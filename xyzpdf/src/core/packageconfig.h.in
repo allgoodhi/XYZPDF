@@ -1,0 +1,33 @@
+// Generated from the XYZPDF_PACKAGE_* cache variables in CMakeLists.txt. Do not
+// edit the copy in the build directory.
+//
+// These are the package's identity, and they have to be the same in three
+// places at once: this program, the manifest that gets packed, and -- for a
+// Store build -- what Partner Center assigned when the name was reserved. The
+// program needs them because it works out its own package family name at
+// runtime to notice whether it is running packaged; get that wrong and it
+// registers the fallback registry verbs on top of the packaged ones, and the
+// user sees two identical entries in Explorer's menu with nothing to tell them
+// apart.
+//
+// The defaults below are the local development identity: a locally installed
+// package has to match the self-signed certificate it is signed with. Nothing
+// has been reserved in Partner Center for this program yet, so there is no
+// Store identity to write down -- that arrives with the submission, in M4, and
+// is supplied from the command line the way XYZip does it:
+//
+//     cmake -B build -DXYZPDF_PACKAGE_IDENTITY_NAME=<the reserved name> \
+//                    -DXYZPDF_PACKAGE_PUBLISHER="CN=<the assigned publisher id>" \
+//                    -DXYZPDF_PACKAGE_PUBLISHER_DISPLAY_NAME=<the display name>
+//
+// packaging/build-store-package.ps1 reads this same generated header, so there
+// is nothing to keep in step by hand.
+#pragma once
+
+#define XYZPDF_PACKAGE_IDENTITY_NAME "@XYZPDF_PACKAGE_IDENTITY_NAME@"
+#define XYZPDF_PACKAGE_IDENTITY_NAME_W L"@XYZPDF_PACKAGE_IDENTITY_NAME@"
+#define XYZPDF_PACKAGE_PUBLISHER "@XYZPDF_PACKAGE_PUBLISHER@"
+#define XYZPDF_PACKAGE_PUBLISHER_W L"@XYZPDF_PACKAGE_PUBLISHER@"
+#define XYZPDF_PACKAGE_PUBLISHER_DISPLAY_NAME "@XYZPDF_PACKAGE_PUBLISHER_DISPLAY_NAME@"
+#define XYZPDF_PACKAGE_DISPLAY_NAME "@XYZPDF_PACKAGE_DISPLAY_NAME@"
+#define XYZPDF_PACKAGE_DISPLAY_NAME_W L"@XYZPDF_PACKAGE_DISPLAY_NAME@"

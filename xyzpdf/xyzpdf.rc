@@ -1,0 +1,44 @@
+// The icon Explorer and the taskbar read off the file itself, as opposed to the
+// one QGuiApplication::setWindowIcon gives the running windows. Both come from
+// Resources/icons/app.svg; tools/makeappicon.py writes this one.
+IDI_ICON1 ICON "packaging/app.ico"
+
+// What the Details tab of the file's properties shows, and what the Store and
+// most installers read a version out of. Without this the executable reports
+// 0.0.0.0, which looks like a build that went wrong.
+//
+// The numbers come from CMakeLists.txt by way of a generated header, so there
+// is nothing here to forget to bump.
+#include <winres.h>
+#include <xyzpdf/version.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION XYZPDF_VERSION_COMMAS
+PRODUCTVERSION XYZPDF_VERSION_COMMAS
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0x0804 is Chinese (Simplified), 04B0 is UTF-16. The strings below are
+        // in Chinese, so claiming English here would be a lie the shell repeats.
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName", "allgoodhi"
+            VALUE "FileDescription", "XYZPDF PDF 阅读器"
+            VALUE "FileVersion", XYZPDF_VERSION_QUAD
+            VALUE "InternalName", "xyzpdf"
+            VALUE "LegalCopyright", "Copyright (C) 2026 allgoodhi"
+            VALUE "OriginalFilename", "xyzpdf.exe"
+            VALUE "ProductName", "XYZPDF"
+            VALUE "ProductVersion", XYZPDF_VERSION_QUAD
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

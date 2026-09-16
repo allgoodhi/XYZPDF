@@ -1,0 +1,19 @@
+Qt 及其内置的第三方库
+
+Qt（Qt6Core.dll、Qt6Gui.dll、Qt6Widgets.dll、Qt6Network.dll、Qt6Svg.dll、
+Qt6Pdf.dll）本身以 LGPL-3.0 授权，许可证全文见同目录下的 LGPL-3.0.txt。
+Qt 内置了若干第三方库，随 Qt 的二进制库一并分发，它们的授权不影响 XYZPDF
+自身代码的授权：
+
+  zlib                     zlib 许可证        https://zlib.net/
+  libpng                   libpng 许可证      http://www.libpng.org/pub/png/libpng.html
+  freetype                 FTL 或 GPL-2.0     https://freetype.org/
+  harfbuzz                 MIT                https://harfbuzz.github.io/
+  libjpeg-turbo            BSD-3-Clause 等    https://libjpeg-turbo.org/
+  Brotli                   MIT                https://github.com/google/brotli
+
+这些库的源码可以从 https://download.qt.io/official_releases/qt/ 对应的源码
+包（qtbase-everywhere-src-*.tar.xz 中的 src/3rdparty 目录）取得，也可以从
+上表中各自的官方地址取得。
+
+Qt PDF 内含 PDFium，其许可证见 pdfium.txt。

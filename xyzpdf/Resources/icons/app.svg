@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!--
+    The application icon. What the running windows wear, and what
+    tools/makeappicon.py draws the .ico from -- the same shapes in both, so the
+    taskbar icon and the icon on the .exe cannot drift apart.
+
+    Deliberately not the Windows default PDF icon: a reader that shows the same
+    picture as the shell does for the file tells nobody which program will open
+    it.
+  -->
+  <rect x="0" y="0" width="256" height="256" rx="56" ry="56" fill="#C4302B"/>
+  <path d="M56 36 h100 l44 44 v140 a12 12 0 0 1 -12 12 H56 a12 12 0 0 1 -12 -12 V48 a12 12 0 0 1 12 -12 z"
+        fill="#FFFFFF"/>
+  <path d="M156 36 l44 44 h-36 a8 8 0 0 1 -8 -8 z" fill="#D9DDE3"/>
+  <rect x="76" y="126" width="104" height="10" rx="5" fill="#C4302B"/>
+  <rect x="76" y="154" width="104" height="10" rx="5" fill="#E3A6A2"/>
+  <rect x="76" y="182" width="68" height="10" rx="5" fill="#E3A6A2"/>
+</svg>

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The local test package.
+
+  Version is the placeholder 0.0.0.0 on purpose. packaging/build-package.ps1
+  stamps the real one in from the generated version header, which is the same
+  number the About box shows and the VERSIONINFO resource carries. A number
+  written here would be a number nobody bumps, and the Store is the place that
+  notices. tests/version_smoke.cpp checks both halves of that arrangement: that
+  this file still parses, and that the version in it is still the placeholder.
+
+  Identity/@Name has no space in it, because the schema does not allow one;
+  Properties/DisplayName is where the name people read goes.
+
+  What is deliberately NOT here yet: the file associations, the IExplorerCommand
+  handler and the preview-pane handler. Those arrive with the packaging work in
+  M4, and each of them has to agree with what the program does at startup. See
+  src/windows/shellintegration.cpp for the registry half.
+
+  (No double hyphens anywhere in these comments: an XML comment may not contain
+  two in a row, and a reader refuses the whole file when it does. That is
+  exactly what this file did on its first build, which the version test caught.)
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="allgoodhi.XYZPDF"
+    Publisher="CN=allgoodhi"
+    Version="0.0.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>XYZPDF</DisplayName>
+    <PublisherDisplayName>allgoodhi</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <!--
+      Every language the program can be is listed here as well as in
+      src/core/languages.cpp, because the package's language list is what
+      Windows shows in the Store and in Settings. tools/add_language.py writes
+      both when a language is added, which is the only way the two stay in step.
+    -->
+    <Resource Language="en" />
+  </Resources>
+
+  <Applications>
+    <Application Id="XYZPDF" Executable="xyzpdf.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="XYZPDF"
+        Description="Windows PDF 阅读器"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- The only capability this program needs: run as an ordinary desktop
+         application, with the user's own file access. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

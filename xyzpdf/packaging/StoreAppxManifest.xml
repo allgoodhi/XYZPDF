@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Store package.
+
+  Same shape as AppxManifest.xml and deliberately a separate file rather than
+  the same one with substitutions: a Store submission is the one thing here that
+  cannot be redone quietly, and the values that decide whether it is accepted
+  (Identity/@Name and @Publisher, which Partner Center assigns and reserves)
+  should be visible in the file they are in rather than assembled from
+  variables at pack time.
+
+  Nothing has been reserved in Partner Center for this program yet, so the
+  identity below is still the development one. packaging/build-store-package.ps1
+  overrides the three identity values on the command line once they exist; see
+  src/core/packageconfig.h.in for how the program is told the same thing.
+
+  Version is the placeholder that gets stamped, as in AppxManifest.xml.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="allgoodhi.XYZPDF"
+    Publisher="CN=3C3318D2-C146-4BCB-AE5B-29787FFF4D89"
+    Version="0.0.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>XYZPDF</DisplayName>
+    <PublisherDisplayName>allgoodhi</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en" />
+  </Resources>
+
+  <Applications>
+    <Application Id="XYZPDF" Executable="xyzpdf.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="XYZPDF"
+        Description="Windows PDF 阅读器"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

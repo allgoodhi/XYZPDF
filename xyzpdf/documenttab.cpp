@@ -1,0 +1,463 @@
+#include "documenttab.h"
+
+#include "src/core/appsettings.h"
+#include "src/document/pagemetrics.h"
+#include "src/document/qtpdfbackend.h"
+#include "src/render/pagerenderer.h"
+#include "src/theme/thememanager.h"
+#include "src/ui/ocrdialog.h"
+#include "src/view/pageview.h"
+
+#include <QClipboard>
+#include <QDir>
+#include <QEvent>
+#include <QFileInfo>
+#include <QFutureWatcher>
+#include <QGuiApplication>
+#include <QPainter>
+#include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrentRun>
+
+#include <cmath>
+
+namespace {
+
+// How much memory the view may keep rendered beyond what is on screen.
+//
+// A fraction of the cache's budget rather than a number of pages: the page is
+// what varies (8 MB on one document, 50 on the next), and the cache budget is
+// the number the user can actually change. An eighth leaves the prefetch
+// modest next to the cache it exists to make hit, and drops to nothing on a
+// document whose pages are big enough that one of them is worth more than the
+// allowance -- which is the right answer: rendering a page nobody is looking at
+// is not worth fifty megabytes.
+qint64 prefetchAllowanceFor(qint64 cacheBytes)
+{
+    return qMax<qint64>(0, cacheBytes / 8);
+}
+
+// How many pixels to put on the recognition crop's longer side.
+//
+// Recognition quality lives on the height of the letters in pixels: the same
+// page at 50% on screen is often too small to read reliably, and at 800% it is
+// a waste. Sixteen hundred -- roughly 300 dpi for ordinary text -- is where the
+// answers stop improving, so that is the target rather than either extreme.
+constexpr double kOcrTargetPixels = 1600.0;
+
+// The whole page is what gets rendered to produce a crop from, so the crop's
+// scale is also capped where the whole page stays a *UI-thread-sized* job --
+// this render is synchronous, on the thread that draws, and four million
+// pixels is a few dozen milliseconds on this machine's documents. A tiny box on
+// a huge page would otherwise ask for a fifty-thousand-pixel rendering to get
+// its two hundred.
+constexpr qint64 kOcrMaximumPagePixels = 4LL * 1024 * 1024;
+
+// Below this, on the crop's longer side, the picture is brought up before it
+// goes to the recognizer. The cap above can leave a small box at two hundred
+// pixels, which reads badly; doubling costs nothing off-thread and is the
+// difference between "nothing found" and the four words that were there.
+constexpr int kOcrMinimumCropPixels = 480;
+
+} // namespace
+
+DocumentTab::DocumentTab(QWidget *parent)
+    : QWidget(parent)
+    , backend(std::make_unique<QtPdfBackend>())
+    , renderer(std::make_unique<PageRenderer>())
+{
+    pageView = new PageView(this);
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(pageView);
+
+    // Fit width on opening, which is what a reader is read at. Not "fit page":
+    // on a tall window that leaves a document at 60% with a grey band each side,
+    // and every reader that has tried it has been asked to change it back.
+    pageView->setZoomMode(ZoomController::Mode::FitWidth);
+
+    // Every tab gets its own budget rather than sharing one: two open documents
+    // then cost twice as much, which is the honest accounting -- and a shared
+    // budget would have the two cache entries evicting each other.
+    cache.setMaximumBytes(AppSettings::renderCacheBytes(RenderCache::DefaultMaximumBytes));
+    pageView->setPrefetchBudget(prefetchAllowanceFor(cache.maximumBytes()));
+
+    // The order of these two connections is the order the view emits them, and
+    // it is load-bearing: the view invalidates before it asks for anything, so
+    // the request that follows carries the generation this bump creates. See
+    // the note on PageView::invalidated().
+    connect(pageView, &PageView::invalidated, this, &DocumentTab::invalidateRenders);
+    connect(pageView, &PageView::pageImageNeeded, this, &DocumentTab::onPageImageNeeded);
+    connect(pageView, &PageView::currentPageChanged, this, [this](int page) {
+        Q_EMIT pageChanged(page, pageCount());
+    });
+    connect(pageView, &PageView::zoomChanged, this, &DocumentTab::zoomChanged);
+    connect(pageView, &PageView::rotationChanged, this, &DocumentTab::rotationChanged);
+    connect(pageView, &PageView::selectionChanged, this, &DocumentTab::selectionChanged);
+    connect(pageView, &PageView::regionCaptured, this, &DocumentTab::onRegionCaptured);
+    connect(renderer.get(), &PageRenderer::rendered, this, &DocumentTab::onPageRendered);
+    connect(renderer.get(), &PageRenderer::discarded, this, &DocumentTab::onDiscarded);
+
+    applyThemeColors();
+}
+
+DocumentTab::~DocumentTab() = default;
+
+void DocumentTab::applyThemeColors()
+{
+    const ThemeColors colors = ThemeManager::currentColors();
+    // The page gets its own greys rather than the interface's: a white page
+    // needs a surround and an edge chosen for it, and the interface's border
+    // colour is tuned for controls sitting on a white surface, not for a page
+    // sitting on a grey one.
+    //
+    // The selection wash is the accent, not the palette's selection colour: the
+    // palette's is a pale blue meant to sit behind a whole row of text in a
+    // list, and over black glyphs on white paper it is almost invisible.
+    pageView->setColors(colors.pageBackdrop, colors.pagePlaceholder, colors.pageBorder,
+                        colors.accent);
+}
+
+void DocumentTab::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    // The theme is applied as a stylesheet on the application, which reaches
+    // every widget that Qt can paint -- and not the page surface, which paints
+    // itself. This is how it finds out.
+    if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange)
+        applyThemeColors();
+}
+
+Document::Status DocumentTab::open(const QString &path, const QString &password)
+{
+    const Document::Status result = backend->load(path, password);
+    status = result;
+
+    if (result != Document::Status::Ready) {
+        opened = false;
+        // The view is emptied rather than left showing the previous document:
+        // a page from another file under a tab named after this one is worse
+        // than an empty surface -- and its text goes with it, so that a click
+        // cannot select characters out of the document that used to be open.
+        pageView->setDocument(nullptr);
+        pageView->setRotation(0);
+        pageView->clearDocument();
+        Q_EMIT titleChanged(title());
+        Q_EMIT pageChanged(0, 0);
+        return result;
+    }
+
+    // The renderer is pointed at the new document first, because that is what
+    // bumps the generation -- and the page sizes below make the view ask for
+    // images immediately, synchronously, inside setPageSizes.
+    renderer->setDocument(backend->pdfDocument());
+    // And the view is given the document to ask its own questions of: which
+    // character is under this point, and what is in this range. Borrowed only,
+    // and only for text -- images still come through this class, which is what
+    // keeps them off the thread that draws.
+    pageView->setDocument(backend.get());
+    // A new document's pages have nothing to do with the previous one's, and
+    // they are keyed by page number and size, so they would be found and drawn.
+    cache.clear();
+    pageView->setRotation(0);
+
+    QVector<QSizeF> sizes;
+    const int count = backend->pageCount();
+    sizes.reserve(count);
+    for (int page = 0; page < count; ++page)
+        sizes.append(backend->pageSize(page));
+
+    // Before the sizes, not after. setPageSizes() lays the document out and
+    // asks for the pages in view *synchronously*, and onPageImageNeeded refuses
+    // to do anything while this tab is not open -- so setting this afterwards
+    // threw away every request opening the document had just made. The view
+    // recorded them as on their way and never asked again, which left the first
+    // page a grey placeholder until something else happened to reschedule it.
+    // documenttab_smoke catches it by opening a document and waiting for it.
+    opened = true;
+
+    pageView->setPageSizes(sizes);
+
+    Q_EMIT titleChanged(title());
+    Q_EMIT pageChanged(pageView->currentPage(), count);
+    Q_EMIT cacheChanged(cache.usedBytes(), cache.maximumBytes());
+    return result;
+}
+
+QString DocumentTab::lastError() const
+{
+    return backend->lastError();
+}
+
+QString DocumentTab::documentPath() const
+{
+    return backend->path();
+}
+
+QString DocumentTab::title() const
+{
+    const QString path = backend->path();
+    if (path.isEmpty())
+        return tr("（空标签）");
+    return QFileInfo(path).fileName();
+}
+
+int DocumentTab::pageCount() const
+{
+    return backend->pageCount();
+}
+
+int DocumentTab::currentPage() const
+{
+    return pageView->currentPage();
+}
+
+void DocumentTab::setCurrentPage(int page)
+{
+    pageView->goToPage(page);
+}
+
+double DocumentTab::zoom() const
+{
+    return pageView->zoom();
+}
+
+void DocumentTab::setZoom(double zoom)
+{
+    pageView->setZoom(zoom);
+}
+
+void DocumentTab::setZoomMode(ZoomController::Mode mode)
+{
+    pageView->setZoomMode(mode);
+}
+
+ZoomController::Mode DocumentTab::zoomMode() const
+{
+    return pageView->zoomMode();
+}
+
+void DocumentTab::rotateBy(int degrees)
+{
+    pageView->setRotation(pageView->rotation() + degrees);
+}
+
+int DocumentTab::rotation() const
+{
+    return pageView->rotation();
+}
+
+void DocumentTab::setLayoutMode(PageLayout::Mode mode)
+{
+    pageView->setLayoutMode(mode);
+}
+
+PageLayout::Mode DocumentTab::layoutMode() const
+{
+    return pageView->layoutMode();
+}
+
+void DocumentTab::setCacheLimit(qint64 bytes)
+{
+    cache.setMaximumBytes(bytes);
+    // The prefetch allowance is a fraction of this, so it moves with it: a user
+    // who lowers the budget expects the memory to come back, and prefetching is
+    // memory.
+    pageView->setPrefetchBudget(prefetchAllowanceFor(cache.maximumBytes()));
+    Q_EMIT cacheChanged(cache.usedBytes(), cache.maximumBytes());
+}
+
+bool DocumentTab::isBusy() const
+{
+    return renderer->inFlight() > 0;
+}
+
+void DocumentTab::invalidateRenders()
+{
+    if (renderer->document())
+        renderer->beginGeneration();
+}
+
+void DocumentTab::onPageImageNeeded(const RenderToken &requested)
+{
+    if (!opened)
+        return;
+
+    // The view asks in terms of the page; the generation is filled in here,
+    // which is what keeps the view from having to know about generations at
+    // all. Everything else in the token -- which page, which band of it, at
+    // what size, which way up -- comes from the view, because it is the only
+    // thing that knows what is on screen.
+    RenderToken token = requested;
+    token.generation = renderer->generation();
+
+    // The cache first. Equality ignores the generation, so a page rendered
+    // before a zoom change and asked for again at the same size is found here
+    // -- which is what makes zooming out and back in instant.
+    const QImage cached = cache.image(token);
+    if (!cached.isNull()) {
+        pageView->setPageImage(token, cached);
+        return;
+    }
+    renderer->request(token);
+}
+
+void DocumentTab::onPageRendered(const RenderToken &token, const QImage &image)
+{
+    // Checked again here even though the renderer drops what it can tell is
+    // stale: the renderer's generation is bumped by this object, and between
+    // the two there is a window -- small, and not zero -- in which the tab knows
+    // something the renderer does not. This is the last word, and the plan asks
+    // for exactly one: a stale image never reaches the screen.
+    if (!token.isCurrent(renderer->generation()))
+        return;
+
+    // The cache keeps only what came back, and only when it is worth keeping:
+    // an image that produced nothing is not a result to remember, and the view
+    // has to hear about it so that the page is asked for again.
+    if (!image.isNull())
+        cache.insert(token, image);
+    if (opened && token.page < pageCount())
+        pageView->setPageImage(token, image);
+    Q_EMIT cacheChanged(cache.usedBytes(), cache.maximumBytes());
+}
+
+void DocumentTab::selectAll()
+{
+    pageView->selectAll();
+}
+
+void DocumentTab::clearSelection()
+{
+    pageView->clearSelection();
+}
+
+bool DocumentTab::hasSelection() const
+{
+    return pageView->hasSelection();
+}
+
+QString DocumentTab::selectedText() const
+{
+    return pageView->selectedText();
+}
+
+void DocumentTab::copySelection()
+{
+    const QString text = selectedText();
+    if (text.isEmpty())
+        return;
+    QGuiApplication::clipboard()->setText(text);
+}
+
+void DocumentTab::onDiscarded(const RenderToken &token)
+{
+    Q_UNUSED(token)
+    ++discardedCount;
+}
+
+void DocumentTab::onRegionCaptured(int page, QRectF points)
+{
+    if (!opened || page < 0 || page >= backend->pageCount())
+        return;
+    const QSizeF pagePoints = backend->pageSize(page);
+    if (pagePoints.isEmpty() || points.isEmpty())
+        return;
+
+    // The crop is rendered at a size of its own rather than the size it
+    // happens to be on screen: the user may have zoomed out to see the page
+    // they are cropping, and a crop that arrives at 40% reads badly no matter
+    // how good the recognizer is.
+    double scale = kOcrTargetPixels / qMax(points.width(), points.height());
+    // The whole page is what gets rendered to cut the crop from, so the scale
+    // is also capped where the whole page stays a UI-thread-sized job -- which
+    // is what keeps a tiny box on a huge page from asking for a
+    // fifty-thousand-pixel rendering to get its two hundred.
+    const double pageCap =
+        std::sqrt(double(kOcrMaximumPagePixels))
+        / std::sqrt(double(pagePoints.width()) * double(pagePoints.height()));
+    scale = qBound(1.0, scale, pageCap);
+
+    const int rotation = pageView->rotation();
+    const QSize full = PageMetrics::pixelsFor(PageMetrics::rotated(pagePoints, rotation), scale,
+                                              1.0);
+    // The box is in the page's own coordinates; the image it will be cut from
+    // is the page the way it is drawn, which is a quarter turn away when the
+    // reader has rotated it. One formula, shared with the view -- which is the
+    // reason it lives in PageMetrics rather than here as a copy.
+    const QRectF drawn = PageMetrics::rotatedRect(points, pagePoints, rotation);
+    QRect crop = QRect(int(std::floor(drawn.left() * scale)),
+                       int(std::floor(drawn.top() * scale)),
+                       int(std::ceil(drawn.width() * scale)),
+                       int(std::ceil(drawn.height() * scale)));
+    crop = crop.intersected(QRect(QPoint(0, 0), full));
+    if (crop.isEmpty())
+        return;
+
+    // The crop is rendered here, synchronously, and NOT through PageRenderer.
+    // That is a decision with a story: an asynchronous crop render on the
+    // renderer's threads, still in flight while the user reopens the document,
+    // ended in a fail-fast inside the reload -- reproducible at will in the
+    // integration test, and never seen before because a *view* render is never
+    // still running when the next document loads. Rendering on this thread
+    // makes the overlap impossible by construction: nothing that touches the
+    // document runs concurrently with anything else that does. The cost is a
+    // synchronous render of a few dozen milliseconds, capped by the pixel
+    // budget above, paid at the moment the user releases a box they dragged --
+    // the slow part, the recognition, still runs off this thread.
+    RenderOptions options;
+    options.rotationDegrees = rotation;
+    options.annotations = true;
+    options.clip = crop;
+    options.scaledSize = full;
+    const QImage cropImage = backend->render(page, crop.size(), options);
+    if (cropImage.isNull())
+        return;
+
+    OcrDialog *dialog = new OcrDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+    startRecognition(cropImage, dialog);
+}
+
+void DocumentTab::startRecognition(const QImage &crop, QPointer<OcrDialog> dialog)
+{
+    // The crop is copied into the worker by value, so the view can go on
+    // scrolling, zooming, even closing this tab while it runs -- nothing in
+    // the task touches this object. The dialog is watched with a QPointer:
+    // the user is free to close it, and a result nobody is waiting for is
+    // dropped rather than kept alive to be shown into nothing.
+    auto *watcher = new QFutureWatcher<Ocr::Result>(this);
+    connect(watcher, &QFutureWatcher<Ocr::Result>::finished, this, [watcher, dialog] {
+        const Ocr::Result result = watcher->result();
+        watcher->deleteLater();
+        if (dialog)
+            dialog->setResult(result);
+    });
+    watcher->setFuture(QtConcurrent::run([crop] {
+        // Onto white paper first, and this is the whole trick. A PDF page has no
+        // background: what the renderer hands back is the ink at full alpha over
+        // transparent *black*, so the crop is a black rectangle with black text
+        // on it, and the recognizer reads exactly nothing from it -- which is
+        // what the first version of this feature did, on every picture, while
+        // looking correct in every debug print. The view flattens a page the
+        // same way before drawing it; this is the same step, for the same
+        // reason.
+        QImage input(crop.size(), QImage::Format_RGB32);
+        input.fill(Qt::white);
+        {
+            QPainter painter(&input);
+            painter.drawImage(0, 0, crop);
+        }
+
+        // A crop that came out small -- a few words boxed on a page whose
+        // scale was capped -- is brought up before recognition. Doubling costs
+        // nothing here, off the thread that draws, and is the difference
+        // between "nothing found" and the words that were there.
+        const int longerSide = qMax(input.width(), input.height());
+        if (longerSide > 0 && longerSide < kOcrMinimumCropPixels) {
+            input = input.scaled(longerSide * 2, longerSide * 2, Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
+        }
+        return Ocr::recognize(input);
+    }));
+}

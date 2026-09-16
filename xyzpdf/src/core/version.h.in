@@ -1,0 +1,13 @@
+// Generated from CMakeLists.txt's project(VERSION). Do not edit the copy in the
+// build directory -- edit the version in CMakeLists.txt and reconfigure.
+#pragma once
+
+// "0.1.0", for people.
+#define XYZPDF_VERSION "@PROJECT_VERSION@"
+
+// The same thing in the shape Windows wants: four numbers, comma-separated for
+// the VERSIONINFO resource and dotted for Identity/@Version in the package
+// manifest. The fourth field stays zero -- the Store reserves it and rejects a
+// manifest that sets it.
+#define XYZPDF_VERSION_COMMAS @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+#define XYZPDF_VERSION_QUAD "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.0"

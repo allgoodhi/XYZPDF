@@ -1,0 +1,31 @@
+<RCC>
+    <!--
+      What goes into the binary, as opposed to what sits beside it.
+
+      Qt's own Chinese catalogue is here because Qt's built-in widgets say
+      "OK", "Cancel" and "Hide Details" in English unless something tells them
+      otherwise, and this program's interface is Chinese. It is embedded rather
+      than read from the Qt installation so that it cannot go missing when the
+      program is deployed somewhere without a translations directory.
+
+      This program's own catalogues are NOT here: they are compiled from the .ts
+      files by qt_add_translations and attached to the target, which is the one
+      arrangement that keeps the .qm and the .ts from disagreeing.
+    -->
+    <qresource prefix="/">
+        <file alias="translations/qtbase_zh_CN.qm">Resources/translations/qtbase_zh_CN.qm</file>
+
+        <file alias="icons/app.svg">Resources/icons/app.svg</file>
+        <file alias="icons/check_white.svg">Resources/icons/check_white.svg</file>
+        <file alias="icons/radio_dot_white.svg">Resources/icons/radio_dot_white.svg</file>
+        <file alias="icons/chevron_down_dark.svg">Resources/icons/chevron_down_dark.svg</file>
+        <file alias="icons/chevron_down_light.svg">Resources/icons/chevron_down_light.svg</file>
+        <file alias="icons/chevron_up_dark.svg">Resources/icons/chevron_up_dark.svg</file>
+        <file alias="icons/chevron_up_light.svg">Resources/icons/chevron_up_light.svg</file>
+
+        <file alias="licenses/LGPL-3.0.txt">Resources/licenses/LGPL-3.0.txt</file>
+        <file alias="licenses/GPL-3.0.txt">Resources/licenses/GPL-3.0.txt</file>
+        <file alias="licenses/pdfium.txt">Resources/licenses/pdfium.txt</file>
+        <file alias="licenses/qt.txt">Resources/licenses/qt.txt</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Merged into the manifest the linker generates, rather than replacing it. The
+  default one already carries the execution level, and two RT_MANIFEST resources
+  in one binary is an error rather than a merge.
+
+  What this adds is the DPI declaration. Qt sets per-monitor v2 awareness itself
+  when QGuiApplication starts, so the program was already scaling correctly, but
+  that happens from inside the platform plugin, after the process is running, and
+  nothing static can see it. The App Certification Kit reads the executable's
+  manifest and its imports, finds neither, and reports the app as not DPI aware.
+
+  Saying it here is also simply better than saying it in code: the awareness is
+  set before any window exists, instead of being changed part way through
+  startup. Qt reads the process awareness it finds and leaves it alone.
+
+  (No em dashes anywhere above: an XML comment may not contain two hyphens in a
+  row, and mt.exe refuses the whole file when it does.)
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- Windows 10 1703 and later read this one. -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <!-- The older spelling, for anything that does not understand the above. -->
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+    </windowsSettings>
+  </application>
+</assembly>

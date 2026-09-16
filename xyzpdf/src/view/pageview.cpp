@@ -154,9 +154,15 @@ void PageView::setPageSizes(const QVector<QSizeF> &points)
     // And so is the selection: it is a pair of character indices, and the
     // characters they point at belong to the document that has just gone.
     clearSelection();
-    // A box being dragged belongs to the page it was dragged on.
+    // A box being dragged, and a pan, belong to the document that was there
+    // when they started.
     regionSelecting = false;
     regionDrag = QRect();
+    if (panning) {
+        panning = false;
+        viewport()->releaseMouse();
+        applyPointerShape(pointerShapeFor(QPoint()));
+    }
 
     QVector<QSizeF> rotatedSizes;
     rotatedSizes.reserve(points.size());
@@ -535,15 +541,87 @@ void PageView::extendSelectionTo(const QPoint &viewportPoint)
     Q_EMIT selectionChanged();
 }
 
+void PageView::setTool(Tool tool)
+{
+    if (activeTool == tool)
+        return;
+
+    // Whatever the old tool had in progress ends with it. A box half-dragged or
+    // a page half-panned belongs to the tool that started it -- carrying either
+    // into the next one is a drag the user never asked for, and the release
+    // would arrive at a handler that no longer has a press to go with it.
+    if (regionSelecting) {
+        regionSelecting = false;
+        regionDrag = QRect();
+    }
+    if (panning) {
+        panning = false;
+        viewport()->releaseMouse();
+    }
+    selecting = false;
+
+    activeTool = tool;
+
+    // The pointer is the only thing on screen that says which tool is in force
+    // before anything is dragged, so it changes with the tool. In Select mode
+    // the next move refines it to an I-beam over a line of text; the other two
+    // are the same everywhere on the page.
+    applyPointerShape(tool == Tool::View      ? Qt::OpenHandCursor
+                      : tool == Tool::Recognize ? Qt::CrossCursor
+                                                : Qt::ArrowCursor);
+
+    viewport()->update();
+    Q_EMIT toolChanged(tool);
+}
+
 void PageView::mousePressEvent(QMouseEvent *event)
 {
-    if (!textSource || event->button() != Qt::LeftButton) {
+    if (event->button() != Qt::LeftButton) {
         QAbstractScrollArea::mousePressEvent(event);
         return;
     }
 
     const QPoint at = event->position().toPoint();
+
+    // ---- the hand ----
+    //
+    // It takes the mouse: a pan that stops when the pointer leaves the widget
+    // is a page that stops moving under a hand that has not let go, which feels
+    // like the program dropping it.
+    if (activeTool == Tool::View) {
+        panning = true;
+        panOrigin = at;
+        viewport()->grabMouse();
+        applyPointerShape(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+
     const int page = pageAtPoint(at);
+
+    // ---- the box ----
+    //
+    // No document question to ask first: a box is drawn over whatever is there,
+    // text included, and the recognition handles the rest.
+    if (activeTool == Tool::Recognize) {
+        if (page < 0)
+            return; // the backdrop, or the gap between two pages
+        // A previous selection goes with it: one drag, one meaning, and leaving
+        // the old selection lit while a box is drawn would make both look like
+        // they are about to do something.
+        clearSelection();
+        regionSelecting = true;
+        regionOrigin = at;
+        regionDrag = QRect();
+        viewport()->update();
+        return;
+    }
+
+    // ---- the selection ----
+    if (!textSource) {
+        QAbstractScrollArea::mousePressEvent(event);
+        return;
+    }
     if (page < 0) {
         // The backdrop, or the gap between two pages: clicking there is how
         // everybody clears a selection.
@@ -552,47 +630,49 @@ void PageView::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    // Alt overrides: a box anywhere, text and all. It is how a picture inside
-    // a page that has text of its own gets to be recognized -- and it is why
-    // this is Alt, the modifier that means "I mean it" and not one of the ones
-    // a keyboard layout owns.
-    const bool forceRegion = event->modifiers().testFlag(Qt::AltModifier);
-
-    // Over a line of text the drag is a text selection, and everywhere else it
-    // is a box. This is the cursor's own question, asked again at the press:
-    // the pointer shows an I-beam over text and an arrow elsewhere, so the
-    // drag a press starts is the drag the pointer has been promising.
-    if (!forceRegion
-        && textSource->hasTextAt(page, pagePointFor(page, at))) {
-        const int index = textSource->characterIndexAt(page, pagePointFor(page, at));
-
-        // Shift extends from the existing anchor, which is what every text
-        // control does and what makes a selection reachable without dragging.
-        if (!event->modifiers().testFlag(Qt::ShiftModifier) || anchorPage < 0) {
-            anchorPage = page;
-            anchorIndex = index;
-        }
-        focusPage = page;
-        focusIndex = index;
-        selecting = true;
-        viewport()->update();
-        Q_EMIT selectionChanged();
+    // Anywhere on a page that has text anchors the selection at the nearest
+    // character -- including the margin, which is where a drag that selects from
+    // the start of a line begins. The pointer is stricter than this (an I-beam
+    // only over the ink, an arrow over the margin), and deliberately: the
+    // pointer answers "is there a line right here", the press answers "where
+    // would a selection start". Making the press as strict as the pointer is how
+    // a drag from just left of a line stops working.
+    const int index = textSource->characterIndexAt(page, pagePointFor(page, at));
+    if (index < 0) {
+        clearSelection(); // a page of scans, or a picture: no text to select
         return;
     }
 
-    // The box. A previous selection goes with it: one drag, one meaning, and
-    // leaving the old selection lit while a box is drawn would make both look
-    // like they are about to do something.
-    clearSelection();
-    regionSelecting = true;
-    regionOrigin = at;
-    regionDrag = QRect();
+    // Shift extends from the existing anchor, which is what every text control
+    // does and what makes a selection reachable without dragging.
+    if (!event->modifiers().testFlag(Qt::ShiftModifier) || anchorPage < 0) {
+        anchorPage = page;
+        anchorIndex = index;
+    }
+    focusPage = page;
+    focusIndex = index;
+    selecting = true;
     viewport()->update();
+    Q_EMIT selectionChanged();
 }
 
 void PageView::mouseMoveEvent(QMouseEvent *event)
 {
     const QPoint at = event->position().toPoint();
+
+    if (panning) {
+        // The paper follows the pointer, so the scroll position moves against
+        // it: dragging right shows what is to the left, dragging down shows
+        // what is above. This is the whole of the hand tool, and the reason it
+        // is not "scroll by the drag" is that a page picked up and moved is
+        // what the hand means.
+        const QPoint delta = at - panOrigin;
+        panOrigin = at;
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+        return;
+    }
+
     if (regionSelecting) {
         regionDrag = QRect(regionOrigin, at).normalized();
         viewport()->update();
@@ -606,30 +686,61 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
     QAbstractScrollArea::mouseMoveEvent(event);
 }
 
-void PageView::updateCursorAt(const QPoint &viewportPoint)
+Qt::CursorShape PageView::pointerShapeFor(const QPoint &viewportPoint) const
 {
-    // Which question to ask depends on the document, and asking it on every
-    // move is the point: the pointer crosses lines, margins and background as
-    // it goes, and the cursor has to say which one it is over.
-    bool overText = false;
-    if (textSource) {
-        const int page = pageAtPoint(viewportPoint);
-        if (page >= 0)
-            overText = textSource->hasTextAt(page, pagePointFor(page, viewportPoint));
+    switch (activeTool) {
+    case Tool::View:
+        return panning ? Qt::ClosedHandCursor : Qt::OpenHandCursor;
+    case Tool::Recognize:
+        // A crosshair, which is what "draw a box" looks like everywhere else,
+        // and is not confusable with either of the other two.
+        return Qt::CrossCursor;
+    case Tool::Select:
+        break;
     }
 
+    // Selection: an I-beam over a line of text and an arrow everywhere else --
+    // the pointer is the only thing that says "this can be selected", and it
+    // has to be right about it, so it asks the strict question. What a *press*
+    // does is more forgiving; see the note in mousePressEvent().
+    if (!textSource)
+        return Qt::ArrowCursor;
+    const int page = pageAtPoint(viewportPoint);
+    if (page < 0 || !textSource->hasTextAt(page, pagePointFor(page, viewportPoint)))
+        return Qt::ArrowCursor;
+    return Qt::IBeamCursor;
+}
+
+void PageView::updateCursorAt(const QPoint &viewportPoint)
+{
+    // Which question to ask depends on the tool and on the document, and asking
+    // it on every move is the point: the pointer crosses lines, margins and
+    // background as it goes, and it has to say which one it is over.
+    applyPointerShape(pointerShapeFor(viewportPoint));
+}
+
+void PageView::applyPointerShape(Qt::CursorShape shape)
+{
     // Only when the answer changes. setCursor() on every mouse move is a
     // window-system call per event for a shape that is almost always the one
     // already in force, and on a page of scans it would be that call for
     // nothing, thousands of times a second.
-    if (overText == pointerOverText)
+    if (shape == pointerShape)
         return;
-    pointerOverText = overText;
-    viewport()->setCursor(overText ? Qt::IBeamCursor : Qt::ArrowCursor);
+    pointerShape = shape;
+    viewport()->setCursor(shape);
 }
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton && panning) {
+        panning = false;
+        viewport()->releaseMouse();
+        // Back to the open hand: the tool has not changed, the drag has ended.
+        applyPointerShape(Qt::OpenHandCursor);
+        QAbstractScrollArea::mouseReleaseEvent(event);
+        return;
+    }
     if (event->button() == Qt::LeftButton && regionSelecting) {
         regionSelecting = false;
         finishRegionDrag();
@@ -678,7 +789,10 @@ void PageView::finishRegionDrag()
 
 void PageView::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    if (!textSource || event->button() != Qt::LeftButton) {
+    // Selecting a word is a thing the selection tool does. In the other two a
+    // double-click is two clicks of the tool in force -- two pans, or two boxes
+    // the second of which is the click that cancels the first.
+    if (activeTool != Tool::Select || !textSource || event->button() != Qt::LeftButton) {
         QAbstractScrollArea::mouseDoubleClickEvent(event);
         return;
     }

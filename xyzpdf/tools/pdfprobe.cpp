@@ -1,7 +1,8 @@
 // Measures one document: how long its pages take to render, how many pixels
-// that is, and how many of them fit in the render cache's budget.
+// that is, how many of them fit in the render cache's budget, and what the text
+// layer of one page looks like.
 //
-//     xyzpdf_pdfprobe <file.pdf> [page count to sample] [viewport width]
+//     xyzpdf_pdfprobe <file.pdf> [page count to sample] [viewport width] [text page]
 //
 // Not a test -- it prints numbers rather than passing or failing, which is why
 // tools/build_all_tests.py skips anything with "probe" in its name. It exists
@@ -112,6 +113,164 @@ int main(int argc, char **argv)
         std::cout << "a " << megabytes(RenderCache::DefaultMaximumBytes).toStdString()
                   << " cache holds " << RenderCache::DefaultMaximumBytes / firstPageBytes
                   << " pages of that size\n";
+    }
+
+    // ---- the text layer, which is what a mouse drag selects from ----
+    //
+    // Added because "selection does not work in this document" is a question
+    // that cannot be answered from outside the program: what matters is whether
+    // the page has text at all, how long it is, where its boxes are, and what
+    // index a point on it comes back as -- and every one of those differs
+    // between a Latin page and a CJK one, which is where the difference showed
+    // up. The numbers here are what turned "Chinese cannot be selected" into a
+    // cause.
+    {
+        const int page = arguments.size() > 4 ? arguments.at(4).toInt() - 1 : 0;
+        if (page < 0 || page >= pages) {
+            std::cout << "\nno page " << page + 1 << " to report the text of\n";
+        } else {
+            const QString text = document.text(page);
+            QString sample = text.left(60);
+            sample.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
+            std::cout << "\ntext on page " << page + 1 << ": " << text.length()
+                      << " characters, first 60: \"" << sample.toStdString() << "\"\n";
+
+            const QVector<TextRun> runs = document.textRuns(page);
+            std::cout << "text runs (line boxes): " << runs.size() << '\n';
+            for (int index = 0; index < runs.size() && index < 3; ++index) {
+                const QRectF &box = runs.at(index).box;
+                std::cout << "  run " << index << ": " << box.x() << ',' << box.y() << ' '
+                          << box.width() << 'x' << box.height() << '\n';
+            }
+
+            // Per-character boxes, over the first few characters and over the
+            // first few that are not Latin. Both, because the two come back
+            // differently: what is measured here is that a CJK character's box
+            // is empty from this API, and what the character itself comes back
+            // as, which is where the index space was suspect.
+            const auto describeCharacter = [&document, page, &text](int index) {
+                const PageSelection one = document.pageSelection(page, index, index + 1);
+                QString box = QStringLiteral("(none)");
+                if (!one.boxes.isEmpty()) {
+                    box = QStringLiteral("%1,%2 %3x%4")
+                              .arg(one.boxes.first().x())
+                              .arg(one.boxes.first().y())
+                              .arg(one.boxes.first().width())
+                              .arg(one.boxes.first().height());
+                }
+                const QString code =
+                    QStringLiteral("U+%1")
+                        .arg(int(text.at(index).unicode()), 4, 16, QLatin1Char('0'));
+                std::cout << "  " << index << ". " << code.toStdString() << " ["
+                          << QString(text.at(index)).toStdString() << "] -> "
+                          << int(one.boxes.size()) << " box(es), first " << box.toStdString()
+                          << ", api text [" << one.text.toStdString() << "]\n";
+            };
+
+            std::cout << "per-character boxes, first 6:\n";
+            for (int index = 0; index < qMin(6, text.length()); ++index)
+                describeCharacter(index);
+
+            std::cout << "per-character boxes, first 6 that are not Latin:\n";
+            int shown = 0;
+            for (int index = 0; index < text.length() && shown < 6; ++index) {
+                if (text.at(index).unicode() > 0x2E80) {
+                    describeCharacter(index);
+                    ++shown;
+                }
+            }
+
+            // And the characters the API has no box for at all -- a newline is
+            // the usual one. They are the reason a binary search over "is this
+            // character before the point" lands somewhere arbitrary: they are
+            // holes in the middle of the answer.
+            int withoutBox = 0;
+            QString firstWithout;
+            for (int index = 0; index < text.length(); ++index) {
+                if (document.pageSelection(page, index, index + 1).boxes.isEmpty()) {
+                    ++withoutBox;
+                    if (firstWithout.size() < 12) {
+                        firstWithout += QStringLiteral("%1[%2] ")
+                                            .arg(index)
+                                            .arg(QString(text.at(index)).replace('\n',
+                                                                                 QStringLiteral("\\n"))
+                                                     .replace('\r', QStringLiteral("\\r")));
+                    }
+                }
+            }
+            std::cout << "characters with no box: " << withoutBox << " of " << text.length()
+                      << "; first: " << firstWithout.toStdString() << '\n';
+
+            // Where the characters sit, every so many of them. Whether this list
+            // goes down the page in order is the question a bisection over the
+            // index depends on: the search assumes that a character later in the
+            // text is never higher up or further left than an earlier one, and a
+            // document that lays its text out in another order breaks that
+            // silently -- it does not fail, it answers somewhere else.
+            std::cout << "index -> box, every " << qMax(1, text.length() / 12) << " characters:\n";
+            const int step = qMax(1, text.length() / 12);
+            for (int index = 0; index < text.length(); index += step) {
+                const QRectF box = document.pageSelection(page, index, index + 1).boxes.isEmpty()
+                                       ? QRectF()
+                                       : document.pageSelection(page, index, index + 1)
+                                             .boxes.first();
+                std::cout << QStringLiteral("  %1: %2,%3 %4x%5")
+                                 .arg(index, 4)
+                                 .arg(box.x(), 6, 'f', 0)
+                                 .arg(box.y(), 6, 'f', 0)
+                                 .arg(box.width(), 5, 'f', 0)
+                                 .arg(box.height(), 5, 'f', 0)
+                                 .toStdString()
+                          << '\n';
+            }
+
+            // What a click at the centre of each of the first few lines answers
+            // with. This is the measurement the "Chinese cannot be selected"
+            // report turned into: the answer has to be an index of *that* line,
+            // and before the fix it was an index of another one.
+            for (int index = 0; index < runs.size() && index < 6; ++index) {
+                const QPointF at = runs.at(index).box.center();
+                const int answered = document.characterIndexAt(page, at);
+                std::cout << "  centre of run " << index << " (" << at.x() << ',' << at.y()
+                          << ") -> index " << answered << ", hasTextAt "
+                          << (document.hasTextAt(page, at) ? "yes" : "no") << '\n';
+                if (answered > 0 && answered <= text.length()) {
+                    const PageSelection near = document.pageSelection(page, answered - 1, answered);
+                    if (!near.boxes.isEmpty()) {
+                        std::cout << "      which is the character before [" << near.text.toStdString()
+                                  << "] at " << near.boxes.first().center().y() << " (the line is at "
+                                  << runs.at(index).box.center().y() << ")\n";
+                    }
+                }
+            }
+
+            // What the per-character geometry costs, since it is what a click
+            // needs: one PDFium lookup per character. Timed apart, because the
+            // answer decides whether it can be built on the thread that draws.
+            {
+                QElapsedTimer timer;
+                timer.start();
+                const QString whole = document.text(page);
+                std::cout << "the page's text: " << timer.elapsed() << " ms (" << whole.length()
+                          << " characters)\n";
+                timer.restart();
+                for (int index = 0; index < 20; ++index)
+                    document.pageSelection(page, index, index + 1);
+                std::cout << "20 single-character selections: " << timer.elapsed() << " ms\n";
+
+                // Which is why the index at a point is found by bisection --
+                // about twelve of those calls per click, and the page's text is
+                // already cached by then.
+                if (!runs.isEmpty()) {
+                    timer.restart();
+                    document.characterIndexAt(page, runs.first().box.center());
+                    std::cout << "one click at a point (bisection): " << timer.elapsed() << " ms\n";
+                    timer.restart();
+                    document.hasTextAt(page, runs.first().box.center());
+                    std::cout << "one hover test (line box only): " << timer.elapsed() << " ms\n";
+                }
+            }
+        }
     }
 
     // And what a band of a zoomed-in page costs, which is what the view does

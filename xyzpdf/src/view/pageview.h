@@ -57,6 +57,32 @@ class PageView : public QAbstractScrollArea
     Q_OBJECT
 
 public:
+    // What a mouse drag on the page does. One tool at a time, chosen by the
+    // user rather than guessed from the pointer's position.
+    //
+    // ---- why explicit, after a version where it was not ----
+    //
+    // Dragging used to mean whichever of the two the pointer was pointing at:
+    // an I-beam under the cursor meant "select text", an arrow meant "draw a
+    // box". That was self-consistent and cost no interface, and it broke the
+    // moment both features existed: selecting text in a scanned document -- or
+    // anywhere the pointer happened to be between two lines -- was a box, and
+    // there was no way to ask for the other one except by holding Alt, which is
+    // a thing to be told rather than a thing to be discovered.
+    //
+    // With a tool chosen from the toolbar, each drag has exactly one meaning and
+    // the pointer still says which: a hand, an I-beam, a crosshair.
+    enum class Tool {
+        // The paper follows the pointer. Nothing on the page is selected --
+        // this is the tool for reading a document and moving around it.
+        View,
+        // Text is selected the way it always was: drag, double-click, Shift.
+        Select,
+        // A drag draws a box, and the text inside it is recognized from the
+        // pixels -- which is the only way to read a scan or a picture.
+        Recognize
+    };
+
     explicit PageView(QWidget *parent = nullptr);
 
     // Page sizes in points, in page order. Empty means nothing is open.
@@ -168,6 +194,13 @@ public:
     void setColors(const QColor &background, const QColor &placeholder, const QColor &border,
                    const QColor &selection);
 
+    // What a drag on a page does, and what the pointer looks like while it is
+    // over one. Changing it cancels whatever the previous tool had in progress:
+    // a box half-dragged and a pan half-done belong to the tool that started
+    // them, and carrying either into the next one is a drag nobody asked for.
+    void setTool(Tool tool);
+    Tool tool() const { return activeTool; }
+
     QSize minimumSizeHint() const override;
 
 Q_SIGNALS:
@@ -211,6 +244,10 @@ Q_SIGNALS:
     // A tiny drag is not reported: it is a click that missed, not a region.
     // Received by the tab, which renders the crop and has it recognized.
     void regionCaptured(int page, QRectF points);
+
+    // The tool in force changed, whether the user changed it here or somewhere
+    // else did. The window keeps its toolbar in step with this.
+    void toolChanged(Tool tool);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -297,11 +334,15 @@ private:
     // Moves the focus end of the selection to a point, if there is text there.
     void extendSelectionTo(const QPoint &viewportPoint);
 
-    // The pointer's shape, from what is under it: an I-beam over a line of
-    // text, an arrow everywhere else. Called from the move handler, and only
-    // changes the cursor when the answer changes -- see the note in the
-    // implementation.
+    // The pointer's shape, from the tool in force and from what is under it:
+    // a hand for View, an I-beam over a line of text for Select, a crosshair
+    // for Recognize. Called from the move handler, and only changes the cursor
+    // when the answer changes -- see the note in the implementation.
     void updateCursorAt(const QPoint &viewportPoint);
+    Qt::CursorShape pointerShapeFor(const QPoint &viewportPoint) const;
+    // Sets the pointer to `shape`, remembering it so that the next move does
+    // not set it again for nothing.
+    void applyPointerShape(Qt::CursorShape shape);
 
     // Scrolling, which is what the keyboard does: PgUp/PgDn move by a screen,
     // and the arrows and space by less.
@@ -335,13 +376,22 @@ private:
     int anchorIndex = 0;
     int focusPage = -1;
     int focusIndex = 0;
+    Tool activeTool = Tool::Select;
+
     // Between the press and the release, so that a move without a button held
     // does not extend the selection -- which is how a selection gets dragged
     // out from under the user by a stray mouse movement.
     bool selecting = false;
-    // What the pointer was over last time it moved, so that the cursor is set
-    // when it changes rather than on every mouse move.
-    bool pointerOverText = false;
+
+    // Between the press and the release of the hand tool's drag, and where the
+    // pointer was at the last move: the page is moved by the *difference*
+    // between two positions, so the last one is what it is moved against.
+    bool panning = false;
+    QPoint panOrigin;
+
+    // What the pointer was last set to, so that the cursor is changed when the
+    // answer changes rather than on every mouse move.
+    Qt::CursorShape pointerShape = Qt::ArrowCursor;
 
     // The same drag over a part of the page with no text of its own. Which one
     // a drag becomes is decided at the press, from the same question the cursor

@@ -12,6 +12,7 @@
 #include "../src/document/qtpdfbackend.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QFile>
 #include <QString>
 
@@ -302,6 +303,92 @@ int main(int argc, char **argv)
               QStringLiteral("with ink in both of them (%1 and %2 opaque pixels)")
                   .arg(inkPixels(whole))
                   .arg(partInkPixels));
+    }
+
+    // ---- a point on a page with more than one line ----
+    //
+    // The bug this is here for, and the reason it is about line breaks rather
+    // than about scripts: the index at a point used to be found by bisecting on
+    // "is this character before the point", which stops being monotone the
+    // moment a page has a line break in it -- a line break has no box, and the
+    // comparison treated it as being above the point, so it counted as "before"
+    // wherever the point was. Every line but the first answered with an index
+    // from somewhere else in the document.
+    //
+    // It was reported as "selection works in English and not in Chinese". The
+    // document was Chinese and had more than one line per page; every fixture
+    // here had exactly one line per page, so the line break -- the actual cause
+    // -- was in none of them.
+    {
+        QtPdfBackend document;
+        const QString path = fixture(directory, QStringLiteral("lines.pdf"));
+        if (!QFileInfo::exists(path)) {
+            std::cerr << "FAIL: " << path.toStdString()
+                      << " is missing; run tools/make_fixtures.py\n";
+            ++failures;
+        } else {
+            check(document.load(path, QString()) == Document::Status::Ready,
+                  "the multi-line fixture opens");
+
+            const QString pageText = document.text(0);
+            const QVector<TextRun> lines = document.textRuns(0);
+            check(lines.size() == 3,
+                  QStringLiteral("it has three lines (got %1)").arg(lines.size()));
+
+            const QStringList expected = {QStringLiteral("XYZPDF first line"),
+                                          QStringLiteral("second line here"),
+                                          QStringLiteral("third line")};
+            for (int line = 0; line < qMin(lines.size(), expected.size()); ++line) {
+                const QRectF box = lines.at(line).box;
+                const int start = pageText.indexOf(expected.at(line));
+                check(start >= 0,
+                      QStringLiteral("line %1 is in the page's text").arg(line + 1));
+                if (start < 0)
+                    continue;
+
+                // A point in the middle of the line, and the index it answers
+                // with -- which has to be an index *of that line*. Any index
+                // inside the page passes a weaker test; that is exactly what the
+                // bisection returned.
+                const QPointF centre = box.center();
+                const int index = document.characterIndexAt(0, centre);
+                check(index >= start && index <= start + expected.at(line).length(),
+                      QStringLiteral("a click at the centre of line %1 lands in line %1 "
+                                     "(index %2, line runs %3 to %4)")
+                          .arg(line + 1)
+                          .arg(index)
+                          .arg(start)
+                          .arg(start + expected.at(line).length()));
+                check(document.hasTextAt(0, centre),
+                      QStringLiteral("and line %1 is reported as text under the pointer").arg(line + 1));
+
+                // And the character just before that index is on that line, by
+                // its own box: the index being in range is not enough on its own
+                // if the characters it points at are somewhere else.
+                const int before = qBound(0, index - 1, pageText.length() - 1);
+                const PageSelection one = document.pageSelection(0, before, before + 1);
+                if (!one.boxes.isEmpty()) {
+                    const double y = one.boxes.first().center().y();
+                    check(y >= box.top() - 2 && y <= box.bottom() + 2,
+                          QStringLiteral("and the character before it (index %1, y %2) is on that line "
+                                         "(y %3 to %4)")
+                              .arg(before)
+                              .arg(y)
+                              .arg(box.top())
+                              .arg(box.bottom()));
+                }
+
+                // The margins are still not text: below the last line and beside
+                // the first one, the pointer is over paper.
+                check(!document.hasTextAt(0, QPointF(box.right() + 60, centre.y())),
+                      QStringLiteral("line %1: the margin beside it is not text").arg(line + 1));
+            }
+
+            // A page whose text is one line long was never the problem, and has
+            // to keep working: the fixture the rest of this file uses.
+            check(!document.hasTextAt(0, QPointF(300, 800)),
+                  "nor is the space below the last line");
+        }
     }
 
     // ---- a page stored portrait and marked 90 degrees ----

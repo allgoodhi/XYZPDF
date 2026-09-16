@@ -6,6 +6,8 @@
 #include <QImage>
 #include <QSize>
 #include <QStringList>
+#include <QThread>
+#include <QThreadPool>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -34,7 +36,31 @@ QString sentence(const char *text)
     return QCoreApplication::translate("Ocr", text);
 }
 
-// Runs a block of WinRT work on a global-pool thread and waits for it.
+// The pool the WinRT work runs on, and why it is not the global one.
+//
+// The callers of this class are themselves usually on a pool thread: the tab
+// runs the recognition through QtConcurrent so that the window keeps drawing.
+// Sending the work to the same global pool and then waiting for it means the
+// caller's thread is blocked while its own replacement waits for a free thread
+// -- which is fine while there are threads to spare and a deadlock the moment
+// there are not (a two-core machine, or a handful of boxes dragged in a row).
+// A pool of its own cannot be starved by its callers, and the wait becomes an
+// ordinary wait.
+QThreadPool &winrtPool()
+{
+    static QThreadPool pool;
+    static const bool sized = [] {
+        // More than one, always: with a single thread a second request would
+        // queue behind the first while a caller waits for it, which is the same
+        // starvation one level down.
+        pool.setMaxThreadCount(qMax(2, QThread::idealThreadCount() / 2));
+        return true;
+    }();
+    Q_UNUSED(sized)
+    return pool;
+}
+
+// Runs a block of WinRT work on an MTA thread and waits for it.
 //
 // The GUI thread is an STA thread -- Qt initialises OLE on it -- and blocking
 // an STA thread on an async operation (`RecognizeAsync().get()`) is a deadlock
@@ -45,7 +71,7 @@ template <typename Function>
 auto onMtaThread(Function &&function) -> decltype(function())
 {
     using ReturnType = decltype(function());
-    QFuture<ReturnType> future = QtConcurrent::run(std::forward<Function>(function));
+    QFuture<ReturnType> future = QtConcurrent::run(&winrtPool(), std::forward<Function>(function));
     if constexpr (std::is_void_v<ReturnType>)
         future.waitForFinished();
     else

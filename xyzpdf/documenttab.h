@@ -18,6 +18,7 @@
 #include "src/ocr/ocrengine.h"
 #include "src/render/rendercache.h"
 #include "src/view/pagelayout.h"
+#include "src/view/pageview.h"
 #include "src/view/zoomcontroller.h"
 
 #include <QPointer>
@@ -69,6 +70,13 @@ public:
     void setLayoutMode(PageLayout::Mode mode);
     PageLayout::Mode layoutMode() const;
 
+    // What a drag on a page does: pan it, select its text, or draw a box to
+    // recognize. A property of the view, kept per tab -- and the window applies
+    // the one the user last chose to every tab it opens, because a mode that
+    // resets itself when a document is opened is a mode people give up on.
+    void setTool(PageView::Tool tool);
+    PageView::Tool tool() const;
+
     // The memory budget for rendered pages. Applied immediately: a user who
     // lowers it to free memory gets the memory back rather than getting it back
     // the next time they scroll.
@@ -98,6 +106,7 @@ Q_SIGNALS:
     void zoomChanged(double zoom);
     void rotationChanged(int degrees);
     void selectionChanged();
+    void toolChanged(PageView::Tool tool);
     // The render cache's used bytes, for the status bar's honesty about memory.
     void cacheChanged(qint64 usedBytes, qint64 limitBytes);
 
@@ -108,6 +117,10 @@ protected:
 
 private:
     void applyThemeColors();
+
+    // Waits for the renders in flight to come back, before the document under
+    // them is replaced. See the note in the definition.
+    void drainRenders();
 
     void onPageImageNeeded(const RenderToken &token);
     void onPageRendered(const RenderToken &token, const QImage &image);
@@ -136,6 +149,9 @@ private:
 
     Document::Status status = Document::Status::FileError;
     bool opened = false;
+    // Set while open() is draining renders, so that a stray event delivered from
+    // inside that wait cannot start a second open on this tab.
+    bool opening = false;
     // Results that arrived for a question nobody is asking any more. Counted
     // rather than only dropped, so that "it happens all the time" is a number
     // rather than an impression.

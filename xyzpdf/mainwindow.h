@@ -8,6 +8,7 @@
 #pragma once
 
 #include "src/cli/commandline.h"
+#include "src/view/pageview.h"
 
 #include <QMainWindow>
 
@@ -80,6 +81,10 @@ private:
     void showAbout();
     void showThirdParty();
 
+    // What a drag on a page does, from here on: applied to the tab in front,
+    // remembered for the tabs opened after it, and shown in the toolbar.
+    void chooseTool(PageView::Tool tool);
+
     void zoomIn();
     void zoomOut();
     void zoomTo(double zoom);
@@ -128,6 +133,9 @@ private:
     QMenu *languageMenu = nullptr;
 
     QAction *openAction = nullptr;
+    QAction *viewToolAction = nullptr;
+    QAction *selectToolAction = nullptr;
+    QAction *recognizeToolAction = nullptr;
     QAction *copyAction = nullptr;
     QAction *selectAllAction = nullptr;
     QAction *closeTabAction = nullptr;
@@ -145,6 +153,11 @@ private:
     QAction *rotateRightAction = nullptr;
     QAction *continuousAction = nullptr;
     QAction *singlePageAction = nullptr;
+
+    // The tool the user chose, for the tabs that are opened after this. The tab
+    // in front has its own copy -- this is what a new one is started with, so
+    // that a mode does not reset itself every time a file is opened.
+    PageView::Tool rememberedTool = PageView::Tool::Select;
 
     // Set while this window is putting its own state into the toolbar, so that
     // the widget's change signals do not come back in as commands.

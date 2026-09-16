@@ -393,6 +393,12 @@ int main(int argc, char **argv)
     // text, that the same drag backwards selects the same thing, and that a
     // click selects nothing.
     {
+        // The tool this block is about. It is also the default, and saying so
+        // here is the point: what a drag does is now a mode, and a test that
+        // does not name the mode it is exercising is a test that reads as
+        // though the old implicit rule were still in force.
+        view->setTool(PageView::Tool::Select);
+
         const QString path3 = directory + QStringLiteral("/text.pdf");
         check(tab.open(path3) == Document::Status::Ready, "the fixture reopens for selecting");
         view->goToPage(0);
@@ -485,14 +491,18 @@ int main(int argc, char **argv)
         check(washed.blue() > washed.red(), "in the selection colour rather than the page's");
     }
 
-    // ---- a drag on a page with no text is a box, and the box comes back ----
+    // ---- the two drag tools do not answer to each other's gestures ----
     //
-    // blank.pdf has no text layer, so every point on its page answers the
-    // cursor's question with "no line here" -- and the drag is a box, reported
-    // in the page's own coordinates, because that is what the recognition crop
-    // is cut from. The fractions below are the same ones the selection test
-    // used, so the two results can be compared by eye: the same gesture, on a
-    // page with text and on one without.
+    // What this milestone was about. Until the tools existed, a drag meant
+    // whichever of the two things the pointer was pointing at, and the two
+    // features fought over the same gesture: selecting text on a scan was a
+    // box, and a box over a line was a selection. Now the mode decides, and
+    // this is the pair of assertions that says so -- the same drag, over the
+    // same page, doing one thing and then the other.
+    //
+    // blank.pdf has no text layer, so a selection drag there has nothing to
+    // select: in Select mode it must do nothing at all, and in Recognize mode
+    // it must draw a box.
     {
         const QString blankPath = directory + QStringLiteral("/blank.pdf");
         if (!QFileInfo::exists(blankPath)) {
@@ -520,6 +530,24 @@ int main(int argc, char **argv)
                                page.top() + page.height() * 0.3);
             const QPointF to(page.left() + page.width() * 0.6,
                              page.top() + page.height() * 0.6);
+
+            // ---- and first: the selection tool, where the same drag does nothing ----
+            view->setTool(PageView::Tool::Select);
+            sendMouse(view->viewport(), QEvent::MouseMove, QPointF(4, 2));
+            check(view->viewport()->cursor().shape() == Qt::ArrowCursor,
+                  "the selection tool's pointer is not a hand or a crosshair");
+
+            sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true);
+            sendMouse(view->viewport(), QEvent::MouseMove, to, true);
+            sendMouse(view->viewport(), QEvent::MouseButtonRelease, to);
+            check(captures == 0, "a selection drag on a page of scans draws no box");
+            check(!tab.hasSelection(), "and selects nothing, there being no text to select");
+
+            // ---- then the recognition tool, where it draws the box ----
+            view->setTool(PageView::Tool::Recognize);
+            sendMouse(view->viewport(), QEvent::MouseMove, from);
+            check(view->viewport()->cursor().shape() == Qt::CrossCursor,
+                  "the recognition tool's pointer is a crosshair");
 
             sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true);
             sendMouse(view->viewport(), QEvent::MouseMove, to, true);
@@ -554,9 +582,12 @@ int main(int argc, char **argv)
             sendMouse(view->viewport(), QEvent::MouseButtonRelease, from);
             check(captures == 1, "a click reports no region");
 
-            // And on a page that has text, the same drag is a selection, not a
-            // box: the rule follows the pointer, and the pointer says I-beam
-            // there.
+            // ---- and a box over text, which is the case the tool exists for ----
+            //
+            // A picture inside a page of text, a table read as a picture, a
+            // heading in a scan: the box is drawn over whatever is there and
+            // nothing is selected. This is what the mode buys over the old
+            // "the pointer decides" rule, where a drag here was a selection.
             check(tab.open(directory + QStringLiteral("/text.pdf"))
                       == Document::Status::Ready,
                   "the text fixture reopens");
@@ -568,11 +599,29 @@ int main(int argc, char **argv)
                                  textPage.top() + textPage.height() * 0.09);
             const QPointF across(textPage.left() + textPage.width() * 0.30,
                                  textPage.top() + textPage.height() * 0.09);
+
+            // A box has two dimensions: these two corners are above and below
+            // the line, not just either side of it. A drag along one line is a
+            // selection gesture, and in this tool it is a box with no height,
+            // which the minimum size throws away.
+            const QPointF boxFrom(textPage.left() + textPage.width() * 0.08,
+                                  textPage.top() + textPage.height() * 0.05);
+            const QPointF boxTo(textPage.left() + textPage.width() * 0.40,
+                                textPage.top() + textPage.height() * 0.13);
+
+            sendMouse(view->viewport(), QEvent::MouseButtonPress, boxFrom, true);
+            sendMouse(view->viewport(), QEvent::MouseMove, boxTo, true);
+            sendMouse(view->viewport(), QEvent::MouseButtonRelease, boxTo);
+            check(captures == 2, "a box over a line of text is still a box");
+            check(!tab.hasSelection(), "and selects nothing");
+
+            // ---- and the selection tool selects the very same line ----
+            view->setTool(PageView::Tool::Select);
             sendMouse(view->viewport(), QEvent::MouseButtonPress, onLine, true);
             sendMouse(view->viewport(), QEvent::MouseMove, across, true);
             sendMouse(view->viewport(), QEvent::MouseButtonRelease, across);
-            check(captures == 1, "a drag over text reports no region");
-            check(tab.hasSelection(), "and selects text instead");
+            check(captures == 2, "while the selection tool draws no box");
+            check(tab.hasSelection(), "and selects the text instead");
 
             // Off again before the locals go out of scope: the connection
             // outlives this block, and it captures them by reference.
@@ -580,21 +629,109 @@ int main(int argc, char **argv)
         }
     }
 
-    // ---- Alt and a box over text: read, not selected ----
+    // ---- the hand drags the page and touches nothing on it ----
+    //
+    // The third tool, and the one with the least to get wrong -- which is why
+    // it is worth asserting rather than assuming: a pan that also selected
+    // something, or a pan in the wrong direction, is a tool nobody would use
+    // twice.
+    {
+        check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
+              "a document is open for the hand");
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }), "and drawn for the hand");
+
+        view->setTool(PageView::Tool::View);
+        // Scrolled somewhere with room in both directions, so that a pan that
+        // ran off the end of the document would still be visible as a value
+        // that did not move.
+        view->horizontalScrollBar()->setValue(100);
+        view->verticalScrollBar()->setValue(200);
+        const int beforeX = view->horizontalScrollBar()->value();
+        const int beforeY = view->verticalScrollBar()->value();
+        const QRectF beforeRect = view->pageRectInViewport(0);
+
+        const QRectF page = view->pageRectInViewport(0);
+
+        const QPointF from(page.left() + page.width() * 0.5, page.top() + page.height() * 0.5);
+        const QPointF to(from.x() + 40, from.y() + 30);
+
+        sendMouse(view->viewport(), QEvent::MouseMove, from);
+        check(view->viewport()->cursor().shape() == Qt::OpenHandCursor,
+              "the hand tool's pointer is an open hand");
+
+        sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true);
+        check(view->viewport()->cursor().shape() == Qt::ClosedHandCursor,
+              "which closes while the page is being dragged");
+        sendMouse(view->viewport(), QEvent::MouseMove, to, true);
+        sendMouse(view->viewport(), QEvent::MouseButtonRelease, to);
+        check(view->viewport()->cursor().shape() == Qt::OpenHandCursor, "and opens again");
+
+        // The paper follows the pointer: dragging right and down shows what is
+        // to the left and above, so the scroll position moves against the drag
+        // by exactly its own amount.
+        check(view->horizontalScrollBar()->value() == beforeX - 40
+                  && view->verticalScrollBar()->value() == beforeY - 30,
+              QStringLiteral("the page followed the pointer (%1,%2 from %3,%4)")
+                  .arg(view->horizontalScrollBar()->value())
+                  .arg(view->verticalScrollBar()->value())
+                  .arg(beforeX)
+                  .arg(beforeY));
+        check(qRound(view->pageRectInViewport(0).left() - beforeRect.left()) == 40
+                  && qRound(view->pageRectInViewport(0).top() - beforeRect.top()) == 30,
+              "which moved the page on screen by the same amount");
+        check(!tab.hasSelection(), "and selected nothing");
+    }
+
+    // ---- a drag over the second line of a page selects that line ----
+    //
+    // The reported bug, end to end. On a document with more than one line per
+    // page, dragging over any line but the first used to select nothing a reader
+    // could see: the index it anchored at was found by bisecting on a predicate
+    // a line break makes non-monotone, and came back from somewhere else in the
+    // document. It was reported as "selection works in English and not in
+    // Chinese" -- the document was Chinese, and every fixture here had exactly
+    // one line per page, so the line break was in none of them.
+    //
+    // The second line of this fixture is at y between 93 and 110 points of a
+    // 595x842 page, which is where the drag below is aimed.
+    {
+        view->setTool(PageView::Tool::Select);
+        check(tab.open(directory + QStringLiteral("/lines.pdf")) == Document::Status::Ready,
+              "the multi-line fixture opens");
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }), "and is drawn");
+
+        const QRectF page = view->pageRectInViewport(0);
+        const QPointF from(page.left() + page.width() * 0.15, page.top() + page.height() * 0.115);
+        const QPointF to(page.left() + page.width() * 0.35, page.top() + page.height() * 0.125);
+
+        sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true);
+        sendMouse(view->viewport(), QEvent::MouseMove, to, true);
+        sendMouse(view->viewport(), QEvent::MouseButtonRelease, to);
+
+        const QString selected = tab.selectedText();
+        check(!selected.isEmpty(),
+              QStringLiteral("dragging over the second line selects something (got \"%1\")")
+                  .arg(selected));
+        check(QStringLiteral("second line here").contains(selected),
+              QStringLiteral("and it is that line's own text (got \"%1\")").arg(selected));
+    }
+
+    // ---- a box over the text: read, not selected ----
     //
     // The case the whole feature is for, and the one its own test did not
     // cover: the drag on the blank fixture proves a window opens and says
     // nothing about what is in it. Here the box is drawn around the fixture's
     // line of text, and what has to come back is the words that are in it.
-    //
-    // Alt because the pointer is over a line: a plain drag there is a
-    // selection, and Alt is what asks for a box instead.
     {
         check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
               "the text fixture is open for a box over its text");
         view->goToPage(0);
-        check(waitFor([view] { return view->isRendered(0); }), "and drawn");
+        check(waitFor([view] { return view->isRendered(0); }), "and drawn for the box");
 
+        view->setTool(PageView::Tool::Recognize);
+        view->clearSelection();
         const int dialogsBefore = tab.findChildren<OcrDialog *>().size();
 
         const QRectF page = view->pageRectInViewport(0);
@@ -604,11 +741,11 @@ int main(int argc, char **argv)
                            page.top() + page.height() * 0.05);
         const QPointF to(page.left() + page.width() * 0.45, page.top() + page.height() * 0.13);
 
-        sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true, Qt::AltModifier);
-        sendMouse(view->viewport(), QEvent::MouseMove, to, true, Qt::AltModifier);
-        sendMouse(view->viewport(), QEvent::MouseButtonRelease, to, false, Qt::AltModifier);
+        sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true);
+        sendMouse(view->viewport(), QEvent::MouseMove, to, true);
+        sendMouse(view->viewport(), QEvent::MouseButtonRelease, to);
 
-        check(!tab.hasSelection(), "Alt and a drag over text does not select it");
+        check(!tab.hasSelection(), "a box over text does not select it");
 
         OcrDialog *dialog = nullptr;
         check(waitFor([&tab, dialogsBefore, &dialog] {
@@ -628,6 +765,41 @@ int main(int argc, char **argv)
             const QString text = recognized->toPlainText().simplified();
             check(text.contains(QStringLiteral("XYZPDF")),
                   QStringLiteral("with the text that was inside the box (got \"%1\")").arg(text));
+        }
+    }
+
+    // ---- a document is replaced while its pages are still rendering ----
+    //
+    // The race, made reproducible rather than left to luck: open a document,
+    // ask for pages, and replace the document before those renders come back --
+    // five times over. A render that is still running is inside the document
+    // that QPdfDocument::load() is about to replace, and Qt's global PDFium lock
+    // does not cover the reload itself: this used to end in a fail-fast inside
+    // open(), which the test saw as "a page is drawn" timing out and then the
+    // process dying.
+    //
+    // A reader hits it by opening a second document while the first is still
+    // painting -- rare on a two-page file, ordinary on a five-hundred-page scan.
+    // DocumentTab::open() now waits for the renders in flight before it reloads.
+    {
+        const QString manyPages = directory + QStringLiteral("/many-pages.pdf");
+        const QString small = directory + QStringLiteral("/text.pdf");
+        if (QFileInfo::exists(manyPages)) {
+            for (int attempt = 0; attempt < 5; ++attempt) {
+                check(tab.open(manyPages) == Document::Status::Ready,
+                      QStringLiteral("round %1: the long fixture opens").arg(attempt + 1));
+                // Deliberately not waited for: the renders are what the next
+                // open has to survive.
+                view->goToPage(attempt + 3);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+
+                check(tab.open(small) == Document::Status::Ready,
+                      QStringLiteral("round %1: and the next document opens over the renders "
+                                     "still in flight")
+                          .arg(attempt + 1));
+            }
+            check(waitFor([view] { return view->isRendered(0); }),
+                  "and a page is drawn afterwards, so nothing was left wedged");
         }
     }
 

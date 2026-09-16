@@ -8,7 +8,9 @@
 
 #include "document.h"
 
+#include <QHash>
 #include <QString>
+#include <QVector>
 
 #include <memory>
 
@@ -51,6 +53,32 @@ public:
     QPdfDocument *pdfDocument() const;
 
 private:
+    // A page's text and the boxes of its lines, kept for a few pages.
+    //
+    // Both come out of one getAllText() call, which is free: measured on a page
+    // of 756 characters, the text and every line box costs 0 ms. A *character*
+    // box is a different story -- getSelectionAtIndex(), which is the only way
+    // to ask for one, is about a millisecond each (measured: 20 of them take
+    // 19 ms). A table of those for that page therefore cost 753 ms to build,
+    // which is why there is no such table: the index at a point is found by
+    // bisection, and this is what the bisection is told about the page.
+    struct PageText
+    {
+        QString text;
+        // One box per line, in the order textRuns() reports them, in the page's
+        // own points.
+        QVector<QRectF> lines;
+    };
+
+    const PageText &pageTextOf(int page) const;
+    // The line nearest a point vertically, or -1 for a page with no lines.
+    static int nearestLine(const QVector<QRectF> &lines, double y);
+    // Whether the character at `index` of `page` is before `point` in reading
+    // order -- the predicate the bisection needs to be monotone, which is what
+    // the line boxes are for. See the definition for the two ways it used not to
+    // be.
+    bool characterIsBefore(int page, const PageText &pageContent, int index, QPointF point) const;
+
     // Rebuilt when the document changes; Qt's models own their own bookkeeping
     // and are cheap to point at a new document.
     void attachModels();
@@ -61,6 +89,13 @@ private:
     // NOT kept, because reading it means telling it which page to look at --
     // see links(), which says why that cannot live behind a const method.
     std::unique_ptr<QPdfBookmarkModel> bookmarks;
+
+    // The pages that have been asked about, and the order they were read in so
+    // that the oldest can be let go. Four pages: a drag across a page boundary
+    // alternates between two, and a reader paging through a document touches
+    // one at a time.
+    mutable QHash<int, PageText> pageTexts;
+    mutable QVector<int> pageTextsOrder;
 
     QString loadedPath;
     QString errorText;

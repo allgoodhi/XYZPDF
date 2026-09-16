@@ -10,6 +10,7 @@
 
 #include <QClipboard>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QFileInfo>
 #include <QFutureWatcher>
@@ -94,6 +95,7 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(pageView, &PageView::rotationChanged, this, &DocumentTab::rotationChanged);
     connect(pageView, &PageView::selectionChanged, this, &DocumentTab::selectionChanged);
     connect(pageView, &PageView::regionCaptured, this, &DocumentTab::onRegionCaptured);
+    connect(pageView, &PageView::toolChanged, this, &DocumentTab::toolChanged);
     connect(renderer.get(), &PageRenderer::rendered, this, &DocumentTab::onPageRendered);
     connect(renderer.get(), &PageRenderer::discarded, this, &DocumentTab::onDiscarded);
 
@@ -127,10 +129,47 @@ void DocumentTab::changeEvent(QEvent *event)
         applyThemeColors();
 }
 
+void DocumentTab::drainRenders()
+{
+    // ---- why the reload waits for the renderer ----
+    //
+    // QPdfDocument::load() replaces what the document is, and a render that is
+    // still running on the renderer's thread is inside the old one. Qt
+    // serialises PDFium calls behind a single global lock and this is what fell
+    // outside it: measured while this was being written, reopening a file with a
+    // render in flight ended in a fail-fast inside the reload. It took a test
+    // that opens documents as fast as it can to hit it -- a *view* render is
+    // almost never still running when somebody opens the next file -- but
+    // "almost never" on a 500-page scan is a reader who opens a second document
+    // while the first is still painting.
+    //
+    // So the renders are waited for. They come back carrying a generation that
+    // the load is about to supersede and are dropped, which is the point:
+    // what has to be true is that the render *finished* before the document it
+    // was rendering changed.
+    //
+    // Pumping the event loop is how they arrive -- they are queued signals --
+    // and it is bounded, because a render that never comes back must not make
+    // opening a file impossible.
+    QElapsedTimer timer;
+    timer.start();
+    constexpr int kGiveUpAfter = 2000;
+    while (renderer->inFlight() > 0 && timer.elapsed() < kGiveUpAfter)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+}
+
 Document::Status DocumentTab::open(const QString &path, const QString &password)
 {
+    // A drop or another Open arriving from inside drainRenders' event loop must
+    // not start a second open on top of this one.
+    if (opening)
+        return status;
+    opening = true;
+    drainRenders();
+
     const Document::Status result = backend->load(path, password);
     status = result;
+    opening = false;
 
     if (result != Document::Status::Ready) {
         opened = false;
@@ -254,6 +293,16 @@ void DocumentTab::setLayoutMode(PageLayout::Mode mode)
 PageLayout::Mode DocumentTab::layoutMode() const
 {
     return pageView->layoutMode();
+}
+
+void DocumentTab::setTool(PageView::Tool tool)
+{
+    pageView->setTool(tool);
+}
+
+PageView::Tool DocumentTab::tool() const
+{
+    return pageView->tool();
 }
 
 void DocumentTab::setCacheLimit(qint64 bytes)

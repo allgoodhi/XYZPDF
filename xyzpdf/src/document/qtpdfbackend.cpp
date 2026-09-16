@@ -11,6 +11,8 @@
 #include <QDateTime>
 #include <QFileInfo>
 
+#include <limits>
+
 namespace {
 
 QPdfDocumentRenderOptions::Rotation rotationFromDegrees(int degrees)
@@ -101,23 +103,6 @@ QRectF characterBox(QPdfDocument *document, int page, int index)
 // in every word space, which reads as the program being unsure.
 constexpr double kTextHitTolerance = 4.0;
 
-// Whether the character at `index` comes before `point` in reading order.
-//
-// Monotone in `index`, which is what makes the bisection in characterIndexAt()
-// valid: an earlier line is before the point, a later one is after it, and on
-// the same line it is the horizontal position that decides.
-bool characterIsBefore(QPdfDocument *document, int page, int index, QPointF point)
-{
-    const QRectF box = characterBox(document, page, index);
-    if (box.isNull())
-        return true; // nothing there, so nothing after the point either
-    if (box.bottom() < point.y())
-        return true;
-    if (box.top() > point.y())
-        return false;
-    return box.center().x() < point.x();
-}
-
 } // namespace
 
 QtPdfBackend::QtPdfBackend()
@@ -138,6 +123,12 @@ Document::Status QtPdfBackend::load(const QString &path, const QString &password
     loadedPath.clear();
     errorText.clear();
     neededPassword = false;
+
+    // The page text of the previous document: page numbers and character
+    // indices both mean something else now, and lines from the file that was
+    // open would place a click in this one.
+    pageTexts.clear();
+    pageTextsOrder.clear();
 
     // The password goes in before the load, not after a failure: Qt PDF reads
     // it once while opening the file, and setting it afterwards reloads the
@@ -263,13 +254,95 @@ QVector<TextRun> QtPdfBackend::textRuns(int page) const
     return runs;
 }
 
+const QtPdfBackend::PageText &QtPdfBackend::pageTextOf(int page) const
+{
+    const auto held = pageTexts.constFind(page);
+    if (held != pageTexts.constEnd())
+        return held.value();
+
+    PageText built;
+    const QPdfSelection all = document->getAllText(page);
+    built.text = all.text();
+    const QList<QPolygonF> bounds = all.bounds();
+    built.lines.reserve(bounds.size());
+    for (const QPolygonF &polygon : std::as_const(bounds))
+        built.lines.append(polygon.boundingRect());
+
+    // A few pages at a time, oldest let go: a drag across a page boundary
+    // alternates between two of them.
+    constexpr int kPagesHeld = 4;
+    while (pageTextsOrder.size() >= kPagesHeld)
+        pageTexts.remove(pageTextsOrder.takeFirst());
+    pageTextsOrder.append(page);
+    return *pageTexts.insert(page, built);
+}
+
+int QtPdfBackend::nearestLine(const QVector<QRectF> &lines, double y)
+{
+    int nearest = -1;
+    double best = std::numeric_limits<double>::max();
+    for (int line = 0; line < lines.size(); ++line) {
+        const QRectF &box = lines.at(line);
+        // Zero inside the line's own band, so a point that is on a line always
+        // beats one that is merely near it.
+        const double distance =
+            y < box.top() ? box.top() - y : (y > box.bottom() ? y - box.bottom() : 0.0);
+        if (distance < best) {
+            best = distance;
+            nearest = line;
+        }
+    }
+    return nearest;
+}
+
+bool QtPdfBackend::characterIsBefore(int page, const PageText &pageContent, int index,
+                                     QPointF point) const
+{
+    if (index < 0)
+        return true;
+    if (index >= pageContent.text.length())
+        return false;
+
+    const QRectF box = characterBox(document.get(), page, index);
+    if (box.isNull()) {
+        // ---- the character with no geometry ----
+        //
+        // A line break. PDFium reports it as a zero-size rectangle in the
+        // page's bottom-left corner, which is *above* every line of text, so
+        // comparing it with the point put it before the point wherever the
+        // point was -- a "true" in the middle of the search's "false" region,
+        // and one of those is enough for a bisection to land somewhere
+        // arbitrary. It is answered instead by the character before it, which is
+        // the last character of the line it ends: a line break is before the
+        // point exactly when the end of its line is.
+        int previous = index - 1;
+        while (previous >= 0 && characterBox(document.get(), page, previous).isNull())
+            --previous;
+        return characterIsBefore(page, pageContent, previous, point);
+    }
+
+    // ---- which line, by the line boxes rather than by the character ----
+    //
+    // The vertical position alone does not say which line a character is on:
+    // a space has a zero-height box sitting *on* the baseline, so it compares as
+    // being below the point whenever the point is above the baseline -- inside
+    // the same line of text. The line boxes, which are free, say it properly:
+    // both the character and the point are put on their nearest line, and only
+    // when they are the same line does the horizontal position decide.
+    const int characterLine = nearestLine(pageContent.lines, box.center().y());
+    const int pointLine = nearestLine(pageContent.lines, point.y());
+    if (characterLine >= 0 && pointLine >= 0 && characterLine != pointLine)
+        return characterLine < pointLine;
+    return box.center().x() < point.x();
+}
+
 int QtPdfBackend::characterIndexAt(int page, QPointF point) const
 {
     if (page < 0 || page >= pageCount())
         return -1;
 
-    const QString pageText = text(page);
-    if (pageText.isEmpty())
+    const PageText &pageContent = pageTextOf(page);
+    if (pageContent.text.isEmpty())
         return -1;
 
     // ---- why this is a search rather than a query ----
@@ -282,59 +355,72 @@ int QtPdfBackend::characterIndexAt(int page, QPointF point) const
     // That is no use for a click: a reader clicking a line expects the cursor
     // somewhere on that line, and half the line is not ink.
     //
-    // So the index is found here, by bisection over the characters' own boxes,
-    // which are exact and always available. Twelve queries on a page of three
-    // thousand characters, each one a lookup in a text page PDFium already has
-    // in memory.
+    // So the index is found by bisection over the character boxes, which are
+    // exact and always available -- twelve queries on a page of three thousand
+    // characters. A table of every character's box was tried instead and thrown
+    // away: a character box costs about a millisecond (measured: 20 of them take
+    // 19 ms), so the table for a page of 756 characters took 753 ms to build,
+    // on the thread that draws the window.
+    //
+    // Above the text is its beginning and below it is its end, whatever the
+    // horizontal position: the contract in document.h, and where a drag that
+    // starts in the margin lands.
+    if (!pageContent.lines.isEmpty()) {
+        double top = 0;
+        double bottom = 0;
+        for (int line = 0; line < pageContent.lines.size(); ++line) {
+            const QRectF &box = pageContent.lines.at(line);
+            if (line == 0 || box.top() < top)
+                top = box.top();
+            if (line == 0 || box.bottom() > bottom)
+                bottom = box.bottom();
+        }
+        if (point.y() < top)
+            return 0;
+        if (point.y() > bottom)
+            return pageContent.text.length();
+    }
+
     int low = 0;
-    int high = pageText.length();
+    int high = pageContent.text.length();
     while (low < high) {
         const int middle = low + (high - low) / 2;
-        if (characterIsBefore(document.get(), page, middle, point))
+        if (characterIsBefore(page, pageContent, middle, point))
             low = middle + 1;
         else
             high = middle;
     }
     // One past the last character is a legitimate answer, and the useful one: it
     // is where a selection dragged off the end of the text stops, and where a
-    // click below the last line puts the cursor. Only a page with no text at
-    // all has no answer.
+    // click below the last line puts the cursor. Only a page with no text at all
+    // has no answer.
     return low;
 }
 
 bool QtPdfBackend::hasTextAt(int page, QPointF point) const
 {
-    const QString pageText = text(page);
-    if (pageText.isEmpty())
+    if (page < 0 || page >= pageCount())
         return false;
 
-    const int index = characterIndexAt(page, point);
-    if (index < 0)
-        return false;
-
-    // The index is a boundary, not a glyph: the search returns the first
-    // character that starts after the point, so the point is between that one
-    // and the one before it. Which of the two it is inside depends on where in
-    // the glyph it fell -- a click on the right half of a letter is a click
-    // before the next one -- so both are asked, and that is also what covers
-    // the gap between two words, where neither box contains the point but both
-    // are within the tolerance.
+    // ---- the line box, not the characters ----
     //
-    // Past the end of the page's text there is nothing after it, and the
-    // character before is the line the pointer is just off the end of.
-    for (const int candidate : {index, index - 1}) {
-        if (candidate < 0 || candidate >= pageText.length())
-            continue;
-        const QRectF box = characterBox(document.get(), page, candidate);
-        if (box.isNull())
-            continue; // a space: no ink, no box, and the character beside it answers
-        if (box.adjusted(-kTextHitTolerance, -kTextHitTolerance, kTextHitTolerance,
-                         kTextHitTolerance)
-                .contains(point)) {
-            return true;
-        }
-    }
-    return false;
+    // Every character's box would say this exactly, and costs a millisecond each
+    // (see characterIndexAt). The line box says it well enough and is free with
+    // the page's text: a pointer is over a line when it is beside that line's
+    // ink, which is what "the pointer shows an I-beam over text" means -- in the
+    // gap between two words, yes; in the margin, no.
+    //
+    // Only the nearest line, so that a point beside the last line of a page is
+    // not over the first line of whatever comes next.
+    const PageText &pageContent = pageTextOf(page);
+    const int line = nearestLine(pageContent.lines, point.y());
+    if (line < 0)
+        return false;
+
+    const QRectF box = pageContent.lines.at(line);
+    return box.adjusted(-kTextHitTolerance, -kTextHitTolerance, kTextHitTolerance,
+                        kTextHitTolerance)
+        .contains(point);
 }
 
 PageSelection QtPdfBackend::pageSelection(int page, int from, int to) const

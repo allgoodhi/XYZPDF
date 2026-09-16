@@ -20,7 +20,9 @@
 
 #include "../documenttab.h"
 #include "../mainwindow.h"
+#include "../src/view/pageview.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
@@ -31,6 +33,8 @@
 #include <QMimeData>
 #include <QPointF>
 #include <QString>
+#include <QTabWidget>
+#include <QToolBar>
 #include <QUrl>
 
 #include <functional>
@@ -109,6 +113,15 @@ int openTabs(const MainWindow &window)
             ++open;
     }
     return open;
+}
+
+// The tab in front, asked of the tab strip rather than guessed from the order
+// findChildren() happens to walk the object tree in -- which is depth-first,
+// not creation order, and had this test poking at a tab nobody was looking at.
+DocumentTab *currentDocumentTab(const MainWindow &window)
+{
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    return tabs ? qobject_cast<DocumentTab *>(tabs->currentWidget()) : nullptr;
 }
 
 QString onlyOpenPath(const MainWindow &window)
@@ -261,8 +274,84 @@ int main(int argc, char **argv)
                   .arg(openTabs(window)));
     }
 
+    // ---- the three tools, where the request put them ----
+    //
+    // In the toolbar, first, and one at a time. All three are things a test can
+    // only see by looking at the real window: whether the buttons exist, where
+    // they sit, whether the group really is exclusive (two tools in force is a
+    // drag with two meanings, which is the state this milestone exists to get
+    // out of), and whether choosing one reaches the document.
+    {
+        QToolBar *bar = window.findChild<QToolBar *>(QStringLiteral("mainToolBar"));
+        check(bar != nullptr, "the main toolbar exists");
+
+        // Found by their object names: the labels are translated, and the
+        // shortcuts are not a stable identity either -- the first version of
+        // this used Ctrl+1, which already belonged to "fit width", and the
+        // buttons were found by that name until it moved.
+        const auto toolAction = [&window](const char *name) {
+            return window.findChild<QAction *>(QString::fromLatin1(name));
+        };
+
+        QList<QAction *> tools;
+        {
+            const char *names[] = {"viewToolAction", "selectToolAction", "recognizeToolAction"};
+            for (const char *name : names)
+                tools.append(toolAction(name));
+            check(!tools.contains(nullptr), "the three tool actions exist");
+        }
+
+        if (bar && !tools.contains(nullptr)) {
+            const QList<QAction *> actions = bar->actions();
+            for (QAction *action : std::as_const(tools))
+                check(actions.contains(action), "and each of them is in the toolbar");
+            check(actions.size() >= 3 && actions.mid(0, 3) == tools,
+                  "as the first three buttons, in the order they were asked for");
+            for (QAction *action : std::as_const(tools))
+                check(action->isCheckable(), "and each of them is a checkable button");
+        }
+
+        // Exclusive: choosing the last one takes the tick off the others.
+        if (tools.size() == 3) {
+            tools.at(2)->trigger();
+            check(tools.at(2)->isChecked() && !tools.at(0)->isChecked()
+                      && !tools.at(1)->isChecked(),
+                  "only one tool is in force at a time");
+
+            // And the choice reaches the document, not just the button.
+            DocumentTab *current = currentDocumentTab(window);
+            check(current && current->tool() == PageView::Tool::Recognize,
+                  "choosing the recognition tool puts the open document's view into it");
+
+            // A document opened afterwards starts in the same tool: a mode that
+            // resets itself on every open is a mode people stop using.
+            const QString other = directory + QStringLiteral("/blank.pdf");
+            if (QFileInfo::exists(other)) {
+                dropFiles(window, {QUrl::fromLocalFile(other).toString()}, Qt::CopyAction);
+                check(waitFor([&window] { return openTabs(window) == 3; }),
+                      "a third document opens");
+                DocumentTab *newest = currentDocumentTab(window);
+                check(newest && newest != current && newest->tool() == PageView::Tool::Recognize,
+                      "and it is already in the tool the user was using");
+            }
+
+            // A tool changed from somewhere else -- a shortcut, a future
+            // context menu -- brings the toolbar with it. Asked of the tab in
+            // front, because that is the one the toolbar describes: a tab in
+            // the background changing its tool is not supposed to move the
+            // buttons out from under the document being read.
+            DocumentTab *front = currentDocumentTab(window);
+            if (front) {
+                front->setTool(PageView::Tool::View);
+                check(tools.at(0)->isChecked(), "the toolbar follows the tool the view is in");
+                front->setTool(PageView::Tool::Select);
+                check(tools.at(1)->isChecked(), "either way it was changed");
+            }
+        }
+    }
+
     if (failures == 0) {
-        std::cout << "files dropped on the window open\n";
+        std::cout << "files dropped on the window open, and the three tools are wired\n";
         return 0;
     }
     std::cerr << failures << " failure(s)\n";

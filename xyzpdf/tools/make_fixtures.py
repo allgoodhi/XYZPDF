@@ -43,6 +43,11 @@ def makePdf(pages):
 
     Each entry is (width, height, rotate, text, extra_keys) with the size in
     points, rotate in degrees or 0, and text drawn at the top left.
+
+    A text containing "\\n" is drawn as that many lines, thirty points apart,
+    which is what the multi-line fixture needs: the text of a document with one
+    line per page has no line breaks in it, and a line break is exactly the
+    thing that used to break selection on every page of every real document.
     """
     objects = []
 
@@ -58,7 +63,14 @@ def makePdf(pages):
     page_ids = []
     content_ids = []
     for index, (width, height, rotate, text, extra) in enumerate(pages):
-        stream = ('BT /F1 24 Tf 60 %d Td (%s) Tj ET' % (int(height) - 80, text)).encode('ascii')
+        lines = text.split('\n')
+        drawn = 'BT /F1 24 Tf 60 %d Td 0 0 Td' % (int(height) - 80)
+        for position, line in enumerate(lines):
+            if position:
+                drawn += ' 0 -30 Td'
+            drawn += ' (%s) Tj' % line
+        drawn += ' ET'
+        stream = drawn.encode('ascii')
         compressed = zlib.compress(stream)
         content_ids.append(add(b'<< /Length %d /Filter /FlateDecode >>\nstream\n' % len(compressed)
                                + compressed + b'\nendstream'))
@@ -137,6 +149,17 @@ def main():
     # region-drag test runs against this file.
     write('blank.pdf', makePdf([
         (595, 842, 0, '', b''),
+    ]))
+
+    # Three lines on one page. The other fixtures put one line per page, which
+    # means their text has no line breaks in it -- and a line break is a
+    # character with no geometry, which is what used to make a click on any line
+    # but the first land at an arbitrary place in the document. Reported as
+    # "Chinese cannot be selected", because the document that showed it up had
+    # more than one line and happened to be Chinese; the line break was the
+    # cause, not the script.
+    write('lines.pdf', makePdf([
+        (595, 842, 0, 'XYZPDF first line\nsecond line here\nthird line', b''),
     ]))
 
     # Truncated: the header, a page object and half the xref table. A PDF

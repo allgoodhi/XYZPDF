@@ -354,6 +354,62 @@ void MainWindow::buildMenus()
     // ---- 查看 ----
     QMenu *viewMenu = menuBar()->addMenu(tr("查看(&V)"));
 
+    // ---- what a drag on a page does ----
+    //
+    // Three tools in one exclusive group rather than one clever pointer. A drag
+    // used to mean whichever of the two things the pointer was pointing at,
+    // which worked until both features existed: selecting text on a page of
+    // scans was a box, and the only way to ask for the other one was a modifier
+    // key nobody could guess. A tool is one more click and no guessing.
+    {
+        auto *toolGroup = new QActionGroup(this);
+        toolGroup->setExclusive(true);
+
+        // Ctrl+Shift+1/2/3, and the Shift is not decoration: Ctrl+1 and Ctrl+2
+        // are already "fit width" and "fit page", which is exactly the kind of
+        // collision that shows up as one command quietly doing another one's
+        // work. A shortcut that steals a key from an existing command is worse
+        // than no shortcut at all.
+        const struct
+        {
+            QAction **action;
+            const char *name;
+            QString text;
+            QString shortcut;
+            QString hint;
+        } tools[] = {
+            {&viewToolAction, "viewToolAction", tr("只查看"), QStringLiteral("Ctrl+Shift+1"),
+             tr("拖动页面本身，不选择页面上的内容")},
+            {&selectToolAction, "selectToolAction", tr("选择"), QStringLiteral("Ctrl+Shift+2"),
+             tr("选择文字并复制，指针在文字上变成 I 形")},
+            {&recognizeToolAction, "recognizeToolAction", tr("识别"),
+             QStringLiteral("Ctrl+Shift+3"), tr("拖出一个方框，识别框内像素里的文字")},
+        };
+
+        for (const auto &tool : tools) {
+            QAction *action = makeAction(tool.text, QKeySequence(tool.shortcut));
+            // Named so that a test can find them without depending on a label
+            // that translation changes, or on the shortcut, which this very
+            // change moved once already.
+            action->setObjectName(QString::fromLatin1(tool.name));
+            action->setCheckable(true);
+            action->setToolTip(tool.hint);
+            action->setStatusTip(tool.hint);
+            toolGroup->addAction(action);
+            viewMenu->addAction(action);
+            *tool.action = action;
+        }
+
+        connect(viewToolAction, &QAction::triggered, this,
+                [this] { chooseTool(PageView::Tool::View); });
+        connect(selectToolAction, &QAction::triggered, this,
+                [this] { chooseTool(PageView::Tool::Select); });
+        connect(recognizeToolAction, &QAction::triggered, this,
+                [this] { chooseTool(PageView::Tool::Recognize); });
+
+        viewMenu->addSeparator();
+    }
+
     zoomInAction = makeAction(tr("放大"), QKeySequence::ZoomIn);
     connect(zoomInAction, &QAction::triggered, this, &MainWindow::zoomIn);
     viewMenu->addAction(zoomInAction);
@@ -483,6 +539,14 @@ void MainWindow::buildToolBar()
     toolBar->setObjectName(QStringLiteral("mainToolBar"));
     toolBar->setMovable(false);
     toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+
+    // The three tools first, and that is where they belong: everything else in
+    // this toolbar acts on a page, and these decide what happens when the page
+    // is touched. A reader reaches for the hand before the page number.
+    toolBar->addAction(viewToolAction);
+    toolBar->addAction(selectToolAction);
+    toolBar->addAction(recognizeToolAction);
+    toolBar->addSeparator();
 
     toolBar->addAction(openAction);
     toolBar->addSeparator();
@@ -623,8 +687,19 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
     }
 
     auto *tab = new DocumentTab(this);
+    // The tool the user is on, rather than the tab's own default: a mode that
+    // resets itself every time a document is opened is a mode people stop
+    // using.
+    tab->setTool(rememberedTool);
     const int index = tabs->addTab(tab, QFileInfo(path).fileName());
     tabs->setCurrentIndex(index);
+
+    // A tab that changes the tool itself -- a shortcut, or a future "recognize
+    // this picture" on a context menu -- brings the toolbar with it.
+    connect(tab, &DocumentTab::toolChanged, this, [this, tab](PageView::Tool) {
+        if (tab == currentTab())
+            updateForCurrentTab();
+    });
 
     const auto applyTitle = [this, tab](const QString &title) {
         const int at = tabs->indexOf(tab);
@@ -748,6 +823,14 @@ void MainWindow::closeCurrentTab()
         closeTab(tabs->currentIndex());
 }
 
+void MainWindow::chooseTool(PageView::Tool tool)
+{
+    rememberedTool = tool;
+    if (DocumentTab *tab = currentTab())
+        tab->setTool(tool);
+    updateForCurrentTab();
+}
+
 void MainWindow::updateForCurrentTab()
 {
     DocumentTab *tab = currentTab();
@@ -758,9 +841,22 @@ void MainWindow::updateForCurrentTab()
                             lastPageAction, goToPageAction, zoomInAction, zoomOutAction,
                             fitWidthAction, fitPageAction, actualSizeAction, rotateLeftAction,
                             rotateRightAction, continuousAction, singlePageAction,
-                            selectAllAction}) {
+                            selectAllAction, viewToolAction, selectToolAction, recognizeToolAction}) {
         if (action)
             action->setEnabled(hasDocument);
+    }
+
+    // The tool buttons show the tool the tab in front is actually using, which
+    // is not necessarily the remembered one: the tab may have been given a
+    // different one before this window existed, and each tab keeps its own.
+    {
+        const PageView::Tool current = tab ? tab->tool() : rememberedTool;
+        if (viewToolAction)
+            viewToolAction->setChecked(current == PageView::Tool::View);
+        if (selectToolAction)
+            selectToolAction->setChecked(current == PageView::Tool::Select);
+        if (recognizeToolAction)
+            recognizeToolAction->setChecked(current == PageView::Tool::Recognize);
     }
     // Copy is the one that needs more than an open document: with nothing
     // selected it would clear the clipboard, which is worse than doing nothing.

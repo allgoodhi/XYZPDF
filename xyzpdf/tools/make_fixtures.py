@@ -42,7 +42,9 @@ def makePdf(pages):
     """A PDF with one page per entry in `pages`.
 
     Each entry is (width, height, rotate, text, extra_keys) with the size in
-    points, rotate in degrees or 0, and text drawn at the top left.
+    points, rotate in degrees or 0, and text drawn at the top left. An optional
+    sixth element is raw PDF operators appended to the page's content, which is
+    how a fixture draws something that is not text.
 
     A text containing "\\n" is drawn as that many lines, thirty points apart,
     which is what the multi-line fixture needs: the text of a document with one
@@ -62,7 +64,9 @@ def makePdf(pages):
 
     page_ids = []
     content_ids = []
-    for index, (width, height, rotate, text, extra) in enumerate(pages):
+    for index, page in enumerate(pages):
+        width, height, rotate, text, extra = page[:5]
+        drawing = page[5] if len(page) > 5 else ''
         lines = text.split('\n')
         drawn = 'BT /F1 24 Tf 60 %d Td 0 0 Td' % (int(height) - 80)
         for position, line in enumerate(lines):
@@ -70,6 +74,8 @@ def makePdf(pages):
                 drawn += ' 0 -30 Td'
             drawn += ' (%s) Tj' % line
         drawn += ' ET'
+        if drawing:
+            drawn += ' ' + drawing
         stream = drawn.encode('ascii')
         compressed = zlib.compress(stream)
         content_ids.append(add(b'<< /Length %d /Filter /FlateDecode >>\nstream\n' % len(compressed)
@@ -160,6 +166,47 @@ def main():
     # cause, not the script.
     write('lines.pdf', makePdf([
         (595, 842, 0, 'XYZPDF first line\nsecond line here\nthird line', b''),
+    ]))
+
+    # A page that is a picture rather than text: a filled red rectangle, drawn
+    # with an operator and no font at all. This is what a scan is, reduced to its
+    # geometry -- something put ink on the page and there is no text layer to
+    # read -- and it is the fixture the export's image path needs. blank.pdf
+    # cannot show that path working: a white page comes out white whether the
+    # picture was copied or not.
+    write('picture.pdf', makePdf([
+        (595, 842, 0, '', b'', '1 0 0 rg 60 400 475 380 re f'),
+    ]))
+
+    # One line of text drawn in pieces, which is how a justified line, a line
+    # with a superscript in it, or any line a PDF placed piece by piece comes
+    # back from the backend: several boxes side by side, on one line. Taking a box
+    # for a line turns one line into a paragraph per piece -- and a real report
+    # had a sentence come out as "推荐" / "使用" / "较高" / "配置", one word to a
+    # paragraph, for exactly that reason.
+    write('runs.pdf', makePdf([
+        (595, 842, 0, '', b'',
+         'BT /F1 24 Tf 60 700 Td (XYZPDF piece one ) Tj 200 0 Td (and piece two) Tj ET'),
+    ]))
+
+    # Small text with wide spacing: ten-point glyphs with thirty-one points
+    # between the lines, which is what a slide or a deliberately loose layout
+    # looks like. The gap between two of these lines is twice the height of a
+    # line, so a rule that measures a paragraph break in line heights calls every
+    # line a paragraph of its own -- which is what a real forty-one-line page did.
+    write('spaced.pdf', makePdf([
+        (595, 842, 0, '', b'',
+         'BT /F1 10 Tf 60 700 Td (XYZPDF a paragraph that) Tj 0 -31 Td (wraps onto a second line.) Tj'
+         ' 0 -62 Td (No. 2 is a paragraph of its own.) Tj ET'),
+    ]))
+
+    # One page of text and one page that is a picture: the shape of a scanned
+    # report with a typed cover, which is what most documents that need this are.
+    # The two have to come out in the same file, in order, one as words and one as
+    # a page image, with a page break between them.
+    write('mixed.pdf', makePdf([
+        (595, 842, 0, 'XYZPDF typed cover', b''),
+        (595, 842, 0, '', b'', '0 0 1 rg 60 400 475 380 re f'),
     ]))
 
     # Truncated: the header, a page object and half the xref table. A PDF

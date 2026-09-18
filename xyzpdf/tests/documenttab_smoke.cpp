@@ -961,14 +961,29 @@ int main(int argc, char **argv)
 
         bool answered = false;
         WordExportReport answer;
+        int progressReports = 0;
+        int lastReported = 0;
         const QMetaObject::Connection listening = QObject::connect(
             &tab, &DocumentTab::wordExportFinished, &tab, [&](const WordExportReport &report) {
                 answered = true;
                 answer = report;
             });
+        // The progress the window puts in the status bar, which is the only sign
+        // of life a long export has -- and the only part of this that has to
+        // cross from the worker thread to this one.
+        const QMetaObject::Connection progress = QObject::connect(
+            &tab, &DocumentTab::wordExportProgress, &tab, [&](int done, int total) {
+                ++progressReports;
+                lastReported = total > 0 ? done : lastReported;
+            });
 
         tab.exportToWord(file);
         check(waitFor([&answered] { return answered; }, 30000), "the export answers");
+        check(progressReports > 0, QStringLiteral("having reported its progress (%1 reports)")
+                                       .arg(progressReports));
+        check(progressReports == 0 || lastReported == 2,
+              QStringLiteral("up to the last page (%1)").arg(lastReported));
+        QObject::disconnect(progress);
 
         check(answer.ok, QStringLiteral("with a file written (%1)").arg(answer.error));
         check(answer.path == file, "at the path it was given");

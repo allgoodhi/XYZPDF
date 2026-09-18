@@ -328,12 +328,37 @@ void DocumentTab::exportToWord(const QString &path)
         Q_EMIT wordExportFinished(report);
     });
 
+    WordExportOptions options;
+    options.cancel = cancel;
+    // Progress comes from the worker thread, so it is handed to this object's
+    // thread rather than run where it is called: a page image is a render, a
+    // scanned document is minutes of them, and the window has to keep painting
+    // while they happen. Queued through a QPointer, because by the time the
+    // message arrives the tab may be gone.
+    QPointer<DocumentTab> alive(this);
+    options.progress = [alive](int done, int total) {
+        if (!alive)
+            return;
+        QMetaObject::invokeMethod(
+            alive.data(),
+            [alive, done, total] {
+                if (alive)
+                    alive->notifyExportProgress(done, total);
+            },
+            Qt::QueuedConnection);
+    };
+
     // Qualified: this class has a method of the same name, which is the one the
     // window calls, and the free function is the one that does the reading.
     auto *document = backend.get();
     wordExportTask = QtConcurrent::run(
-        [document, path, cancel] { return ::exportToWord(*document, path, cancel); });
+        [document, path, options] { return ::exportToWord(*document, path, options); });
     watcher->setFuture(wordExportTask);
+}
+
+void DocumentTab::notifyExportProgress(int done, int total)
+{
+    Q_EMIT wordExportProgress(done, total);
 }
 
 bool DocumentTab::isExporting() const

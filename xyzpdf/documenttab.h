@@ -159,6 +159,10 @@ Q_SIGNALS:
     void searchChanged(int current, int total, bool searching);
     // The render cache's used bytes, for the status bar's honesty about memory.
     void cacheChanged(qint64 usedBytes, qint64 limitBytes);
+    // How far the export has got: pages written of pages in the document. Sent
+    // from the worker thread, once per page -- a page with a picture on it is a
+    // render, and a scanned document is minutes of work nobody can see.
+    void wordExportProgress(int done, int total);
     // What an export wrote, or why it did not.
     void wordExportFinished(const WordExportReport &report);
 
@@ -199,6 +203,10 @@ private:
     // is done. The crop is copied into the worker; the window is watched with
     // a QPointer, because the user may close it first.
     void startRecognition(const QImage &crop, QPointer<OcrDialog> dialog);
+
+    // Emits the progress signal, and only ever runs on this object's thread: the
+    // export reports from a worker, and this is how the report gets here.
+    void notifyExportProgress(int done, int total);
 
     // Declared before the renderer, and therefore destroyed after it: the
     // renderer holds a pointer to this document, and a document that goes away

@@ -892,6 +892,12 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
     // The export's answer, which arrives from a worker thread when it arrives:
     // written to a file the reader asked for, so it is reported rather than
     // silently done.
+    // How far along it is: a page with a picture on it is a render, so a scanned
+    // document is minutes of work, and a reader who has been told only "正在导出"
+    // has no way to tell that from a program that has stopped.
+    connect(tab, &DocumentTab::wordExportProgress, this, [this](int done, int total) {
+        setStatusMessage(tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total));
+    });
     connect(tab, &DocumentTab::wordExportFinished, this,
             [this](const WordExportReport &report) { reportWordExport(report); });
 
@@ -1050,15 +1056,27 @@ void MainWindow::reportWordExport(const WordExportReport &report)
                           .arg(report.pages)
                           .arg(report.paragraphs)
                           .arg(QDir::toNativeSeparators(report.path));
+
+    QString detail;
+    if (report.imagePages > 0) {
+        // Said out loud because it changes what the file is: those pages are
+        // pictures, and a reader who tries to edit the text on one of them needs
+        // to know that is what happened rather than wondering why the cursor
+        // will not go in.
+        detail = tr("其中 %1 页没有文字层（扫描页或整页图片），已按图片还原：保持原貌，"
+                    "但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。")
+                     .arg(report.imagePages);
+    }
     if (report.emptyPages > 0) {
         // Counted and named rather than left out: a reader who exported a
-        // fourteen-page document and got twelve pages of text has to be told
-        // which two, and what to do about them.
-        message += QStringLiteral("\n\n")
-                   + tr("其中 %1 页没有文字层（扫描页或整页图片），没有内容可导出。"
-                        "这类页面可以用“识别”工具框选后再用，或先做一次 OCR。")
-                         .arg(report.emptyPages);
+        // fourteen-page document and got twelve has to be told about the two,
+        // and why.
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("另有 %1 页既没有文字，也没有渲染出内容，已跳过。").arg(report.emptyPages);
     }
+    if (!detail.isEmpty())
+        message += QStringLiteral("\n\n") + detail;
     setStatusMessage(tr("已导出为 Word"), 5000);
     WindowDialogs::information(this, tr("导出为 Word"), message);
 }

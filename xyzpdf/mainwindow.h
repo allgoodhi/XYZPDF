@@ -10,6 +10,9 @@
 #include "src/cli/commandline.h"
 #include "src/view/pageview.h"
 
+class WrappingToolBarArea;
+struct WordExportReport;
+
 #include <QMainWindow>
 
 #include <memory>
@@ -21,6 +24,7 @@ class MainWindow;
 class QAction;
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QMenu;
 class QStackedWidget;
 class QTabWidget;
@@ -71,6 +75,13 @@ private:
     DocumentTab *openDocument(const QString &path, int page = -1);
     DocumentTab *currentTab() const;
     void openFileDialog();
+    // Asks where to put the Word file, and tells the tab in front to write it.
+    // The answer comes back as a signal -- the writing happens on a worker -- and
+    // is said in a message box: this is a thing that produced a file somewhere,
+    // and "it worked" has to come with where.
+    void exportCurrentToWord();
+    // Says what the export did, in a message box that names the file it wrote.
+    void reportWordExport(const WordExportReport &report);
     void closeTab(int index);
     void closeCurrentTab();
     // Asks for the password of an encrypted document, and retries.
@@ -84,6 +95,11 @@ private:
     // What a drag on a page does, from here on: applied to the tab in front,
     // remembered for the tabs opened after it, and shown in the toolbar.
     void chooseTool(PageView::Tool tool);
+
+    // The toolbar's count of hits: which one is in front and how many there
+    // are. Reads the tab in front rather than remembering anything, so that it
+    // cannot disagree with the document it describes.
+    void updateSearchCount();
 
     void zoomIn();
     void zoomOut();
@@ -123,6 +139,9 @@ private:
     QStackedWidget *stack = nullptr;
     QWidget *emptyState = nullptr;
     QToolBar *toolBar = nullptr;
+    // The strip the toolbars live in, which wraps them onto extra rows rather
+    // than letting them hide their own tails: see buildToolBar().
+    WrappingToolBarArea *toolBarArea = nullptr;
 
     QComboBox *pageBox = nullptr;
     QComboBox *zoomBox = nullptr;
@@ -138,6 +157,12 @@ private:
     QAction *recognizeToolAction = nullptr;
     QAction *copyAction = nullptr;
     QAction *selectAllAction = nullptr;
+    QAction *exportWordAction = nullptr;
+    QAction *findAction = nullptr;
+    QAction *findNextAction = nullptr;
+    QAction *findPreviousAction = nullptr;
+    QLineEdit *searchBox = nullptr;
+    QLabel *searchCount = nullptr;
     QAction *closeTabAction = nullptr;
     QAction *firstPageAction = nullptr;
     QAction *previousPageAction = nullptr;

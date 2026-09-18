@@ -20,6 +20,7 @@
 
 #include "../documenttab.h"
 #include "../src/theme/thememanager.h"
+#include "../src/ui/findbar.h"
 #include "../src/ui/ocrdialog.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
@@ -27,10 +28,13 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QString>
+#include <QTemporaryDir>
 #include <QThreadPool>
 
 #include <cmath>
@@ -768,6 +772,134 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- searching the document ----
+    //
+    // The whole way round: a needle typed into the bar, a scan that runs off the
+    // UI thread, the count that comes back, stepping through the hits (wrapping
+    // at both ends), the highlight on the page, and the search being forgotten
+    // when the document it belonged to is closed.
+    {
+        check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
+              "the two-page fixture opens for searching");
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }), "and is drawn for the search");
+
+        // ---- the bar is shown where the search belongs ----
+        tab.showFindBar();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        check(tab.findBarWidget() && tab.findBarWidget()->isVisible(),
+              "ask for the find bar and it appears");
+        if (tab.findBarWidget()) {
+            auto *field = tab.findBarWidget()->findChild<QLineEdit *>(QStringLiteral("findField"));
+            // The bar's own focus widget rather than hasFocus(), which is false
+            // unless the window is active -- and on the offscreen platform it is
+            // not. What is being checked is that the caret has been given to the
+            // field, which is what Ctrl+F twice is for.
+            check(field && tab.findBarWidget()->focusWidget() == field,
+                  "with the caret in the field, ready to be typed in");
+        }
+
+        // ---- a needle in two pages ----
+        //
+        // The fixture says "XYZPDF one" on page 1 and "XYZPDF two" on page 2, so
+        // this is a search that has to cross a page boundary to be right.
+        tab.startSearch(QStringLiteral("XYZPDF"), false);
+        check(waitFor([&tab] { return !tab.isSearching() && tab.searchMatchCount() == 2; }),
+              QStringLiteral("two hits in the document (found %1)").arg(tab.searchMatchCount()));
+        check(tab.currentSearchMatch() == 0, "and the first of them is in front");
+        check(view->currentPage() == 0, "which is on the page that was being read");
+
+        // ---- and the bar says so ----
+        //
+        // The label was in the bar from the day it was written and nothing ever
+        // filled it in: the count was only reachable through this tab's API,
+        // which is not where a reader looks for it. Asserted on the text rather
+        // than on the API for that reason, and loosely -- the numbers are the
+        // requirement, the wording is the bar's business.
+        if (tab.findBarWidget()) {
+            auto *count = tab.findBarWidget()->findChild<QLabel *>(QStringLiteral("findCount"));
+            check(count != nullptr, "the bar has somewhere to show the count");
+            if (count) {
+                const QString shown = count->text();
+                check(shown.contains(QStringLiteral("1")) && shown.contains(QStringLiteral("2")),
+                      QStringLiteral("and it says which of how many (got \"%1\")").arg(shown));
+            }
+        }
+
+        // ---- it is on the page, and visible ----
+        {
+            const QRectF page = view->pageRectInViewport(0);
+            // The fixture draws its text near the top left of a 595x842 page; the
+            // view has just been scrolled to the match, so the box is sampled
+            // where the match is rather than where it was.
+            const QPointF inside(page.left() + page.width() * 0.12,
+                                 page.top() + page.height() * 0.09);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            const QImage shot = view->grab().toImage();
+            const QColor marked = shot.pixelColor(inside.toPoint());
+            check(marked != QColor(255, 255, 255),
+                  QStringLiteral("the hit is washed on the page (%1,%2,%3 at %4,%5)")
+                      .arg(marked.red())
+                      .arg(marked.green())
+                      .arg(marked.blue())
+                      .arg(inside.x())
+                      .arg(inside.y()));
+            check(marked.red() > marked.blue(), "in the highlight colour, not the page's");
+        }
+
+        // ---- stepping, and wrapping at both ends ----
+        tab.stepSearch(1);
+        check(tab.currentSearchMatch() == 1, "the next hit is the one on page 2");
+        check(view->currentPage() == 1, "and the view went to page 2 with it");
+        tab.stepSearch(1);
+        check(tab.currentSearchMatch() == 0, "stepping past the last hit wraps to the first");
+        tab.stepSearch(-1);
+        check(tab.currentSearchMatch() == 1, "and stepping back from the first wraps to the last");
+
+        // ---- case, both ways ----
+        tab.startSearch(QStringLiteral("xyzpdf"), true);
+        check(waitFor([&tab] { return !tab.isSearching(); }), "a case-sensitive search finishes");
+        check(tab.searchMatchCount() == 0,
+              QStringLiteral("and finds nothing in a document that has it in capitals (found %1)")
+                  .arg(tab.searchMatchCount()));
+        tab.startSearch(QStringLiteral("xyzpdf"), false);
+        check(waitFor([&tab] { return !tab.isSearching() && tab.searchMatchCount() == 2; }),
+              "while the same needle without case finds both");
+
+        // ---- nothing to find ----
+        tab.startSearch(QStringLiteral("nothing like this is in the document"), false);
+        check(waitFor([&tab] { return !tab.isSearching(); }), "a needle that is not there finishes");
+        check(tab.searchMatchCount() == 0, "with no hits");
+        check(tab.currentSearchMatch() == -1, "and nothing in front");
+        tab.stepSearch(1);
+        check(tab.currentSearchMatch() == -1, "and stepping does nothing rather than crashing");
+
+        tab.startSearch(QString(), false);
+        check(waitFor([&tab] { return !tab.isSearching(); }), "an empty needle finishes");
+        check(tab.searchMatchCount() == 0, "and matches nothing rather than everything");
+
+        // ---- the same thing on a document with more than one line per page ----
+        //
+        // Which is where selection used to break, and a search that highlights
+        // the wrong box is the same bug wearing a hat.
+        check(tab.open(directory + QStringLiteral("/lines.pdf")) == Document::Status::Ready,
+              "the multi-line fixture opens");
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }), "and is drawn");
+
+        tab.startSearch(QStringLiteral("second"), false);
+        check(waitFor([&tab] { return !tab.isSearching() && tab.searchMatchCount() == 1; }),
+              QStringLiteral("one hit for the word on the second line (found %1)")
+                  .arg(tab.searchMatchCount()));
+
+        // ---- and a search does not outlive its document ----
+        check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
+              "another document opens");
+        check(tab.searchMatchCount() == 0,
+              QStringLiteral("and the search of the previous one is gone (found %1)")
+                  .arg(tab.searchMatchCount()));
+    }
+
     // ---- a document is replaced while its pages are still rendering ----
     //
     // The race, made reproducible rather than left to luck: open a document,
@@ -798,6 +930,11 @@ int main(int argc, char **argv)
                                      "still in flight")
                           .arg(attempt + 1));
             }
+            // Back to the first page before waiting: the loops above left the
+            // view scrolled wherever the last document's page 4 was, and a page
+            // that is not on screen is never rendered -- which is not the
+            // question being asked here.
+            view->goToPage(0);
             check(waitFor([view] { return view->isRendered(0); }),
                   "and a page is drawn afterwards, so nothing was left wedged");
         }
@@ -807,6 +944,40 @@ int main(int argc, char **argv)
     // it decided to do, the test does not leave work behind at exit: a process
     // teardown under a running WinRT call is a hang, not a failure.
     QThreadPool::globalInstance()->waitForDone(30000);
+
+    // ---- 导出为 Word：the tab's own half of it ----
+    //
+    // The conversion itself is wordexport_smoke's business. What is this test's
+    // is the wiring around it: that the work runs off the UI thread, that the
+    // answer comes back as a signal, and that the tab knows it is busy -- the
+    // last of which is what keeps a document from being reloaded under it.
+    {
+        const QString path = directory + QStringLiteral("/text.pdf");
+        check(tab.open(path) == Document::Status::Ready, "the fixture opens for export");
+
+        QTemporaryDir output;
+        check(output.isValid(), "there is somewhere to export to");
+        const QString file = output.filePath(QStringLiteral("tab.docx"));
+
+        bool answered = false;
+        WordExportReport answer;
+        const QMetaObject::Connection listening = QObject::connect(
+            &tab, &DocumentTab::wordExportFinished, &tab, [&](const WordExportReport &report) {
+                answered = true;
+                answer = report;
+            });
+
+        tab.exportToWord(file);
+        check(waitFor([&answered] { return answered; }, 30000), "the export answers");
+
+        check(answer.ok, QStringLiteral("with a file written (%1)").arg(answer.error));
+        check(answer.path == file, "at the path it was given");
+        check(answer.pages == 2, QStringLiteral("of both pages (%1)").arg(answer.pages));
+        check(QFileInfo::exists(file) && QFileInfo(file).size() > 0, "and it is on disk");
+        check(!tab.isExporting(), "and the tab is no longer busy");
+
+        QObject::disconnect(listening);
+    }
 
     if (failures == 0) {
         std::cout << "the view and the tab hold together\n";

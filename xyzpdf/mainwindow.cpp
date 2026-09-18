@@ -11,6 +11,7 @@
 #include "src/render/rendercache.h"
 #include "src/settings/settingsdialog.h"
 #include "src/theme/thememanager.h"
+#include "src/ui/wrappingtoolbararea.h"
 #include "src/ui/thirdpartydialog.h"
 #include "src/view/pagelayout.h"
 #include "src/view/zoomcontroller.h"
@@ -29,6 +30,9 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFileInfo>
+#include <QFontMetrics>
+#include <QGuiApplication>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -89,6 +93,20 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     // The tab strip does not get the wheel. See buildCentralWidget().
     if (tabs && watched == tabs->findChild<QTabBar *>() && event->type() == QEvent::Wheel)
         return true;
+
+    // Escape in the toolbar's search box clears the search, which is what
+    // Escape means in every other search box: the highlights go, the field
+    // empties, and the page is left as it was found.
+    if (searchBox && watched == searchBox && event->type() == QEvent::KeyPress) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Escape) {
+            searchBox->clear();
+            if (DocumentTab *tab = currentTab())
+                tab->clearSearch();
+            return true;
+        }
+    }
+
     return QMainWindow::eventFilter(watched, event);
 }
 
@@ -234,12 +252,21 @@ MainWindow::~MainWindow()
 
 void MainWindow::buildCentralWidget()
 {
+    // The central widget is the chrome and, under it, the area a document is
+    // drawn in. The chrome is a widget in this layout rather than a toolbar in
+    // the window's toolbar area, which is a decision about wrapping -- see
+    // WrappingToolBarArea and buildToolBar().
+    auto *central = new QWidget(this);
+    auto *centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+
     // A stack of two: the tab strip, and what to show when there is no tab.
     //
     // QTabWidget has no empty state of its own -- with no tabs it draws a bare
     // frame -- and the first thing a new user sees is exactly that, so the
     // empty case gets a page of its own.
-    stack = new QStackedWidget(this);
+    stack = new QStackedWidget(central);
 
     tabs = new QTabWidget(stack);
     tabs->setObjectName(QStringLiteral("documentTabs"));
@@ -285,7 +312,11 @@ void MainWindow::buildCentralWidget()
     stack->addWidget(tabs);
     stack->addWidget(emptyState);
     stack->setCurrentWidget(emptyState);
-    setCentralWidget(stack);
+
+    // The strip goes in front of the stack, and is filled in by buildToolBar() --
+    // which runs after this, because a toolbar's actions are made with the menus.
+    centralLayout->addWidget(stack, 1);
+    setCentralWidget(central);
 
     // The window is the drop target rather than the page surface, so that a
     // drag anywhere over it works -- over the tab strip, over the page, and
@@ -316,6 +347,19 @@ void MainWindow::buildMenus()
 
     recentMenu = fileMenu->addMenu(tr("最近打开"));
     rebuildRecentMenu();
+
+    // ---- 导出 ----
+    //
+    // Beside Open, because it is the other thing done *to* a file rather than to
+    // a page: the reader has a document and wants it in another program. No
+    // shortcut: every combination that means "export" means something else in
+    // the editors this is used next to.
+    fileMenu->addSeparator();
+    exportWordAction = makeAction(tr("导出为 Word(&E)…"), QKeySequence());
+    exportWordAction->setObjectName(QStringLiteral("exportWordAction"));
+    exportWordAction->setToolTip(tr("把这份 PDF 的文字导出为 .docx 文档"));
+    connect(exportWordAction, &QAction::triggered, this, &MainWindow::exportCurrentToWord);
+    fileMenu->addAction(exportWordAction);
 
     fileMenu->addSeparator();
     closeTabAction = makeAction(tr("关闭标签(&W)"), QKeySequence::Close);
@@ -350,6 +394,35 @@ void MainWindow::buildMenus()
             tab->selectAll();
     });
     editMenu->addAction(selectAllAction);
+
+    // ---- 查找 ----
+    //
+    // The bar lives in the tab, because a search belongs to the document it is
+    // looking in -- two open documents have two searches, and moving between
+    // them should find each one's where it was left.
+    editMenu->addSeparator();
+
+    findAction = makeAction(tr("查找(&F)…"), QKeySequence::Find);
+    findAction->setObjectName(QStringLiteral("findAction"));
+    connect(findAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->showFindBar();
+    });
+    editMenu->addAction(findAction);
+
+    findNextAction = makeAction(tr("查找下一个"), QKeySequence(QStringLiteral("F3")));
+    connect(findNextAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->stepSearch(1);
+    });
+    editMenu->addAction(findNextAction);
+
+    findPreviousAction = makeAction(tr("查找上一个"), QKeySequence(QStringLiteral("Shift+F3")));
+    connect(findPreviousAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->stepSearch(-1);
+    });
+    editMenu->addAction(findPreviousAction);
 
     // ---- 查看 ----
     QMenu *viewMenu = menuBar()->addMenu(tr("查看(&V)"));
@@ -535,26 +608,42 @@ void MainWindow::buildMenus()
 
 void MainWindow::buildToolBar()
 {
-    toolBar = addToolBar(tr("主工具栏"));
-    toolBar->setObjectName(QStringLiteral("mainToolBar"));
-    toolBar->setMovable(false);
-    toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    // ---- one row, a "…", and an expansion that stays ----
+    //
+    // This was decided the hard way, and the reasoning lives with the class that
+    // implements it; WrappingToolBarArea's header has the long version. The
+    // short one: the window's own toolbar area does put a "»" at the end of a
+    // toolbar that does not fit, and clicking it does show the rest -- but only
+    // until the pointer leaves or anything re-lays out, which typing in a field
+    // on the toolbar is enough to cause. A reader who opened it to reach the
+    // search box lost it while reaching. So the strip holds that state itself,
+    // and only a click changes it.
+    toolBarArea = new WrappingToolBarArea(centralWidget());
+    // Above the tab strip: the same place the toolbar area used to put it, and
+    // the tab strip is inside the stack this is inserted in front of.
+    if (auto *layout = qobject_cast<QVBoxLayout *>(centralWidget()->layout()))
+        layout->insertWidget(0, toolBarArea);
 
-    // The three tools first, and that is where they belong: everything else in
-    // this toolbar acts on a page, and these decide what happens when the page
-    // is touched. A reader reaches for the hand before the page number.
+    auto addGroup = [this](const QString &objectName, const QString &title) {
+        return toolBarArea->addGroup(objectName, title);
+    };
+
+    // The three tools first, and that is where they belong: everything else acts
+    // on a page, and these decide what happens when the page is touched. A
+    // reader reaches for the hand before the page number -- so the tool group
+    // and Open, which together are what a reader needs first, are one toolbar.
+    toolBar = addGroup(QStringLiteral("mainToolBar"), tr("主工具栏"));
     toolBar->addAction(viewToolAction);
     toolBar->addAction(selectToolAction);
     toolBar->addAction(recognizeToolAction);
     toolBar->addSeparator();
-
     toolBar->addAction(openAction);
-    toolBar->addSeparator();
 
-    toolBar->addAction(firstPageAction);
-    toolBar->addAction(previousPageAction);
+    QToolBar *pageBar = addGroup(QStringLiteral("pageToolBar"), tr("翻页"));
+    pageBar->addAction(firstPageAction);
+    pageBar->addAction(previousPageAction);
 
-    pageBox = new QComboBox(toolBar);
+    pageBox = new QComboBox(pageBar);
     pageBox->setObjectName(QStringLiteral("pageBox"));
     pageBox->setEditable(true);
     pageBox->setInsertPolicy(QComboBox::NoInsert);
@@ -573,15 +662,16 @@ void MainWindow::buildToolBar()
         if (!updatingControls && index >= 0)
             jumpTo(index);
     });
-    toolBar->addWidget(pageBox);
+    pageBar->addWidget(pageBox);
+    pageBar->addAction(nextPageAction);
+    pageBar->addAction(lastPageAction);
 
-    toolBar->addAction(nextPageAction);
-    toolBar->addAction(lastPageAction);
-    toolBar->addSeparator();
+    // Zoom and rotation travel together: they are the four ways to answer "I
+    // cannot quite read this", and the two are asked in the same breath.
+    QToolBar *viewBar = addGroup(QStringLiteral("viewToolBar"), tr("缩放与旋转"));
+    viewBar->addAction(zoomOutAction);
 
-    toolBar->addAction(zoomOutAction);
-
-    zoomBox = new QComboBox(toolBar);
+    zoomBox = new QComboBox(viewBar);
     zoomBox->setObjectName(QStringLiteral("zoomBox"));
     zoomBox->setEditable(true);
     zoomBox->setInsertPolicy(QComboBox::NoInsert);
@@ -618,13 +708,108 @@ void MainWindow::buildToolBar()
         }
         zoomTo(value.toDouble() / 100.0);
     });
-    toolBar->addWidget(zoomBox);
+    viewBar->addWidget(zoomBox);
 
-    toolBar->addAction(zoomInAction);
-    toolBar->addAction(fitWidthAction);
-    toolBar->addSeparator();
-    toolBar->addAction(rotateLeftAction);
-    toolBar->addAction(rotateRightAction);
+    viewBar->addAction(zoomInAction);
+    viewBar->addAction(fitWidthAction);
+    viewBar->addSeparator();
+    viewBar->addAction(rotateLeftAction);
+    viewBar->addAction(rotateRightAction);
+
+    // ---- 查找 ----
+    //
+    // Last, where a search box is looked for, and a toolbar of its own so that
+    // it is a group the area can move to a row of its own when the window is
+    // narrow -- the one thing in this chrome that must never be out of reach,
+    // because it is also the thing whose own use can trigger a re-layout.
+    //
+    // Beside it, the count that answers the question a search raises second --
+    // "where am I in this?" -- as soon as it is answered first. The bar inside
+    // the tab has the same two things; whichever one is typed into, both show
+    // the same needle and the same count, because they are two views of one
+    // search.
+    QToolBar *searchBar = addGroup(QStringLiteral("searchToolBar"), tr("查找"));
+
+    searchBox = new QLineEdit(searchBar);
+    searchBox->setObjectName(QStringLiteral("searchBox"));
+    searchBox->setPlaceholderText(tr("在文档中查找"));
+    searchBox->setClearButtonEnabled(true);
+    searchBox->setToolTip(tr("输入即搜索；Enter 到下一个，Shift+Enter 到上一个，Esc 清除"));
+    // Fixed, not merely bounded: the clear button appears and disappears with
+    // the text, and a QLineEdit that reports a different size hint when it has
+    // text is a widget whose typing changes the width its toolbar needs. That is
+    // the shape of the bug this whole function is arranged around -- so the box
+    // asks for exactly one width and keeps it.
+    searchBox->setFixedWidth(220);
+    searchBox->installEventFilter(this);
+    connect(searchBox, &QLineEdit::textChanged, this, [this](const QString &needle) {
+        // Ignored while the box is being filled in from the tab in front: that
+        // is the window showing what is being searched, not a request to search
+        // for it again.
+        if (updatingControls)
+            return;
+        if (DocumentTab *tab = currentTab())
+            tab->startSearch(needle, tab->searchCaseSensitive());
+    });
+    connect(searchBox, &QLineEdit::returnPressed, this, [this] {
+        // Shift is read from the keyboard rather than from an event: the field
+        // consumes the key, so no event arrives anywhere that could say.
+        const bool backwards = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+        if (DocumentTab *tab = currentTab())
+            tab->stepSearch(backwards ? -1 : 1);
+    });
+    searchBar->addWidget(searchBox);
+
+    searchCount = new QLabel(searchBar);
+    searchCount->setObjectName(QStringLiteral("searchCount"));
+    searchCount->setToolTip(tr("当前是第几个匹配，一共几个"));
+    // Wide enough for the longest thing it ever says, asked of the font rather
+    // than written down as a number of pixels: "第 1234 / 1234 个" is the
+    // longest, and measuring it is what makes this right at every scale factor
+    // and in every language the program is translated into. A minimum and not a
+    // fixed width, so that a longer count is never clipped -- it cannot happen,
+    // but a label that silently truncates its own number is a bad way to find
+    // out that the longest string was wrong.
+    {
+        const QFontMetrics metrics(searchCount->font());
+        searchCount->setMinimumWidth(
+            metrics.horizontalAdvance(tr("第 1234 / 1234 个")) + 8);
+    }
+    searchBar->addWidget(searchCount);
+
+    // ---- and never narrower than one group needs ----
+    //
+    // The "…" promises that what is behind it can be shown. That promise holds
+    // as long as a single group fits on a row of its own, and the window is what
+    // decides that -- so the window refuses to be narrower than the widest one.
+    // Measured here rather than written down as a number: it depends on the font,
+    // the theme's padding and the language of the labels, none of which this
+    // function can know in advance and all of which it has just built.
+    setMinimumWidth(qMax(minimumWidth(), toolBarArea->minimumSizeHint().width() + 24));
+}
+
+void MainWindow::updateSearchCount()
+{
+    if (!searchCount)
+        return;
+
+    DocumentTab *tab = currentTab();
+    if (!tab || !tab->isOpen() || tab->searchText().isEmpty()) {
+        searchCount->clear();
+        return;
+    }
+    if (tab->isSearching()) {
+        searchCount->setText(tr("搜索中…"));
+        return;
+    }
+    const int total = tab->searchMatchCount();
+    if (total <= 0) {
+        searchCount->setText(tr("没有找到"));
+        return;
+    }
+    // One-based, because that is how a reader counts, and "第 3 / 12 个" is the
+    // answer to the only question the count is asked.
+    searchCount->setText(tr("第 %1 / %2 个").arg(tab->currentSearchMatch() + 1).arg(total));
 }
 
 void MainWindow::buildStatusBar()
@@ -699,6 +884,28 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
     connect(tab, &DocumentTab::toolChanged, this, [this, tab](PageView::Tool) {
         if (tab == currentTab())
             updateForCurrentTab();
+    });
+
+    // And so does a search, including one typed into the tab's own find bar:
+    // the toolbar box shows the needle and the count of the document in front,
+    // whichever end of the search it was started from.
+    // The export's answer, which arrives from a worker thread when it arrives:
+    // written to a file the reader asked for, so it is reported rather than
+    // silently done.
+    connect(tab, &DocumentTab::wordExportFinished, this,
+            [this](const WordExportReport &report) { reportWordExport(report); });
+
+    connect(tab, &DocumentTab::searchChanged, this, [this, tab](int, int, bool) {
+        if (tab != currentTab())
+            return;
+        if (searchBox && searchBox->text() != tab->searchText()) {
+            // Blocked: the box is being told, not typed into -- see the
+            // textChanged connection in buildToolBar().
+            updatingControls = true;
+            searchBox->setText(tab->searchText());
+            updatingControls = false;
+        }
+        updateSearchCount();
     });
 
     const auto applyTitle = [this, tab](const QString &title) {
@@ -797,6 +1004,65 @@ void MainWindow::openFileDialog()
         openDocument(path);
 }
 
+void MainWindow::exportCurrentToWord()
+{
+    DocumentTab *tab = currentTab();
+    if (!tab || !tab->isOpen() || tab->isExporting())
+        return;
+
+    // The PDF's own name with the extension swapped, in the folder it came from:
+    // what makes a folder of exports recognisable next to the files they were
+    // made from.
+    const QFileInfo info(tab->documentPath());
+    QString suggested = info.completeBaseName() + QStringLiteral(".docx");
+    if (!info.absolutePath().isEmpty())
+        suggested = info.absolutePath() + QLatin1Char('/') + suggested;
+
+    const QString path = WindowDialogs::getSaveFileName(this, tr("导出为 Word"), suggested,
+                                                       tr("Word 文档 (*.docx)"));
+    if (path.isEmpty())
+        return;
+
+    // Said now rather than when it finishes: the conversion reads every page, and
+    // a reader who has just clicked something deserves to know it was heard.
+    setStatusMessage(tr("正在导出为 Word…"));
+    tab->exportToWord(path);
+}
+
+void MainWindow::reportWordExport(const WordExportReport &report)
+{
+    // Nothing to say about an export that was stopped because the document was
+    // replaced: whoever replaced it is looking at the new one, and a modal box
+    // about the old one would be an interruption about something they have
+    // already moved on from. The status bar keeps it on the record.
+    if (report.cancelled) {
+        setStatusMessage(tr("导出已取消"), 5000);
+        return;
+    }
+
+    if (!report.ok) {
+        setStatusMessage(tr("导出失败"), 5000);
+        WindowDialogs::warning(this, tr("导出为 Word"), report.error);
+        return;
+    }
+
+    QString message = tr("已导出 %1 页、%2 个段落到：\n%3")
+                          .arg(report.pages)
+                          .arg(report.paragraphs)
+                          .arg(QDir::toNativeSeparators(report.path));
+    if (report.emptyPages > 0) {
+        // Counted and named rather than left out: a reader who exported a
+        // fourteen-page document and got twelve pages of text has to be told
+        // which two, and what to do about them.
+        message += QStringLiteral("\n\n")
+                   + tr("其中 %1 页没有文字层（扫描页或整页图片），没有内容可导出。"
+                        "这类页面可以用“识别”工具框选后再用，或先做一次 OCR。")
+                         .arg(report.emptyPages);
+    }
+    setStatusMessage(tr("已导出为 Word"), 5000);
+    WindowDialogs::information(this, tr("导出为 Word"), message);
+}
+
 void MainWindow::closeTab(int index)
 {
     auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
@@ -841,7 +1107,9 @@ void MainWindow::updateForCurrentTab()
                             lastPageAction, goToPageAction, zoomInAction, zoomOutAction,
                             fitWidthAction, fitPageAction, actualSizeAction, rotateLeftAction,
                             rotateRightAction, continuousAction, singlePageAction,
-                            selectAllAction, viewToolAction, selectToolAction, recognizeToolAction}) {
+                            selectAllAction, findAction, findNextAction, findPreviousAction,
+                            exportWordAction, viewToolAction, selectToolAction,
+                            recognizeToolAction}) {
         if (action)
             action->setEnabled(hasDocument);
     }
@@ -864,6 +1132,20 @@ void MainWindow::updateForCurrentTab()
         copyAction->setEnabled(hasDocument && tab->hasSelection());
     pageBox->setEnabled(hasDocument);
     zoomBox->setEnabled(hasDocument);
+
+    // The search box shows the search of the document in front, which is a
+    // property of that tab: a reader moving between two documents finds each
+    // one's own search where they left it.
+    if (searchBox) {
+        const QString needle = tab ? tab->searchText() : QString();
+        if (searchBox->text() != needle) {
+            updatingControls = true;
+            searchBox->setText(needle);
+            updatingControls = false;
+        }
+        searchBox->setEnabled(hasDocument);
+    }
+    updateSearchCount();
 
     updatingControls = true;
     if (hasDocument) {

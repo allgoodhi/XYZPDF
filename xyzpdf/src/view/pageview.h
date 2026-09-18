@@ -194,6 +194,21 @@ public:
     void setColors(const QColor &background, const QColor &placeholder, const QColor &border,
                    const QColor &selection);
 
+    // ---- search ----
+    //
+    // The matches to wash over the pages, and which one is being looked at.
+    // Ranges, exactly like a selection, because that is what a search result is:
+    // a range of a page's text. Drawing them is the same code as the selection,
+    // in another colour and a lighter wash, so that a match with the selection
+    // over it is still readable.
+    void setSearchHighlights(const QVector<PageTextRange> &matches, const PageTextRange &current);
+
+    // Scrolls so that a range is on screen, which is what "go to the match"
+    // means. A third of the way down rather than at the edge: a line at the very
+    // top of the window is a line with nothing above it, and matches are read
+    // with the text that came before them.
+    void showRange(const PageTextRange &range);
+
     // What a drag on a page does, and what the pointer looks like while it is
     // over one. Changing it cancels whatever the previous tool had in progress:
     // a box half-dragged and a pan half-done belong to the tool that started
@@ -314,6 +329,17 @@ private:
     // The selected text, washed over the pages it covers.
     void drawSelection(QPainter &painter, const QPoint &offset, const QRectF &visible) const;
 
+    // The search matches, and the selection, drawn by one piece of code: both
+    // are ranges of pages' text, and both are boxes from pageSelection() scaled
+    // onto the drawn page.
+    void drawRanges(QPainter &painter, const QPoint &offset, const QRectF &visible,
+                    const QVector<PageTextRange> &ranges, const QColor &colour, int alpha) const;
+
+    // Where a range sits on screen, in viewport coordinates: a null rectangle
+    // for a range whose boxes cannot be had -- a page that is not laid out, or
+    // one whose text the backend reports no geometry for.
+    QRectF rangeRectInViewport(const PageTextRange &range) const;
+
     // The box being dragged over a text-free part of a page, drawn over
     // everything.
     void drawRegionDrag(QPainter &painter) const;
@@ -412,8 +438,17 @@ private:
     // different one moments after the jump announced its own.
     bool adjustingScroll = false;
 
+    // The search results, and which of them is being looked at. Empty in the
+    // ordinary case, and drawn in both of the two ways a page can be drawn.
+    QVector<PageTextRange> searchMatches;
+    PageTextRange searchCurrent;
+
     QColor background = QColor(120, 124, 130);
     QColor placeholder = QColor(232, 234, 237);
     QColor border = QColor(198, 202, 208);
     QColor selection = QColor(57, 130, 207);
+    // Amber, and deliberately not from the theme: a highlight is read against
+    // white paper, which is the same paper in either theme, and the one colour
+    // that has to be recognisable as "this is what you searched for".
+    QColor highlight = QColor(255, 200, 60);
 };

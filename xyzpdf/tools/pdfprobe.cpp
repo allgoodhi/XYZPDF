@@ -1,8 +1,8 @@
 // Measures one document: how long its pages take to render, how many pixels
-// that is, how many of them fit in the render cache's budget, and what the text
-// layer of one page looks like.
+// that is, how many of them fit in the render cache's budget, what the text
+// layer of one page looks like, and what a search for a phrase would find.
 //
-//     xyzpdf_pdfprobe <file.pdf> [page count to sample] [viewport width] [text page]
+//     xyzpdf_pdfprobe <file.pdf> [samples] [viewport width] [text page] [needle]
 //
 // Not a test -- it prints numbers rather than passing or failing, which is why
 // tools/build_all_tests.py skips anything with "probe" in its name. It exists
@@ -19,6 +19,7 @@
 // itself is not on the include path.
 #include "../src/document/pagemetrics.h"
 #include "../src/document/qtpdfbackend.h"
+#include "../src/document/textsearch.h"
 #include "../src/render/rendercache.h"
 
 #include <QCoreApplication>
@@ -271,6 +272,35 @@ int main(int argc, char **argv)
                 }
             }
         }
+    }
+
+    // ---- what a search for a phrase would find ----
+    //
+    // The same matching the program does, page by page, which answers the two
+    // questions a reader asks about a document they cannot search: does it have
+    // a text layer at all, and is the phrase in it? A scan answers "0
+    // characters" and "0 hits" -- and the answer to that is the recognition
+    // tool, not a better search.
+    if (arguments.size() > 5) {
+        const QString needle = arguments.at(5);
+        int total = 0;
+        int pagesWithText = 0;
+        std::cout << "\nsearching for \"" << needle.toStdString() << "\"\n";
+        for (int page = 0; page < pages; ++page) {
+            const QString pageText = document.text(page);
+            if (!pageText.isEmpty())
+                ++pagesWithText;
+            const QVector<TextSearch::Match> found =
+                TextSearch::matchesInPage(page, pageText, needle, false);
+            if (found.isEmpty())
+                continue;
+            total += found.size();
+            std::cout << "  page " << page + 1 << ": " << found.size() << " hit(s), first at "
+                      << found.first().from << " ["
+                      << pageText.mid(found.first().from, needle.length()).toStdString() << "]\n";
+        }
+        std::cout << total << " hit(s) in " << pages << " page(s); " << pagesWithText
+                  << " of them have any text at all\n";
     }
 
     // And what a band of a zoomed-in page costs, which is what the view does

@@ -135,6 +135,14 @@ QString ThemeManager::styleSheetFor(AppTheme theme)
         QToolBar { background: $SURFACE; border-bottom: 1px solid $BORDER; padding: 4px 8px; spacing: 4px; }
         QToolBar::separator { width: 1px; background: $BORDER; margin: 4px 6px; }
 
+        /* The strip the toolbars live in. The same surface they are, so that the
+           space at its right end -- where the "…" that expands the chrome sits --
+           does not look like a hole in it; and the line under the chrome is drawn
+           once, by the strip, so that it is straight across the groups and does
+           not double up under the last row. */
+        QWidget#toolBarStrip { background: $SURFACE; border-bottom: 1px solid $BORDER; }
+        QWidget#toolBarStrip > QToolBar { border-bottom: none; }
+
         QPushButton, QToolButton { background: $SURFACE; color: $TEXT; border: 1px solid $BORDER;
                                    border-radius: 7px; padding: 6px 12px; }
         QPushButton:hover, QToolButton:hover { background: $HOVER; border-color: $ACCENT; }
@@ -143,6 +151,11 @@ QString ThemeManager::styleSheetFor(AppTheme theme)
         QPushButton:disabled, QToolButton:disabled { color: $DISABLED_TEXT;
                                                     background: $DISABLED_SURFACE; border-color: $BORDER; }
         QToolButton:checked { background: $SELECTION; border-color: $ACCENT; }
+
+        /* The "…" at the end of the toolbar strip: the same button as everything
+           else, only with the padding of a three-dot glyph rather than of a word,
+           so that it closes the row instead of competing with the controls in it. */
+        QToolButton#toolBarMoreButton { padding: 2px 6px; }
 
         QLineEdit, QComboBox, QAbstractSpinBox { background: $FIELD; color: $TEXT;
                                                 border: 1px solid $BORDER; border-radius: 6px;

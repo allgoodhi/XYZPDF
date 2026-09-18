@@ -5,9 +5,11 @@
 #include "src/document/qtpdfbackend.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
+#include "src/ui/findbar.h"
 #include "src/ui/ocrdialog.h"
 #include "src/view/pageview.h"
 
+#include <QAtomicInt>
 #include <QClipboard>
 #include <QDir>
 #include <QElapsedTimer>
@@ -66,10 +68,28 @@ DocumentTab::DocumentTab(QWidget *parent)
     , backend(std::make_unique<QtPdfBackend>())
     , renderer(std::make_unique<PageRenderer>())
 {
+    findBar = new FindBar(this);
+    // Hidden until it is asked for: a reader who is not searching has no use for
+    // a search box, and a strip of chrome above every page is what "which page
+    // am I on" stops being obvious about.
+    findBar->hide();
+
     pageView = new PageView(this);
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(findBar);
     layout->addWidget(pageView);
+
+    connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
+    connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
+    connect(findBar, &FindBar::closed, this, [this] {
+        findBar->hide();
+        // The highlights go with the bar: a page covered in amber with nothing
+        // on screen to say what for is a page nobody can read.
+        clearSearch();
+        pageView->setFocus(Qt::OtherFocusReason);
+    });
 
     // Fit width on opening, which is what a reader is read at. Not "fit page":
     // on a tall window that leaves a document at 60% with a grey band each side,
@@ -102,7 +122,230 @@ DocumentTab::DocumentTab(QWidget *parent)
     applyThemeColors();
 }
 
-DocumentTab::~DocumentTab() = default;
+DocumentTab::~DocumentTab()
+{
+    // A scan reads through the backend, and the backend is about to be
+    // destroyed with this object. Cancelled and waited for here rather than
+    // left to finish: a worker holding a pointer to a document that has been
+    // freed is not a race that shows up before it crashes.
+    if (searchCancel)
+        searchCancel->storeRelaxed(1);
+    for (QFuture<QVector<TextSearch::Match>> &task : searchTasks)
+        task.waitForFinished();
+
+    // The export reads the same document by the same means, so it is cancelled
+    // and waited for here for the same reason -- and it is the one that would
+    // take longest to notice, because a document is a lot of pages to read.
+    if (exportCancel)
+        exportCancel->storeRelaxed(1);
+    if (wordExportTask.isRunning())
+        wordExportTask.waitForFinished();
+}
+
+void DocumentTab::startSearch(const QString &needle, bool caseSensitive)
+{
+    searchCase = caseSensitive;
+
+    // What is being searched for, kept here rather than in either of the two
+    // controls that can type it: this is the answer searchText() gives, and
+    // both the bar's label and the toolbar's count are filled in from it.
+    // Without this line the count has nothing to describe -- which is exactly
+    // how the label came to be empty.
+    searchNeedle = needle;
+
+    // Whichever control the needle was typed into, the other one shows it. The
+    // window's toolbar box and this tab's bar are two views of one search, and
+    // two controls showing different needles for the same highlighted pages is
+    // a state a user cannot reason about.
+    if (findBar)
+        findBar->setText(needle);
+
+    // Whatever was running is answering an old question now: its flag is
+    // cleared, and its results are recognised as stale when they arrive -- by
+    // their flag not being the current one.
+    if (searchCancel)
+        searchCancel->storeRelaxed(1);
+    for (auto task = searchTasks.begin(); task != searchTasks.end();) {
+        if (task->isFinished())
+            task = searchTasks.erase(task);
+        else
+            ++task;
+    }
+
+    searchMatches.clear();
+    currentMatchIndex = -1;
+
+    if (needle.isEmpty() || !opened) {
+        updateSearchHighlights();
+        return;
+    }
+
+    const auto cancel = QSharedPointer<QAtomicInt>::create(0);
+    searchCancel = cancel;
+    QtPdfBackend *backendPointer = backend.get();
+    const int pages = backend->pageCount();
+
+    updateSearchHighlights(); // "searching", with nothing found yet
+
+    auto *watcher = new QFutureWatcher<QVector<TextSearch::Match>>(this);
+    connect(watcher, &QFutureWatcher<QVector<TextSearch::Match>>::finished, this,
+            [this, watcher, cancel] {
+                const QVector<TextSearch::Match> found = watcher->result();
+                watcher->deleteLater();
+                // An answer to a question this tab has stopped asking. The flag
+                // is compared rather than a counter incremented, because the
+                // object identity is what the running scan was given.
+                if (cancel != searchCancel)
+                    return;
+                applySearchResults(found);
+            });
+
+    QFuture<QVector<TextSearch::Match>> task =
+        QtConcurrent::run([backendPointer, cancel, needle, caseSensitive, pages] {
+            QVector<TextSearch::Match> found;
+            for (int page = 0; page < pages; ++page) {
+                if (cancel->loadRelaxed())
+                    return found; // abandoned: the page after this one is not worth reading
+                found += TextSearch::matchesInPage(page, backendPointer->text(page), needle,
+                                                   caseSensitive);
+            }
+            return found;
+        });
+    watcher->setFuture(task);
+    searchTasks.append(task);
+}
+
+void DocumentTab::applySearchResults(const QVector<TextSearch::Match> &matches)
+{
+    searchMatches = matches;
+    currentMatchIndex = -1;
+
+    // The first match at or after the page being read, which is where a reader
+    // who searches expects to be taken: the next one from where they are, not
+    // the first one in the document.
+    const int page = pageView->currentPage();
+    for (int index = 0; index < searchMatches.size(); ++index) {
+        if (searchMatches.at(index).page >= page) {
+            currentMatchIndex = index;
+            break;
+        }
+    }
+    if (currentMatchIndex < 0 && !searchMatches.isEmpty())
+        currentMatchIndex = 0; // the hit is behind them: wrap round to the beginning
+
+    updateSearchHighlights();
+    if (currentMatchIndex >= 0)
+        pageView->showRange(rangeOf(currentMatchIndex));
+}
+
+PageTextRange DocumentTab::rangeOf(int index) const
+{
+    if (index < 0 || index >= searchMatches.size())
+        return {};
+    const TextSearch::Match &match = searchMatches.at(index);
+    return PageTextRange{match.page, match.from, match.to};
+}
+
+void DocumentTab::updateSearchHighlights()
+{
+    QVector<PageTextRange> ranges;
+    ranges.reserve(searchMatches.size());
+    for (int index = 0; index < searchMatches.size(); ++index)
+        ranges.append(rangeOf(index));
+
+    const PageTextRange current = currentMatchIndex >= 0 ? rangeOf(currentMatchIndex)
+                                                        : PageTextRange();
+    pageView->setSearchHighlights(ranges, current);
+
+    // The statistics, said in the two places a search can be driven from. The
+    // bar in this tab had a label for them from the day it was written, and
+    // nothing ever filled it in: the count was only ever visible through the
+    // tab's own API, which is not where a reader looks for it.
+    if (findBar)
+        findBar->setResultCount(currentMatchIndex, int(searchMatches.size()), isSearching());
+    Q_EMIT searchChanged(currentMatchIndex, int(searchMatches.size()), isSearching());
+}
+
+void DocumentTab::stepSearch(int delta)
+{
+    if (searchMatches.isEmpty())
+        return;
+
+    const int count = int(searchMatches.size());
+    if (currentMatchIndex < 0)
+        currentMatchIndex = delta >= 0 ? 0 : count - 1;
+    else
+        // Adding count first so that stepping back from the first match lands on
+        // the last one rather than on -1: the two ends of a document are next to
+        // each other, which is what every reader does.
+        currentMatchIndex = ((currentMatchIndex + delta) % count + count) % count;
+
+    updateSearchHighlights();
+    pageView->showRange(rangeOf(currentMatchIndex));
+}
+
+void DocumentTab::clearSearch()
+{
+    if (searchCancel)
+        searchCancel->storeRelaxed(1);
+    searchMatches.clear();
+    currentMatchIndex = -1;
+    searchNeedle.clear();
+    updateSearchHighlights();
+}
+
+bool DocumentTab::isSearching() const
+{
+    return searchRunning();
+}
+
+bool DocumentTab::searchRunning() const
+{
+    for (const QFuture<QVector<TextSearch::Match>> &task : searchTasks) {
+        if (!task.isFinished())
+            return true;
+    }
+    return false;
+}
+
+void DocumentTab::exportToWord(const QString &path)
+{
+    if (!opened || path.isEmpty() || wordExportTask.isRunning())
+        return;
+
+    // A flag of its own, handed to the worker. When this tab's document is about
+    // to be replaced -- open(), and the destructor -- it is set, and the export
+    // stops at the page it is on rather than reading a document that is being
+    // torn down under it. The same arrangement the search uses, for the same
+    // reason; see drainRenders().
+    exportCancel = QSharedPointer<QAtomicInt>::create(0);
+    const QSharedPointer<QAtomicInt> cancel = exportCancel;
+
+    auto *watcher = new QFutureWatcher<WordExportReport>(this);
+    connect(watcher, &QFutureWatcher<WordExportReport>::finished, this, [this, watcher] {
+        const WordExportReport report = watcher->result();
+        watcher->deleteLater();
+        Q_EMIT wordExportFinished(report);
+    });
+
+    // Qualified: this class has a method of the same name, which is the one the
+    // window calls, and the free function is the one that does the reading.
+    auto *document = backend.get();
+    wordExportTask = QtConcurrent::run(
+        [document, path, cancel] { return ::exportToWord(*document, path, cancel); });
+    watcher->setFuture(wordExportTask);
+}
+
+bool DocumentTab::isExporting() const
+{
+    return wordExportTask.isRunning();
+}
+
+void DocumentTab::showFindBar()
+{
+    findBar->show();
+    findBar->focusField();
+}
 
 void DocumentTab::applyThemeColors()
 {
@@ -148,14 +391,30 @@ void DocumentTab::drainRenders()
     // what has to be true is that the render *finished* before the document it
     // was rendering changed.
     //
-    // Pumping the event loop is how they arrive -- they are queued signals --
-    // and it is bounded, because a render that never comes back must not make
-    // opening a file impossible.
+    // The search scan is waited for as well, and for exactly the same reason: it
+    // reads every page's text through the same backend, one call at a time, and
+    // a page of it still running when the document is replaced is the same race
+    // with a different name. It is cancelled first, so that it stops at the next
+    // page boundary rather than reading to the end of a document nobody is
+    // going to see.
+    if (searchCancel)
+        searchCancel->storeRelaxed(1);
+    // And the export, which reads the document the same way a search does and is
+    // waited for below on the same grounds. Told to stop here rather than left to
+    // run out: a search of one page is quick, an export of five hundred is not.
+    if (exportCancel)
+        exportCancel->storeRelaxed(1);
+
+    // Pumping the event loop is how the renders arrive -- they are queued
+    // signals -- and it is bounded, because work that never comes back must not
+    // make opening a file impossible.
     QElapsedTimer timer;
     timer.start();
     constexpr int kGiveUpAfter = 2000;
-    while (renderer->inFlight() > 0 && timer.elapsed() < kGiveUpAfter)
+    while ((renderer->inFlight() > 0 || searchRunning() || isExporting())
+           && timer.elapsed() < kGiveUpAfter) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
 }
 
 Document::Status DocumentTab::open(const QString &path, const QString &password)
@@ -173,6 +432,7 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
 
     if (result != Document::Status::Ready) {
         opened = false;
+        clearSearch();
         // The view is emptied rather than left showing the previous document:
         // a page from another file under a tab named after this one is worse
         // than an empty surface -- and its text goes with it, so that a click
@@ -184,6 +444,10 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         Q_EMIT pageChanged(0, 0);
         return result;
     }
+
+    // Whatever was being searched for belonged to the document that has just
+    // been replaced: the matches are character indices into its text.
+    clearSearch();
 
     // The renderer is pointed at the new document first, because that is what
     // bumps the generation -- and the page sizes below make the view ask for

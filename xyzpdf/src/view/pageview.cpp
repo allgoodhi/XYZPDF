@@ -154,6 +154,11 @@ void PageView::setPageSizes(const QVector<QSizeF> &points)
     // And so is the selection: it is a pair of character indices, and the
     // characters they point at belong to the document that has just gone.
     clearSelection();
+    // And so are the search results: they are character indices into a text
+    // that has just been replaced.
+    searchMatches.clear();
+    searchCurrent = PageTextRange();
+
     // A box being dragged, and a pan, belong to the document that was there
     // when they started.
     regionSelecting = false;
@@ -839,37 +844,35 @@ void PageView::mouseDoubleClickEvent(QMouseEvent *event)
     Q_EMIT selectionChanged();
 }
 
-void PageView::drawSelection(QPainter &painter, const QPoint &offset, const QRectF &visible) const
+void PageView::drawRanges(QPainter &painter, const QPoint &offset, const QRectF &visible,
+                          const QVector<PageTextRange> &ranges, const QColor &colour,
+                          int alpha) const
 {
-    if (!textSource)
-        return;
-    const QVector<PageTextRange> ranges = selectedRanges();
-    if (ranges.isEmpty())
+    if (!textSource || ranges.isEmpty())
         return;
 
     const QVector<QSizeF> &sizes = layout.pagePoints();
-    QColor wash = selection;
+    QColor wash = colour;
     // Washed rather than filled: the text underneath has to stay readable, and
-    // the highlight that hides what it highlights is the one thing a selection
-    // must not do.
-    wash.setAlpha(96);
+    // a highlight that hides what it highlights is the one thing neither a
+    // selection nor a search result may do.
+    wash.setAlpha(alpha);
     painter.setPen(Qt::NoPen);
 
     for (const PageTextRange &range : ranges) {
+        if (range.isEmpty() || range.page >= sizes.size() || range.page >= baseSizes.size())
+            continue;
         const QRectF rect = layout.rectOf(range.page);
-        if (rect.isNull() || range.page >= sizes.size())
+        if (rect.isNull())
             continue;
         if (!rect.translated(-offset.x(), -offset.y()).intersects(visible))
-            continue;
-        if (range.page >= baseSizes.size())
             continue;
 
         const QSizeF drawn = sizes.at(range.page); // the rotated size, in points
         if (drawn.isEmpty())
             continue;
 
-        const PageSelection part =
-            textSource->pageSelection(range.page, range.from, range.to);
+        const PageSelection part = textSource->pageSelection(range.page, range.from, range.to);
         const double scaleX = rect.width() / drawn.width();
         const double scaleY = rect.height() / drawn.height();
         const QPointF origin = rect.topLeft() - QPointF(offset.x(), offset.y());
@@ -885,6 +888,98 @@ void PageView::drawSelection(QPainter &painter, const QPoint &offset, const QRec
                                   turned.height() * scaleY);
             painter.fillRect(washRect, wash);
         }
+    }
+}
+
+void PageView::drawSelection(QPainter &painter, const QPoint &offset, const QRectF &visible) const
+{
+    // The selection is the user's own doing and is drawn over the search
+    // results: when the two are on the same words, the one they just did with
+    // the mouse is the one that has to be recognisable.
+    drawRanges(painter, offset, visible, selectedRanges(), selection, 96);
+}
+
+void PageView::setSearchHighlights(const QVector<PageTextRange> &matches,
+                                   const PageTextRange &current)
+{
+    if (matches == searchMatches && current == searchCurrent)
+        return;
+    searchMatches = matches;
+    searchCurrent = current;
+    viewport()->update();
+}
+
+QRectF PageView::rangeRectInViewport(const PageTextRange &range) const
+{
+    if (!textSource || range.isEmpty())
+        return {};
+    const QVector<QSizeF> &sizes = layout.pagePoints();
+    if (range.page >= sizes.size() || range.page >= baseSizes.size())
+        return {};
+    const QRectF rect = layout.rectOf(range.page);
+    if (rect.isNull())
+        return {};
+
+    // Where it is on the page, which is what the backend can say, and then
+    // where the page is on screen, which is what the layout can say.
+    const PageSelection part = textSource->pageSelection(range.page, range.from, range.to);
+    if (part.boxes.isEmpty())
+        return {};
+    QRectF box = part.boxes.first();
+    for (const QRectF &one : part.boxes)
+        box = box.united(one);
+
+    const QSizeF drawn = sizes.at(range.page);
+    if (drawn.isEmpty())
+        return {};
+    const QRectF turned = rotateBox(box, baseSizes.at(range.page), rotationDegrees);
+    const double scaleX = rect.width() / drawn.width();
+    const double scaleY = rect.height() / drawn.height();
+    const QRectF onPage(rect.left() + turned.left() * scaleX, rect.top() + turned.top() * scaleY,
+                        turned.width() * scaleX, turned.height() * scaleY);
+    return onPage.translated(-horizontalScrollBar()->value(), -verticalScrollBar()->value());
+}
+
+void PageView::showRange(const PageTextRange &range)
+{
+    const QRectF onScreen = rangeRectInViewport(range);
+    if (onScreen.isNull())
+        return;
+
+    const QRectF viewportRect(viewport()->rect());
+    const QRectF content = visibleContentRect();
+
+    // ----- horizontally: centred when it fits, its left edge otherwise -----
+    double left = content.left();
+    if (onScreen.width() >= viewportRect.width()) {
+        // Wider than the window: its beginning is what is worth showing, since
+        // that is where reading starts.
+        left = onScreen.left() - kSpacing;
+    } else if (onScreen.left() < viewportRect.left() || onScreen.right() > viewportRect.right()) {
+        left = onScreen.center().x() - viewportRect.width() / 2.0;
+    } else {
+        left = content.left(); // already visible: leave the scrollbar where it is
+    }
+
+    // ----- vertically: a third of the way down -----
+    //
+    // A third rather than the top, because a match at the very top of the window
+    // has none of its context above it -- and rather than the middle, which
+    // leaves the text that leads up to it off the screen.
+    double top = content.top();
+    if (onScreen.top() < viewportRect.top() || onScreen.bottom() > viewportRect.bottom())
+        top = onScreen.top() - viewportRect.height() / 3.0;
+    else
+        top = content.top();
+
+    horizontalScrollBar()->setValue(qRound(left));
+    verticalScrollBar()->setValue(qRound(top));
+
+    // And the page it is on becomes the current one, which is what the page box
+    // and the status bar show.
+    if (range.page != layout.currentPage()) {
+        layout.setCurrentPage(range.page);
+        Q_EMIT currentPageChanged(range.page);
     }
 }
 
@@ -1169,9 +1264,14 @@ void PageView::paintEvent(QPaintEvent *event)
         painter.drawImage(target, entry->image);
     }
 
-    // The selection last, over the finished page. It is an overlay on the page,
-    // not part of it: drawing it with the page would put the wash under the
-    // text of a page that renders a moment later.
+    // The search results, then the selection, over the finished page. Both are
+    // overlays on the page and not part of it: drawing them with the page would
+    // put the wash under the text of a page that renders a moment later.
+    drawRanges(painter, offset, visible, searchMatches, highlight, 112);
+    // The one being looked at, again: the same wash twice is how a match stands
+    // out from the others without a second colour to explain.
+    if (!searchCurrent.isEmpty())
+        drawRanges(painter, offset, visible, {searchCurrent}, highlight, 150);
     drawSelection(painter, offset, visible);
 
     // And the box being dragged over that.

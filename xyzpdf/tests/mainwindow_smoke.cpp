@@ -20,6 +20,8 @@
 
 #include "../documenttab.h"
 #include "../mainwindow.h"
+#include "../src/ui/findbar.h"
+#include "../src/ui/wrappingtoolbararea.h"
 #include "../src/view/pageview.h"
 
 #include <QAction>
@@ -30,11 +32,17 @@
 #include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMimeData>
 #include <QPointF>
 #include <QString>
 #include <QTabWidget>
 #include <QToolBar>
+#include <QToolButton>
 #include <QUrl>
 
 #include <functional>
@@ -350,8 +358,328 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- finding text, from the window ----
+    //
+    // The bar is inside the tab rather than in the window -- a search belongs to
+    // the document it is looking in -- so what the window has to do is reach the
+    // tab in front and ask it. That is one line per action, and the kind of line
+    // that is easy to wire to nothing.
+    {
+        QAction *find = window.findChild<QAction *>(QStringLiteral("findAction"));
+        check(find != nullptr, "the find action exists");
+
+        DocumentTab *front = currentDocumentTab(window);
+        check(front != nullptr, "and there is a document in front to search");
+        if (find && front) {
+            check(front->findBarWidget() && !front->findBarWidget()->isVisible(),
+                  "whose find bar starts hidden");
+            find->trigger();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            check(front->findBarWidget() && front->findBarWidget()->isVisible(),
+                  "and appears when the action is run");
+
+            // F3 and Shift+F3 step through what the bar has found. With no
+            // needle typed there is nothing to step to, so this is about the
+            // actions existing and reaching the tab rather than about counting.
+            QAction *next = nullptr;
+            for (QAction *action : window.findChildren<QAction *>()) {
+                if (action->shortcut() == QKeySequence(QStringLiteral("F3")))
+                    next = action;
+            }
+            check(next != nullptr, "the window has a find-next action");
+            if (next) {
+                next->trigger();
+                check(front->currentSearchMatch() == -1,
+                      "which does nothing when nothing has been searched for");
+            }
+
+            front->findBarWidget()->hide();
+        }
+    }
+
+    // ---- searching from the toolbar, and the count beside it ----
+    //
+    // The box and the count are one feature: a search box that does not say
+    // where you are in its results is a box people use to search once and then
+    // scroll looking for the highlight. Both are driven through the tab in
+    // front, and both are views of that tab's one search.
+    {
+        // The two-page fixture, dropped in: it may already be open from an
+        // earlier block, in which case this raises it rather than opening a
+        // second tab -- which is the behaviour being relied on, so the check is
+        // that it is in front rather than how many tabs there are.
+        const QString pdf = directory + QStringLiteral("/text.pdf");
+        dropFiles(window, {QUrl::fromLocalFile(pdf).toString()}, Qt::CopyAction);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+
+        QToolBar *bar = window.findChild<QToolBar *>(QStringLiteral("mainToolBar"));
+        QToolBar *searchBar = window.findChild<QToolBar *>(QStringLiteral("searchToolBar"));
+        auto *box = window.findChild<QLineEdit *>(QStringLiteral("searchBox"));
+        auto *count = window.findChild<QLabel *>(QStringLiteral("searchCount"));
+        check(box != nullptr, "the toolbar has a search box");
+        check(count != nullptr, "and a place for the count");
+        if (searchBar && box)
+            check(box->parentWidget() == searchBar, "and it sits in the toolbar itself");
+
+        DocumentTab *front = currentDocumentTab(window);
+        check(front != nullptr, "with a document in front to search");
+        if (box && count && front) {
+            check(box->isEnabled(), "the box is enabled while a document is open");
+
+            // Typing searches, which is the whole of the box's behaviour.
+            box->setText(QStringLiteral("XYZPDF"));
+            check(waitFor([front] { return !front->isSearching() && front->searchMatchCount() == 2; }),
+                  QStringLiteral("typing in the box searches the document in front (found %1)")
+                      .arg(front->searchMatchCount()));
+
+            const QString shown = count->text();
+            check(shown.contains(QStringLiteral("1")) && shown.contains(QStringLiteral("2")),
+                  QStringLiteral("and the count says which of how many (got \"%1\")").arg(shown));
+
+            // The same search, seen from the document's own find bar: two
+            // controls, one search, and neither may drift from the other.
+            if (front->findBarWidget()) {
+                auto *field = front->findBarWidget()->findChild<QLineEdit *>(
+                    QStringLiteral("findField"));
+                check(field && field->text() == QStringLiteral("XYZPDF"),
+                      "the document's own find bar shows the same needle");
+            }
+
+            // Enter goes to the next hit -- the key a search box is expected to
+            // answer to -- and the count moves with it.
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(box, &enter);
+            check(front->currentSearchMatch() == 1,
+                  QStringLiteral("Enter in the box goes to the next hit (at %1)")
+                      .arg(front->currentSearchMatch()));
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            check(count->text() != shown,
+                  QStringLiteral("and the count follows (was \"%1\", now \"%2\")")
+                      .arg(shown)
+                      .arg(count->text()));
+
+            // A needle that is in nothing: the box says so rather than showing
+            // a count of zero hits as if it were one.
+            box->setText(QStringLiteral("this phrase is in no document of mine"));
+            check(waitFor([front] { return !front->isSearching() && front->searchMatchCount() == 0; }),
+                  "a phrase that is not there finds nothing");
+            check(!count->text().isEmpty(), "and the count says something about it");
+            check(!count->text().contains(QStringLiteral("/")),
+                  QStringLiteral("which is not a fraction of nothing (got \"%1\")").arg(count->text()));
+
+            // Each document has its own search, and the toolbar describes the
+            // one in front: moving to another tab shows that tab's search --
+            // which is nothing, if it has never been searched.
+            if (auto *strip = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"))) {
+                const int here = strip->currentIndex();
+                const int other = (here + 1) % strip->count();
+                strip->setCurrentIndex(other);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+                check(currentDocumentTab(window) != front, "another document is in front");
+                check(box->text().isEmpty() && count->text().isEmpty(),
+                      QStringLiteral("whose own search is shown instead (box \"%1\", count \"%2\")")
+                          .arg(box->text())
+                          .arg(count->text()));
+
+                strip->setCurrentIndex(here);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+                check(box->text() == QStringLiteral("this phrase is in no document of mine"),
+                      QStringLiteral("and coming back finds it where it was left (box \"%1\")")
+                          .arg(box->text()));
+            }
+
+            // Escape clears both, which is what Escape means in a search box.
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(box, &escape);
+            check(box->text().isEmpty(), "Escape empties the box");
+            check(front->searchMatchCount() == 0 && front->searchText().isEmpty(),
+                  "and clears the search it was making");
+            check(count->text().isEmpty(), "and the count goes with it");
+        }
+    }
+
+    // ---- the chrome: one row, a "…", and an expansion that stays put ----
+    //
+    // The bug this pins down, in the words it was reported in: the "…" at the
+    // right end opened the chrome up, and then folded it back by itself --
+    // when the pointer left it, and when the search box beside it was typed in
+    // (typing is a layout pass). The complaint was not about the folding as
+    // such, it was that the state would not stay: it should open and close on a
+    // click, and on nothing else. That is what the strip below promises, and
+    // this is the test of the promise rather than of the drawing.
+    {
+        const int narrow = window.minimumWidth();
+        check(narrow > 0,
+              QStringLiteral("the window refuses to be narrower than one group needs (%1)")
+                  .arg(narrow));
+        window.resize(narrow, 640);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 300);
+
+        auto *chrome = window.findChild<WrappingToolBarArea *>(QStringLiteral("toolBarStrip"));
+        auto *more = window.findChild<QToolButton *>(QStringLiteral("toolBarMoreButton"));
+        check(chrome != nullptr, "the toolbars live in a strip of their own");
+        check(more != nullptr, "with a “…” at its right end");
+
+        // What is not on screen, how many rows are on screen, and how many
+        // chevrons the chrome is showing. All three are read from the widgets
+        // rather than from a member: this is about what a reader can see.
+        struct Chrome {
+            int hidden = 0;
+            int rows = 1;
+            // Qt's own "»", the one on a toolbar that has more than its width can
+            // show. It has to be zero: the strip has a "…" of its own, and two
+            // buttons that mean the same thing is what this looked like.
+            int chevrons = 0;
+        };
+        auto survey = [&window]() {
+            Chrome seen;
+            QList<int> rows;
+            for (QToolBar *bar : window.findChildren<QToolBar *>()) {
+                if (bar->isFloating() || !bar->isVisible())
+                    continue;
+                auto *extension =
+                    bar->findChild<QToolButton *>(QStringLiteral("qt_toolbar_ext_button"));
+                if (extension && extension->isVisible() && extension->width() > 0)
+                    ++seen.chevrons;
+                if (!rows.contains(bar->y()))
+                    rows.append(bar->y());
+                for (QAction *action : bar->actions()) {
+                    QWidget *item = bar->widgetForAction(action);
+                    if (item && !item->isVisible())
+                        ++seen.hidden;
+                }
+            }
+            seen.rows = int(rows.size());
+            return seen;
+        };
+
+        const Chrome collapsed = survey();
+        check(collapsed.rows == 1,
+              QStringLiteral("a narrow window shows one row (rows %1)").arg(collapsed.rows));
+        check(more && more->isVisible(), "the “…” is offered, because something does not fit");
+        check(collapsed.hidden > 0,
+              QStringLiteral("and that something really is behind it (hidden %1)")
+                  .arg(collapsed.hidden));
+        check(collapsed.chevrons == 0,
+              QStringLiteral("with no second chevron of Qt's beside it (%1)").arg(collapsed.chevrons));
+        if (chrome)
+            check(!chrome->isExpanded(), "and the strip starts folded, which is the default");
+
+        // And the "…" is a control, not a lid on the row: the height of a button
+        // with three dots in it, sat in the middle of the row.
+        if (more && chrome) {
+            int rowHeight = 0;
+            for (QToolBar *bar : chrome->toolBars())
+                rowHeight = qMax(rowHeight, bar->height());
+            check(more->height() < rowHeight,
+                  QStringLiteral("and is a button rather than the height of the row (%1 of %2)")
+                      .arg(more->height())
+                      .arg(rowHeight));
+            check(more->geometry().right() <= chrome->width(),
+                  QStringLiteral("inside the strip it belongs to (right %1 of %2)")
+                      .arg(more->geometry().right())
+                      .arg(chrome->width()));
+        }
+
+        // The click that opens it.
+        if (more) {
+            more->click();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        }
+        const Chrome opened = survey();
+        check(opened.hidden == 0,
+              QStringLiteral("clicking it shows everything (hidden %1)").arg(opened.hidden));
+        check(opened.rows > 1,
+              QStringLiteral("over more than one row (rows %1)").arg(opened.rows));
+        check(opened.chevrons == 0, "still with only the one button");
+        check(more && more->isVisible(), "and the “…” stays, as the way back");
+        if (chrome)
+            check(chrome->isExpanded(), "with the strip in the expanded state");
+
+        // ---- and it stays that way ----
+        //
+        // The three things that used to fold it up, one after another: the
+        // pointer leaving, a field on the toolbar being typed into, and a layout
+        // pass of any other kind.
+        {
+            QEvent leave(QEvent::Leave);
+            if (chrome)
+                QApplication::sendEvent(chrome, &leave);
+            if (more)
+                QApplication::sendEvent(more, &leave);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+            auto *box = window.findChild<QLineEdit *>(QStringLiteral("searchBox"));
+            DocumentTab *front = currentDocumentTab(window);
+            if (box && front) {
+                box->setText(QStringLiteral("XYZPDF"));
+                waitFor([front] { return !front->isSearching(); });
+                box->clear();
+            }
+            window.resize(narrow + 1, 640);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            window.resize(narrow, 640);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        }
+        const Chrome afterwards = survey();
+        check(afterwards.hidden == 0 && afterwards.rows == opened.rows,
+              QStringLiteral("and does not fold up again by itself -- not on the pointer leaving, "
+                             "not on typing, not on a layout pass (hidden %1, rows %2, was %3)")
+                  .arg(afterwards.hidden)
+                  .arg(afterwards.rows)
+                  .arg(opened.rows));
+
+        // The click that closes it, which is the only thing that does.
+        if (more) {
+            more->click();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        }
+        const Chrome closed = survey();
+        check(closed.rows == 1,
+              QStringLiteral("clicking it again folds the chrome back to one row (rows %1)")
+                  .arg(closed.rows));
+        check(closed.hidden > 0 && closed.chevrons == 0,
+              "with the rest behind the one “…” again");
+        if (chrome)
+            check(!chrome->isExpanded(), "and the strip back in its default state");
+
+        // A window with room for everything needs no "…" at all.
+        window.resize(2400, 900);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 300);
+        const Chrome wide = survey();
+        check(wide.hidden == 0 && wide.rows == 1 && wide.chevrons == 0,
+              QStringLiteral("a window that fits everything shows one row (hidden %1, rows %2, "
+                             "chevrons %3)")
+                  .arg(wide.hidden)
+                  .arg(wide.rows)
+                  .arg(wide.chevrons));
+        check(more && !more->isVisible(), "with no “…” to offer, because there is nothing behind it");
+
+        window.resize(900, 700);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+    }
+
+    // ---- and the File menu offers the export ----
+    //
+    // Only the wiring: the conversion is wordexport_smoke's and the tab's half is
+    // documenttab_smoke's. What is checked here is that a reader can reach it and
+    // that it is offered when -- and only when -- there is a document to export.
+    {
+        auto *action = window.findChild<QAction *>(QStringLiteral("exportWordAction"));
+        check(action != nullptr, "the window offers an export to Word");
+        check(action && action->isEnabled(), "and offers it while a document is open");
+        // In the File menu, beside the other things done to a file rather than to
+        // a page: a reader looking for it looks there.
+        bool inFileMenu = false;
+        for (QAction *menuAction : window.menuBar()->actions()) {
+            if (menuAction->menu() && menuAction->menu()->actions().contains(action))
+                inFileMenu = menuAction->text().contains(QStringLiteral("文件"));
+        }
+        check(inFileMenu, "from the File menu");
+    }
+
     if (failures == 0) {
-        std::cout << "files dropped on the window open, and the three tools are wired\n";
+        std::cout << "files dropped on the window open, the three tools are wired, and so is Find\n";
         return 0;
     }
     std::cerr << failures << " failure(s)\n";

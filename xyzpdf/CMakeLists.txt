@@ -190,6 +190,15 @@ set(XYZPDF_SOURCES
     src/document/qtpdfbackend.cpp
     src/document/textlayer.h
     src/document/textlayer.cpp
+    src/document/textsearch.h
+    src/document/textsearch.cpp
+
+    src/export/docxwriter.h
+    src/export/docxwriter.cpp
+    src/export/wordexport.h
+    src/export/wordexport.cpp
+    src/export/zipwriter.h
+    src/export/zipwriter.cpp
 
     src/ocr/ocrengine.h
     src/ocr/ocrengine.cpp
@@ -207,12 +216,16 @@ set(XYZPDF_SOURCES
     src/theme/thememanager.h
     src/theme/thememanager.cpp
 
+    src/ui/findbar.h
+    src/ui/findbar.cpp
     src/ui/languagedialog.h
     src/ui/languagedialog.cpp
     src/ui/ocrdialog.h
     src/ui/ocrdialog.cpp
     src/ui/thirdpartydialog.h
     src/ui/thirdpartydialog.cpp
+    src/ui/wrappingtoolbararea.h
+    src/ui/wrappingtoolbararea.cpp
 
     src/view/pagelayout.h
     src/view/pagelayout.cpp
@@ -407,6 +420,15 @@ if(XYZPDF_BUILD_TEXTLAYER_SMOKE)
         SOURCES src/document/textlayer.cpp)
 endif()
 
+# What counts as a match: case, overlapping occurrences, and the needle that is
+# not there. No PDF and no window either -- the rules a reader notices are the
+# rules worth pinning down.
+option(XYZPDF_BUILD_TEXTSEARCH_SMOKE "Build the text search smoke test" OFF)
+if(XYZPDF_BUILD_TEXTSEARCH_SMOKE)
+    xyzpdf_add_test(textsearch_smoke
+        SOURCES src/document/textsearch.cpp)
+endif()
+
 # Rendering a page for real, and the generation rule that drops a stale result.
 option(XYZPDF_BUILD_RENDER_SMOKE "Build the page rendering smoke test" OFF)
 if(XYZPDF_BUILD_RENDER_SMOKE)
@@ -467,7 +489,12 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textlayer.cpp
+                src/document/textsearch.cpp
+                src/export/docxwriter.cpp
+                src/export/wordexport.cpp
+                src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
+                src/ui/findbar.cpp
                 src/ui/ocrdialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
@@ -502,14 +529,20 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textlayer.cpp
+                src/document/textsearch.cpp
+                src/export/docxwriter.cpp
+                src/export/wordexport.cpp
+                src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
+                src/ui/findbar.cpp
                 src/ui/languagedialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/thirdpartydialog.cpp
+                src/ui/wrappingtoolbararea.cpp
                 src/view/pagelayout.cpp
                 src/view/pageview.cpp
                 src/view/zoomcontroller.cpp
@@ -533,6 +566,26 @@ if(XYZPDF_BUILD_OCR_SMOKE AND WIN32)
     xyzpdf_add_test(ocr_smoke
         SOURCES src/ocr/ocrengine.cpp
         LIBRARIES Qt6::Concurrent windowsapp)
+endif()
+
+# A PDF read out as a Word document.
+#
+# Two halves that need no PDF -- rules about where one paragraph ends and the
+# next begins, and a ZIP with XML in it -- plus one run over a fixture, because
+# the halves agreeing with each other is exactly what a test of either half
+# cannot check. The ZIP is unpacked by the test itself rather than by the writer
+# that made it: a reader and a writer from the same hand agree by construction
+# and prove nothing about whether Word can open the file.
+option(XYZPDF_BUILD_WORDEXPORT_SMOKE "Build the Word export smoke test" OFF)
+if(XYZPDF_BUILD_WORDEXPORT_SMOKE)
+    xyzpdf_add_test(wordexport_smoke
+        SOURCES src/export/docxwriter.cpp
+                src/export/wordexport.cpp
+                src/export/zipwriter.cpp
+                src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES Qt6::Pdf)
 endif()
 
 # The registry entries, and the guard on the recursive delete in front of them.
@@ -567,6 +620,7 @@ if(XYZPDF_BUILD_PDFPROBE)
         src/document/qtpdfbackend.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp
+        src/document/textsearch.cpp
         src/render/rendercache.cpp)
     target_link_libraries(xyzpdf_pdfprobe PRIVATE Qt6::Core Qt6::Gui Qt6::Pdf)
     set_target_properties(xyzpdf_pdfprobe PROPERTIES

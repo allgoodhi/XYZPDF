@@ -4,11 +4,13 @@
 #include "src/core/windowdialogs.h"
 #include "src/document/pagemetrics.h"
 #include "src/document/qtpdfbackend.h"
+#include "src/export/imageexport.h"
 #include "src/print/printjob.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
 #include "src/translate/translator.h"
 #include "src/ui/findbar.h"
+#include "src/ui/imageexportdialog.h"
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
 #include "src/ui/printdialog.h"
@@ -973,6 +975,58 @@ void DocumentTab::print()
 
     if (!report.ok && !report.cancelled)
         WindowDialogs::warning(window(), tr("打印"), report.error);
+}
+
+void DocumentTab::exportImages()
+{
+    if (!opened)
+        return;
+
+    ImageExportDialog dialog(window(), pageView->currentPage(), pageCount());
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString directory = dialog.directory();
+    if (directory.isEmpty()) {
+        WindowDialogs::warning(window(), tr("导出为图片"), tr("请先选择保存文件夹。"));
+        return;
+    }
+    const QVector<int> pages = dialog.pages();
+    if (pages.isEmpty()) {
+        WindowDialogs::warning(window(), tr("导出为图片"), tr("页码范围里没有可导出的页面。"));
+        return;
+    }
+    const QString base = QFileInfo(documentPath()).completeBaseName();
+
+    // Foreground, like printing: each page is a render under the same lock the
+    // view uses, and pumping events in the callback is what keeps the progress
+    // box live and its Cancel button responsive between pages.
+    auto cancel = QSharedPointer<QAtomicInt>::create(0);
+    QProgressDialog progress(tr("正在导出为图片…"), tr("取消"), 0, pages.size(), window());
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoReset(false);
+    progress.setValue(0);
+
+    const ImageExport::Report report = ImageExport::run(
+        *backend, pages, directory, base, dialog.format(), dialog.dpi(),
+        [&progress, &cancel](int done, int total) {
+            progress.setMaximum(total);
+            progress.setValue(done);
+            QApplication::processEvents();
+            if (progress.wasCanceled())
+                cancel->storeRelaxed(1);
+        },
+        cancel.data());
+
+    if (report.cancelled)
+        return;
+    if (!report.ok) {
+        WindowDialogs::warning(window(), tr("导出为图片"), report.error);
+        return;
+    }
+    AppSettings::setLastOpenDirectory(directory);
+    Q_EMIT imageExportFinished(report.directory, report.pages);
 }
 
 void DocumentTab::startTranslation(const QString &text, QPointer<TranslateDialog> dialog)

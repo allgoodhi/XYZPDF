@@ -373,6 +373,15 @@ void MainWindow::buildMenus()
     });
     fileMenu->addAction(printAction);
 
+    exportImagesAction = makeAction(tr("导出为图片(&G)…"), QKeySequence());
+    exportImagesAction->setObjectName(QStringLiteral("exportImagesAction"));
+    exportImagesAction->setToolTip(tr("把每一页导出为 PNG 图片到一个文件夹"));
+    connect(exportImagesAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->exportImages();
+    });
+    fileMenu->addAction(exportImagesAction);
+
     fileMenu->addSeparator();
     closeTabAction = makeAction(tr("关闭标签(&W)"), QKeySequence::Close);
     connect(closeTabAction, &QAction::triggered, this, &MainWindow::closeCurrentTab);
@@ -972,6 +981,10 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
                 closeExportProgress();
                 reportWordExport(report);
             });
+    connect(tab, &DocumentTab::imageExportFinished, this, [this](const QString &directory,
+                                                                 int pages) {
+        statusBar()->showMessage(tr("已导出 %1 张图片到 %2").arg(pages).arg(directory), 6000);
+    });
 
     connect(tab, &DocumentTab::searchChanged, this, [this, tab](int, int, bool) {
         if (tab != currentTab())
@@ -1332,7 +1345,8 @@ void MainWindow::updateForCurrentTab()
                             rotateRightAction, continuousAction, singlePageAction,
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
-                            exportWordAction, printAction, viewToolAction, selectToolAction,
+                            exportWordAction, printAction, exportImagesAction,
+                            viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)
             action->setEnabled(hasDocument);

@@ -168,6 +168,10 @@ public:
     // thing, so this is not a worker-thread job the way an export is.
     void print();
 
+    // Writes every page out as a PNG into a folder the reader chooses. Foreground
+    // with a cancel-able progress dialog, like printing.
+    void exportImages();
+
     // ---- 导出 ----
     //
     // Writes the whole document's text out as a Word file, off the UI thread:
@@ -205,6 +209,9 @@ Q_SIGNALS:
     void wordExportProgress(int done, int total);
     // What an export wrote, or why it did not.
     void wordExportFinished(const WordExportReport &report);
+    // A page-image export finished: how many files and where, for the window to
+    // say so in the status bar.
+    void imageExportFinished(const QString &directory, int pages);
 
 protected:
     // Theming: the page surface paints itself, so the application stylesheet

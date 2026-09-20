@@ -195,6 +195,8 @@ set(XYZPDF_SOURCES
 
     src/export/docxwriter.h
     src/export/docxwriter.cpp
+    src/export/imageexport.h
+    src/export/imageexport.cpp
     src/export/wordexport.h
     src/export/wordexport.cpp
     src/export/zipwriter.h
@@ -224,6 +226,8 @@ set(XYZPDF_SOURCES
 
     src/ui/findbar.h
     src/ui/findbar.cpp
+    src/ui/imageexportdialog.h
+    src/ui/imageexportdialog.cpp
     src/ui/languagedialog.h
     src/ui/languagedialog.cpp
     src/ui/ocrdialog.h
@@ -505,12 +509,14 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/document/textlayer.cpp
                 src/document/textsearch.cpp
                 src/export/docxwriter.cpp
+                src/export/imageexport.cpp
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
                 src/print/printjob.cpp
                 src/translate/translator.cpp
                 src/ui/findbar.cpp
+                src/ui/imageexportdialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
@@ -550,6 +556,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/document/textlayer.cpp
                 src/document/textsearch.cpp
                 src/export/docxwriter.cpp
+                src/export/imageexport.cpp
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
@@ -560,6 +567,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/findbar.cpp
+                src/ui/imageexportdialog.cpp
                 src/ui/languagedialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
@@ -639,6 +647,14 @@ endif()
 option(XYZPDF_BUILD_APPSETTINGS_SMOKE "Build the settings storage smoke test" OFF)
 if(XYZPDF_BUILD_APPSETTINGS_SMOKE)
     xyzpdf_add_test(appsettings_smoke)
+endif()
+
+# The file names a page-image export writes: the 1-based page, zero-padded so a
+# folder sorts them in page order, and the extension that matches the format.
+option(XYZPDF_BUILD_IMAGEEXPORT_SMOKE "Build the image export naming smoke test" OFF)
+if(XYZPDF_BUILD_IMAGEEXPORT_SMOKE)
+    xyzpdf_add_test(imageexport_smoke
+        SOURCES src/export/imageexport.cpp)
 endif()
 
 # The registry entries, and the guard on the recursive delete in front of them.

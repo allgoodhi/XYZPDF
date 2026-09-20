@@ -36,6 +36,14 @@ OcrDialog::OcrDialog(QWidget *parent)
         QGuiApplication::clipboard()->setText(text->toPlainText());
     });
     buttons->addWidget(copyButton);
+    // Translate the recognized words -- the reason a scan or a picture can be
+    // read into another language, not just into text. Emitted rather than done
+    // here: this window knows nothing about services or the network.
+    translateButton = new QPushButton(tr("翻译"), this);
+    connect(translateButton, &QPushButton::clicked, this, [this] {
+        Q_EMIT translateRequested(text->toPlainText());
+    });
+    buttons->addWidget(translateButton);
     buttons->addStretch(1);
     auto *closeButton = new QPushButton(tr("关闭"), this);
     connect(closeButton, &QPushButton::clicked, this, &QDialog::close);
@@ -51,6 +59,7 @@ void OcrDialog::setPending()
     text->clear();
     text->setEnabled(false);
     copyButton->setEnabled(false);
+    translateButton->setEnabled(false);
 }
 
 void OcrDialog::setResult(const Ocr::Result &result)
@@ -60,6 +69,7 @@ void OcrDialog::setResult(const Ocr::Result &result)
         status->setText(result.error.isEmpty() ? tr("识别失败。") : result.error);
         text->clear();
         copyButton->setEnabled(false);
+        translateButton->setEnabled(false);
         return;
     }
     if (result.text.isEmpty()) {
@@ -68,9 +78,11 @@ void OcrDialog::setResult(const Ocr::Result &result)
         status->setText(tr("框选的区域里没有识别出文字。"));
         text->clear();
         copyButton->setEnabled(false);
+        translateButton->setEnabled(false);
         return;
     }
-    status->setText(tr("识别完成，可以复制："));
+    status->setText(tr("识别完成，可以复制或翻译："));
     text->setPlainText(result.text);
     copyButton->setEnabled(true);
+    translateButton->setEnabled(true);
 }

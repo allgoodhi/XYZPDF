@@ -16,6 +16,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -41,6 +42,9 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     originalRecent = RecentDocuments::isEnabled();
     originalShell = AppSettings::shellIntegrationEnabled();
     originalCache = AppSettings::renderCacheBytes(RenderCache::DefaultMaximumBytes);
+    originalProvider = AppSettings::translateProvider();
+    originalKey = AppSettings::translateApiKey();
+    originalTrigger = AppSettings::translateTrigger();
 
     auto *layout = new QVBoxLayout(this);
 
@@ -90,6 +94,56 @@ SettingsDialog::SettingsDialog(QWidget *parent)
 
         connect(cacheBox, &QSpinBox::valueChanged, this, [this](int megabytes) {
             AppSettings::setRenderCacheBytes(qint64(megabytes) * kMegabyte);
+            Q_EMIT settingsChanged();
+        });
+    }
+
+    // ---- 翻译 ----
+    {
+        auto *group = new QGroupBox(tr("翻译"), this);
+        auto *form = new QFormLayout(group);
+
+        translateProviderBox = new QComboBox(group);
+        translateProviderBox->addItem(tr("谷歌（免费，无需密钥）"), QStringLiteral("google"));
+        translateProviderBox->addItem(tr("DeepL（需密钥）"), QStringLiteral("deepl"));
+        translateProviderBox->setCurrentIndex(
+            qMax(0, translateProviderBox->findData(originalProvider)));
+        form->addRow(tr("翻译服务"), translateProviderBox);
+
+        translateKeyEdit = new QLineEdit(group);
+        translateKeyEdit->setEchoMode(QLineEdit::Password);
+        translateKeyEdit->setText(originalKey);
+        translateKeyEdit->setPlaceholderText(tr("仅 DeepL 需要"));
+        form->addRow(tr("API 密钥"), translateKeyEdit);
+
+        translateTriggerBox = new QComboBox(group);
+        translateTriggerBox->addItem(tr("选中后手动（右键菜单 / 工具栏）"), QStringLiteral("menu"));
+        translateTriggerBox->addItem(tr("选中即自动翻译"), QStringLiteral("auto"));
+        translateTriggerBox->setCurrentIndex(
+            qMax(0, translateTriggerBox->findData(originalTrigger)));
+        form->addRow(tr("触发方式"), translateTriggerBox);
+
+        auto *note = new QLabel(
+            tr("翻译会把选中的文字发送到所选服务。密钥以明文保存在本机设置中。"), group);
+        note->setWordWrap(true);
+        note->setEnabled(false);
+        form->addRow(QString(), note);
+
+        layout->addWidget(group);
+
+        connect(translateProviderBox, &QComboBox::currentIndexChanged, this, [this] {
+            AppSettings::setTranslateProvider(translateProviderBox->currentData().toString());
+            Q_EMIT settingsChanged();
+        });
+        // The key is written when focus leaves the field rather than on every
+        // keystroke: a password box typed one character at a time would otherwise
+        // rewrite the settings file a dozen times for one paste.
+        connect(translateKeyEdit, &QLineEdit::editingFinished, this, [this] {
+            AppSettings::setTranslateApiKey(translateKeyEdit->text());
+            Q_EMIT settingsChanged();
+        });
+        connect(translateTriggerBox, &QComboBox::currentIndexChanged, this, [this] {
+            AppSettings::setTranslateTrigger(translateTriggerBox->currentData().toString());
             Q_EMIT settingsChanged();
         });
     }
@@ -178,6 +232,9 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         ThemeManager::apply(originalTheme);
         AppSettings::setRenderCacheBytes(originalCache);
         RecentDocuments::setEnabled(originalRecent);
+        AppSettings::setTranslateProvider(originalProvider);
+        AppSettings::setTranslateApiKey(originalKey);
+        AppSettings::setTranslateTrigger(originalTrigger);
         if (AppSettings::shellIntegrationEnabled() != originalShell) {
             QString error;
             const QString classesRoot = ShellIntegration::defaultClassesRoot();

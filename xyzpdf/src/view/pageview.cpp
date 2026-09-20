@@ -3,7 +3,9 @@
 #include "../document/pagemetrics.h"
 
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QResizeEvent>
@@ -604,11 +606,17 @@ void PageView::mousePressEvent(QMouseEvent *event)
 
     const int page = pageAtPoint(at);
 
-    // ---- the box ----
+    // ---- the box, or the selection ----
     //
-    // No document question to ask first: a box is drawn over whatever is there,
-    // text included, and the recognition handles the rest.
-    if (activeTool == Tool::Recognize) {
+    // Recognize always draws a box. Translate is the one tool that does both
+    // jobs and decides which from where the pointer landed: over a line of text
+    // it selects and translates the words, everywhere else it boxes, reads, and
+    // translates -- which is the only way to translate a scan.
+    const bool overText =
+        page >= 0 && textSource && textSource->hasTextAt(page, pagePointFor(page, at));
+    const bool wantsBox =
+        activeTool == Tool::Recognize || (activeTool == Tool::Translate && !overText);
+    if (wantsBox) {
         if (page < 0)
             return; // the backdrop, or the gap between two pages
         // A previous selection goes with it: one drag, one meaning, and leaving
@@ -700,6 +708,16 @@ Qt::CursorShape PageView::pointerShapeFor(const QPoint &viewportPoint) const
         // A crosshair, which is what "draw a box" looks like everywhere else,
         // and is not confusable with either of the other two.
         return Qt::CrossCursor;
+    case Tool::Translate:
+        // The translate tool does both jobs, so it shows which one the next drag
+        // will be: an I-beam over a line of text (select and translate), a
+        // crosshair everywhere else (box, recognize, translate).
+        if (textSource) {
+            const int page = pageAtPoint(viewportPoint);
+            if (page >= 0 && textSource->hasTextAt(page, pagePointFor(page, viewportPoint)))
+                return Qt::IBeamCursor;
+        }
+        return Qt::CrossCursor;
     case Tool::Select:
         break;
     }
@@ -760,6 +778,10 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
         // program is the same as having selected nothing.
         if (isEmptySelection(anchorPage, anchorIndex, focusPage, focusIndex))
             clearSelection();
+        else if (activeTool == Tool::Translate)
+            Q_EMIT translateRequested(); // the tool's whole purpose is to translate
+        else
+            Q_EMIT selectionFinished();
     }
     QAbstractScrollArea::mouseReleaseEvent(event);
 }
@@ -794,10 +816,13 @@ void PageView::finishRegionDrag()
 
 void PageView::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    // Selecting a word is a thing the selection tool does. In the other two a
-    // double-click is two clicks of the tool in force -- two pans, or two boxes
-    // the second of which is the click that cancels the first.
-    if (activeTool != Tool::Select || !textSource || event->button() != Qt::LeftButton) {
+    // Selecting a word is a thing the selection tool does, and the translate tool
+    // does it too -- a double-clicked word is the fastest way to ask after one
+    // term. In the other two a double-click is two clicks of the tool in force:
+    // two pans, or two boxes the second of which is the click that cancels the
+    // first.
+    if ((activeTool != Tool::Select && activeTool != Tool::Translate) || !textSource
+        || event->button() != Qt::LeftButton) {
         QAbstractScrollArea::mouseDoubleClickEvent(event);
         return;
     }
@@ -842,6 +867,39 @@ void PageView::mouseDoubleClickEvent(QMouseEvent *event)
     selecting = false;
     viewport()->update();
     Q_EMIT selectionChanged();
+    // A double-clicked word in the translate tool translates at once; in the
+    // selection tool it is a finished selection the auto-translate mode may act
+    // on.
+    if (activeTool == Tool::Translate)
+        Q_EMIT translateRequested();
+    else
+        Q_EMIT selectionFinished();
+}
+
+void PageView::contextMenuEvent(QContextMenuEvent *event)
+{
+    // The menu is only worth offering over a selection: right-clicking blank
+    // paper, or a page of scans with no text to take, would show a menu of
+    // actions that all do nothing -- and a menu of dead items reads as a bug
+    // rather than as "there is nothing here". The tab's own actions stay
+    // disabled in that case too, so the two agree.
+    if (!hasSelection()) {
+        QAbstractScrollArea::contextMenuEvent(event);
+        return;
+    }
+
+    QMenu menu(this);
+    QAction *copy = menu.addAction(tr("复制(&C)"));
+    QAction *translate = menu.addAction(tr("翻译(&T)"));
+    // The action the menu takes is the action the toolbar takes -- emitted out,
+    // done by the tab, which is the one that can reach the clipboard and the
+    // translation service.
+    QAction *chosen = menu.exec(event->globalPos());
+    if (chosen == copy)
+        Q_EMIT copyRequested();
+    else if (chosen == translate)
+        Q_EMIT translateRequested();
+    event->accept();
 }
 
 void PageView::drawRanges(QPainter &painter, const QPoint &offset, const QRectF &visible,

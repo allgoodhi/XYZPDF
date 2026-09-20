@@ -37,6 +37,7 @@ class OcrDialog;
 class PageRenderer;
 class PageView;
 class QtPdfBackend;
+class TranslateDialog;
 class QAtomicInt;
 
 class DocumentTab : public QWidget
@@ -103,6 +104,18 @@ public:
     // window's Copy action is disabled in that case, and a menu item reached by
     // a keyboard shortcut anyway should not clear what was on the clipboard.
     void copySelection();
+
+    // ---- translation ----
+    //
+    // The selected words, sent to the configured service and answered in a
+    // window of its own. Does nothing when there is nothing selected, exactly
+    // like copySelection -- the action that reaches it is disabled then anyway.
+    void translateSelection();
+
+    // Translate an explicit piece of text -- the words just recognized from a
+    // box, or a selection. The shared path behind translateSelection(); public so
+    // the recognition window's "翻译" button can reach it.
+    void translateText(const QString &text);
 
     // ---- search ----
     //
@@ -207,8 +220,15 @@ private:
     bool searchRunning() const;
     // Runs the recognition off the UI thread and fills the window in when it
     // is done. The crop is copied into the worker; the window is watched with
-    // a QPointer, because the user may close it first.
-    void startRecognition(const QImage &crop, QPointer<OcrDialog> dialog);
+    // a QPointer, because the user may close it first. When `thenTranslate` is
+    // set (the translate tool boxing a picture), the recognized words are sent
+    // straight to a translation and `dialog` is null.
+    void startRecognition(const QImage &crop, QPointer<OcrDialog> dialog, bool thenTranslate = false);
+
+    // The same for a translation: the request runs off the UI thread (a round
+    // trip is a second or more), and the window is watched so a result nobody is
+    // waiting for is dropped. `text` is copied into the worker.
+    void startTranslation(const QString &text, QPointer<TranslateDialog> dialog);
 
     // Emits the progress signal, and only ever runs on this object's thread: the
     // export reports from a worker, and this is how the report gets here.

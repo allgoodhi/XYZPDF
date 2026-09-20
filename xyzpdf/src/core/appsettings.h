@@ -177,6 +177,72 @@ inline void setRenderCacheBytes(qint64 bytes)
     valueStore.sync();
 }
 
+// Which translation service "划线翻译" asks, and its key.
+//
+// "google" (the free, no-key endpoint) is the default so the feature works out
+// of the box; "deepl" is offered for those who have a key and want better
+// quality. The key is stored in plain text like every other desktop preference
+// -- there is no secret in this program worth a keystore, and the alternative is
+// a preference the user cannot read back.
+inline QString translateProviderKey()
+{
+    return QStringLiteral("translate/provider");
+}
+
+inline QString translateProvider()
+{
+    return settings().value(translateProviderKey(), QStringLiteral("google")).toString();
+}
+
+inline void setTranslateProvider(const QString &provider)
+{
+    QSettings valueStore = settings();
+    valueStore.setValue(translateProviderKey(), provider);
+    valueStore.sync();
+}
+
+inline QString translateApiKeyKey()
+{
+    return QStringLiteral("translate/apiKey");
+}
+
+inline QString translateApiKey()
+{
+    return settings().value(translateApiKeyKey()).toString();
+}
+
+inline void setTranslateApiKey(const QString &key)
+{
+    QSettings valueStore = settings();
+    valueStore.setValue(translateApiKeyKey(), key);
+    valueStore.sync();
+}
+
+// How a translation is asked for.
+//
+// "menu" (the default) only translates when the reader chooses it -- the
+// toolbar/menu action or the right-click menu over a selection. "auto" also
+// fires the moment a selection is finished, which is what "划线即翻" means: a
+// small window pops up with the answer without a second click. It is opt-in
+// because a translation that pops up on every selection -- including the ones
+// made just to copy -- is a window in the way more often than it is a help.
+inline QString translateTriggerKey()
+{
+    return QStringLiteral("translate/trigger");
+}
+
+inline QString translateTrigger()
+{
+    return settings().value(translateTriggerKey(), QStringLiteral("menu")).toString();
+}
+
+inline void setTranslateTrigger(const QString &mode)
+{
+    QSettings valueStore = settings();
+    valueStore.setValue(translateTriggerKey(), mode);
+    valueStore.sync();
+}
+
 } // namespace AppSettings
 
 #endif // APPSETTINGS_H

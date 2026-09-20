@@ -216,6 +216,9 @@ set(XYZPDF_SOURCES
     src/theme/thememanager.h
     src/theme/thememanager.cpp
 
+    src/translate/translator.h
+    src/translate/translator.cpp
+
     src/ui/findbar.h
     src/ui/findbar.cpp
     src/ui/languagedialog.h
@@ -224,6 +227,8 @@ set(XYZPDF_SOURCES
     src/ui/ocrdialog.cpp
     src/ui/thirdpartydialog.h
     src/ui/thirdpartydialog.cpp
+    src/ui/translatedialog.h
+    src/ui/translatedialog.cpp
     src/ui/wrappingtoolbararea.h
     src/ui/wrappingtoolbararea.cpp
 
@@ -476,7 +481,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     # The tab owns the recognition flow, so the engine comes with it -- which
     # also means this test runs real Windows OCR once, on the region drag it
     # performs below.
-    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent)
+    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network)
     if(WIN32)
         list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp)
     endif()
@@ -494,8 +499,10 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
+                src/translate/translator.cpp
                 src/ui/findbar.cpp
                 src/ui/ocrdialog.cpp
+                src/ui/translatedialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
                 src/theme/thememanager.cpp
@@ -511,7 +518,7 @@ endif()
 # call to setAcceptDrops(), and neither is visible in the handlers.
 option(XYZPDF_BUILD_MAINWINDOW_SMOKE "Build the window drag-and-drop smoke test" OFF)
 if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
-    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent)
+    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network)
     if(WIN32)
         list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp)
     endif()
@@ -534,6 +541,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
+                src/translate/translator.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
                 src/settings/settingsdialog.cpp
@@ -541,6 +549,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/findbar.cpp
                 src/ui/languagedialog.cpp
                 src/ui/ocrdialog.cpp
+                src/ui/translatedialog.cpp
                 src/ui/thirdpartydialog.cpp
                 src/ui/wrappingtoolbararea.cpp
                 src/view/pagelayout.cpp
@@ -586,6 +595,17 @@ if(XYZPDF_BUILD_WORDEXPORT_SMOKE)
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES Qt6::Pdf)
+endif()
+
+# The arithmetic behind "select some words and translate them": the request URL
+# and the response parsing, checked on bytes with no service in the loop. Network
+# on purpose -- a test that reached the internet would fail on a plane and prove
+# nothing about the code.
+option(XYZPDF_BUILD_TRANSLATE_SMOKE "Build the translation smoke test" OFF)
+if(XYZPDF_BUILD_TRANSLATE_SMOKE)
+    xyzpdf_add_test(translate_smoke
+        SOURCES src/translate/translator.cpp
+        LIBRARIES Qt6::Network)
 endif()
 
 # The registry entries, and the guard on the recursive delete in front of them.

@@ -171,7 +171,9 @@ private:
     QAction *viewToolAction = nullptr;
     QAction *selectToolAction = nullptr;
     QAction *recognizeToolAction = nullptr;
+    QAction *translateToolAction = nullptr;
     QAction *copyAction = nullptr;
+    QAction *translateAction = nullptr;
     QAction *selectAllAction = nullptr;
     QAction *exportWordAction = nullptr;
     QAction *findAction = nullptr;

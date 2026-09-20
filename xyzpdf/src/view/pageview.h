@@ -80,7 +80,12 @@ public:
         Select,
         // A drag draws a box, and the text inside it is recognized from the
         // pixels -- which is the only way to read a scan or a picture.
-        Recognize
+        Recognize,
+        // A drag means "translate what I point at": over text it selects the
+        // words and translates them on release; over a picture it draws a box,
+        // reads it with the recognizer, and translates that. The one tool that
+        // answers a question rather than just marking up the page.
+        Translate
     };
 
     explicit PageView(QWidget *parent = nullptr);
@@ -264,6 +269,19 @@ Q_SIGNALS:
     // else did. The window keeps its toolbar in step with this.
     void toolChanged(Tool tool);
 
+    // The reader asked, from the right-click menu over a selection, to copy or
+    // translate it. The view has no business with the clipboard or a network, so
+    // it says what was asked and the tab does it -- the same division that keeps
+    // rendering out of this class.
+    void copyRequested();
+    void translateRequested();
+
+    // A selection was just completed -- the drag was released over text, or a
+    // word was double-clicked. Emitted only on the finishing gesture, not on
+    // every move, so a caller that acts on a finished selection (the "划线即翻"
+    // auto-translate mode) is not asked to act while the reader is still dragging.
+    void selectionFinished();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -274,6 +292,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
 
 private:
     // One rendered image, with the token it is an answer to: the token carries

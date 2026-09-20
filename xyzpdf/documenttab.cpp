@@ -5,8 +5,10 @@
 #include "src/document/qtpdfbackend.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
+#include "src/translate/translator.h"
 #include "src/ui/findbar.h"
 #include "src/ui/ocrdialog.h"
+#include "src/ui/translatedialog.h"
 #include "src/view/pageview.h"
 
 #include <QAtomicInt>
@@ -115,6 +117,15 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(pageView, &PageView::rotationChanged, this, &DocumentTab::rotationChanged);
     connect(pageView, &PageView::selectionChanged, this, &DocumentTab::selectionChanged);
     connect(pageView, &PageView::regionCaptured, this, &DocumentTab::onRegionCaptured);
+    connect(pageView, &PageView::copyRequested, this, &DocumentTab::copySelection);
+    connect(pageView, &PageView::translateRequested, this, &DocumentTab::translateSelection);
+    // "划线即翻": when the reader asked for it, finishing a selection translates
+    // it without a second click. The default ("menu") does nothing here, so the
+    // reader who only wants the right-click path is not interrupted.
+    connect(pageView, &PageView::selectionFinished, this, [this] {
+        if (AppSettings::translateTrigger() == QLatin1String("auto"))
+            translateSelection();
+    });
     connect(pageView, &PageView::toolChanged, this, &DocumentTab::toolChanged);
     connect(renderer.get(), &PageRenderer::rendered, this, &DocumentTab::onPageRendered);
     connect(renderer.get(), &PageRenderer::discarded, this, &DocumentTab::onDiscarded);
@@ -757,13 +768,25 @@ void DocumentTab::onRegionCaptured(int page, QRectF points)
     if (cropImage.isNull())
         return;
 
+    // The translate tool boxes a picture to translate it, so it goes straight
+    // from the pixels to the translation window -- no intermediate recognition
+    // result to click through. The recognize tool still shows what it read.
+    if (pageView->tool() == PageView::Tool::Translate) {
+        startRecognition(cropImage, nullptr, /*thenTranslate=*/true);
+        return;
+    }
+
     OcrDialog *dialog = new OcrDialog(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    // The recognized words can be translated from this window -- the path that
+    // reads a scan or a picture into another language.
+    connect(dialog, &OcrDialog::translateRequested, this, &DocumentTab::translateText);
     dialog->show();
     startRecognition(cropImage, dialog);
 }
 
-void DocumentTab::startRecognition(const QImage &crop, QPointer<OcrDialog> dialog)
+void DocumentTab::startRecognition(const QImage &crop, QPointer<OcrDialog> dialog,
+                                   bool thenTranslate)
 {
     // The crop is copied into the worker by value, so the view can go on
     // scrolling, zooming, even closing this tab while it runs -- nothing in
@@ -771,11 +794,18 @@ void DocumentTab::startRecognition(const QImage &crop, QPointer<OcrDialog> dialo
     // the user is free to close it, and a result nobody is waiting for is
     // dropped rather than kept alive to be shown into nothing.
     auto *watcher = new QFutureWatcher<Ocr::Result>(this);
-    connect(watcher, &QFutureWatcher<Ocr::Result>::finished, this, [watcher, dialog] {
+    connect(watcher, &QFutureWatcher<Ocr::Result>::finished, this, [this, watcher, dialog, thenTranslate] {
         const Ocr::Result result = watcher->result();
         watcher->deleteLater();
         if (dialog)
             dialog->setResult(result);
+        // Translate the recognized words when the reader either chose the
+        // translate tool (thenTranslate) or turned on "划线即翻" for the recognize
+        // tool. Only when there was something to read.
+        const bool wantTranslate =
+            thenTranslate || AppSettings::translateTrigger() == QLatin1String("auto");
+        if (wantTranslate && result.ok && !result.text.trimmed().isEmpty())
+            translateText(result.text);
     });
     watcher->setFuture(QtConcurrent::run([crop] {
         // Onto white paper first, and this is the whole trick. A PDF page has no
@@ -803,5 +833,45 @@ void DocumentTab::startRecognition(const QImage &crop, QPointer<OcrDialog> dialo
                                  Qt::SmoothTransformation);
         }
         return Ocr::recognize(input);
+    }));
+}
+
+void DocumentTab::translateSelection()
+{
+    translateText(selectedText().trimmed());
+}
+
+void DocumentTab::translateText(const QString &raw)
+{
+    const QString text = raw.trimmed();
+    if (text.isEmpty())
+        return; // the action is disabled without text; a shortcut is not
+
+    // Shown before the request goes out, so the reader sees the words they asked
+    // about immediately and a "translating…" line while the round trip happens --
+    // the request itself runs off this thread, below.
+    auto *dialog = new TranslateDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setPending(text);
+    dialog->show();
+    startTranslation(text, dialog);
+}
+
+void DocumentTab::startTranslation(const QString &text, QPointer<TranslateDialog> dialog)
+{
+    // The same shape as a recognition: the text is copied into the worker, the
+    // window is watched with a QPointer so a result nobody is waiting for is
+    // dropped, and nothing in the task touches this object or the document -- so
+    // a reload under a running translation cannot crash the way a render can.
+    auto *watcher = new QFutureWatcher<Translate::Result>(this);
+    connect(watcher, &QFutureWatcher<Translate::Result>::finished, this, [watcher, dialog] {
+        const Translate::Result result = watcher->result();
+        watcher->deleteLater();
+        if (dialog)
+            dialog->setResult(result);
+    });
+    watcher->setFuture(QtConcurrent::run([text] {
+        const std::unique_ptr<Translate::Translator> translator = Translate::makeTranslator();
+        return translator->translate(text);
     }));
 }

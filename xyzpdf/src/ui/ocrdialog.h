@@ -33,8 +33,15 @@ public:
     // engine's sentence about what went wrong.
     void setResult(const Ocr::Result &result);
 
+Q_SIGNALS:
+    // The reader asked to translate what was just recognized. The dialog has no
+    // business with a translation service -- it hands the text out and the tab
+    // that owns it does the asking, the same way the page view's menu does.
+    void translateRequested(const QString &text);
+
 private:
     QLabel *status = nullptr;
     QPlainTextEdit *text = nullptr;
     QPushButton *copyButton = nullptr;
+    QPushButton *translateButton = nullptr;
 };

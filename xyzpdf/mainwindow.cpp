@@ -389,6 +389,14 @@ void MainWindow::buildMenus()
     });
     editMenu->addAction(copyAction);
 
+    translateAction = makeAction(tr("翻译(&T)"), QKeySequence(QStringLiteral("Ctrl+T")));
+    translateAction->setObjectName(QStringLiteral("translateAction"));
+    connect(translateAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->translateSelection();
+    });
+    editMenu->addAction(translateAction);
+
     selectAllAction = makeAction(tr("全选(&A)"), QKeySequence::SelectAll);
     selectAllAction->setObjectName(QStringLiteral("selectAllAction"));
     connect(selectAllAction, &QAction::triggered, this, [this] {
@@ -459,6 +467,9 @@ void MainWindow::buildMenus()
              tr("选择文字并复制，指针在文字上变成 I 形")},
             {&recognizeToolAction, "recognizeToolAction", tr("识别"),
              QStringLiteral("Ctrl+Shift+3"), tr("拖出一个方框，识别框内像素里的文字")},
+            {&translateToolAction, "translateToolAction", tr("翻译"),
+             QStringLiteral("Ctrl+Shift+4"),
+             tr("拖选文字即翻译；拖到图片上则框选识别后再翻译")},
         };
 
         for (const auto &tool : tools) {
@@ -481,6 +492,8 @@ void MainWindow::buildMenus()
                 [this] { chooseTool(PageView::Tool::Select); });
         connect(recognizeToolAction, &QAction::triggered, this,
                 [this] { chooseTool(PageView::Tool::Recognize); });
+        connect(translateToolAction, &QAction::triggered, this,
+                [this] { chooseTool(PageView::Tool::Translate); });
 
         viewMenu->addSeparator();
     }
@@ -638,6 +651,7 @@ void MainWindow::buildToolBar()
     toolBar->addAction(viewToolAction);
     toolBar->addAction(selectToolAction);
     toolBar->addAction(recognizeToolAction);
+    toolBar->addAction(translateToolAction);
     toolBar->addSeparator();
     toolBar->addAction(openAction);
 
@@ -1277,11 +1291,18 @@ void MainWindow::updateForCurrentTab()
             selectToolAction->setChecked(current == PageView::Tool::Select);
         if (recognizeToolAction)
             recognizeToolAction->setChecked(current == PageView::Tool::Recognize);
+        if (translateToolAction)
+            translateToolAction->setChecked(current == PageView::Tool::Translate);
     }
     // Copy is the one that needs more than an open document: with nothing
     // selected it would clear the clipboard, which is worse than doing nothing.
     if (copyAction)
         copyAction->setEnabled(hasDocument && tab->hasSelection());
+    // Translate needs a selection for the same reason -- there is nothing to
+    // send otherwise -- and shares Copy's enable signal, so both light up when
+    // the reader drags over some words.
+    if (translateAction)
+        translateAction->setEnabled(hasDocument && tab->hasSelection());
     pageBox->setEnabled(hasDocument);
     zoomBox->setEnabled(hasDocument);
 

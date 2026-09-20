@@ -14,6 +14,7 @@
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QPushButton;
 class QSpinBox;
 
@@ -40,6 +41,9 @@ private:
     QSpinBox *cacheBox = nullptr;
     QCheckBox *recentBox = nullptr;
     QPushButton *clearRecentButton = nullptr;
+    QComboBox *translateProviderBox = nullptr;
+    QLineEdit *translateKeyEdit = nullptr;
+    QComboBox *translateTriggerBox = nullptr;
     QCheckBox *shellBox = nullptr;
     QLabel *shellNote = nullptr;
 
@@ -48,4 +52,7 @@ private:
     bool originalRecent = true;
     bool originalShell = false;
     qint64 originalCache = 0;
+    QString originalProvider;
+    QString originalKey;
+    QString originalTrigger;
 };

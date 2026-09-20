@@ -14,6 +14,7 @@ class WrappingToolBarArea;
 struct WordExportReport;
 
 #include <QMainWindow>
+#include <QPointer>
 
 #include <memory>
 
@@ -26,6 +27,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QMenu;
+class QProgressDialog;
 class QStackedWidget;
 class QTabWidget;
 class QToolBar;
@@ -82,6 +84,13 @@ private:
     void exportCurrentToWord();
     // Says what the export did, in a message box that names the file it wrote.
     void reportWordExport(const WordExportReport &report);
+    // The progress box, put up when the export reports its first page and taken
+    // down when it reports its last. Driven by the tab's own signals rather than
+    // by the menu item, so that it describes work that is happening rather than
+    // work that was asked for -- and so that an export started any other way gets
+    // one too.
+    void showExportProgress(DocumentTab *tab, int done, int total);
+    void closeExportProgress();
     void closeTab(int index);
     void closeCurrentTab();
     // Asks for the password of an encrypted document, and retries.
@@ -142,6 +151,13 @@ private:
     // The strip the toolbars live in, which wraps them onto extra rows rather
     // than letting them hide their own tails: see buildToolBar().
     WrappingToolBarArea *toolBarArea = nullptr;
+    // The export that is running, and the tab it is reading. Both null when
+    // nothing is being exported, which is the state the box is shown in.
+    QProgressDialog *exportProgress = nullptr;
+    QPointer<DocumentTab> exportTab;
+    // The last page count reported, so that a box left saying "正在停止…" still
+    // shows how far it got rather than snapping back to nothing.
+    int exportDone = 0;
 
     QComboBox *pageBox = nullptr;
     QComboBox *zoomBox = nullptr;

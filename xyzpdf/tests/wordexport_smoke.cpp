@@ -15,11 +15,15 @@
 // way to say what the rule is meant to be without also saying what Qt PDF happens
 // to do with a fixture -- which is a different thing, tested at the end.
 
+#include "../src/document/pagemetrics.h"
 #include "../src/document/qtpdfbackend.h"
 #include "../src/export/docxwriter.h"
 #include "../src/export/wordexport.h"
 #include "../src/export/zipwriter.h"
 
+#include <QtConcurrent/QtConcurrentRun>
+#include <QFuture>
+#include <QThread>
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -27,6 +31,7 @@
 #include <QColor>
 #include <QHash>
 #include <QImage>
+#include <QPainter>
 #include <QRectF>
 #include <QString>
 #include <QElapsedTimer>
@@ -171,13 +176,13 @@ int main(int argc, char **argv)
             line(100, 114, 400, 12, "and so does the second,"),
             line(100, 128, 200, 12, "and this one ends it."),
         };
-        const QVector<QString> one = paragraphsFromLines(continuing);
+        const QVector<Paragraph> one = paragraphsFromLines(continuing);
         check(one.size() == 1, QStringLiteral("lines that run on are one paragraph (%1)")
                                    .arg(one.size()));
-        check(one.value(0)
+        check(one.value(0).text()
                   == QStringLiteral("The first line reaches the margin and so does the second, "
                                     "and this one ends it."),
-              QStringLiteral("joined with spaces (got \"%1\")").arg(one.value(0)));
+              QStringLiteral("joined with spaces (got \"%1\")").arg(one.value(0).text()));
 
         // A gap between two lines, wider than the spacing the page uses, is a
         // break -- measured against that spacing, which needs a page's worth of
@@ -201,12 +206,12 @@ int main(int argc, char **argv)
             line(100, 114, 90, 12, "and its end."),
             line(100, 128, 400, 12, "A new paragraph starts here."),
         };
-        const QVector<QString> two = paragraphsFromLines(shortEnding);
+        const QVector<Paragraph> two = paragraphsFromLines(shortEnding);
         check(two.size() == 2, QStringLiteral("a line ending early ends its paragraph (%1)")
                                    .arg(two.size()));
-        check(two.value(1) == QStringLiteral("A new paragraph starts here."),
+        check(two.value(1).text() == QStringLiteral("A new paragraph starts here."),
               QStringLiteral("and the next line begins the following one (got \"%1\")")
-                  .arg(two.value(1)));
+                  .arg(two.value(1).text()));
 
         // And a line that starts further in than its paragraph did is a new one.
         const QVector<TextLine> indented = {
@@ -222,10 +227,173 @@ int main(int argc, char **argv)
             line(100, 100, 400, 12, QStringLiteral("这是一段中文，换行的时候")),
             line(100, 114, 400, 12, QStringLiteral("不应该多出一个空格。")),
         };
-        const QVector<QString> joined = paragraphsFromLines(chinese);
+        const QVector<Paragraph> joined = paragraphsFromLines(chinese);
         check(joined.size() == 1, "Chinese lines that run on are one paragraph");
-        check(joined.value(0) == QStringLiteral("这是一段中文，换行的时候不应该多出一个空格。"),
-              QStringLiteral("with no space put between them (got \"%1\")").arg(joined.value(0)));
+        check(joined.value(0).text() == QStringLiteral("这是一段中文，换行的时候不应该多出一个空格。"),
+              QStringLiteral("with no space put between them (got \"%1\")")
+                  .arg(joined.value(0).text()));
+    }
+
+    // ---- and where each paragraph sits ----
+    //
+    // The layout of a conversion, read out of the same boxes: a heading centred in
+    // the column, a list set in from the margin, the two-character first-line
+    // indent Chinese prose is set with, and the room left above a paragraph. All of
+    // it is measurement -- the column here is x=100 to x=500, the way this file's
+    // other paragraph tests are written.
+    {
+        // An ordinary paragraph is left alone: no alignment, no indents, no space.
+        // That matters as much as the rest of it -- a conversion that wrote
+        // paragraph properties into every paragraph would be imposing an idea of
+        // how text should look on a document that has its own.
+        const QVector<Paragraph> plain = paragraphsFromLines({
+            line(100, 100, 400, 12, "A paragraph that begins at the margin"),
+            line(100, 114, 400, 12, "and carries on to the end of the column,"),
+            line(100, 128, 200, 12, "ending here."),
+        });
+        check(plain.size() == 1 && plain.value(0).align == ParagraphAlign::Left
+                  && plain.value(0).indentTwips == 0 && plain.value(0).firstLineTwips == 0
+                  && plain.value(0).spaceBeforeTwips == 0,
+              QStringLiteral("an ordinary paragraph carries no layout of its own (align %1, "
+                             "indent %2, first line %3, space %4)")
+                  .arg(int(plain.value(0).align))
+                  .arg(plain.value(0).indentTwips)
+                  .arg(plain.value(0).firstLineTwips)
+                  .arg(plain.value(0).spaceBeforeTwips));
+
+        // A heading centred in the column, over text that is not: 200 wide in a
+        // 400-wide column, and its middle on the column's middle.
+        const QVector<Paragraph> centred = paragraphsFromLines({
+            line(200, 100, 200, 12, "A heading centred in the column"),
+            line(100, 128, 400, 12, "and the text under it, reaching both margins,"),
+            line(100, 142, 300, 12, "which is what body text does."),
+        });
+        check(centred.size() == 2,
+              QStringLiteral("a centred heading is its own paragraph (%1)").arg(centred.size()));
+        if (centred.size() == 2) {
+            check(centred.value(0).align == ParagraphAlign::Center,
+                  "and it is centred, because it is centred");
+            check(centred.value(0).indentTwips == 0 && centred.value(0).firstLineTwips == 0,
+                  "with no indent to push it off centre");
+            check(centred.value(1).align == ParagraphAlign::Left,
+                  "while the text under it is set from the margin");
+        }
+
+        // A block set in from the margin: 24 points in, which is two characters of
+        // a 12-point font, and what a list of items looks like.
+        const QVector<Paragraph> indented = paragraphsFromLines({
+            line(100, 100, 400, 12, "A paragraph that begins at the margin"),
+            line(100, 114, 400, 12, "and carries on to the end of the column,"),
+            line(124, 142, 376, 12, "An item set in from the margin,"),
+            line(124, 156, 376, 12, "and its second line."),
+        });
+        check(indented.size() == 2, QStringLiteral("an indented block is its own paragraph (%1)")
+                                        .arg(indented.size()));
+        if (indented.size() == 2) {
+            check(indented.value(1).indentTwips == 480,
+                  QStringLiteral("set in by the 24 points it is set in by (%1 twips)")
+                      .arg(indented.value(1).indentTwips));
+            check(indented.value(1).firstLineTwips == 0,
+                  "with no first-line indent on top of it");
+        }
+
+        // The first-line indent, which is the opposite: the paragraph *starts*
+        // further in and its body comes back to the margin. Every Chinese paragraph
+        // is set this way, and reading it as two paragraphs is the difference
+        // between a page of prose and a page of fragments.
+        const QVector<Paragraph> firstLine = paragraphsFromLines({
+            line(124, 100, 376, 12, QStringLiteral("首行缩进两字，这是中文段落的常态，")),
+            line(100, 114, 400, 12, QStringLiteral("其余各行顶格排到右边界为止，")),
+            line(100, 128, 400, 12, QStringLiteral("应该算作同一段。")),
+        });
+        check(firstLine.size() == 1,
+              QStringLiteral("a first-line indent is one paragraph, not two (%1)")
+                  .arg(firstLine.size()));
+        if (!firstLine.isEmpty()) {
+            check(firstLine.value(0).firstLineTwips == 480,
+                  QStringLiteral("with the indent written down as a first-line indent (%1 twips)")
+                      .arg(firstLine.value(0).firstLineTwips));
+            check(firstLine.value(0).indentTwips == 0,
+                  "and not as an indent of the whole paragraph");
+        }
+
+        // And the room above a paragraph, which is the space before it: 24 points
+        // more than this page's own line spacing of 14.
+        const QVector<Paragraph> spaced = paragraphsFromLines({
+            line(100, 100, 400, 12, "A paragraph at the top,"),
+            line(100, 114, 400, 12, "with a second line to it."),
+            line(100, 152, 400, 12, "A paragraph with room left above it,"),
+            line(100, 166, 200, 12, "and a line to finish."),
+        });
+        check(spaced.size() == 2, QStringLiteral("two paragraphs (%1)").arg(spaced.size()));
+        if (spaced.size() == 2) {
+            check(spaced.value(0).spaceBeforeTwips == 0,
+                  QStringLiteral("the first of them has nothing above it (%1)")
+                      .arg(spaced.value(0).spaceBeforeTwips));
+            check(spaced.value(1).spaceBeforeTwips == 480,
+                  QStringLiteral("and the second has the room it was given (%1 twips)")
+                      .arg(spaced.value(1).spaceBeforeTwips));
+        }
+    }
+
+    // ---- and how a paragraph writes that layout out ----
+    //
+    // The paragraph properties, in the order the schema requires of them, and only
+    // when there is something to say: a paragraph with no layout of its own must
+    // come out with no <w:pPr> at all, so that ordinary body text follows whatever
+    // the reader's own Word is set to.
+    {
+        DocxWriter plain;
+        plain.addParagraph(QStringLiteral("ordinary text"));
+        const QByteArray plainXml = plain.toBytes();
+        check(!plainXml.contains("<w:pPr>"),
+              "a paragraph with no layout writes no paragraph properties");
+        check(plainXml.contains("<w:p><w:r><w:t xml:space=\"preserve\">ordinary text</w:t>"),
+              "and is otherwise exactly what it was");
+
+        DocxWriter laid;
+        DocxLayout layout;
+        layout.align = DocxLayout::Align::Center;
+        layout.indentTwips = 480;
+        layout.firstLineTwips = 240;
+        layout.spaceBeforeTwips = 120;
+        laid.addParagraph(QVector<DocxRun>{{QStringLiteral("a heading"), QColor()}}, false, layout);
+        const QByteArray laidXml = laid.toBytes();
+        check(laidXml.contains("<w:spacing w:before=\"120\"/>"), "the room above it is written");
+        check(laidXml.contains("<w:ind w:left=\"480\" w:firstLine=\"240\"/>"),
+              "the indents are written together, as one element");
+        check(laidXml.contains("<w:jc w:val=\"center\"/>"), "and the centring");
+        // The order is not taste: the schema fixes it, and Word rejects a document
+        // whose paragraph properties are in any other order.
+        check(laidXml.indexOf("<w:spacing") < laidXml.indexOf("<w:ind")
+                  && laidXml.indexOf("<w:ind") < laidXml.indexOf("<w:jc"),
+              "in the order the schema requires of them (spacing, ind, jc)");
+
+        DocxLayout centred;
+        centred.align = DocxLayout::Align::Center;
+        DocxWriter onlyCentre;
+        onlyCentre.addParagraph(QVector<DocxRun>{{QStringLiteral("a centred line"), QColor()}}, false,
+                                centred);
+        const QByteArray centredXml = onlyCentre.toBytes();
+        check(centredXml.contains("<w:jc w:val=\"center\"/>")
+                  && !centredXml.contains("<w:ind") && !centredXml.contains("<w:spacing"),
+              "a paragraph that is only centred writes only that");
+
+        DocxTable table;
+        table.columnWidthsPoints = {80.0, 120.0};
+        table.cells.resize(2);
+        for (auto &row : table.cells)
+            row.resize(2);
+        table.cells[0][0].append(QVector<DocxRun>{{QStringLiteral("top-left"), QColor()}});
+        table.cells[1][1].append(QVector<DocxRun>{{QStringLiteral("bottom-right"), QColor()}});
+        DocxWriter tabular;
+        tabular.addTable(table);
+        const QByteArray tableXml = tabular.toBytes();
+        check(tabular.tableCount() == 1 && tableXml.contains("<w:tbl>")
+                  && tableXml.count("<w:tr>") == 2 && tableXml.count("<w:tc>") == 4,
+              "a two-by-two PDF grid becomes a real Word table");
+        check(tableXml.contains("top-left") && tableXml.contains("bottom-right"),
+              "and its cell text remains text rather than a picture");
     }
 
     // ---- the archive, which is the half Word has to be able to open ----
@@ -518,12 +686,243 @@ int main(int argc, char **argv)
 
             const QVector<TextLine> lines = linesOfPage(document, 0);
             check(lines.size() == 3, QStringLiteral("three lines (%1)").arg(lines.size()));
-            const QVector<QString> paragraphs = paragraphsFromLines(lines);
+            const QVector<Paragraph> paragraphs = paragraphsFromLines(lines);
             check(paragraphs.size() == 2,
                   QStringLiteral("are two paragraphs, not three (%1)").arg(paragraphs.size()));
-            check(paragraphs.value(0).contains(QStringLiteral("wraps onto a second line")),
+            check(paragraphs.value(0).text().contains(QStringLiteral("wraps onto a second line")),
                   QStringLiteral("the wrapped pair joined into one (got \"%1\")")
-                      .arg(paragraphs.value(0).left(60)));
+                      .arg(paragraphs.value(0).text().left(60)));
+        }
+    }
+
+    // ---- a page that has words and is not mostly words ----
+    //
+    // A certificate: a coloured panel, a letterhead, a row of logos -- and a text
+    // layer, so nothing calls it a scan. Exporting its words alone leaves a list
+    // of lines where the document was, which is what "the conversion looks poor"
+    // means for a page like this. The two halves of that are the measurement --
+    // how much of what is drawn is not the words -- and the decision to put the
+    // page in as the page.
+    {
+        // The measurement first, on three pages made here: words on paper, the
+        // same words on a pale panel, and the same words on a panel with
+        // something dark drawn on it -- a certificate, without its text layer.
+        QImage written(600, 200, QImage::Format_RGB32);
+        written.fill(Qt::white);
+        QImage panelled(600, 200, QImage::Format_RGB32);
+        panelled.fill(Qt::white);
+        QImage letterheaded(600, 200, QImage::Format_RGB32);
+        letterheaded.fill(Qt::white);
+        {
+            QPainter onPanel(&panelled);
+            onPanel.fillRect(QRect(20, 40, 560, 120), QColor(217, 217, 242));
+            QPainter onLetterhead(&letterheaded);
+            onLetterhead.fillRect(QRect(20, 40, 560, 120), QColor(217, 217, 242));
+            onLetterhead.fillRect(QRect(20, 10, 300, 24), Qt::black);       // a letterhead
+            onLetterhead.fillRect(QRect(60, 170, 80, 24), QColor(40, 40, 120)); // a mark
+        }
+        for (QImage *page : {&written, &panelled, &letterheaded}) {
+            // A bar of ink inside the line box, standing in for the words: this
+            // test has no GUI application behind it, and drawing a glyph would
+            // need the font database that only one brings.
+            QPainter painter(page);
+            painter.fillRect(QRect(40, 88, 380, 12), Qt::black);
+        }
+        // The line the words sit on. Only boxes are needed to weigh a page: the
+        // text of a line is not what makes it heavy.
+        const QVector<QRectF> lines = {QRectF(40, 80, 500, 30)};
+        const PageInk asWords = inkOutsideLines(written, lines, 1.0);
+        const PageInk asPanel = inkOutsideLines(panelled, lines, 1.0);
+        const PageInk asLetterhead = inkOutsideLines(letterheaded, lines, 1.0);
+        check(asWords.markedShare < 0.03 && asWords.drawnShare < 0.03,
+              QStringLiteral("a line of text on paper is nearly all text (%1 marked, %2 drawn)")
+                  .arg(asWords.markedShare)
+                  .arg(asWords.drawnShare));
+        check(asPanel.markedShare > 0.4,
+              QStringLiteral("a pale panel under the words is most of that page (%1)")
+                  .arg(asPanel.markedShare));
+        check(asPanel.drawnShare < 0.03,
+              QStringLiteral("and is still a page of text: a background is not a picture (%1)")
+                  .arg(asPanel.drawnShare));
+        check(asLetterhead.drawnShare > 0.03,
+              QStringLiteral("but ink drawn outside the words is (%1)")
+                  .arg(asLetterhead.drawnShare));
+
+        const QString path = fixture(directory, QStringLiteral("graphic.pdf"));
+        if (!QFileInfo::exists(path)) {
+            std::cerr << "FAIL: " << path.toStdString()
+                      << " is missing; run tools/make_fixtures.py\n";
+            ++failures;
+        } else {
+            QtPdfBackend document;
+            check(document.load(path, QString()) == Document::Status::Ready,
+                  "the panel fixture opens");
+            check(!document.text(0).trimmed().isEmpty(), "and it does have words on it");
+
+            QTemporaryDir output;
+            const QString file = output.filePath(QStringLiteral("graphic.docx"));
+            const WordExportReport report = exportToWord(document, file);
+            check(report.ok, QStringLiteral("it exports (%1)").arg(report.error));
+            // The page has words of its own below the drawing. Those remain text,
+            // while the panel and letterhead remain pictures, so a mixed page is
+            // not needlessly flattened into a photograph.
+            check(report.imagePages == 0,
+                  QStringLiteral("the page itself is not a picture (%1)").arg(report.imagePages));
+            check(report.paragraphs == 1,
+                  QStringLiteral("the words outside the drawing stay editable (%1)")
+                      .arg(report.paragraphs));
+            check(report.figures >= 1,
+                  QStringLiteral("the drawing is retained as a picture (%1)")
+                      .arg(report.figures));
+
+            const QHash<QString, ZipEntry> parts = unpackZip(readAll(file));
+            QStringList pictures;
+            for (const QString &name : parts.keys()) {
+                if (name.startsWith(QStringLiteral("word/media/")))
+                    pictures.append(name);
+            }
+            check(!pictures.isEmpty(),
+                  QStringLiteral("each drawn part of the page is a part of the document (%1)")
+                      .arg(pictures.size()));
+
+            // The panel, which is the whole of what a text-only conversion loses,
+            // is still present in one of the extracted images.
+            bool foundPanel = false;
+            bool allDecoded = true;
+            for (const QString &name : std::as_const(pictures)) {
+                const QImage picture = QImage::fromData(parts.value(name).content);
+                if (picture.isNull()) {
+                    allDecoded = false;
+                    continue;
+                }
+                const QColor colour = picture.pixelColor(picture.width() / 2, picture.height() / 4);
+                if (colour.red() > 190 && colour.blue() > 190 && colour.blue() >= colour.red())
+                    foundPanel = true;
+            }
+            check(allDecoded, "and every one of them decodes");
+            check(foundPanel, "one of which still has the panel in it");
+
+            // Both forms exist: page prose through a text run, and the panel as a
+            // drawing placed in the document's reading order.
+            const QByteArray xml = parts.value(QStringLiteral("word/document.xml")).content;
+            check(xml.contains("XYZPDF a line of its own"),
+                  "the page's own words are written as editable text");
+            check(xml.contains("<w:drawing>"), "alongside the retained drawing");
+        }
+    }
+
+    // ---- a stop lands inside a page, not at the end of it ----
+    //
+    // The reading of a page is two character queries per line and that is where
+    // the time of an export goes: a page of a real manual is nine seconds. A stop
+    // that is only looked at between pages is therefore a button that does nothing
+    // for nine seconds -- which is what the reader of exactly that manual
+    // reported, in those words. So the flag is looked at between lines, and this
+    // is the test of it: the same page, read whole and read while a stop is asked
+    // for from another thread.
+    {
+        const QString path = fixture(directory, QStringLiteral("dense.pdf"));
+        if (!QFileInfo::exists(path)) {
+            std::cerr << "FAIL: " << path.toStdString()
+                      << " is missing; run tools/make_fixtures.py\n";
+            ++failures;
+        } else {
+            QtPdfBackend document;
+            check(document.load(path, QString()) == Document::Status::Ready,
+                  "the dense fixture opens");
+
+            QElapsedTimer whole;
+            whole.start();
+            const QVector<TextLine> all = linesOfPage(document, 0);
+            const qint64 wholeTime = whole.elapsed();
+            check(all.size() >= 60,
+                  QStringLiteral("its first page has its seventy lines (%1, %2 ms)")
+                      .arg(all.size())
+                      .arg(wholeTime));
+
+            auto flag = QSharedPointer<QAtomicInt>::create(0);
+            // Stop a quarter of the way through the whole read, so the assertion
+            // below ("a fraction of the time") holds however fast a cold read of
+            // this page happens to be -- the character-box cache made the first
+            // read quicker than it used to be, and a fixed sleep could land after
+            // the page was already finished.
+            const int stopAfter = qMax(20, int(wholeTime / 4));
+            QFuture<void> stopper = QtConcurrent::run([flag, stopAfter] {
+                QThread::msleep(stopAfter);
+                flag->storeRelaxed(1);
+            });
+            // A fresh document, so this read pays the character queries again: the
+            // whole read above has warmed the backend's character-box cache, and a
+            // stop can only interrupt work that is still being done. A page of an
+            // export is read once, cold, which is the case this checks.
+            QtPdfBackend cold;
+            check(cold.load(path, QString()) == Document::Status::Ready,
+                  "the dense fixture opens again for the stopped read");
+            QElapsedTimer part;
+            part.start();
+            const QVector<TextLine> prefix = linesOfPage(cold, 0, flag.data());
+            const qint64 partTime = part.elapsed();
+            stopper.waitForFinished();
+
+            check(prefix.size() < all.size(),
+                  QStringLiteral("read while a stop is asked for, it comes back short (%1 of %2)")
+                      .arg(prefix.size())
+                      .arg(all.size()));
+            check(partTime < wholeTime / 2,
+                  QStringLiteral("and in a fraction of the time (%1 ms of %2 ms)")
+                      .arg(partTime)
+                      .arg(wholeTime));
+
+            // And the export itself stops without writing anything: the file is
+            // written at the very end, so a stop that lands before it means the
+            // reader is left with no file rather than half of one.
+            QTemporaryDir output;
+            const QString file = output.filePath(QStringLiteral("stopped.docx"));
+            WordExportOptions options;
+            options.cancel = flag;
+            flag->storeRelaxed(0);
+            QFuture<void> stopper2 = QtConcurrent::run([flag] {
+                QThread::msleep(150);
+                flag->storeRelaxed(1);
+            });
+            QElapsedTimer exportTime;
+            exportTime.start();
+            const WordExportReport report = exportToWord(document, file, options);
+            const qint64 taken = exportTime.elapsed();
+            stopper2.waitForFinished();
+
+            check(report.cancelled, "the export reports itself cancelled");
+            check(!QFileInfo::exists(file), "and wrote no file at all");
+            check(taken < wholeTime * 2,
+                  QStringLiteral("having stopped in the page it was reading (%1 ms, a page is %2)")
+                      .arg(taken)
+                      .arg(wholeTime));
+        }
+    }
+
+    // ---- a ruled PDF grid becomes editable Word cells ----
+    {
+        const QString path = fixture(directory, QStringLiteral("table.pdf"));
+        if (!QFileInfo::exists(path)) {
+            std::cerr << "FAIL: " << path.toStdString()
+                      << " is missing; run tools/make_fixtures.py\n";
+            ++failures;
+        } else {
+            QtPdfBackend document;
+            check(document.load(path, QString()) == Document::Status::Ready,
+                  "the ruled table fixture opens");
+            QTemporaryDir output;
+            const QString file = output.filePath(QStringLiteral("table.docx"));
+            const WordExportReport report = exportToWord(document, file);
+            check(report.ok && report.tables == 1 && report.imagePages == 0,
+                  QStringLiteral("its grid becomes one editable table (%1 tables, %2 images)")
+                      .arg(report.tables).arg(report.imagePages));
+            const QByteArray xml = unpackZip(readAll(file)).value(QStringLiteral("word/document.xml"))
+                                       .content;
+            check(xml.count("<w:tr>") == 2 && xml.count("<w:tc>") == 4,
+                  "with its two rows and two columns");
+            check(xml.contains("top left") && xml.contains("bottom right"),
+                  "and text is placed in cells rather than a table screenshot");
         }
     }
 
@@ -547,9 +946,11 @@ int main(int argc, char **argv)
             const QString file = output.filePath(QStringLiteral("mixed.docx"));
 
             // And it says how far along it is while it does it: one report per
-            // page, ending at the last. A page image is a render, and a reader
-            // watching a scanned document convert has to be able to tell work
-            // happening from a program that has stopped.
+            // page, ending at the last, and one before the first -- because a page
+            // of a real manual is seconds of work, and a reader has to be offered a
+            // way out while there is still time to take it. A page image is a
+            // render too, and a reader watching a scanned document convert has to
+            // be able to tell work happening from a program that has stopped.
             QVector<QPair<int, int>> reported;
             WordExportOptions options;
             options.progress = [&reported](int done, int total) {
@@ -558,9 +959,13 @@ int main(int argc, char **argv)
 
             const WordExportReport report = exportToWord(document, file, options);
             check(report.ok, QStringLiteral("it exports (%1)").arg(report.error));
-            check(reported.size() == report.pages,
-                  QStringLiteral("one progress report per page (%1 for %2 pages)")
-                      .arg(reported.size())
+            check(!reported.isEmpty() && reported.first() == QPair<int, int>(0, 2),
+                  QStringLiteral("it says how big the job is before starting it (%1 of %2)")
+                      .arg(reported.isEmpty() ? -1 : reported.first().first)
+                      .arg(reported.isEmpty() ? -1 : reported.first().second));
+            check(reported.size() == report.pages + 1,
+                  QStringLiteral("one report per page after that (%1 for %2 pages)")
+                      .arg(reported.size() - 1)
                       .arg(report.pages));
             check(!reported.isEmpty() && reported.last() == QPair<int, int>(2, 2),
                   QStringLiteral("the last of them at the end (got %1 of %2)")
@@ -582,6 +987,98 @@ int main(int argc, char **argv)
                   "in the order they are in the document");
             check(xml.indexOf("<w:drawing>") > xml.indexOf("<w:br w:type=\"page\"/>"),
                   "with a page break in front of the picture");
+        }
+    }
+
+    // ---- colour, which is in the page and not in the text layer ----
+    //
+    // Qt PDF hands out a page's characters and the boxes its lines occupy and
+    // nothing about how any of it was set: no font, no weight, no colour. The
+    // colour is not lost though -- it is in the picture, which is what the reader
+    // is looking at -- so the export draws the page once and reads the ink back
+    // out of it. Two halves to check: the reading, on an image that is known
+    // because it was made here, and the writing, on a document that has colour in
+    // it.
+    {
+        // A red line on white paper.
+        QImage red(600, 60, QImage::Format_RGB32);
+        red.fill(Qt::white);
+        {
+            QPainter painter(&red);
+            painter.setPen(QColor(200, 30, 30));
+            painter.drawLine(20, 30, 580, 30);
+        }
+        const QColor sampled = inkColor(red, QRectF(10, 20, 580, 20), 1.0);
+        check(sampled.isValid() && sampled.red() > 150 && sampled.green() < 110
+                  && sampled.blue() < 110,
+              QStringLiteral("red ink is sampled as red (%1)").arg(sampled.name()));
+
+        // Black and grey are not colours. Nearly every line of nearly every
+        // document is one of them, and a Word file that wrote black into all of
+        // them would have overridden the reader's theme to say nothing.
+        QImage grey(600, 60, QImage::Format_RGB32);
+        grey.fill(Qt::white);
+        {
+            QPainter painter(&grey);
+            painter.setPen(QColor(40, 40, 40));
+            painter.drawLine(20, 30, 580, 30);
+        }
+        check(!inkColor(grey, QRectF(10, 20, 580, 20), 1.0).isValid(),
+              "black text is left to the reader's own colour");
+
+        QImage paper(600, 60, QImage::Format_RGB32);
+        paper.fill(Qt::white);
+        check(!inkColor(paper, QRectF(10, 20, 580, 20), 1.0).isValid(),
+              "and so is a box with no ink in it");
+        check(!inkColor(QImage(), QRectF(0, 0, 10, 10), 1.0).isValid(),
+              "as is a page that was never drawn");
+
+        // A box that is dark all through is a filled shape, or a dark page with
+        // light text on it. What is in it is not ink on paper, and the colour of it
+        // is not the colour of any text -- so it is left alone rather than used.
+        QImage filled(600, 60, QImage::Format_RGB32);
+        filled.fill(QColor(20, 40, 200));
+        check(!inkColor(filled, QRectF(10, 20, 580, 20), 1.0).isValid(),
+              "a box that is dark all through is not a line of text");
+    }
+    {
+        const QString path = fixture(directory, QStringLiteral("colored.pdf"));
+        if (!QFileInfo::exists(path)) {
+            std::cerr << "FAIL: " << path.toStdString()
+                      << " is missing; run tools/make_fixtures.py\n";
+            ++failures;
+        } else {
+            QtPdfBackend document;
+            check(document.load(path, QString()) == Document::Status::Ready,
+                  "the coloured fixture opens");
+
+            QTemporaryDir output;
+            const QString file = output.filePath(QStringLiteral("colored.docx"));
+            const WordExportReport report = exportToWord(document, file);
+            check(report.ok, QStringLiteral("it exports (%1)").arg(report.error));
+
+            const QByteArray xml = unpackZip(readAll(file)).value(QStringLiteral("word/document.xml"))
+                                       .content;
+            const int colours = xml.count("<w:color w:val=\"");
+            check(colours == 1,
+                  QStringLiteral("only the coloured line carries a colour (%1)").arg(colours));
+
+            const int at = xml.indexOf("<w:color w:val=\"");
+            const QByteArray value = xml.mid(at + 16, 6);
+            const QColor written(QStringLiteral("#") + QString::fromLatin1(value));
+            check(written.isValid() && written.red() > 150 && written.green() < 110
+                      && written.blue() < 110,
+                  QStringLiteral("and it is the red that was on the page (%1)")
+                      .arg(QString::fromLatin1(value)));
+
+            // On the right line: the black one is written with no colour at all,
+            // and the red one's colour comes after the black line's text.
+            const int blackText = xml.indexOf(">XYZPDF</w:t>");
+            check(blackText >= 0 && blackText < at,
+                  QStringLiteral("attached to the line after the black one (%1 against %2)")
+                      .arg(blackText)
+                      .arg(at));
+            check(xml.contains("XYZPDF red line"), "with the red line's text in it");
         }
     }
 

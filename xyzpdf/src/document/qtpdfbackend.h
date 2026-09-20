@@ -8,6 +8,7 @@
 
 #include "document.h"
 
+#include <QBitArray>
 #include <QHash>
 #include <QString>
 #include <QVector>
@@ -73,6 +74,15 @@ private:
     const PageText &pageTextOf(int page) const;
     // The line nearest a point vertically, or -1 for a page with no lines.
     static int nearestLine(const QVector<QRectF> &lines, double y);
+    // The box of one character, remembered for the page it belongs to.
+    //
+    // The bisection in characterIndexAt() asks for the same character boxes over
+    // and over -- every line of a page narrows toward the same handful of indices,
+    // and a page of a pin-out diagram has hundreds of lines. Caching turns those
+    // repeated ~1 ms queries into one query per character; for the interactive
+    // path (a click, a drag) it is invisible, and for an export of a text-heavy
+    // page it is the difference between seconds and tens of seconds.
+    QRectF characterBoxAt(int page, const PageText &pageContent, int index) const;
     // Whether the character at `index` of `page` is before `point` in reading
     // order -- the predicate the bisection needs to be monotone, which is what
     // the line boxes are for. See the definition for the two ways it used not to
@@ -96,6 +106,18 @@ private:
     // one at a time.
     mutable QHash<int, PageText> pageTexts;
     mutable QVector<int> pageTextsOrder;
+
+    // The character boxes asked for so far, per page, with which of them have
+    // actually been computed (a null box is a real answer for a line break, so
+    // an empty rectangle cannot double as "not asked yet"). A few pages, oldest
+    // let go, the same way the line boxes are kept.
+    struct CharBoxes
+    {
+        QVector<QRectF> boxes;
+        QBitArray computed;
+    };
+    mutable QHash<int, CharBoxes> charBoxes;
+    mutable QVector<int> charBoxesOrder;
 
     QString loadedPath;
     QString errorText;

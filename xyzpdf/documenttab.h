@@ -146,6 +146,12 @@ public:
     // queued, because they would be writing the same file.
     void exportToWord(const QString &path);
     bool isExporting() const;
+    // The reader has asked for it to stop, through the window's progress box.
+    // The same flag the destructor sets, and for the same reason: the export
+    // looks at it between pages, which is the only place it can look -- and
+    // because the file is written at the very end, an export stopped this way
+    // leaves nothing behind to explain.
+    void cancelWordExport();
 
 Q_SIGNALS:
     void titleChanged(const QString &title);

@@ -366,6 +366,12 @@ bool DocumentTab::isExporting() const
     return wordExportTask.isRunning();
 }
 
+void DocumentTab::cancelWordExport()
+{
+    if (exportCancel)
+        exportCancel->storeRelaxed(1);
+}
+
 void DocumentTab::showFindBar()
 {
     findBar->show();

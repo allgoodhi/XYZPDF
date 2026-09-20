@@ -103,6 +103,15 @@ def main(argv):
             kinds.append('page break')
         if one.findall('.//{%s}drawing' % W):
             kinds.append('picture')
+        # The colours, one per run: what a conversion that carries the colour of
+        # the page across has to show, and what nothing else in this output would.
+        colours = []
+        for run in one.findall('{%s}r' % W):
+            colour = run.find('{%s}rPr/{%s}color' % (W, W))
+            if colour is not None:
+                colours.append('#' + colour.get('{%s}val' % W))
+        if colours:
+            kinds.append('colour ' + ','.join(colours))
         print('   [%s] %s' % (', '.join(kinds) or 'text', text[:60]))
 
     section = document.find('.//{%s}sectPr' % W)

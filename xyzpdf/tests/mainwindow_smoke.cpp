@@ -37,10 +37,16 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QMimeData>
+#include <QProgressDialog>
+#include <QPushButton>
+#include <QStatusBar>
+#include <QTemporaryDir>
 #include <QPointF>
 #include <QString>
 #include <QTabWidget>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QUrl>
@@ -676,6 +682,133 @@ int main(int argc, char **argv)
                 inFileMenu = menuAction->text().contains(QStringLiteral("文件"));
         }
         check(inFileMenu, "from the File menu");
+    }
+
+    // ---- exporting says how far it has got, and can be stopped ----
+    //
+    // What the status bar could not do. It is in the bottom-left corner, which is
+    // not where a reader who has just asked for a conversion is looking, and it
+    // cannot be clicked -- so a reader who had started converting a scanned
+    // document, which is minutes of renders, had no way to stop it short of
+    // closing the tab.
+    {
+        // The report at the end is a modal box. This test has to get past it
+        // rather than be the reason it never closes.
+        QTimer closer;
+        closer.setInterval(20);
+        QObject::connect(&closer, &QTimer::timeout, [] {
+            for (QWidget *widget : QApplication::topLevelWidgets()) {
+                if (auto *box = qobject_cast<QMessageBox *>(widget)) {
+                    if (box->isVisible())
+                        box->close();
+                }
+            }
+        });
+        closer.start();
+
+        const QString pdf = directory + QStringLiteral("/many-pages.pdf");
+        dropFiles(window, {QUrl::fromLocalFile(pdf).toString()}, Qt::CopyAction);
+        check(waitFor([&window, &pdf] {
+                  DocumentTab *front = currentDocumentTab(window);
+                  return front && sameFile(front->documentPath(), pdf);
+              }),
+              "the forty-page document is in front");
+
+        DocumentTab *tab = currentDocumentTab(window);
+        check(tab && tab->isOpen(), "with a document to convert");
+        QTemporaryDir output;
+
+        if (tab && tab->isOpen()) {
+            const QString file = output.filePath(QStringLiteral("many.docx"));
+            tab->exportToWord(file);
+
+            // Forty pages of one line each, which is over in a moment. No box is
+            // demanded of it -- a conversion that fast has nothing to report, and
+            // Qt's grace is what decides -- but nothing may be left behind either,
+            // and the file has to be there.
+            check(waitFor([tab] { return !tab->isExporting(); }, 8000), "the export finishes");
+            check(QFileInfo::exists(file) && QFileInfo(file).size() > 0,
+                  QStringLiteral("with the file written (%1 bytes)").arg(QFileInfo(file).size()));
+            check(waitFor([&window] {
+                      return window.findChild<QProgressDialog *>(
+                                 QStringLiteral("exportProgress")) == nullptr;
+                  }),
+                  "and no box left behind");
+
+            // ---- the box, on a document that takes long enough to need one ----
+            //
+            // The page below takes a second or more to read (two character queries
+            // per line, seventy lines), which is the shape of the manual this was
+            // reported from: nine seconds a page. A stop that is only noticed
+            // between pages leaves the reader watching the box for all nine.
+            const QString densePath = directory + QStringLiteral("/dense.pdf");
+            dropFiles(window, {QUrl::fromLocalFile(densePath).toString()}, Qt::CopyAction);
+            check(waitFor([&window, &densePath] {
+                      DocumentTab *front = currentDocumentTab(window);
+                      return front && sameFile(front->documentPath(), densePath);
+                  }),
+                  "the page of seventy lines is in front");
+            if (DocumentTab *dense = currentDocumentTab(window)) {
+                const QString unwritten = output.filePath(QStringLiteral("dense.docx"));
+                dense->exportToWord(unwritten);
+                QProgressDialog *third = nullptr;
+                check(waitFor([&window, &third] {
+                          third = window.findChild<QProgressDialog *>(
+                              QStringLiteral("exportProgress"));
+                          return third && third->isVisible();
+                      }),
+                      "its export offers the box before the first page is done");
+                if (third) {
+                    check(third->maximum() == 2,
+                          QStringLiteral("with the whole document in it (%1 pages)")
+                              .arg(third->maximum()));
+                    // The first report is the one that says the export has started
+                    // -- page nought of two -- because the point of it is to offer
+                    // a way out while there is still time to take it.
+                    check(third->value() < third->maximum(),
+                          QStringLiteral("and how far it has got (%1 of %2)")
+                              .arg(third->value())
+                              .arg(third->maximum()));
+                    check(third->labelText().contains(QStringLiteral("2")),
+                          QStringLiteral("naming the size of the job (\"%1\")")
+                              .arg(third->labelText()));
+                    check(third->windowModality() == Qt::WindowModal,
+                          "window-modal, like every other dialog in this program");
+
+                    auto *button = third->findChild<QPushButton *>();
+                    check(button != nullptr, "with a button to stop it");
+                    if (button) {
+                        QElapsedTimer clock;
+                        clock.start();
+                        button->click();
+                        check(waitFor([dense] { return !dense->isExporting(); }, 8000),
+                              "clicking it stops the export");
+                        check(clock.elapsed() < 1500,
+                              QStringLiteral("in the middle of the page it was reading (%1 ms; a "
+                                             "page of that document is seconds)")
+                                  .arg(clock.elapsed()));
+                        check(!QFileInfo::exists(unwritten),
+                              QStringLiteral("and leaves no half-written file behind (%1 bytes)")
+                                  .arg(QFileInfo(unwritten).size()));
+                        // Waited for rather than read at once: the task is known
+                        // to have stopped before the answer it produces is
+                        // delivered to this thread, so the status bar still says
+                        // how far the export had got for a turn or two after it.
+                        check(waitFor([&window] {
+                                  return window.statusBar()->currentMessage().contains(
+                                      QStringLiteral("取消"));
+                              }, 3000),
+                              QStringLiteral("with the status bar saying as much (\"%1\")")
+                                  .arg(window.statusBar()->currentMessage()));
+                        check(window.findChild<QProgressDialog *>(
+                                  QStringLiteral("exportProgress")) == nullptr,
+                              "and the box gone with it");
+                    }
+                }
+            }
+        }
+
+        closer.stop();
     }
 
     if (failures == 0) {

@@ -129,6 +129,8 @@ Document::Status QtPdfBackend::load(const QString &path, const QString &password
     // open would place a click in this one.
     pageTexts.clear();
     pageTextsOrder.clear();
+    charBoxes.clear();
+    charBoxesOrder.clear();
 
     // The password goes in before the load, not after a failure: Qt PDF reads
     // it once while opening the file, and setting it afterwards reloads the
@@ -295,6 +297,34 @@ int QtPdfBackend::nearestLine(const QVector<QRectF> &lines, double y)
     return nearest;
 }
 
+QRectF QtPdfBackend::characterBoxAt(int page, const PageText &pageContent, int index) const
+{
+    if (index < 0 || index >= pageContent.text.length())
+        return {};
+
+    auto held = charBoxes.find(page);
+    if (held == charBoxes.end()) {
+        CharBoxes fresh;
+        fresh.boxes.resize(pageContent.text.length());
+        fresh.computed = QBitArray(pageContent.text.length(), false);
+        // A few pages at a time, oldest let go -- the same shape as the line-box
+        // cache, because a document being exported touches one page at a time.
+        constexpr int kPagesHeld = 4;
+        while (charBoxesOrder.size() >= kPagesHeld)
+            charBoxes.remove(charBoxesOrder.takeFirst());
+        charBoxesOrder.append(page);
+        held = charBoxes.insert(page, fresh);
+    }
+    CharBoxes &cache = *held;
+    if (cache.computed.testBit(index))
+        return cache.boxes.at(index);
+
+    const QRectF box = characterBox(document.get(), page, index);
+    cache.boxes[index] = box;
+    cache.computed.setBit(index);
+    return box;
+}
+
 bool QtPdfBackend::characterIsBefore(int page, const PageText &pageContent, int index,
                                      QPointF point) const
 {
@@ -303,7 +333,7 @@ bool QtPdfBackend::characterIsBefore(int page, const PageText &pageContent, int 
     if (index >= pageContent.text.length())
         return false;
 
-    const QRectF box = characterBox(document.get(), page, index);
+    const QRectF box = characterBoxAt(page, pageContent, index);
     if (box.isNull()) {
         // ---- the character with no geometry ----
         //
@@ -316,7 +346,7 @@ bool QtPdfBackend::characterIsBefore(int page, const PageText &pageContent, int 
         // the last character of the line it ends: a line break is before the
         // point exactly when the end of its line is.
         int previous = index - 1;
-        while (previous >= 0 && characterBox(document.get(), page, previous).isNull())
+        while (previous >= 0 && characterBoxAt(page, pageContent, previous).isNull())
             --previous;
         return characterIsBefore(page, pageContent, previous, point);
     }

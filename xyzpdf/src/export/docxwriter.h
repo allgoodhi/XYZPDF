@@ -25,17 +25,69 @@
 #pragma once
 
 #include <QByteArray>
+#include <QColor>
 #include <QSizeF>
 #include <QString>
 #include <QVector>
 
 class ZipWriter;
 
+// A run of text in one colour: what a paragraph of this document is made of.
+//
+// An invalid colour is not black -- it is "no colour of its own", which is what
+// almost every document wants: a paragraph with no colour on it takes the colour
+// of whatever theme the reader is using, and writing black into every one of them
+// would take that away.
+struct DocxRun
+{
+    QString text;
+    QColor color;
+};
+
+// Where a paragraph sits on the page, read out of the PDF's own line boxes: see
+// Paragraph in wordexport.h for where these numbers come from. All of it is
+// optional -- a paragraph with nothing set is set the way the reader's own Word
+// sets its text, which is what a paragraph of a PDF with no peculiarities of its
+// own should be.
+struct DocxLayout
+{
+    enum class Align
+    {
+        Left,
+        Center,
+    };
+
+    Align align = Align::Left;
+    int indentTwips = 0;
+    int firstLineTwips = 0;
+    int spaceBeforeTwips = 0;
+
+    bool plain() const
+    {
+        return align == Align::Left && indentTwips == 0 && firstLineTwips == 0
+            && spaceBeforeTwips == 0;
+    }
+};
+
+// A real Word table. Widths are in PDF points; each cell owns its paragraphs so
+// wrapped text in a tall PDF cell does not turn into one run with lost line breaks.
+struct DocxTable
+{
+    QVector<double> columnWidthsPoints;
+    QVector<QVector<QVector<QVector<DocxRun>>>> cells;
+};
+
 class DocxWriter
 {
 public:
-    // One paragraph. `pageBreakBefore` starts it at the top of a new page, which
-    // is how the pages of a PDF stay pages of the document.
+    // One paragraph, in as many runs as it has colours. `pageBreakBefore` starts
+    // it at the top of a new page, which is how the pages of a PDF stay pages of
+    // the document.
+    void addParagraph(const QVector<DocxRun> &runs, bool pageBreakBefore = false,
+                      const DocxLayout &layout = DocxLayout());
+
+    // The same for a paragraph that needs no colours. And for an empty one, which
+    // is a blank line and is worth keeping.
     void addParagraph(const QString &text, bool pageBreakBefore = false);
 
     // A page put in as a picture, in a paragraph of its own, centred.
@@ -46,6 +98,8 @@ public:
     // it already fits.
     void addImage(const QByteArray &bytes, const QString &extension, QSizeF sizePoints,
                   bool pageBreakBefore = false);
+
+    void addTable(const DocxTable &table, bool pageBreakBefore = false);
 
     // The page the document is written on, and the margin around its edge, in
     // points.
@@ -59,6 +113,7 @@ public:
 
     int paragraphCount() const { return paragraphs; }
     int imageCount() const { return int(images.size()); }
+    int tableCount() const { return tables; }
 
     QByteArray toBytes() const;
 
@@ -86,6 +141,7 @@ private:
     QByteArray body;
     QVector<Image> images;
     int paragraphs = 0;
+    int tables = 0;
 
     QSizeF page;
     double margin = 36.0; // half an inch

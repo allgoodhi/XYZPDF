@@ -200,6 +200,65 @@ def main():
          ' 0 -62 Td (No. 2 is a paragraph of its own.) Tj ET'),
     ]))
 
+    # A short black line and a long red one. The text layer carries the characters
+    # and nothing about how they were set -- Qt PDF gives out no font and no
+    # colour -- so the colour has to be recovered from the page itself, which is
+    # what the export does and what this fixture is for. The first line is much
+    # shorter than the column on purpose: that is what makes the two lines two
+    # paragraphs rather than one, so that the colour of one can be told from the
+    # absence of colour in the other.
+    write('colored.pdf', makePdf([
+        (595, 842, 0, 'XYZPDF', b'',
+         'BT /F1 24 Tf 60 700 Td 1 0 0 rg (XYZPDF red line, longer than the black one) Tj ET'),
+    ]))
+
+    # Two pages of seventy lines each: a document whose export is *slow*, because
+    # the reading of a page is two character queries per line and that is where
+    # all of the time goes. Stopping in the middle of a page is what this exists
+    # to make testable -- a page of one line has nothing to stop, and a stop that
+    # only lands between pages cannot be told from one that does not work.
+    def dense(prefix):
+        # A str, not bytes: the drawing is appended to the page's own content and
+        # the pair of them are encoded together.
+        block = ' '.join('(%s %02d) Tj T*' % (prefix, index + 1) for index in range(70))
+        return 'BT /F1 7 Tf 11 TL 60 810 Td ' + block + ' ET'
+
+    write('dense.pdf', makePdf([
+        (595, 842, 0, '', b'', dense('XYZPDF line')),
+        (595, 842, 0, '', b'', dense('XYZPDF more')),
+    ]))
+
+    # A certificate, reduced to its parts: a pale panel the words sit on, and a
+    # dark letterhead above them and a row of dark marks below -- the logos and
+    # the rules, which is what a conversion of the words alone throws away.
+    #
+    # The page HAS a text layer, so nothing about it says "scan"; it is the pale
+    # panel that is deliberately *not* what makes it a picture (a grey background
+    # behind a code listing is the same shape and must stay text), and the dark
+    # ink outside the words that is.
+    # The line under the panel is the one that makes this a mixed page rather than
+    # a drawn one: it is prose that belongs to the page and not to the drawing, and
+    # a conversion of it has to come out as words *and* as a picture of the panel.
+    write('graphic.pdf', makePdf([
+        (595, 842, 0, 'XYZPDF words on a panel', b'',
+         'BT /F1 12 Tf 60 120 Td (XYZPDF a line of its own, under the panel) Tj ET '
+         '0.85 0.85 0.95 rg 60 400 475 380 re f '
+         '0 0 0 rg 60 800 380 26 re f '
+         '0.2 0.2 0.6 rg 150 420 120 60 re f 250 420 120 60 re f'),
+    ]))
+
+    # A ruled two-by-two table with a text layer in every cell. This is separate
+    # from graphic.pdf because a panel is correctly a picture while a grid is
+    # editable structure: the exporter must tell those two kinds of drawing apart.
+    write('table.pdf', makePdf([
+        (595, 842, 0, '', b'',
+         '0 0 0 RG 1 w '
+         '60 500 m 360 500 l S 60 600 m 360 600 l S 60 700 m 360 700 l S '
+         '60 500 m 60 700 l S 210 500 m 210 700 l S 360 500 m 360 700 l S '
+         'BT /F1 14 Tf 90 650 Td (top left) Tj 160 0 Td (top right) Tj ET '
+         'BT /F1 14 Tf 90 550 Td (bottom left) Tj 135 0 Td (bottom right) Tj ET'),
+    ]))
+
     # One page of text and one page that is a picture: the shape of a scanned
     # report with a typed cover, which is what most documents that need this are.
     # The two have to come out in the same file, in order, one as words and one as

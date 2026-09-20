@@ -39,11 +39,13 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTimer>
 #include <QToolBar>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -892,14 +894,30 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
     // The export's answer, which arrives from a worker thread when it arrives:
     // written to a file the reader asked for, so it is reported rather than
     // silently done.
-    // How far along it is: a page with a picture on it is a render, so a scanned
-    // document is minutes of work, and a reader who has been told only "正在导出"
-    // has no way to tell that from a program that has stopped.
-    connect(tab, &DocumentTab::wordExportProgress, this, [this](int done, int total) {
+    // How far along it is, in two places: a line in the status bar, and -- since
+    // a page with a picture on it is a render, so a scanned document is minutes
+    // of work -- a progress box with a way to stop it. The status bar alone was
+    // what there was, and a reader who has been told only "正在导出" cannot tell a
+    // long job from a program that has stopped, nor find the bottom-left corner
+    // of a window when the thing they are watching is in front of them.
+    connect(tab, &DocumentTab::wordExportProgress, this, [this, tab](int done, int total) {
+        // A report from an export that is no longer running is stale, and it
+        // arrives that way often enough to matter: the progress of a page is
+        // posted to this thread while the answer is delivered by the future, and
+        // nothing orders the two. The last page's report can therefore land after
+        // "已导出"/"导出已取消" and overwrite it with a line saying the export is
+        // still going -- which, once, was what the status bar said about a
+        // conversion that had already finished.
+        if (!tab->isExporting())
+            return;
         setStatusMessage(tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total));
+        showExportProgress(tab, done, total);
     });
     connect(tab, &DocumentTab::wordExportFinished, this,
-            [this](const WordExportReport &report) { reportWordExport(report); });
+            [this](const WordExportReport &report) {
+                closeExportProgress();
+                reportWordExport(report);
+            });
 
     connect(tab, &DocumentTab::searchChanged, this, [this, tab](int, int, bool) {
         if (tab != currentTab())
@@ -1035,6 +1053,107 @@ void MainWindow::exportCurrentToWord()
     tab->exportToWord(path);
 }
 
+void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
+{
+    if (!tab)
+        return;
+
+    if (!exportProgress) {
+        // The box is made when the first page is done rather than when the menu
+        // item is clicked, so that it is a box about work that is happening: a
+        // document that turns out to have nothing in it, or a file that cannot
+        // be written, never puts one on screen at all.
+        auto *dialog = new QProgressDialog(this);
+        dialog->setObjectName(QStringLiteral("exportProgress"));
+        dialog->setWindowTitle(tr("导出为 Word — %1").arg(QFileInfo(tab->documentPath()).fileName()));
+        dialog->setCancelButtonText(tr("取消"));
+        dialog->setAutoClose(false);
+        // A quarter of a second, and not Qt's own four: the document this was
+        // reported from takes nine seconds a page, and a box that appears when
+        // the job is nearly over is a box nobody can use. Not zero either, so
+        // that a conversion that is over in a moment -- an export of pictures is
+        // one now, at two hundred milliseconds for six pages -- does not flash a
+        // dialog on screen and take it away again. Qt shows it when the timer
+        // runs out; nothing here calls show().
+        dialog->setMinimumDuration(250);
+        WindowDialogs::makeWindowModal(dialog, this);
+
+        // ---- the way out ----
+        //
+        // Cancelling is a request, not a fact: the export looks at its flag
+        // between pages, and a page of a scan is a render that takes a while. So
+        // the box stays, saying that it is stopping, until the export itself says
+        // it has stopped -- which is the only moment at which the file is known
+        // not to have been written. Taking the box away on the click would be
+        // telling the reader it was finished.
+        //
+        // Deferred, because the click does two things: it emits this signal and
+        // it puts the box away, zeroing the bar on the way out (see
+        // QProgressDialog::cancel()). Anything said here is said to a widget that
+        // is about to be hidden, so it is said after that has happened; and the
+        // button is disabled rather than replaced, because it is in the middle of
+        // emitting the very signal this is running from.
+        connect(dialog, &QProgressDialog::canceled, this, [this, dialog, tab] {
+            if (tab != exportTab)
+                return;
+            tab->cancelWordExport();
+            const int stoppedAt = exportDone;
+            QTimer::singleShot(0, dialog, [this, dialog, stoppedAt] {
+                if (exportProgress != dialog)
+                    return; // it has been taken down in the meantime
+                dialog->setLabelText(tr("正在停止…"));
+                dialog->setValue(stoppedAt);
+                if (auto *button = dialog->findChild<QPushButton *>())
+                    button->setEnabled(false);
+                dialog->show();
+            });
+        });
+
+        // A tab can be closed while it is exporting -- a reader shutting the
+        // window rather than waiting -- and the export is then cancelled by the
+        // tab's own destructor. Nothing will arrive to take this box down, so it
+        // goes with the tab it belongs to.
+        connect(tab, &QObject::destroyed, this, [this, tab] {
+            if (tab == exportTab)
+                closeExportProgress();
+        });
+
+        exportProgress = dialog;
+        exportTab = tab;
+        // Left to show itself: see setMinimumDuration above.
+        dialog->setMaximum(total);
+        dialog->setValue(0);
+    }
+
+    exportDone = done;
+    if (exportProgress->wasCanceled())
+        return; // stopping: further pages are not news
+
+    exportProgress->setMaximum(total);
+    exportProgress->setValue(done);
+    // Zero is the report that the export has started rather than finished: "第 0
+    // 页" is not a page, so it says the size of the job instead.
+    exportProgress->setLabelText(done > 0
+                                     ? tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total)
+                                     : tr("正在导出为 Word…（共 %1 页）").arg(total));
+}
+
+void MainWindow::closeExportProgress()
+{
+    if (!exportProgress)
+        return;
+
+    QProgressDialog *dialog = exportProgress;
+    exportProgress = nullptr;
+    exportDone = 0;
+    // Cleared before the close, and that is not tidiness: closing a progress
+    // dialog emits canceled(), and this one is not being cancelled -- it is
+    // finished. With the tab forgotten first, that signal finds nothing to stop.
+    exportTab = nullptr;
+    dialog->close();
+    dialog->deleteLater();
+}
+
 void MainWindow::reportWordExport(const WordExportReport &report)
 {
     // Nothing to say about an export that was stopped because the document was
@@ -1058,14 +1177,29 @@ void MainWindow::reportWordExport(const WordExportReport &report)
                           .arg(QDir::toNativeSeparators(report.path));
 
     QString detail;
+    if (report.tables > 0) {
+        detail = tr("其中 %1 个带网格的表格已转换为可编辑 Word 表格。")
+                     .arg(report.tables);
+    }
+    if (report.figures > 0) {
+        // The figures of a page that also had words on it: cut out of the page and
+        // put in where they sit, with the words beside them as words.
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("其中 %1 处图形（图表、框图、照片等）已按图片插入，"
+                     "其所在页面的文字仍是可以编辑的。")
+                      .arg(report.figures);
+    }
     if (report.imagePages > 0) {
         // Said out loud because it changes what the file is: those pages are
         // pictures, and a reader who tries to edit the text on one of them needs
         // to know that is what happened rather than wondering why the cursor
         // will not go in.
-        detail = tr("其中 %1 页没有文字层（扫描页或整页图片），已按图片还原：保持原貌，"
-                    "但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。")
-                     .arg(report.imagePages);
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("其中 %1 页没有文字层或包含复杂图表/表格，已按整页图片还原以保持原貌，"
+                     "但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。")
+                      .arg(report.imagePages);
     }
     if (report.emptyPages > 0) {
         // Counted and named rather than left out: a reader who exported a

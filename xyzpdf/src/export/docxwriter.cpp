@@ -110,9 +110,16 @@ void DocxWriter::setPageMargin(double points)
     margin = points;
 }
 
-void DocxWriter::addParagraph(const QString &text, bool pageBreakBefore)
+void DocxWriter::addParagraph(const QVector<DocxRun> &runs, bool pageBreakBefore,
+                              const DocxLayout &layout)
 {
-    if (text.isEmpty() && !pageBreakBefore) {
+    bool hasText = false;
+    for (const DocxRun &run : runs) {
+        if (!run.text.isEmpty())
+            hasText = true;
+    }
+
+    if (!hasText && !pageBreakBefore) {
         // An empty paragraph, which is a blank line and is worth keeping: it is
         // how a gap between two blocks of text survives the conversion.
         body.append("<w:p/>");
@@ -121,18 +128,60 @@ void DocxWriter::addParagraph(const QString &text, bool pageBreakBefore)
     }
 
     body.append("<w:p>");
+    if (!layout.plain()) {
+        // The paragraph properties, in the order the schema requires of them --
+        // spacing, then indentation, then the justification. Written only when
+        // there is something to say: a paragraph that is set the way Word sets
+        // text by default is left alone, so that ordinary body text follows the
+        // reader's own settings rather than this program's idea of them.
+        body.append("<w:pPr>");
+        if (layout.spaceBeforeTwips > 0) {
+            body.append(QStringLiteral("<w:spacing w:before=\"%1\"/>")
+                            .arg(layout.spaceBeforeTwips)
+                            .toUtf8());
+        }
+        if (layout.indentTwips > 0 || layout.firstLineTwips > 0) {
+            QString attributes;
+            if (layout.indentTwips > 0)
+                attributes += QStringLiteral(" w:left=\"%1\"").arg(layout.indentTwips);
+            if (layout.firstLineTwips > 0)
+                attributes += QStringLiteral(" w:firstLine=\"%1\"").arg(layout.firstLineTwips);
+            body.append(QStringLiteral("<w:ind%1/>").arg(attributes).toUtf8());
+        }
+        if (layout.align == DocxLayout::Align::Center)
+            body.append("<w:jc w:val=\"center\"/>");
+        body.append("</w:pPr>");
+    }
     if (pageBreakBefore)
         body.append("<w:r><w:br w:type=\"page\"/></w:r>");
-    if (!text.isEmpty()) {
+    for (const DocxRun &run : runs) {
+        if (run.text.isEmpty())
+            continue;
+        body.append("<w:r>");
+        if (run.color.isValid()) {
+            // A colour on the run rather than a character style: this program has
+            // no styles to define, and one attribute is the whole of what a
+            // colour needs to survive into Word.
+            body.append(QStringLiteral("<w:rPr><w:color w:val=\"%1\"/></w:rPr>")
+                            .arg(run.color.name(QColor::HexRgb).mid(1).toUpper())
+                            .toUtf8());
+        }
         // xml:space="preserve": without it Word is entitled to strip the leading
         // and trailing spaces of the text, and a line of a PDF that was indented
         // is a line whose indentation is a space or two.
-        body.append("<w:r><w:t xml:space=\"preserve\">");
-        body.append(xmlText(text));
+        body.append("<w:t xml:space=\"preserve\">");
+        body.append(xmlText(run.text));
         body.append("</w:t></w:r>");
     }
     body.append("</w:p>");
     ++paragraphs;
+}
+
+void DocxWriter::addParagraph(const QString &text, bool pageBreakBefore)
+{
+    DocxRun run;
+    run.text = text;
+    addParagraph(QVector<DocxRun>{run}, pageBreakBefore);
 }
 
 void DocxWriter::addImage(const QByteArray &bytes, const QString &extension, QSizeF sizePoints,
@@ -188,6 +237,62 @@ void DocxWriter::addImage(const QByteArray &bytes, const QString &extension, QSi
                     .arg(cy)
                     .toUtf8());
     body.append("</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
+}
+
+void DocxWriter::addTable(const DocxTable &table, bool pageBreakBefore)
+{
+    if (table.columnWidthsPoints.isEmpty() || table.cells.isEmpty())
+        return;
+
+    if (pageBreakBefore)
+        body.append("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
+
+    // Borders are explicit instead of relying on a Word table style: a .docx
+    // produced here has no styles.xml, and the grid is information from the PDF.
+    body.append("<w:tbl><w:tblPr><w:tblBorders>"
+                "<w:top w:val=\"single\" w:sz=\"4\"/><w:left w:val=\"single\" w:sz=\"4\"/>"
+                "<w:bottom w:val=\"single\" w:sz=\"4\"/><w:right w:val=\"single\" w:sz=\"4\"/>"
+                "<w:insideH w:val=\"single\" w:sz=\"4\"/><w:insideV w:val=\"single\" w:sz=\"4\"/>"
+                "</w:tblBorders></w:tblPr><w:tblGrid>");
+    for (double width : table.columnWidthsPoints)
+        body.append(QStringLiteral("<w:gridCol w:w=\"%1\"/>").arg(twips(width)).toUtf8());
+    body.append("</w:tblGrid>");
+
+    const int columns = table.columnWidthsPoints.size();
+    for (const auto &row : table.cells) {
+        body.append("<w:tr>");
+        for (int column = 0; column < columns; ++column) {
+            body.append("<w:tc><w:tcPr>");
+            body.append(QStringLiteral("<w:tcW w:w=\"%1\" w:type=\"dxa\"/>")
+                            .arg(twips(table.columnWidthsPoints.at(column))).toUtf8());
+            body.append("</w:tcPr>");
+            const auto paragraphsInCell = column < row.size() ? row.at(column)
+                                                               : QVector<QVector<DocxRun>>();
+            if (paragraphsInCell.isEmpty()) {
+                body.append("<w:p/>");
+            } else {
+                for (const auto &runs : paragraphsInCell) {
+                    body.append("<w:p>");
+                    for (const DocxRun &run : runs) {
+                        if (run.text.isEmpty())
+                            continue;
+                        body.append("<w:r>");
+                        if (run.color.isValid())
+                            body.append(QStringLiteral("<w:rPr><w:color w:val=\"%1\"/></w:rPr>")
+                                            .arg(run.color.name(QColor::HexRgb).mid(1).toUpper()).toUtf8());
+                        body.append("<w:t xml:space=\"preserve\">");
+                        body.append(xmlText(run.text));
+                        body.append("</w:t></w:r>");
+                    }
+                    body.append("</w:p>");
+                }
+            }
+            body.append("</w:tc>");
+        }
+        body.append("</w:tr>");
+    }
+    body.append("</w:tbl>");
+    ++tables;
 }
 
 void DocxWriter::addParts(ZipWriter &zip) const

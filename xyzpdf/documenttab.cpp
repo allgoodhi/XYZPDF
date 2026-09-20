@@ -4,15 +4,18 @@
 #include "src/core/windowdialogs.h"
 #include "src/document/pagemetrics.h"
 #include "src/document/qtpdfbackend.h"
+#include "src/print/printjob.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
 #include "src/translate/translator.h"
 #include "src/ui/findbar.h"
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
+#include "src/ui/printdialog.h"
 #include "src/ui/translatedialog.h"
 #include "src/view/pageview.h"
 
+#include <QApplication>
 #include <QAtomicInt>
 #include <QClipboard>
 #include <QDesktopServices>
@@ -23,6 +26,9 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QPainter>
+#include <QPrintDialog>
+#include <QPrinter>
+#include <QProgressDialog>
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
@@ -919,6 +925,42 @@ void DocumentTab::onLinkActivated(const Link &link)
     }
     if (link.targetPage >= 0 && link.targetPage < pageCount())
         pageView->goToPage(link.targetPage);
+}
+
+void DocumentTab::print()
+{
+    if (!opened)
+        return;
+
+    QPrinter printer(QPrinter::HighResolution);
+    PrintDialog dialog(window(), &printer, pageView->currentPage(), pageCount());
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const Print::Settings settings = dialog.settings();
+
+    // A cancel-able progress dialog over a foreground job. Print::run calls the
+    // callback once per sheet on this thread; pumping events here is what lets
+    // the dialog repaint and its Cancel button be noticed between sheets.
+    auto cancel = QSharedPointer<QAtomicInt>::create(0);
+    QProgressDialog progress(tr("正在打印…"), tr("取消"), 0, 1, window());
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoReset(false);
+    progress.setValue(0);
+
+    const Print::Report report = Print::run(
+        *backend, printer, settings,
+        [&progress, &cancel](int done, int total) {
+            progress.setMaximum(total);
+            progress.setValue(done);
+            QApplication::processEvents();
+            if (progress.wasCanceled())
+                cancel->storeRelaxed(1);
+        },
+        cancel.data());
+
+    if (!report.ok && !report.cancelled)
+        WindowDialogs::warning(window(), tr("打印"), report.error);
 }
 
 void DocumentTab::startTranslation(const QString &text, QPointer<TranslateDialog> dialog)

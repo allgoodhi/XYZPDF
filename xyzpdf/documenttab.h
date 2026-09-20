@@ -161,6 +161,13 @@ public:
     // disable the toggle on a document that has none.
     bool hasOutline() const;
 
+    // ---- 打印 ----
+    //
+    // Asks for the print choices, then renders and prints. Foreground, with a
+    // cancel-able progress dialog: a QPrinter's paint device is a GUI-thread
+    // thing, so this is not a worker-thread job the way an export is.
+    void print();
+
     // ---- 导出 ----
     //
     // Writes the whole document's text out as a Word file, off the UI thread:

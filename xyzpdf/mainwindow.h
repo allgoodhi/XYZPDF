@@ -176,6 +176,7 @@ private:
     QAction *translateAction = nullptr;
     QAction *selectAllAction = nullptr;
     QAction *exportWordAction = nullptr;
+    QAction *printAction = nullptr;
     QAction *findAction = nullptr;
     QAction *findNextAction = nullptr;
     QAction *findPreviousAction = nullptr;

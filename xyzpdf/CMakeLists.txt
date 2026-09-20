@@ -66,7 +66,7 @@ endif()
 # Concurrent is for the text-recognition crop: rendering it is the renderer's
 # business, but the recognition itself is seconds of work and goes to the
 # global pool rather than the thread that draws.
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets Network Svg Concurrent LinguistTools)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets Network Svg Concurrent PrintSupport LinguistTools)
 # Qt PDF is PDFium behind a Qt-shaped API and is LGPLv3, so it stays a DLL of
 # its own like every other LGPL dependency here -- linked, never absorbed.
 # PdfWidgets is deliberately NOT required: the plan rules out QPdfView, and
@@ -203,6 +203,9 @@ set(XYZPDF_SOURCES
     src/ocr/ocrengine.h
     src/ocr/ocrengine.cpp
 
+    src/print/printjob.h
+    src/print/printjob.cpp
+
     src/render/pagerenderer.h
     src/render/pagerenderer.cpp
     src/render/rendercache.h
@@ -227,6 +230,8 @@ set(XYZPDF_SOURCES
     src/ui/ocrdialog.cpp
     src/ui/outlinepanel.h
     src/ui/outlinepanel.cpp
+    src/ui/printdialog.h
+    src/ui/printdialog.cpp
     src/ui/thirdpartydialog.h
     src/ui/thirdpartydialog.cpp
     src/ui/translatedialog.h
@@ -252,6 +257,7 @@ target_link_libraries(xyzpdf PRIVATE
     Qt6::Svg
     Qt6::Pdf
     Qt6::Concurrent
+    Qt6::PrintSupport
 )
 
 if(WIN32)
@@ -483,7 +489,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     # The tab owns the recognition flow, so the engine comes with it -- which
     # also means this test runs real Windows OCR once, on the region drag it
     # performs below.
-    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network)
+    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport)
     if(WIN32)
         list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp)
     endif()
@@ -502,10 +508,12 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
+                src/print/printjob.cpp
                 src/translate/translator.cpp
                 src/ui/findbar.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
+                src/ui/printdialog.cpp
                 src/ui/translatedialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
@@ -522,7 +530,7 @@ endif()
 # call to setAcceptDrops(), and neither is visible in the handlers.
 option(XYZPDF_BUILD_MAINWINDOW_SMOKE "Build the window drag-and-drop smoke test" OFF)
 if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
-    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network)
+    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport)
     if(WIN32)
         list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp)
     endif()
@@ -545,6 +553,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
+                src/print/printjob.cpp
                 src/translate/translator.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
@@ -554,6 +563,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/languagedialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
+                src/ui/printdialog.cpp
                 src/ui/translatedialog.cpp
                 src/ui/thirdpartydialog.cpp
                 src/ui/wrappingtoolbararea.cpp
@@ -611,6 +621,16 @@ if(XYZPDF_BUILD_TRANSLATE_SMOKE)
     xyzpdf_add_test(translate_smoke
         SOURCES src/translate/translator.cpp
         LIBRARIES Qt6::Network)
+endif()
+
+# The arithmetic of a print job: which pages a typed range names, and how an
+# n-up count becomes a grid. No printer and no document -- the painting is the
+# part that needs real hardware and is checked by hand.
+option(XYZPDF_BUILD_PRINT_SMOKE "Build the print arithmetic smoke test" OFF)
+if(XYZPDF_BUILD_PRINT_SMOKE)
+    xyzpdf_add_test(print_smoke
+        SOURCES src/print/printjob.cpp
+        LIBRARIES Qt6::PrintSupport)
 endif()
 
 # The registry entries, and the guard on the recursive delete in front of them.

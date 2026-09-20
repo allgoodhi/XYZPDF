@@ -364,6 +364,15 @@ void MainWindow::buildMenus()
     connect(exportWordAction, &QAction::triggered, this, &MainWindow::exportCurrentToWord);
     fileMenu->addAction(exportWordAction);
 
+    printAction = makeAction(tr("打印(&P)…"), QKeySequence(QStringLiteral("Ctrl+P")));
+    printAction->setObjectName(QStringLiteral("printAction"));
+    printAction->setToolTip(tr("把这份 PDF 打印出来"));
+    connect(printAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->print();
+    });
+    fileMenu->addAction(printAction);
+
     fileMenu->addSeparator();
     closeTabAction = makeAction(tr("关闭标签(&W)"), QKeySequence::Close);
     connect(closeTabAction, &QAction::triggered, this, &MainWindow::closeCurrentTab);
@@ -1287,7 +1296,7 @@ void MainWindow::updateForCurrentTab()
                             fitWidthAction, fitPageAction, actualSizeAction, rotateLeftAction,
                             rotateRightAction, continuousAction, singlePageAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
-                            exportWordAction, viewToolAction, selectToolAction,
+                            exportWordAction, printAction, viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)
             action->setEnabled(hasDocument);

@@ -557,6 +557,15 @@ void MainWindow::buildMenus()
     });
     viewMenu->addAction(singlePageAction);
 
+    twoPageAction = makeAction(tr("双页"), QKeySequence());
+    twoPageAction->setCheckable(true);
+    connect(twoPageAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->setLayoutMode(PageLayout::Mode::TwoPage);
+        updateForCurrentTab();
+    });
+    viewMenu->addAction(twoPageAction);
+
     // The bookmark sidebar. Checkable and per-tab like the layout modes: the
     // toggle drives whichever document is in front, and a document with no
     // bookmarks has nothing to show, so the item is disabled there.
@@ -1295,6 +1304,7 @@ void MainWindow::updateForCurrentTab()
                             lastPageAction, goToPageAction, zoomInAction, zoomOutAction,
                             fitWidthAction, fitPageAction, actualSizeAction, rotateLeftAction,
                             rotateRightAction, continuousAction, singlePageAction,
+                            twoPageAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, viewToolAction, selectToolAction,
                             recognizeToolAction}) {
@@ -1357,6 +1367,7 @@ void MainWindow::updateForCurrentTab()
 
         continuousAction->setChecked(tab->layoutMode() == PageLayout::Mode::Continuous);
         singlePageAction->setChecked(tab->layoutMode() == PageLayout::Mode::SinglePage);
+        twoPageAction->setChecked(tab->layoutMode() == PageLayout::Mode::TwoPage);
 
         // The sidebar toggle reflects the tab in front. Blocked so that reading
         // its state does not fire the toggled handler and write it back; and it

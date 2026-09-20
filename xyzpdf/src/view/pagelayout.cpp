@@ -100,6 +100,56 @@ void PageLayout::rebuild()
         return;
     }
 
+    if (layoutMode == Mode::TwoPage) {
+        // Pages are paired (0,1), (2,3), ... with page 1 on the left. A spread is
+        // as wide as its two pages plus the gap between them, and as tall as the
+        // taller of the two -- pages of different heights share the spread's top
+        // and the shorter one simply leaves room below it. An odd last page sits
+        // alone in its spread. The spreads then stack and centre exactly as
+        // continuous mode does, one spread being the unit instead of one page.
+        struct Spread
+        {
+            int left;
+            int right; // -1 when the spread holds a single page
+            double width;
+            double height;
+        };
+        QVector<Spread> spreads;
+        double widestSpread = 0;
+        for (int start = 0; start < drawn.size(); start += 2) {
+            Spread spread;
+            spread.left = start;
+            spread.right = start + 1 < drawn.size() ? start + 1 : -1;
+            spread.width = drawn.at(start).width();
+            spread.height = drawn.at(start).height();
+            if (spread.right >= 0) {
+                spread.width += gap + drawn.at(spread.right).width();
+                spread.height = qMax(spread.height, drawn.at(spread.right).height());
+            }
+            widestSpread = qMax(widestSpread, spread.width);
+            spreads.append(spread);
+        }
+
+        const double width = qMax(widestSpread + 2 * gap, viewport.width());
+        rects.fill(QRectF(), sizes.size());
+        double y = gap;
+        for (const Spread &spread : std::as_const(spreads)) {
+            const double left = (width - spread.width) / 2.0;
+            const QSizeF leftSize = drawn.at(spread.left);
+            rects[spread.left] = QRectF(left, y, leftSize.width(), leftSize.height());
+            if (spread.right >= 0) {
+                const QSizeF rightSize = drawn.at(spread.right);
+                rects[spread.right] =
+                    QRectF(left + leftSize.width() + gap, y, rightSize.width(),
+                           rightSize.height());
+            }
+            y += spread.height + gap;
+        }
+        content = QSizeF(width, qMax(y, viewport.height()));
+        return;
+    }
+
+    // Continuous: one page per row, centred.
     // Centred on the wider of the viewport and the pages: a page wider than the
     // window keeps its left margin and the scrollbar is how the rest of it is
     // reached.

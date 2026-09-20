@@ -148,6 +148,46 @@ int main()
         checkClose(layout.contentSize().height(), 600, "in both directions");
     }
 
+    // ---- two pages per spread ----
+    //
+    // Three pages: (100x200, 50x300) pair into the first spread, and the odd
+    // third page sits alone in the second. Spread 0 is 100 + 10 + 50 = 160 wide
+    // and max(200,300) = 300 tall; the content is max(160 + 20, 400) = 400 wide,
+    // so spread 0 centres at x = (400 - 160) / 2 = 120. Page 1 starts at that x
+    // and page 2 at 120 + 100 + 10 = 230, both at y = 10. Spread 1 (just page 3,
+    // 100 wide) centres at x = (400 - 100) / 2 = 150 and starts at
+    // y = 10 + 300 + 10 = 320.
+    {
+        PageLayout layout;
+        layout.setSpacing(10);
+        layout.setViewportSize(QSizeF(400, 600));
+        layout.setZoom(1.0);
+        layout.setMode(PageLayout::Mode::TwoPage);
+        layout.setPageSizes({QSizeF(100, 200), QSizeF(50, 300), QSizeF(100, 200)});
+
+        const QRectF p1 = layout.rectOf(0);
+        checkClose(p1.left(), 120, "spread 1's left page is centred as a spread");
+        checkClose(p1.top(), 10, "and starts at the top margin");
+        checkClose(p1.height(), 200, "keeping its own height");
+
+        const QRectF p2 = layout.rectOf(1);
+        checkClose(p2.left(), 230, "the right page sits beside the left one, gap between");
+        checkClose(p2.top(), 10, "both pages share the spread's top");
+        checkClose(p2.height(), 300, "the taller page sets the spread height");
+
+        const QRectF p3 = layout.rectOf(2);
+        checkClose(p3.left(), 150, "the odd last page centres alone in its spread");
+        checkClose(p3.top(), 320, "below the first spread and its gap");
+
+        checkClose(layout.contentSize().width(), 400, "content is the viewport when it is wider");
+        checkClose(layout.contentSize().height(), 600, "and at least the viewport tall");
+
+        // Every page is laid out at once (unlike single-page mode), so scrolling
+        // to a page does not move any rectangle.
+        layout.setCurrentPage(2);
+        checkClose(layout.rectOf(0).left(), 120, "the first spread does not move when the page changes");
+    }
+
     // ---- nothing open ----
     {
         PageLayout layout;

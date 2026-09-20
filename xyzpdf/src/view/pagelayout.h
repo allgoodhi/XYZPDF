@@ -11,9 +11,10 @@
 // it is, and the scroll area is told how big the whole thing is; nobody
 // converts between the two outside this file.
 //
-// 双页 and 书籍 are not here yet. The plan puts them in M3, and they are not a
-// variation on this arithmetic: facing pages need a spread index, a rule about
-// which side page 1 falls on, and a different answer for the last page.
+// 双页 (two-page) is here: pages are paired into spreads, page 1 on the left,
+// and the spreads stack vertically. 书籍 (book mode -- page 1 on the right, a
+// blank facing the cover) is not yet; it is the same spread arithmetic with a
+// leading blank and a rule about which side page 1 falls on.
 #pragma once
 
 #include <QRectF>
@@ -27,7 +28,10 @@ public:
         // Pages stacked top to bottom, scrolled through.
         Continuous,
         // One page at a time.
-        SinglePage
+        SinglePage,
+        // Two pages side by side per spread (page 1 on the left), the spreads
+        // stacked and scrolled like continuous mode.
+        TwoPage
     };
 
     void setMode(Mode mode);

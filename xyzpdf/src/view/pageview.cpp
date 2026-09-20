@@ -264,25 +264,11 @@ double PageView::fittingZoom() const
     if (page < 0 || page >= sizes.size() || sizes.at(page).isEmpty())
         return layout.zoom();
 
-    // What "fit" is fitted *to*. In two-page mode that is the whole spread, not
-    // the one page: fitting a single page leaves the facing page twice as wide
-    // as the window, so the reader has to scroll sideways to see it -- which is
-    // the opposite of what "fit width" promises. The spread's width is the two
-    // pages summed (the gap between them is added in pixels by the layout, and
-    // the fit margin already leaves room for it), its height the taller page.
-    QSizeF fitAgainst = sizes.at(page);
-    if (layout.mode() == PageLayout::Mode::TwoPage) {
-        const int left = page - (page % 2);
-        const int right = left + 1;
-        double width = sizes.at(left).width();
-        double height = sizes.at(left).height();
-        if (right < sizes.size() && !sizes.at(right).isEmpty()) {
-            width += sizes.at(right).width();
-            height = qMax(height, sizes.at(right).height());
-        }
-        fitAgainst = QSizeF(width, height);
-    }
-
+    // What "fit" is fitted *to*. The layout decides: a single page in the normal
+    // modes, the whole spread in the two-page and book modes -- fitting one page
+    // there would leave the facing page twice as wide as the window and force a
+    // sideways scroll, the opposite of what "fit width" promises.
+    const QSizeF fitAgainst = layout.fitTarget(page);
     const QSizeF viewportSize(viewport()->width(), viewport()->height());
     // The controller owns this decision for all three modes, including "the
     // factor the user chose, whatever the window is doing". Asking it rather

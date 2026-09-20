@@ -198,6 +198,7 @@ private:
     QAction *continuousAction = nullptr;
     QAction *singlePageAction = nullptr;
     QAction *twoPageAction = nullptr;
+    QAction *bookModeAction = nullptr;
     QAction *outlineSidebarAction = nullptr;
 
     // The tool the user chose, for the tabs that are opened after this. The tab

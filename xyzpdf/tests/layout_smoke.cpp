@@ -188,6 +188,39 @@ int main()
         checkClose(layout.rectOf(0).left(), 120, "the first spread does not move when the page changes");
     }
 
+    // ---- book mode ----
+    //
+    // Same three pages, but page 1 faces a blank on the right, then (2,3).
+    // Spread 0 is blank + page 1: the blank mirrors page 1 (100 wide), so the
+    // spread is 100 + 10 + 100 = 210 wide and page 1 sits on the right at
+    // x = (400 - 210)/2 + 100 + 10 = 205. Spread 1 is pages 2 and 3: 50 + 10 +
+    // 100 = 160 wide, centred at x = (400 - 160)/2 = 120, below spread 0 at
+    // y = 10 + 200 + 10 = 220.
+    {
+        PageLayout layout;
+        layout.setSpacing(10);
+        layout.setViewportSize(QSizeF(400, 600));
+        layout.setZoom(1.0);
+        layout.setMode(PageLayout::Mode::Book);
+        layout.setPageSizes({QSizeF(100, 200), QSizeF(50, 300), QSizeF(100, 200)});
+
+        const QRectF p1 = layout.rectOf(0);
+        checkClose(p1.left(), 205, "page 1 sits on the right, facing the blank");
+        checkClose(p1.top(), 10, "in the first spread at the top");
+
+        const QRectF p2 = layout.rectOf(1);
+        checkClose(p2.left(), 120, "page 2 opens the second spread on the left");
+        checkClose(p2.top(), 220, "below the first spread");
+
+        const QRectF p3 = layout.rectOf(2);
+        checkClose(p3.left(), 180, "page 3 faces page 2 on the right");
+
+        // The fit target is the whole spread, and the blank half counts: page 1
+        // fits against two page-widths (200), not one.
+        checkClose(layout.fitTarget(0).width(), 200, "page 1 fits against a full spread");
+        checkClose(layout.fitTarget(1).width(), 150, "page 2 fits against its spread's two pages");
+    }
+
     // ---- nothing open ----
     {
         PageLayout layout;

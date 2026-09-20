@@ -566,6 +566,15 @@ void MainWindow::buildMenus()
     });
     viewMenu->addAction(twoPageAction);
 
+    bookModeAction = makeAction(tr("书籍模式"), QKeySequence());
+    bookModeAction->setCheckable(true);
+    connect(bookModeAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->setLayoutMode(PageLayout::Mode::Book);
+        updateForCurrentTab();
+    });
+    viewMenu->addAction(bookModeAction);
+
     // The bookmark sidebar. Checkable and per-tab like the layout modes: the
     // toggle drives whichever document is in front, and a document with no
     // bookmarks has nothing to show, so the item is disabled there.
@@ -1018,7 +1027,7 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
             // than trusted.
             AppSettings::DocumentSession saved;
             if (AppSettings::loadDocumentSession(path, saved)) {
-                if (saved.layoutMode >= 0 && saved.layoutMode <= int(PageLayout::Mode::TwoPage))
+                if (saved.layoutMode >= 0 && saved.layoutMode <= int(PageLayout::Mode::Book))
                     tab->setLayoutMode(PageLayout::Mode(saved.layoutMode));
                 if (saved.zoomMode == int(ZoomController::Mode::Percent) && saved.zoomPercent > 0)
                     tab->setZoom(saved.zoomPercent);
@@ -1321,7 +1330,7 @@ void MainWindow::updateForCurrentTab()
                             lastPageAction, goToPageAction, zoomInAction, zoomOutAction,
                             fitWidthAction, fitPageAction, actualSizeAction, rotateLeftAction,
                             rotateRightAction, continuousAction, singlePageAction,
-                            twoPageAction,
+                            twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, viewToolAction, selectToolAction,
                             recognizeToolAction}) {
@@ -1385,6 +1394,7 @@ void MainWindow::updateForCurrentTab()
         continuousAction->setChecked(tab->layoutMode() == PageLayout::Mode::Continuous);
         singlePageAction->setChecked(tab->layoutMode() == PageLayout::Mode::SinglePage);
         twoPageAction->setChecked(tab->layoutMode() == PageLayout::Mode::TwoPage);
+        bookModeAction->setChecked(tab->layoutMode() == PageLayout::Mode::Book);
 
         // The sidebar toggle reflects the tab in front. Blocked so that reading
         // its state does not fire the toggled handler and write it back; and it

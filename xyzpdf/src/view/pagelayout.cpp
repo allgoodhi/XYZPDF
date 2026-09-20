@@ -63,6 +63,47 @@ QRectF PageLayout::rectOf(int page) const
     return rects.at(page);
 }
 
+QVector<QPair<int, int>> PageLayout::spreadList() const
+{
+    QVector<QPair<int, int>> spreads;
+    const int n = sizes.size();
+    if (n == 0)
+        return spreads;
+    if (layoutMode == Mode::Book) {
+        // Page 1 (index 0) on the right, facing a blank; then (2,3)(4,5)...
+        spreads.append({-1, 0});
+        for (int p = 1; p < n; p += 2)
+            spreads.append({p, p + 1 < n ? p + 1 : -1});
+    } else if (layoutMode == Mode::TwoPage) {
+        // Page 1 on the left: (1,2)(3,4)...
+        for (int p = 0; p < n; p += 2)
+            spreads.append({p, p + 1 < n ? p + 1 : -1});
+    }
+    return spreads;
+}
+
+QSizeF PageLayout::fitTarget(int page) const
+{
+    if (page < 0 || page >= sizes.size())
+        return {};
+    if (layoutMode != Mode::TwoPage && layoutMode != Mode::Book)
+        return sizes.at(page);
+    for (const QPair<int, int> &spread : spreadList()) {
+        if (spread.first != page && spread.second != page)
+            continue;
+        const int left = spread.first;
+        const int right = spread.second;
+        const QSizeF leftSize =
+            left >= 0 ? sizes.at(left) : (right >= 0 ? sizes.at(right) : QSizeF());
+        const QSizeF rightSize = right >= 0 ? sizes.at(right) : QSizeF();
+        // The gap is left out: it is added in pixels by the layout and already
+        // allowed for by the fit margin, so the target is the pages' own widths.
+        return QSizeF(leftSize.width() + (right >= 0 ? rightSize.width() : 0.0),
+                      qMax(leftSize.height(), rightSize.height()));
+    }
+    return sizes.at(page);
+}
+
 void PageLayout::rebuild()
 {
     rects.clear();
@@ -100,50 +141,49 @@ void PageLayout::rebuild()
         return;
     }
 
-    if (layoutMode == Mode::TwoPage) {
-        // Pages are paired (0,1), (2,3), ... with page 1 on the left. A spread is
-        // as wide as its two pages plus the gap between them, and as tall as the
-        // taller of the two -- pages of different heights share the spread's top
-        // and the shorter one simply leaves room below it. An odd last page sits
-        // alone in its spread. The spreads then stack and centre exactly as
-        // continuous mode does, one spread being the unit instead of one page.
-        struct Spread
+    if (layoutMode == Mode::TwoPage || layoutMode == Mode::Book) {
+        // Both are spreads; spreadList() is the single source of how pages pair.
+        // A spread is as wide as its two pages plus the gap between them and as
+        // tall as the taller; a book's leading blank mirrors its partner so page
+        // 1 sits on the right. The spreads then centre and stack as continuous
+        // mode does, one spread being the unit instead of one page.
+        const QVector<QPair<int, int>> spreads = spreadList();
+        struct Box
         {
-            int left;
-            int right; // -1 when the spread holds a single page
             double width;
             double height;
         };
-        QVector<Spread> spreads;
+        QVector<Box> boxes;
+        boxes.reserve(spreads.size());
         double widestSpread = 0;
-        for (int start = 0; start < drawn.size(); start += 2) {
-            Spread spread;
-            spread.left = start;
-            spread.right = start + 1 < drawn.size() ? start + 1 : -1;
-            spread.width = drawn.at(start).width();
-            spread.height = drawn.at(start).height();
-            if (spread.right >= 0) {
-                spread.width += gap + drawn.at(spread.right).width();
-                spread.height = qMax(spread.height, drawn.at(spread.right).height());
-            }
-            widestSpread = qMax(widestSpread, spread.width);
-            spreads.append(spread);
+        for (const QPair<int, int> &spread : std::as_const(spreads)) {
+            const int left = spread.first;
+            const int right = spread.second;
+            const QSizeF leftSize =
+                left >= 0 ? drawn.at(left) : (right >= 0 ? drawn.at(right) : QSizeF());
+            const QSizeF rightSize = right >= 0 ? drawn.at(right) : QSizeF();
+            Box box;
+            box.width = leftSize.width() + (right >= 0 ? gap + rightSize.width() : 0.0);
+            box.height = qMax(leftSize.height(), rightSize.height());
+            widestSpread = qMax(widestSpread, box.width);
+            boxes.append(box);
         }
 
         const double width = qMax(widestSpread + 2 * gap, viewport.width());
         rects.fill(QRectF(), sizes.size());
         double y = gap;
-        for (const Spread &spread : std::as_const(spreads)) {
-            const double left = (width - spread.width) / 2.0;
-            const QSizeF leftSize = drawn.at(spread.left);
-            rects[spread.left] = QRectF(left, y, leftSize.width(), leftSize.height());
-            if (spread.right >= 0) {
-                const QSizeF rightSize = drawn.at(spread.right);
-                rects[spread.right] =
-                    QRectF(left + leftSize.width() + gap, y, rightSize.width(),
-                           rightSize.height());
-            }
-            y += spread.height + gap;
+        for (int s = 0; s < spreads.size(); ++s) {
+            const int left = spreads.at(s).first;
+            const int right = spreads.at(s).second;
+            const QSizeF leftSize =
+                left >= 0 ? drawn.at(left) : (right >= 0 ? drawn.at(right) : QSizeF());
+            const double x = (width - boxes.at(s).width) / 2.0;
+            if (left >= 0)
+                rects[left] = QRectF(x, y, drawn.at(left).width(), drawn.at(left).height());
+            if (right >= 0)
+                rects[right] = QRectF(x + leftSize.width() + gap, y, drawn.at(right).width(),
+                                      drawn.at(right).height());
+            y += boxes.at(s).height + gap;
         }
         content = QSizeF(width, qMax(y, viewport.height()));
         return;

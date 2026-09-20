@@ -11,12 +11,15 @@
 // it is, and the scroll area is told how big the whole thing is; nobody
 // converts between the two outside this file.
 //
-// 双页 (two-page) is here: pages are paired into spreads, page 1 on the left,
-// and the spreads stack vertically. 书籍 (book mode -- page 1 on the right, a
-// blank facing the cover) is not yet; it is the same spread arithmetic with a
-// leading blank and a rule about which side page 1 falls on.
+// 双页 (two-page) and 书籍 (book) are both spreads: pages paired side by side,
+// the spreads stacked and scrolled. They differ only in the pairing -- two-page
+// starts (1,2)(3,4) with page 1 on the left, book starts (·,1)(2,3)(4,5) with
+// page 1 on the right facing a blank, the way a real book opens. The pairing
+// lives in one place (spreadList) so the layout and the fit-to-spread zoom cannot
+// drift apart.
 #pragma once
 
+#include <QPair>
 #include <QRectF>
 #include <QSizeF>
 #include <QVector>
@@ -31,7 +34,10 @@ public:
         SinglePage,
         // Two pages side by side per spread (page 1 on the left), the spreads
         // stacked and scrolled like continuous mode.
-        TwoPage
+        TwoPage,
+        // Like TwoPage but a book: page 1 sits on the right facing a blank, then
+        // the pages pair (2,3)(4,5)... the way a real book opens.
+        Book
     };
 
     void setMode(Mode mode);
@@ -68,6 +74,14 @@ public:
 
     QRectF rectOf(int page) const;
 
+    // What "fit width" / "fit page" is fitted *to* for a given page. In the
+    // spread modes that is the whole spread -- the two facing pages summed (a
+    // book's leading blank mirrors its partner, so page 1 sits on the right at a
+    // width that keeps both halves visible) -- not the single page, which would
+    // leave the facing page off-screen and force a sideways scroll. For the other
+    // modes it is just the page's own size.
+    QSizeF fitTarget(int page) const;
+
     // How big the whole content is, which is what the scroll area is told.
     QSizeF contentSize() const;
 
@@ -82,6 +96,11 @@ public:
 
 private:
     void rebuild();
+
+    // The spreads as (left, right) page indices, -1 for a blank half. Empty for
+    // the modes that are not spreads. The single source of the pairing, shared by
+    // rebuild() and fitTarget() so the layout and the fit-to-spread zoom agree.
+    QVector<QPair<int, int>> spreadList() const;
 
     Mode layoutMode = Mode::Continuous;
     QVector<QSizeF> sizes;

@@ -3,6 +3,7 @@
 
 #include "../theme/theme.h"
 
+#include <QCryptographicHash>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -241,6 +242,62 @@ inline void setTranslateTrigger(const QString &mode)
     QSettings valueStore = settings();
     valueStore.setValue(translateTriggerKey(), mode);
     valueStore.sync();
+}
+
+// Where a reader left off in a document, so reopening it puts them back.
+//
+// The enums are stored as their integer values: ZoomController::Mode and
+// PageLayout::Mode, which the caller casts. Kept as ints here so this header
+// does not have to know those types -- a stored 3 that no longer names a mode is
+// clamped by the caller, not a crash.
+struct DocumentSession
+{
+    int page = 0;
+    int zoomMode = 0;
+    double zoomPercent = 1.0;
+    int layoutMode = 0;
+};
+
+// Sessions are keyed by a hash of the path, not the path itself: a Windows path
+// is full of ':' and '\' and QSettings reads '/' as a group separator, so the
+// literal path would not survive being a key. The hash is fixed-length and
+// separator-free; a collision between two of one person's files is not worth
+// worrying about.
+inline QString documentSessionGroup(const QString &path)
+{
+    const QByteArray digest =
+        QCryptographicHash::hash(path.toLower().toUtf8(), QCryptographicHash::Md5).toHex();
+    return QStringLiteral("session/") + QString::fromLatin1(digest);
+}
+
+inline void saveDocumentSession(const QString &path, const DocumentSession &session)
+{
+    if (path.isEmpty())
+        return;
+    const QString group = documentSessionGroup(path);
+    QSettings valueStore = settings();
+    valueStore.setValue(group + QStringLiteral("/page"), session.page);
+    valueStore.setValue(group + QStringLiteral("/zoomMode"), session.zoomMode);
+    valueStore.setValue(group + QStringLiteral("/zoomPercent"), session.zoomPercent);
+    valueStore.setValue(group + QStringLiteral("/layoutMode"), session.layoutMode);
+    valueStore.sync();
+}
+
+// True when a session was stored for this path. Absent is the common case -- a
+// first open -- and the caller then leaves the view at its defaults.
+inline bool loadDocumentSession(const QString &path, DocumentSession &out)
+{
+    if (path.isEmpty())
+        return false;
+    const QString group = documentSessionGroup(path);
+    QSettings valueStore = settings();
+    if (!valueStore.contains(group + QStringLiteral("/page")))
+        return false;
+    out.page = valueStore.value(group + QStringLiteral("/page")).toInt();
+    out.zoomMode = valueStore.value(group + QStringLiteral("/zoomMode")).toInt();
+    out.zoomPercent = valueStore.value(group + QStringLiteral("/zoomPercent")).toDouble();
+    out.layoutMode = valueStore.value(group + QStringLiteral("/layoutMode")).toInt();
+    return true;
 }
 
 } // namespace AppSettings

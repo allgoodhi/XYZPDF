@@ -1009,8 +1009,25 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
         RecentDocuments::remember(path);
         AppSettings::setLastOpenDirectory(info.absolutePath());
         rebuildRecentMenu();
-        if (page >= 0)
+        if (page >= 0) {
             tab->setCurrentPage(page);
+        } else {
+            // No page was asked for on the command line, so put the reader back
+            // where they left off. A stored mode that no longer names one (an
+            // enum that changed shape between versions) is clamped away rather
+            // than trusted.
+            AppSettings::DocumentSession saved;
+            if (AppSettings::loadDocumentSession(path, saved)) {
+                if (saved.layoutMode >= 0 && saved.layoutMode <= int(PageLayout::Mode::TwoPage))
+                    tab->setLayoutMode(PageLayout::Mode(saved.layoutMode));
+                if (saved.zoomMode == int(ZoomController::Mode::Percent) && saved.zoomPercent > 0)
+                    tab->setZoom(saved.zoomPercent);
+                else if (saved.zoomMode >= 0 && saved.zoomMode <= int(ZoomController::Mode::Percent))
+                    tab->setZoomMode(ZoomController::Mode(saved.zoomMode));
+                if (saved.page >= 0 && saved.page < tab->pageCount())
+                    tab->setCurrentPage(saved.page);
+            }
+        }
         statusBar()->showMessage(tr("已打开 %1").arg(info.fileName()), 4000);
         updateForCurrentTab();
         // A page number on the command line is a jump, so it happens here

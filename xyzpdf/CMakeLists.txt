@@ -633,6 +633,14 @@ if(XYZPDF_BUILD_PRINT_SMOKE)
         LIBRARIES Qt6::PrintSupport)
 endif()
 
+# The per-document session record: the path-hashing and round-trip that put a
+# reader back where they left off. Header-only storage over QSettings, which the
+# test runner redirects to a scratch file, so this writes nothing real.
+option(XYZPDF_BUILD_APPSETTINGS_SMOKE "Build the settings storage smoke test" OFF)
+if(XYZPDF_BUILD_APPSETTINGS_SMOKE)
+    xyzpdf_add_test(appsettings_smoke)
+endif()
+
 # The registry entries, and the guard on the recursive delete in front of them.
 # Windows only, because none of it exists anywhere else.
 option(XYZPDF_BUILD_SHELLINTEGRATION_SMOKE "Build the shell integration smoke test" OFF)

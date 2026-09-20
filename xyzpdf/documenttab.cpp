@@ -163,6 +163,18 @@ DocumentTab::DocumentTab(QWidget *parent)
 
 DocumentTab::~DocumentTab()
 {
+    // Where the reader left off, remembered for the next time this file opens.
+    // Done first, while the document is still here to ask; a tab that never
+    // opened (a failed load) has nothing worth remembering.
+    if (opened) {
+        AppSettings::DocumentSession session;
+        session.page = currentPage();
+        session.zoomMode = static_cast<int>(zoomMode());
+        session.zoomPercent = zoom();
+        session.layoutMode = static_cast<int>(layoutMode());
+        AppSettings::saveDocumentSession(documentPath(), session);
+    }
+
     // A scan reads through the backend, and the backend is about to be
     // destroyed with this object. Cancelled and waited for here rather than
     // left to finish: a worker holding a pointer to a document that has been

@@ -41,6 +41,7 @@
 #include <QMimeData>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
@@ -546,6 +547,18 @@ void MainWindow::buildMenus()
         updateForCurrentTab();
     });
     viewMenu->addAction(singlePageAction);
+
+    // The bookmark sidebar. Checkable and per-tab like the layout modes: the
+    // toggle drives whichever document is in front, and a document with no
+    // bookmarks has nothing to show, so the item is disabled there.
+    outlineSidebarAction = makeAction(tr("书签大纲侧栏"),
+                                      QKeySequence(QStringLiteral("Ctrl+Shift+B")));
+    outlineSidebarAction->setCheckable(true);
+    connect(outlineSidebarAction, &QAction::toggled, this, [this](bool on) {
+        if (DocumentTab *tab = currentTab())
+            tab->setSidebarVisible(on);
+    });
+    viewMenu->addAction(outlineSidebarAction);
 
     // ---- 转到 ----
     QMenu *goMenu = menuBar()->addMenu(tr("转到(&G)"));
@@ -1336,6 +1349,15 @@ void MainWindow::updateForCurrentTab()
         continuousAction->setChecked(tab->layoutMode() == PageLayout::Mode::Continuous);
         singlePageAction->setChecked(tab->layoutMode() == PageLayout::Mode::SinglePage);
 
+        // The sidebar toggle reflects the tab in front. Blocked so that reading
+        // its state does not fire the toggled handler and write it back; and it
+        // is only offered on a document that actually has bookmarks.
+        {
+            const QSignalBlocker blocker(outlineSidebarAction);
+            outlineSidebarAction->setChecked(tab->sidebarVisible());
+        }
+        outlineSidebarAction->setEnabled(tab->hasOutline());
+
         statusPage->setText(tr("%1 / %2").arg(tab->currentPage() + 1).arg(count));
         statusZoom->setText(tr("%1%").arg(percent));
     } else {
@@ -1343,6 +1365,7 @@ void MainWindow::updateForCurrentTab()
         zoomBox->setCurrentText(QString());
         statusPage->setText(QString());
         statusZoom->setText(QString());
+        outlineSidebarAction->setEnabled(false);
     }
     updatingControls = false;
 

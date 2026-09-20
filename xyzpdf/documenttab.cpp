@@ -1,6 +1,7 @@
 #include "documenttab.h"
 
 #include "src/core/appsettings.h"
+#include "src/core/windowdialogs.h"
 #include "src/document/pagemetrics.h"
 #include "src/document/qtpdfbackend.h"
 #include "src/render/pagerenderer.h"
@@ -8,11 +9,13 @@
 #include "src/translate/translator.h"
 #include "src/ui/findbar.h"
 #include "src/ui/ocrdialog.h"
+#include "src/ui/outlinepanel.h"
 #include "src/ui/translatedialog.h"
 #include "src/view/pageview.h"
 
 #include <QAtomicInt>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
@@ -20,6 +23,7 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QPainter>
+#include <QSplitter>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -77,11 +81,28 @@ DocumentTab::DocumentTab(QWidget *parent)
     findBar->hide();
 
     pageView = new PageView(this);
+    outlinePanel = new OutlinePanel(this);
+    // The bookmarks sit beside the page, not above or below it: a reader follows
+    // an outline while looking at the page it points into. Hidden until a
+    // document turns out to have bookmarks -- a empty sidebar is a strip of
+    // nothing taking a third of the window.
+    outlinePanel->hide();
+    auto *readingSplit = new QSplitter(Qt::Horizontal, this);
+    readingSplit->addWidget(outlinePanel);
+    readingSplit->addWidget(pageView);
+    readingSplit->setStretchFactor(0, 0); // the sidebar keeps its own width
+    readingSplit->setStretchFactor(1, 1); // the page takes whatever is left
+    readingSplit->setCollapsible(1, false); // the page is never squeezed away
+
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(findBar);
-    layout->addWidget(pageView);
+    layout->addWidget(readingSplit);
+
+    connect(outlinePanel, &OutlinePanel::jumpToPage, this, [this](int page) {
+        pageView->goToPage(page);
+    });
 
     connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
     connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
@@ -119,6 +140,7 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(pageView, &PageView::regionCaptured, this, &DocumentTab::onRegionCaptured);
     connect(pageView, &PageView::copyRequested, this, &DocumentTab::copySelection);
     connect(pageView, &PageView::translateRequested, this, &DocumentTab::translateSelection);
+    connect(pageView, &PageView::linkActivated, this, &DocumentTab::onLinkActivated);
     // "划线即翻": when the reader asked for it, finishing a selection translates
     // it without a second click. The default ("menu") does nothing here, so the
     // reader who only wants the right-click path is not interrupted.
@@ -482,6 +504,8 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         pageView->setDocument(nullptr);
         pageView->setRotation(0);
         pageView->clearDocument();
+        outlinePanel->setOutline({});
+        applySidebarVisibility();
         Q_EMIT titleChanged(title());
         Q_EMIT pageChanged(0, 0);
         return result;
@@ -521,6 +545,12 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
     opened = true;
 
     pageView->setPageSizes(sizes);
+
+    // The bookmarks, filled in once the document is known to be open. A document
+    // with none leaves the panel empty and it stays hidden whatever the reader
+    // asked for -- there is nothing to show.
+    outlinePanel->setOutline(backend->outline());
+    applySidebarVisibility();
 
     Q_EMIT titleChanged(title());
     Q_EMIT pageChanged(pageView->currentPage(), count);
@@ -855,6 +885,40 @@ void DocumentTab::translateText(const QString &raw)
     dialog->setPending(text);
     dialog->show();
     startTranslation(text, dialog);
+}
+
+void DocumentTab::setSidebarVisible(bool visible)
+{
+    sidebarWanted = visible;
+    applySidebarVisibility();
+}
+
+void DocumentTab::applySidebarVisibility()
+{
+    outlinePanel->setVisible(sidebarWanted && outlinePanel->hasOutline());
+}
+
+bool DocumentTab::hasOutline() const
+{
+    return outlinePanel->hasOutline();
+}
+
+void DocumentTab::onLinkActivated(const Link &link)
+{
+    if (!link.url.isEmpty()) {
+        // Handing an address that came out of a document to the browser is asked
+        // about first (docs/PLAN.md M2): the URL may be longer than the words it
+        // was drawn under, and once it opens, it has left this program.
+        const QMessageBox::StandardButton answer = WindowDialogs::question(
+            this, tr("打开链接"),
+            tr("要在浏览器中打开这个地址：\n%1\n\n继续吗？").arg(link.url.toString()),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer == QMessageBox::Yes)
+            QDesktopServices::openUrl(link.url);
+        return;
+    }
+    if (link.targetPage >= 0 && link.targetPage < pageCount())
+        pageView->goToPage(link.targetPage);
 }
 
 void DocumentTab::startTranslation(const QString &text, QPointer<TranslateDialog> dialog)

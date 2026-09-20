@@ -34,6 +34,7 @@
 
 class FindBar;
 class OcrDialog;
+class OutlinePanel;
 class PageRenderer;
 class PageView;
 class QtPdfBackend;
@@ -147,6 +148,19 @@ public:
 
     PageView *view() const { return pageView; }
 
+    // ---- 书签大纲侧栏 ----
+    //
+    // The bookmark sidebar belongs to the tab (docs/PLAN.md §7.1): each open
+    // document has its own outline, and the window's toggle drives whichever tab
+    // is in front. setSidebarVisible shows or hides it; sidebarVisible reports
+    // the wish even when there is nothing to show -- the window keeps its menu
+    // item checked to match, and an empty document simply has nothing to reveal.
+    void setSidebarVisible(bool visible);
+    bool sidebarVisible() const { return sidebarWanted; }
+    // Whether this document actually has bookmarks to show, so the window can
+    // disable the toggle on a document that has none.
+    bool hasOutline() const;
+
     // ---- 导出 ----
     //
     // Writes the whole document's text out as a Word file, off the UI thread:
@@ -207,6 +221,10 @@ private:
     // size of its own, then recognized, then answered in a window.
     void onRegionCaptured(int page, QRectF points);
 
+    // A link clicked in the reading tool: jump to the page it names, or -- for
+    // an external one -- ask first and then hand the URL to the browser.
+    void onLinkActivated(const Link &link);
+
     // The matches a scan came back with, in page order.
     void applySearchResults(const QVector<TextSearch::Match> &matches);
     // One match as the range the view draws and scrolls to, or an empty range
@@ -224,6 +242,10 @@ private:
     // set (the translate tool boxing a picture), the recognized words are sent
     // straight to a translation and `dialog` is null.
     void startRecognition(const QImage &crop, QPointer<OcrDialog> dialog, bool thenTranslate = false);
+
+    // Shows the sidebar only when the reader asked for it *and* the document has
+    // bookmarks -- the one place those two conditions meet.
+    void applySidebarVisibility();
 
     // The same for a translation: the request runs off the UI thread (a round
     // trip is a second or more), and the window is watched so a result nobody is
@@ -245,6 +267,11 @@ private:
     RenderCache cache;
     FindBar *findBar = nullptr;
     PageView *pageView = nullptr;
+    OutlinePanel *outlinePanel = nullptr;
+    // Whether the reader asked for the sidebar, kept separate from whether it is
+    // shown: a document with no bookmarks cannot show one, but the window's menu
+    // item still reflects what was asked.
+    bool sidebarWanted = false;
 
     // ---- search state ----
     //

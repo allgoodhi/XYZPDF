@@ -196,6 +196,7 @@ private:
     QAction *rotateRightAction = nullptr;
     QAction *continuousAction = nullptr;
     QAction *singlePageAction = nullptr;
+    QAction *outlineSidebarAction = nullptr;
 
     // The tool the user chose, for the tabs that are opened after this. The tab
     // in front has its own copy -- this is what a new one is started with, so

@@ -225,6 +225,8 @@ set(XYZPDF_SOURCES
     src/ui/languagedialog.cpp
     src/ui/ocrdialog.h
     src/ui/ocrdialog.cpp
+    src/ui/outlinepanel.h
+    src/ui/outlinepanel.cpp
     src/ui/thirdpartydialog.h
     src/ui/thirdpartydialog.cpp
     src/ui/translatedialog.h
@@ -487,6 +489,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     endif()
     xyzpdf_add_test(documenttab_smoke
         SOURCES documenttab.cpp
+                src/core/windowdialogs.cpp
                 src/view/pageview.cpp
                 src/view/pagelayout.cpp
                 src/view/zoomcontroller.cpp
@@ -502,6 +505,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/translate/translator.cpp
                 src/ui/findbar.cpp
                 src/ui/ocrdialog.cpp
+                src/ui/outlinepanel.cpp
                 src/ui/translatedialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
@@ -549,6 +553,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/findbar.cpp
                 src/ui/languagedialog.cpp
                 src/ui/ocrdialog.cpp
+                src/ui/outlinepanel.cpp
                 src/ui/translatedialog.cpp
                 src/ui/thirdpartydialog.cpp
                 src/ui/wrappingtoolbararea.cpp

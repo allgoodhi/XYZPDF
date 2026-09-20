@@ -276,6 +276,11 @@ Q_SIGNALS:
     void copyRequested();
     void translateRequested();
 
+    // A link the reader clicked, in the reading (View) tool. The view does not
+    // open URLs or move the page -- it says which link was hit and the tab acts
+    // (internal jump, or an external link behind a confirmation).
+    void linkActivated(const Link &link);
+
     // A selection was just completed -- the drag was released over text, or a
     // word was double-clicked. Emitted only on the finishing gesture, not on
     // every move, so a caller that acts on a finished selection (the "划线即翻"
@@ -376,6 +381,15 @@ private:
     // coordinates -- which is the unrotated ones, whatever the view is doing.
     QPointF pagePointFor(int page, const QPointF &viewportPoint) const;
 
+    // A page's links, fetched from the document once and kept. links() is a
+    // PDFium call behind the same global lock as rendering, so it is not
+    // something to ask on every mouse move; the cursor and the click both go
+    // through this cache, which is emptied when the document changes.
+    const QVector<Link> &linksFor(int page) const;
+    // The link under a viewport point, or null when there is none. Only asked in
+    // the reading tool, where following a link is what a click means.
+    const Link *linkAt(const QPoint &viewportPoint) const;
+
     // Moves the focus end of the selection to a point, if there is text there.
     void extendSelectionTo(const QPoint &viewportPoint);
 
@@ -412,6 +426,10 @@ private:
 
     // Borrowed, for text queries only. See setDocument().
     Document *textSource = nullptr;
+
+    // A page's links, kept once fetched (see linksFor). Mutable because the
+    // cursor's hit test is a const question that still has to populate it.
+    mutable QHash<int, QVector<Link>> linkCache;
 
     // The two ends of the selection: where the drag started, and where the
     // pointer is. Page -1 means there is no selection. Which one is "before"

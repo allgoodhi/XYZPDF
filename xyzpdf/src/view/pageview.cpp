@@ -427,6 +427,9 @@ void PageView::setDocument(Document *document)
     // Indices into text belong to the text they came from: kept across a
     // document change they would select a range of whatever is open now.
     clearSelection();
+    // And the links are per-page into the document too -- a cached page of links
+    // from the old file would point at pages of this one.
+    linkCache.clear();
 }
 
 void PageView::clearSelection()
@@ -529,6 +532,34 @@ QPointF PageView::pagePointFor(int page, const QPointF &viewportPoint) const
     }
 }
 
+const QVector<Link> &PageView::linksFor(int page) const
+{
+    static const QVector<Link> none;
+    if (!textSource || page < 0 || page >= pageCount())
+        return none;
+    auto found = linkCache.constFind(page);
+    if (found != linkCache.constEnd())
+        return found.value();
+    // Fetched once per page. links() is a PDFium call, and the cursor asks on
+    // every move, so the cache is what keeps that off the hot path.
+    linkCache.insert(page, textSource->links(page));
+    return linkCache.constFind(page).value();
+}
+
+const Link *PageView::linkAt(const QPoint &viewportPoint) const
+{
+    const int page = pageAtPoint(viewportPoint);
+    if (page < 0)
+        return nullptr;
+    const QPointF at = pagePointFor(page, viewportPoint);
+    const QVector<Link> &links = linksFor(page);
+    for (const Link &link : links) {
+        if (link.box.contains(at))
+            return &link;
+    }
+    return nullptr;
+}
+
 void PageView::extendSelectionTo(const QPoint &viewportPoint)
 {
     if (!textSource)
@@ -592,10 +623,15 @@ void PageView::mousePressEvent(QMouseEvent *event)
 
     // ---- the hand ----
     //
-    // It takes the mouse: a pan that stops when the pointer leaves the widget
-    // is a page that stops moving under a hand that has not let go, which feels
-    // like the program dropping it.
+    // A click on a link is not the start of a pan: in the reading tool, a link
+    // under the pointer is what a click means, so it is followed and the press
+    // stops there. Anything else the hand does is pick the page up and move it.
     if (activeTool == Tool::View) {
+        if (const Link *link = linkAt(at)) {
+            Q_EMIT linkActivated(*link);
+            event->accept();
+            return;
+        }
         panning = true;
         panOrigin = at;
         viewport()->grabMouse();
@@ -703,6 +739,10 @@ Qt::CursorShape PageView::pointerShapeFor(const QPoint &viewportPoint) const
 {
     switch (activeTool) {
     case Tool::View:
+        // A hand everywhere, except over a link -- where it becomes the pointing
+        // hand that says "this click goes somewhere".
+        if (!panning && linkAt(viewportPoint))
+            return Qt::PointingHandCursor;
         return panning ? Qt::ClosedHandCursor : Qt::OpenHandCursor;
     case Tool::Recognize:
         // A crosshair, which is what "draw a box" looks like everywhere else,

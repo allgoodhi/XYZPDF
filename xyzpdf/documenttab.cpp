@@ -899,6 +899,15 @@ void DocumentTab::onRegionCaptured(int page, QRectF points)
 
     OcrDialog *dialog = new OcrDialog(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    // The pixels go in before the recognition answer can, so that "复制图片" is
+    // available even if the engine finds nothing to read -- which for a chart or
+    // a photograph is the usual outcome, and not a reason to withhold the picture.
+    // It is handed the screen's own colours, because that is the picture the
+    // reader chose. Recognition still gets `cropImage` as the renderer produced
+    // it: dark-on-light is what the engine expects, and inverting it to match a
+    // night screen would be a way to make the words harder to read for the one
+    // consumer that has no eyes.
+    dialog->setCropImage(cropImage, pageView->nightInverted());
     // The recognized words can be translated from this window -- the path that
     // reads a scan or a picture into another language.
     connect(dialog, &OcrDialog::translateRequested, this, &DocumentTab::translateText);

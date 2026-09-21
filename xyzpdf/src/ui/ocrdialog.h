@@ -13,6 +13,7 @@
 #include "../ocr/ocrengine.h"
 
 #include <QDialog>
+#include <QImage>
 
 class QLabel;
 class QPlainTextEdit;
@@ -33,6 +34,17 @@ public:
     // engine's sentence about what went wrong.
     void setResult(const Ocr::Result &result);
 
+    // The box the reader dragged, as pixels. Offered beside the words because
+    // they are two different asks: a figure, a chart or a foreign stamp is often
+    // wanted as a picture to paste somewhere even when it holds no readable
+    // text at all -- so this stays available when setResult reports nothing.
+    //
+    // `matchScreen` is whether the reader is reading at night. The renderer's
+    // image carries no paper -- the white is put down by whoever shows it -- so
+    // what gets stored here is the crop laid over paper and, at night, inverted:
+    // the same picture the reader is looking at rather than its complement.
+    void setCropImage(const QImage &rendered, bool matchScreen);
+
 Q_SIGNALS:
     // The reader asked to translate what was just recognized. The dialog has no
     // business with a translation service -- it hands the text out and the tab
@@ -43,5 +55,7 @@ private:
     QLabel *status = nullptr;
     QPlainTextEdit *text = nullptr;
     QPushButton *copyButton = nullptr;
+    QPushButton *copyImageButton = nullptr;
     QPushButton *translateButton = nullptr;
+    QImage crop;
 };

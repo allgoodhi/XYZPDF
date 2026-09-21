@@ -4,7 +4,9 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPainter>
 #include <QPlainTextEdit>
+#include <QPixmap>
 #include <QPushButton>
 #include <QVBoxLayout>
 
@@ -36,6 +38,18 @@ OcrDialog::OcrDialog(QWidget *parent)
         QGuiApplication::clipboard()->setText(text->toPlainText());
     });
     buttons->addWidget(copyButton);
+    // The region itself, as a picture. Enabled by setCropImage rather than by
+    // the recognition result -- a chart or a stamp with nothing to read off it
+    // is still the thing the reader wanted to grab.
+    copyImageButton = new QPushButton(tr("复制图片"), this);
+    copyImageButton->setObjectName(QStringLiteral("copyImageButton"));
+    copyImageButton->setEnabled(false);
+    connect(copyImageButton, &QPushButton::clicked, this, [this] {
+        if (crop.isNull())
+            return;
+        QGuiApplication::clipboard()->setPixmap(QPixmap::fromImage(crop));
+    });
+    buttons->addWidget(copyImageButton);
     // Translate the recognized words -- the reason a scan or a picture can be
     // read into another language, not just into text. Emitted rather than done
     // here: this window knows nothing about services or the network.
@@ -51,6 +65,35 @@ OcrDialog::OcrDialog(QWidget *parent)
     layout->addLayout(buttons);
 
     setPending();
+}
+
+void OcrDialog::setCropImage(const QImage &rendered, bool matchScreen)
+{
+    if (rendered.isNull()) {
+        crop = QImage();
+        copyImageButton->setEnabled(false);
+        return;
+    }
+
+    // The paper first. What comes back from the renderer is ink over
+    // transparency -- the white of a page is put down by whoever shows the
+    // result -- and copying that straight would paste a cut-out whose background
+    // is whatever the reader pasted into, which is not the picture they looked
+    // at and chose.
+    QImage paper(rendered.size(), QImage::Format_RGB32);
+    paper.fill(Qt::white);
+    QPainter onPaper(&paper);
+    onPaper.drawImage(0, 0, rendered);
+    onPaper.end();
+
+    // Then the night. Inverting the composited picture rather than the renderer's
+    // output is what makes the two agree: the view inverts the same way as it
+    // paints, so this is the screen's image, not a second opinion about it.
+    if (matchScreen)
+        paper.invertPixels(QImage::InvertRgb);
+
+    crop = paper;
+    copyImageButton->setEnabled(true);
 }
 
 void OcrDialog::setPending()

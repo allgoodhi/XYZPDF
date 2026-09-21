@@ -26,12 +26,16 @@
 #include "../src/view/zoomcontroller.h"
 
 #include <QApplication>
+#include <QClipboard>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QString>
 #include <QTemporaryDir>
@@ -1047,6 +1051,68 @@ int main(int argc, char **argv)
         // Back the way it was, so that anything added after this sees a day page.
         tab.setNightInverted(false);
         check(waitFor([view] { return view->isRendered(0); }), "and it comes back");
+    }
+
+    // ---- the region snapshot ----
+    //
+    // The first time this suite touches the clipboard at all, so it is worth
+    // stating plainly: if the offscreen platform has no clipboard, the readback
+    // below comes back empty and this fails for a reason that is not the
+    // feature's fault. It stays because "a button that silently copies nothing"
+    // is exactly what the row exists to catch, and the only way to know which of
+    // the two happened is to have looked.
+    {
+        OcrDialog dialog;
+        auto *copyImage = dialog.findChild<QPushButton *>(QStringLiteral("copyImageButton"));
+        check(copyImage != nullptr, "the recognition window offers a picture to copy");
+        if (copyImage) {
+            check(!copyImage->isEnabled(),
+                  "and it is off before there are any pixels to copy");
+
+            // A crop as the renderer actually returns it: ink over transparency,
+            // because the white of a page is put down by whoever shows the image.
+            QImage crop(120, 60, QImage::Format_ARGB32_Premultiplied);
+            crop.fill(Qt::transparent);
+            {
+                QPainter ink(&crop);
+                ink.fillRect(10, 10, 20, 20, Qt::black);
+            }
+
+            // By day: the paper has to be in the picture, or pasting gives a
+            // cut-out that borrows whatever background it lands on.
+            dialog.setCropImage(crop, false);
+            check(copyImage->isEnabled(), "handing it the crop enables it");
+            copyImage->click();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            const QImage pasted = QGuiApplication::clipboard()->image();
+            check(!pasted.isNull(), "clicking it puts an image on the clipboard");
+            check(pasted.size() == crop.size(),
+                  QStringLiteral("at the size that was cropped (%1x%2 against %3x%4)")
+                      .arg(pasted.size().width())
+                      .arg(pasted.size().height())
+                      .arg(crop.size().width())
+                      .arg(crop.size().height()));
+            check(pasted.pixelColor(0, 0) == QColor(Qt::white),
+                  QStringLiteral("with paper under the ink, not transparency (%1)")
+                      .arg(pasted.pixelColor(0, 0).name()));
+            check(pasted.pixelColor(20, 20) == QColor(Qt::black),
+                  QStringLiteral("and the ink still where it was (%1)")
+                      .arg(pasted.pixelColor(20, 20).name()));
+
+            // At night: what the reader is looking at is the inverted page, and a
+            // snapshot that comes back white-on-black is the complement of the
+            // thing they chose to copy.
+            dialog.setCropImage(crop, true);
+            copyImage->click();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            const QImage nightPasted = QGuiApplication::clipboard()->image();
+            check(nightPasted.pixelColor(0, 0) == QColor(Qt::black),
+                  QStringLiteral("at night the paper pastes black (%1)")
+                      .arg(nightPasted.pixelColor(0, 0).name()));
+            check(nightPasted.pixelColor(20, 20) == QColor(Qt::white),
+                  QStringLiteral("and the ink white (%1)")
+                      .arg(nightPasted.pixelColor(20, 20).name()));
+        }
     }
 
     if (failures == 0) {

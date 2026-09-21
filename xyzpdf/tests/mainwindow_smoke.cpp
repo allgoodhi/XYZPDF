@@ -1013,6 +1013,85 @@ int main(int argc, char **argv)
         blank.hide();
     }
 
+    // ---- fullscreen and presentation ----
+    //
+    // Two halves, tested separately because only one of them can be. The
+    // decisions are plain functions of the mode, so they are asserted directly;
+    // the applying is a window hiding its own furniture, which offscreen does
+    // show -- visibility is state, not pixels.
+    {
+        using namespace ViewChrome;
+        check(!hidesMenu(Mode::Normal) && hidesMenu(Mode::FullScreen)
+                  && hidesMenu(Mode::Presentation),
+              "the menu goes away in both modes and only in them");
+        check(!hidesTabStrip(Mode::FullScreen) && hidesTabStrip(Mode::Presentation),
+              "the tab strip is dropped only for a presentation");
+        check(toolbarsCanReveal(Mode::FullScreen) && !toolbarsCanReveal(Mode::Presentation),
+              "only fullscreen brings the toolbars back under the pointer");
+        check(inRevealBand(0) && inRevealBand(kRevealBandPixels - 1)
+                  && !inRevealBand(kRevealBandPixels) && !inRevealBand(-1),
+              "the reveal band is the few pixels at the top, and nothing above them");
+        check(presentationStep(Qt::Key_Space, Qt::NoModifier) == 1
+                  && presentationStep(Qt::Key_Space, Qt::ShiftModifier) == -1,
+              "space goes forward and shift+space back, as the page view already does");
+        check(presentationStep(Qt::Key_Right, Qt::NoModifier) == 1
+                  && presentationStep(Qt::Key_Left, Qt::NoModifier) == -1
+                  && presentationStep(Qt::Key_PageDown, Qt::NoModifier) == 1
+                  && presentationStep(Qt::Key_PageUp, Qt::NoModifier) == -1,
+              "the arrows and the page keys turn pages");
+        check(presentationStep(Qt::Key_Escape, Qt::NoModifier) == 0,
+              "and escape is left to the window, not spent on a page turn");
+        check(presentationClickStep(0, 300) == -1 && presentationClickStep(99, 300) == -1
+                  && presentationClickStep(100, 300) == 1,
+              "the left third of a slide goes back, the rest forward");
+    }
+
+    {
+        MainWindow chrome;
+        chrome.resize(900, 700);
+        chrome.show();
+        dropFiles(chrome,
+                  {QUrl::fromLocalFile(directory + QStringLiteral("/text.pdf")).toString()},
+                  Qt::CopyAction);
+        check(waitFor([&chrome] { return openTabs(chrome) == 1; }), "a document to go fullscreen with");
+
+        auto *fullScreen = chrome.findChild<QAction *>(QStringLiteral("fullScreenAction"));
+        auto *presentation = chrome.findChild<QAction *>(QStringLiteral("presentationAction"));
+        auto *strip = chrome.findChild<QTabBar *>();
+        check(fullScreen != nullptr && presentation != nullptr, "the view menu offers both modes");
+        check(strip != nullptr, "and there is a tab strip to hide");
+
+        if (fullScreen && presentation && strip) {
+            check(chrome.menuBar()->isVisible() && chrome.statusBar()->isVisible(),
+                  "to start with, the window has its furniture");
+
+            fullScreen->trigger();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            check(!chrome.menuBar()->isVisible(), "fullscreen hides the menu");
+            check(!chrome.statusBar()->isVisible(), "and the status bar");
+            check(strip->isVisible(), "but keeps the tab strip, so tabs still work");
+            check(fullScreen->isChecked(), "and says which mode it is in");
+
+            // Straight from one mode into the other, which is the path that could
+            // lose track of what the window looked like before any of this.
+            presentation->trigger();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            check(strip->isHidden(), "presentation drops the tab strip too");
+            check(!fullScreen->isChecked() && presentation->isChecked(),
+                  "and only one of the two is ticked");
+
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(&chrome, &escape);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            check(chrome.menuBar()->isVisible() && chrome.statusBar()->isVisible(),
+                  "Escape brings the whole window back");
+            check(strip->isVisible(), "with the tab strip with it");
+            check(!fullScreen->isChecked() && !presentation->isChecked(),
+                  "and neither mode is ticked afterwards");
+        }
+        chrome.hide();
+    }
+
     if (failures == 0) {
         std::cout << "files dropped on the window open, the three tools are wired, and so is Find\n";
         return 0;

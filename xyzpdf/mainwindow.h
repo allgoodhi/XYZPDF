@@ -9,6 +9,7 @@
 
 #include "src/cli/commandline.h"
 #include "src/view/pageview.h"
+#include "src/view/viewchrome.h"
 
 class WrappingToolBarArea;
 struct WordExportReport;
@@ -17,6 +18,7 @@ struct WordExportReport;
 #include <QMainWindow>
 #include <QPair>
 #include <QPointer>
+#include <QTimer>
 
 #include <memory>
 
@@ -142,6 +144,23 @@ private:
     void stepPage(int delta);
     void jumpTo(int zeroBasedPage);
 
+    // ---- fullscreen and presentation ----
+    //
+    // Which of the window's own furniture is on screen, and what a click and a
+    // key mean while it is not. The decisions themselves are in viewchrome.h as
+    // plain functions; everything here is the applying of them, which is the part
+    // no offscreen test can see.
+    void setChromeMode(ViewChrome::Mode mode);
+    void toggleFullScreen();
+    void togglePresentation();
+    // Hides or shows one part of the window, and nothing else: entering a mode,
+    // leaving one, and having the tab in front change all need the same answer
+    // recomputed, so it is said once.
+    void applyChrome();
+    // Brings the toolbars back while fullscreen, because the pointer reached the
+    // top edge -- and takes them away again when it has been away long enough.
+    void revealToolBars(bool reveal);
+
 protected:
     // One filter, one job: the tab strip does not get the wheel. See
     // buildCentralWidget() for why.
@@ -156,6 +175,11 @@ protected:
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dragLeaveEvent(QDragLeaveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+
+    // Escape leaves fullscreen or presentation. It is asked here rather than by a
+    // shortcut on the action, so that a search box holding the focus still gets
+    // its Escape first -- see eventFilter().
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     // What a drag in progress is carrying: the local files among its URLs,
@@ -229,6 +253,22 @@ private:
     QAction *twoPageAction = nullptr;
     QAction *bookModeAction = nullptr;
     QAction *outlineSidebarAction = nullptr;
+    QAction *fullScreenAction = nullptr;
+    QAction *presentationAction = nullptr;
+
+    // Which of the window's furniture is currently on screen, and why.
+    ViewChrome::Mode chromeMode = ViewChrome::Mode::Normal;
+    // The toolbars are back because the pointer asked for them. Only ever true
+    // while chromeMode is FullScreen.
+    bool chromeRevealed = false;
+    // Started when the pointer leaves the reveal band, so that a toolbar does not
+    // vanish under a hand that is still reaching for it.
+    QTimer chromeHideTimer;
+    // Maximized windows come back maximized and plain ones come back plain, so
+    // the mode has to remember which this window was.
+    bool chromeWasMaximized = false;
+    // Presentation overrides the tab in front, and gives them back on the way out.
+    PageLayout::Mode presentationPreviousLayout = PageLayout::Mode::Continuous;
 
     // The tool the user chose, for the tabs that are opened after this. The tab
     // in front has its own copy -- this is what a new one is started with, so

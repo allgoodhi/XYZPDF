@@ -133,6 +133,52 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    // ---- fullscreen and presentation, seen from the page ----
+    //
+    // The page is the widget the pointer is over and the widget that has the
+    // focus, so both of the things a chrome mode needs to know arrive here: where
+    // the pointer is, and what was pressed.
+    if (DocumentTab *tab = currentTab()) {
+        if (auto *view = tab->view(); watched == view || watched == view->viewport()) {
+            if (event->type() == QEvent::MouseMove) {
+                const QPoint at = mapFromGlobal(QCursor::pos());
+                if (ViewChrome::inRevealBand(at.y())) {
+                    chromeHideTimer.stop();
+                    revealToolBars(true);
+                } else if (chromeRevealed && !chromeHideTimer.isActive()) {
+                    // Left the edge with the toolbars still up: give the hand a
+                    // moment to reach them before they go.
+                    chromeHideTimer.start(700);
+                }
+                // Not taken: the page still has its own uses for a move, from the
+                // cursor's shape to the hand tool's pan.
+            } else if (event->type() == QEvent::Leave && chromeRevealed
+                       && !chromeHideTimer.isActive()) {
+                chromeHideTimer.start(700);
+            } else if (chromeMode == ViewChrome::Mode::Presentation && tab->pageCount() > 0) {
+                if (event->type() == QEvent::KeyPress) {
+                    auto *key = static_cast<QKeyEvent *>(event);
+                    const int step = ViewChrome::presentationStep(key->key(), key->modifiers());
+                    if (step != 0) {
+                        tab->setCurrentPage(
+                            qBound(0, tab->currentPage() + step, tab->pageCount() - 1));
+                        return true;
+                    }
+                } else if (event->type() == QEvent::MouseButtonPress) {
+                    auto *mouse = static_cast<QMouseEvent *>(event);
+                    const int step = ViewChrome::presentationClickStep(
+                        int(mouse->position().x()), view->viewport()->width());
+                    tab->setCurrentPage(qBound(0, tab->currentPage() + step,
+                                               tab->pageCount() - 1));
+                    // Taken, deliberately: in a slide show a click turns a page
+                    // and does nothing else. Selecting text over a projected
+                    // document is not a thing anybody is doing.
+                    return true;
+                }
+            }
+        }
+    }
+
     return QMainWindow::eventFilter(watched, event);
 }
 
@@ -286,6 +332,20 @@ void MainWindow::dropEvent(QDropEvent *event)
         openDocument(path);
 }
 
+void MainWindow::keyPressEvent(QKeyEvent *event)
+{
+    // Escape leaves whatever mode the window is in. The page view holds the focus
+    // and does not use Escape, so this arrives by the usual walk up the parent
+    // chain -- and it is asked here rather than as a shortcut on the action
+    // because a shortcut would fire even when the search box is the thing that
+    // should be answered.
+    if (event->key() == Qt::Key_Escape && chromeMode != ViewChrome::Mode::Normal) {
+        setChromeMode(ViewChrome::Mode::Normal);
+        return;
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -300,6 +360,20 @@ MainWindow::MainWindow(QWidget *parent)
     buildMenus();
     buildToolBar();
     buildStatusBar();
+
+    // The toolbars come back when the pointer reaches the top edge, and they go
+    // away a moment after it leaves -- "a moment" because the reason the toolbars
+    // came back was usually to be clicked, and one that vanishes on the way to a
+    // button is worse than one that is not there at all.
+    chromeHideTimer.setSingleShot(true);
+    connect(&chromeHideTimer, &QTimer::timeout, this, [this] {
+        const QPoint global = QCursor::pos();
+        if (ViewChrome::inRevealBand(mapFromGlobal(global).y()))
+            return; // still at the edge; it will ask again on the next move
+        if (toolBarArea && toolBarArea->rect().contains(toolBarArea->mapFromGlobal(global)))
+            return; // on the toolbars themselves; they stay while they are used
+        revealToolBars(false);
+    });
 
     // The registry entries carry the path of the executable that wrote them, so
     // moving xyzpdf.exe silently empties out its menu -- and nobody connects the
@@ -709,6 +783,25 @@ void MainWindow::buildMenus()
     });
     viewMenu->addAction(outlineSidebarAction);
 
+    viewMenu->addSeparator();
+
+    // Fullscreen and presentation, as a pair rather than one item with a
+    // modifier: they hide different amounts, and a reader choosing between
+    // "give me back my margin" and "project this" is choosing deliberately.
+    fullScreenAction = makeAction(tr("全屏(&L)"), QKeySequence(QStringLiteral("F11")));
+    fullScreenAction->setCheckable(true);
+    fullScreenAction->setObjectName(QStringLiteral("fullScreenAction"));
+    fullScreenAction->setToolTip(tr("隐藏工具栏和菜单，鼠标推到顶边唤出"));
+    connect(fullScreenAction, &QAction::triggered, this, &MainWindow::toggleFullScreen);
+    viewMenu->addAction(fullScreenAction);
+
+    presentationAction = makeAction(tr("演示(&P)"), QKeySequence(QStringLiteral("Shift+F11")));
+    presentationAction->setCheckable(true);
+    presentationAction->setObjectName(QStringLiteral("presentationAction"));
+    presentationAction->setToolTip(tr("从当前页开始放映：点击或方向键翻页，Esc 退出"));
+    connect(presentationAction, &QAction::triggered, this, &MainWindow::togglePresentation);
+    viewMenu->addAction(presentationAction);
+
     // ---- 转到 ----
     QMenu *goMenu = menuBar()->addMenu(tr("转到(&G)"));
 
@@ -1077,6 +1170,17 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
         if (tab == currentTab())
             updateForCurrentTab();
     });
+
+    // Fullscreen needs to know where the pointer is even when it is over nothing
+    // that would otherwise report a move, and presentation needs the page's own
+    // clicks and keys. Both are answered from this window, by filter, once per
+    // tab -- the tracking attribute is what makes the moves and the leave arrive
+    // at all when no button is held.
+    if (auto *view = tab->view()) {
+        view->installEventFilter(this);
+        view->viewport()->installEventFilter(this);
+        view->viewport()->setMouseTracking(true);
+    }
 
     // And so does a search, including one typed into the tab's own find bar:
     // the toolbar box shows the needle and the count of the document in front,
@@ -1611,6 +1715,123 @@ void MainWindow::mergeAllWindows()
                              5000);
 }
 
+void MainWindow::setChromeMode(ViewChrome::Mode mode)
+{
+    if (mode == chromeMode)
+        return;
+
+    // Nothing to look at, nothing to make large. Both modes are about the page.
+    if (mode != ViewChrome::Mode::Normal && !currentTab())
+        return;
+
+    const ViewChrome::Mode previous = chromeMode;
+
+    // Presentation borrows the tab in front: its layout, and its tool. Give them
+    // back before anything else, so that a mode change that lands directly on
+    // another mode does not leave the document in one-page fitted view.
+    if (previous == ViewChrome::Mode::Presentation && mode != ViewChrome::Mode::Presentation) {
+        if (DocumentTab *tab = currentTab()) {
+            tab->setLayoutMode(presentationPreviousLayout);
+            tab->setTool(rememberedTool);
+        }
+    }
+
+    // Remembered once, on the way in, so that a maximized window comes back
+    // maximized and a plain one comes back plain -- and so that going from
+    // fullscreen to presentation does not record fullscreen as the old state.
+    if (previous == ViewChrome::Mode::Normal)
+        chromeWasMaximized = isMaximized();
+
+    chromeMode = mode;
+
+    if (mode == ViewChrome::Mode::Presentation) {
+        if (DocumentTab *tab = currentTab()) {
+            presentationPreviousLayout = tab->layoutMode();
+            tab->setLayoutMode(PageLayout::Mode::SinglePage);
+            tab->setZoomMode(ZoomController::Mode::FitPage);
+            // A drag on a page means nothing in a slide show, and the only tool
+            // that does not leave a mark on the page is the one that just looks.
+            tab->setTool(PageView::Tool::View);
+        }
+    }
+
+    if (mode == ViewChrome::Mode::Normal) {
+        chromeHideTimer.stop();
+        chromeRevealed = false;
+        if (chromeWasMaximized)
+            showMaximized();
+        else
+            showNormal();
+    } else {
+        showFullScreen();
+    }
+
+    if (fullScreenAction) {
+        const QSignalBlocker blocker(fullScreenAction);
+        fullScreenAction->setChecked(mode == ViewChrome::Mode::FullScreen);
+    }
+    if (presentationAction) {
+        const QSignalBlocker blocker(presentationAction);
+        presentationAction->setChecked(mode == ViewChrome::Mode::Presentation);
+    }
+
+    applyChrome();
+}
+
+void MainWindow::toggleFullScreen()
+{
+    setChromeMode(chromeMode == ViewChrome::Mode::FullScreen ? ViewChrome::Mode::Normal
+                                                              : ViewChrome::Mode::FullScreen);
+}
+
+void MainWindow::togglePresentation()
+{
+    setChromeMode(chromeMode == ViewChrome::Mode::Presentation ? ViewChrome::Mode::Normal
+                                                                : ViewChrome::Mode::Presentation);
+}
+
+void MainWindow::applyChrome()
+{
+    menuBar()->setVisible(!ViewChrome::hidesMenu(chromeMode));
+    statusBar()->setVisible(!ViewChrome::hidesStatus(chromeMode));
+    // In fullscreen the toolbars are hidden and shown again by the pointer; in
+    // every other state they are simply what the mode says.
+    if (toolBarArea)
+        toolBarArea->setVisible(!ViewChrome::hidesToolBars(chromeMode) || chromeRevealed);
+
+    // The sidebar belongs to the tab in front, and a document opened while a
+    // chrome mode is on has to inherit it -- otherwise opening a file with
+    // Ctrl+O while fullscreen brings a panel back with it.
+    if (DocumentTab *tab = currentTab()) {
+        if (ViewChrome::hidesSidebar(chromeMode))
+            tab->setSidebarVisible(false);
+    }
+
+    // QTabWidget re-shows its own bar whenever the tab count moves and auto-hide
+    // is off, so the mode is re-asserted here rather than set once on entry.
+    if (auto *bar = tabs->findChild<QTabBar *>())
+        bar->setVisible(!ViewChrome::hidesTabStrip(chromeMode));
+
+    const bool hasDocument = currentTab() != nullptr;
+    if (fullScreenAction)
+        fullScreenAction->setEnabled(hasDocument);
+    if (presentationAction)
+        presentationAction->setEnabled(hasDocument);
+}
+
+void MainWindow::revealToolBars(bool reveal)
+{
+    // Only fullscreen reveals: a presentation has no furniture to bring back, and
+    // a toolbar sliding over a projected slide covers the slide. The timing of
+    // the way back out is the pointer's business, not this function's -- see the
+    // move handling in eventFilter().
+    if (!ViewChrome::toolbarsCanReveal(chromeMode) || chromeRevealed == reveal)
+        return;
+    chromeRevealed = reveal;
+    if (toolBarArea)
+        toolBarArea->setVisible(reveal);
+}
+
 void MainWindow::chooseTool(PageView::Tool tool)
 {
     rememberedTool = tool;
@@ -1677,6 +1898,11 @@ void MainWindow::updateForCurrentTab()
         searchBox->setEnabled(hasDocument);
     }
     updateSearchCount();
+
+    // A chrome mode is a statement about the window, and a new tab in front is
+    // exactly the event that could quietly undo it: the sidebar belongs to the
+    // tab, and so does the tab strip's own idea of when to show itself.
+    applyChrome();
 
     updatingControls = true;
     if (hasDocument) {

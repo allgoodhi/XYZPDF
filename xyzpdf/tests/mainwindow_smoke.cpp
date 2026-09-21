@@ -20,6 +20,7 @@
 
 #include "../documenttab.h"
 #include "../mainwindow.h"
+#include "../src/ui/documenttabbar.h"
 #include "../src/ui/findbar.h"
 #include "../src/ui/wrappingtoolbararea.h"
 #include "../src/view/pageview.h"
@@ -45,6 +46,7 @@
 #include <QTemporaryDir>
 #include <QPointF>
 #include <QString>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -809,6 +811,206 @@ int main(int argc, char **argv)
         }
 
         closer.stop();
+    }
+
+    // ---- a tab merged in from another window opens here ----
+    //
+    // The whole cross-window drag cannot run on the offscreen platform (it needs
+    // a real modal QDrag and two live windows), but what the *receiving* window
+    // does when a tab's mime lands on it can: this drives the entry and the drop
+    // straight at the window, the way a file drop is driven above, and checks
+    // the incoming document turns into a tab.
+    {
+        MainWindow target;
+        target.resize(900, 700);
+        target.show();
+        const QString first = directory + QStringLiteral("/text.pdf");
+        dropFiles(target, {QUrl::fromLocalFile(first).toString()}, Qt::CopyAction);
+        check(waitFor([&target] { return openTabs(target) == 1; }),
+              "the merge target starts with one document");
+
+        const QString incoming = directory + QStringLiteral("/rotated.pdf");
+        QMimeData mime;
+        mime.setData(QStringLiteral("application/x-xyzpdf-tab"),
+                     QStringLiteral("%1\t3").arg(incoming).toUtf8());
+
+        // Dropped over the body: the window takes it and opens the document.
+        QDragEnterEvent enter(QPoint(60, 60), Qt::MoveAction, &mime, Qt::LeftButton,
+                              Qt::NoModifier);
+        QApplication::sendEvent(&target, &enter);
+        check(enter.isAccepted(), "a tab dragged from another window is accepted over the body");
+
+        QDropEvent drop(QPointF(60, 60), Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&target, &drop);
+        check(drop.isAccepted(), "and the drop over the body is taken");
+        check(waitFor([&target] { return openTabs(target) == 2; }),
+              QStringLiteral("the merged document opens as a tab (open documents: %1)")
+                  .arg(openTabs(target)));
+
+        // Dropped over the tab strip. Two entries here, because they answer two
+        // different questions. `takeMergedTab` is the entry the strip forwards a
+        // foreign tab to, and driving it directly says that opening the document
+        // works; the enter-and-drop pair below says the strip is actually reached
+        // by a drop in the first place. The pair matters: an earlier version of
+        // this test sent only the drop, Qt honoured none of it because a drop is
+        // only honoured on a widget that was told about the drag, and that read as
+        // a broken strip when the test itself was what was wrong.
+        auto *strip = target.findChild<DocumentTabBar *>();
+        check(strip != nullptr, "the target has a document tab strip");
+        if (strip) {
+            const QString stripIncoming = directory + QStringLiteral("/many-pages.pdf");
+            strip->takeMergedTab(stripIncoming, 0);
+            check(waitFor([&target] { return openTabs(target) == 3; }),
+                  QStringLiteral("the strip's merge entry opens the incoming document (open: %1)")
+                      .arg(openTabs(target)));
+
+            // And driven as a real drop on the strip itself -- enter first, then
+            // the drop, because Qt only honours a drop on a widget it has told
+            // about the drag. This is the case that used to be gated on the
+            // drag's shared bookkeeping and silently do nothing without it.
+            const QString viaStrip = directory + QStringLiteral("/picture.pdf");
+            QMimeData stripMime;
+            stripMime.setData(QStringLiteral("application/x-xyzpdf-tab"),
+                              QStringLiteral("%1\t0").arg(viaStrip).toUtf8());
+            const QPoint onTab = strip->tabRect(0).center();
+            QDragEnterEvent stripEnter(onTab, Qt::MoveAction, &stripMime, Qt::LeftButton,
+                                       Qt::NoModifier);
+            QApplication::sendEvent(strip, &stripEnter);
+            QDropEvent stripDrop(QPointF(onTab), Qt::MoveAction, &stripMime, Qt::LeftButton,
+                                 Qt::NoModifier);
+            QApplication::sendEvent(strip, &stripDrop);
+            check(stripDrop.isAccepted(), "a tab dropped on the strip is taken");
+            check(waitFor([&target] { return openTabs(target) == 4; }),
+                  QStringLiteral("and merges in through the strip (open: %1)")
+                      .arg(openTabs(target)));
+        }
+
+        // A whole window travels as one line per tab, so a drag of a window with
+        // two documents in it has to put two tabs down here. Same mime type, same
+        // entry point: the only difference is how many records came along.
+        {
+            QMimeData windowMime;
+            windowMime.setData(
+                QStringLiteral("application/x-xyzpdf-tab"),
+                QStringLiteral("%1\t0\n%2\t1")
+                    .arg(directory + QStringLiteral("/colored.pdf"))
+                    .arg(directory + QStringLiteral("/graphic.pdf"))
+                    .toUtf8());
+
+            QList<TabRef> docs;
+            check(DocumentTabBar::readTabs(&windowMime, docs) && docs.size() == 2,
+                  QStringLiteral("a two-tab payload reads back as two tabs (got %1)")
+                      .arg(docs.size()));
+            check(docs.at(0).second == 0 && docs.at(1).second == 1,
+                  "with each tab's page kept beside it");
+
+            // A drop is only honoured on a widget that was told about the drag
+            // first, so this drives enter then drop exactly as the platform does.
+            QDragEnterEvent windowEnter(QPoint(60, 60), Qt::MoveAction, &windowMime,
+                                        Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&target, &windowEnter);
+            check(windowEnter.isAccepted(), "a whole window dragged in is accepted over the body");
+
+            QDropEvent windowDrop(QPointF(60, 60), Qt::MoveAction, &windowMime, Qt::LeftButton,
+                                  Qt::NoModifier);
+            const int pre = openTabs(target);
+            QApplication::sendEvent(&target, &windowDrop);
+            check(pre == 4, "the window was carrying two tabs in, then four open here");
+            check(windowDrop.isAccepted(), "a whole window dropped on the body is taken");
+            check(waitFor([&target] { return openTabs(target) == 6; }),
+                  QStringLiteral("and both of its documents open here (open: %1)")
+                      .arg(openTabs(target)));
+        }
+    }
+
+    // ---- 合并所有窗口 brings another window's documents into this one ----
+    //
+    // The menu command needs no drag at all, so unlike the drags above it can be
+    // driven end to end here: two windows, one document each side, one trigger,
+    // and then who has what. This is also the guard on the one thing that would
+    // make the command fatal -- merging into a window whose death ends the
+    // process -- because in this program the first window built is the one
+    // main.cpp is waiting on.
+    {
+        const int before = openTabs(window);
+
+        MainWindow extra;
+        extra.resize(700, 500);
+        extra.show();
+        const QString spliced = directory + QStringLiteral("/spaced.pdf");
+        dropFiles(extra, {QUrl::fromLocalFile(spliced).toString()}, Qt::CopyAction);
+        check(waitFor([&extra] { return openTabs(extra) == 1; }),
+              "a second window has a document of its own to give");
+
+        auto *action = window.findChild<QAction *>(QStringLiteral("mergeAllWindowsAction"));
+        check(action != nullptr, "and the window menu offers a way to merge it in");
+        if (action) {
+            action->trigger();
+            check(waitFor([&window, before] { return openTabs(window) == before + 1; }),
+                  QStringLiteral("its document arrives here (open: %1, was %2)")
+                      .arg(openTabs(window))
+                      .arg(before));
+            check(waitFor([&extra] { return !extra.isVisible(); }),
+                  "and the window it came from has gone");
+
+            // With nothing left to take, the command says so instead of sitting
+            // there having done nothing.
+            action->trigger();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            check(window.statusBar()->currentMessage().contains(QStringLiteral("没有")),
+                  QStringLiteral("and a second run with nothing to merge says so (\"%1\")")
+                      .arg(window.statusBar()->currentMessage()));
+        }
+    }
+
+    // ---- a press on the blank strip is recognised as a whole-window grab ----
+    //
+    // The gesture nobody has managed to perform by hand: the blank row beside the
+    // tabs, not a tab and not the title bar. Only the half a test can reach is
+    // settled here -- that a press there is taken as "carry the whole window".
+    // The drag itself is deliberately not driven: QDrag::exec runs a modal loop
+    // that has no drop to wait for offscreen. What is asserted instead is the
+    // grab the blank-strip branch takes, which is the whole of its decision and
+    // is what a press on a tab does not do.
+    {
+        MainWindow blank;
+        blank.resize(900, 700);
+        blank.show();
+        // Two documents, so the strip stays on screen: one tab under
+        // setTabBarAutoHide(true) would hide the row this gesture needs.
+        dropFiles(blank, {QUrl::fromLocalFile(directory + QStringLiteral("/text.pdf")).toString()},
+                  Qt::CopyAction);
+        dropFiles(blank,
+                  {QUrl::fromLocalFile(directory + QStringLiteral("/rotated.pdf")).toString()},
+                  Qt::CopyAction);
+        check(waitFor([&blank] { return openTabs(blank) == 2; }),
+              "a window with two tabs leaves a blank stretch of strip");
+
+        auto *bar = blank.findChild<DocumentTabBar *>();
+        check(bar != nullptr && bar->count() == 2, "and the strip is there to press");
+        if (bar && bar->count() == 2) {
+            const QPoint blankSpot(bar->geometry().width() - 6, bar->geometry().height() / 2);
+            check(bar->tabAt(blankSpot) < 0,
+                  QStringLiteral("the spot chosen is blank, not a tab (tabAt=%1)")
+                      .arg(bar->tabAt(blankSpot)));
+
+            const QPoint global = bar->mapToGlobal(blankSpot);
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(blankSpot), QPointF(global),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(bar, &press);
+            QObject *grabber = QWidget::mouseGrabber();
+            check(grabber == bar,
+                  QStringLiteral("a press on the blank strip grabs the pointer for a "
+                                 "whole-window drag (grabber: %1)")
+                      .arg(grabber ? QString::fromLatin1(grabber->metaObject()->className())
+                                   : QStringLiteral("none")));
+
+            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(blankSpot), QPointF(global),
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(bar, &release);
+            check(QWidget::mouseGrabber() != bar, "and letting go gives the pointer back");
+        }
+        blank.hide();
     }
 
     if (failures == 0) {

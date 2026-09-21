@@ -1,12 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <!--
     The application icon. What the running windows wear, and what
-    tools/makeappicon.py draws the .ico from -- the same shapes in both, so the
+    tools/makeappicon.py draws the .ico from: the same shapes in both, so the
     taskbar icon and the icon on the .exe cannot drift apart.
 
-    Deliberately not the Windows default PDF icon: a reader that shows the same
+    Deliberately not the Windows default PDF icon. A reader that shows the same
     picture as the shell does for the file tells nobody which program will open
     it.
+
+    Kept to one sentence per line and free of double hyphens, because an XML
+    comment may not contain them: the parser reads a pair as the start of the
+    closing marker and fails the whole file, which takes the icon with it.
   -->
   <rect x="0" y="0" width="256" height="256" rx="56" ry="56" fill="#C4302B"/>
   <path d="M56 36 h100 l44 44 v140 a12 12 0 0 1 -12 12 H56 a12 12 0 0 1 -12 -12 V48 a12 12 0 0 1 12 -12 z"

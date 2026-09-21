@@ -14,6 +14,7 @@
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
 #include "src/ui/printdialog.h"
+#include "src/ui/thumbnailpanel.h"
 #include "src/ui/translatedialog.h"
 #include "src/view/pageview.h"
 
@@ -32,6 +33,7 @@
 #include <QPrinter>
 #include <QProgressDialog>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -90,13 +92,20 @@ DocumentTab::DocumentTab(QWidget *parent)
 
     pageView = new PageView(this);
     outlinePanel = new OutlinePanel(this);
-    // The bookmarks sit beside the page, not above or below it: a reader follows
-    // an outline while looking at the page it points into. Hidden until a
-    // document turns out to have bookmarks -- a empty sidebar is a strip of
-    // nothing taking a third of the window.
-    outlinePanel->hide();
+    thumbnailPanel = new ThumbnailPanel(this);
+
+    // The reading sidebar is one panel with two tabs -- the document's bookmarks
+    // and a column of page thumbnails -- because both are "get me to a page", and
+    // a reader switches between them, not looks at both at once. It sits beside
+    // the page, hidden until opened (see sidebarWanted).
+    sidebar = new QTabWidget(this);
+    sidebar->setTabPosition(QTabWidget::North);
+    sidebar->addTab(outlinePanel, tr("大纲"));
+    sidebar->addTab(thumbnailPanel, tr("缩略图"));
+    sidebar->hide();
+
     auto *readingSplit = new QSplitter(Qt::Horizontal, this);
-    readingSplit->addWidget(outlinePanel);
+    readingSplit->addWidget(sidebar);
     readingSplit->addWidget(pageView);
     readingSplit->setStretchFactor(0, 0); // the sidebar keeps its own width
     readingSplit->setStretchFactor(1, 1); // the page takes whatever is left
@@ -109,6 +118,9 @@ DocumentTab::DocumentTab(QWidget *parent)
     layout->addWidget(readingSplit);
 
     connect(outlinePanel, &OutlinePanel::jumpToPage, this, [this](int page) {
+        pageView->goToPage(page);
+    });
+    connect(thumbnailPanel, &ThumbnailPanel::jumpToPage, this, [this](int page) {
         pageView->goToPage(page);
     });
 
@@ -140,6 +152,8 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(pageView, &PageView::invalidated, this, &DocumentTab::invalidateRenders);
     connect(pageView, &PageView::pageImageNeeded, this, &DocumentTab::onPageImageNeeded);
     connect(pageView, &PageView::currentPageChanged, this, [this](int page) {
+        // Keep the thumbnail strip's highlight in step with the page in view.
+        thumbnailPanel->setCurrentPage(page);
         Q_EMIT pageChanged(page, pageCount());
     });
     connect(pageView, &PageView::zoomChanged, this, &DocumentTab::zoomChanged);
@@ -193,6 +207,12 @@ DocumentTab::~DocumentTab()
         exportCancel->storeRelaxed(1);
     if (wordExportTask.isRunning())
         wordExportTask.waitForFinished();
+
+    // The thumbnails render through the same backend on their own worker, so the
+    // same wait applies: it must finish before the document it is reading is
+    // destroyed with this object.
+    if (thumbnailPanel)
+        thumbnailPanel->cancelAndDrain();
 }
 
 void DocumentTab::startSearch(const QString &needle, bool caseSensitive)
@@ -483,6 +503,11 @@ void DocumentTab::drainRenders()
     // going to see.
     if (searchCancel)
         searchCancel->storeRelaxed(1);
+    // And the thumbnails, which render through the same backend on their own
+    // worker; cancelled here and waited for below, so a reload cannot free the
+    // document out from under a render still reading it.
+    if (thumbnailPanel)
+        thumbnailPanel->cancel();
     // And the export, which reads the document the same way a search does and is
     // waited for below on the same grounds. Told to stop here rather than left to
     // run out: a search of one page is quick, an export of five hundred is not.
@@ -495,7 +520,8 @@ void DocumentTab::drainRenders()
     QElapsedTimer timer;
     timer.start();
     constexpr int kGiveUpAfter = 2000;
-    while ((renderer->inFlight() > 0 || searchRunning() || isExporting())
+    while ((renderer->inFlight() > 0 || searchRunning() || isExporting()
+            || thumbnailPanel->rendering())
            && timer.elapsed() < kGiveUpAfter) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     }
@@ -525,6 +551,7 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         pageView->setRotation(0);
         pageView->clearDocument();
         outlinePanel->setOutline({});
+        thumbnailPanel->start({}, nullptr);
         applySidebarVisibility();
         Q_EMIT titleChanged(title());
         Q_EMIT pageChanged(0, 0);
@@ -566,10 +593,13 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
 
     pageView->setPageSizes(sizes);
 
-    // The bookmarks, filled in once the document is known to be open. A document
-    // with none leaves the panel empty and it stays hidden whatever the reader
-    // asked for -- there is nothing to show.
+    // The reading panel's two tabs, filled once the document is known to be open:
+    // its bookmarks, and a background pass that renders every page's thumbnail.
     outlinePanel->setOutline(backend->outline());
+    thumbnailPanel->start(sizes, backend.get());
+    // Open on whichever tab has something to lead with -- bookmarks if the file
+    // has them, otherwise the thumbnails, which it always does.
+    sidebar->setCurrentIndex(outlinePanel->hasOutline() ? 0 : 1);
     applySidebarVisibility();
 
     Q_EMIT titleChanged(title());
@@ -915,7 +945,11 @@ void DocumentTab::setSidebarVisible(bool visible)
 
 void DocumentTab::applySidebarVisibility()
 {
-    outlinePanel->setVisible(sidebarWanted && outlinePanel->hasOutline());
+    // The sidebar is worth showing for any open document now that it holds
+    // thumbnails as well as bookmarks -- a page always has a picture, even when
+    // the file has no bookmarks. So the only conditions are "the reader asked"
+    // and "there is a document".
+    sidebar->setVisible(sidebarWanted && opened);
 }
 
 bool DocumentTab::hasOutline() const

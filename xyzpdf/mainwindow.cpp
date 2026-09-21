@@ -11,6 +11,7 @@
 #include "src/render/rendercache.h"
 #include "src/settings/settingsdialog.h"
 #include "src/theme/thememanager.h"
+#include "src/ui/documenttabbar.h"
 #include "src/ui/wrappingtoolbararea.h"
 #include "src/ui/thirdpartydialog.h"
 #include "src/view/pagelayout.h"
@@ -89,6 +90,12 @@ double steppedZoom(double from, int steps)
     return ZoomController::clamp(from * std::pow(ZoomController::Step, steps));
 }
 
+// The first window built, which is the one main.cpp owns on its own stack and
+// returns from when it closes. Every other window is a `new MainWindow` on the
+// heap. A merge has a target, and it must not be a window whose death ends the
+// process -- so this is the one that says which that is.
+MainWindow *primaryWindow = nullptr;
+
 } // namespace
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -96,6 +103,22 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     // The tab strip does not get the wheel. See buildCentralWidget().
     if (tabs && watched == tabs->findChild<QTabBar *>() && event->type() == QEvent::Wheel)
         return true;
+
+    // Middle-clicking a tab closes it -- the gesture everybody who has used a
+    // browser knows, and the quickest way to shed a document you are done with.
+    if (tabs && watched == tabs->findChild<QTabBar *>()
+        && event->type() == QEvent::MouseButtonPress) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::MiddleButton) {
+            if (auto *bar = qobject_cast<QTabBar *>(watched)) {
+                const int index = bar->tabAt(mouse->pos());
+                if (index >= 0) {
+                    closeTab(index);
+                    return true;
+                }
+            }
+        }
+    }
 
     // Escape in the toolbar's search box clears the search, which is what
     // Escape means in every other search box: the highlights go, the field
@@ -115,6 +138,30 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
+    // A tab dragged in from another window is taken over the whole window, not
+    // just the strip: hitting a 30-pixel-high bar while a foreign tab hovers is
+    // the kind of precision a merge gesture should not ask for. Decided before
+    // the file-drop rules below, which want a CopyAction and would refuse a tab
+    // (a merge offers Move, and the tab is not a file).
+    if (DocumentTabBar::isTabDrag(event->mimeData())) {
+        QList<TabRef> docs;
+        if (!DocumentTabBar::readTabs(event->mimeData(), docs)) {
+            event->ignore();
+            return;
+        }
+        tabDragOver = true;
+        if (auto *bar = tabs->findChild<DocumentTabBar *>())
+            bar->setInsertIndicator(bar->count());
+        event->acceptProposedAction();
+        // A whole window arrives as one line per tab; saying "3 documents" beats
+        // naming one of them and letting the rest be a surprise.
+        setStatusMessage(docs.size() == 1
+                             ? tr("松开以在此窗口打开 %1")
+                                   .arg(QFileInfo(docs.first().first).fileName())
+                             : tr("松开以在此窗口合并 %1 个文档").arg(docs.size()));
+        return;
+    }
+
     pendingDrop.clear();
 
     // A copy is the only outcome this window will take, and the drag has to
@@ -152,6 +199,13 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dragMoveEvent(QDragMoveEvent *event)
 {
+    // A tab drag stays taken wherever it moves inside the window; the strip
+    // itself repaints the precise slot, so nothing to recompute for the body.
+    if (tabDragOver && DocumentTabBar::isTabDrag(event->mimeData())) {
+        event->acceptProposedAction();
+        return;
+    }
+
     // The decision was made on entry; a move is the same drag somewhere else.
     // Re-deciding here would mean a stat() per mouse move, and a drag that
     // wandered over a child that did not take drops would flicker between
@@ -166,6 +220,14 @@ void MainWindow::dragMoveEvent(QDragMoveEvent *event)
 
 void MainWindow::dragLeaveEvent(QDragLeaveEvent *event)
 {
+    if (tabDragOver) {
+        tabDragOver = false;
+        if (auto *bar = tabs->findChild<DocumentTabBar *>())
+            bar->setInsertIndicator(-1);
+        setStatusMessage(tr("就绪"));
+        event->accept();
+        return;
+    }
     pendingDrop.clear();
     setStatusMessage(tr("就绪"));
     event->accept();
@@ -173,6 +235,28 @@ void MainWindow::dragLeaveEvent(QDragLeaveEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
+    // The tab merge over the body, mirroring the entry above. The bar's own
+    // dropEvent only fires for a drop that lands on the strip; a drop over the
+    // page arrives here, and takeMergedTabs does the same hand-off -- open what
+    // the drag carried, tell the source to close its copies -- from anywhere in
+    // the window. One call covers a single tab and a whole window's worth.
+    if (DocumentTabBar::isTabDrag(event->mimeData())) {
+        QList<TabRef> docs;
+        tabDragOver = false;
+        auto *bar = tabs->findChild<DocumentTabBar *>();
+        if (bar)
+            bar->setInsertIndicator(-1);
+        if (DocumentTabBar::readTabs(event->mimeData(), docs)) {
+            if (bar)
+                bar->takeMergedTabs(docs);
+            setStatusMessage(tr("就绪"));
+            event->acceptProposedAction();
+        } else {
+            event->ignore();
+        }
+        return;
+    }
+
     // From the drag if there is one, and from the event otherwise: a drop can
     // arrive without an entry this window saw -- a synthetic one, or a drag
     // Qt delivers straight to the drop site -- and opening nothing because the
@@ -208,6 +292,9 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     setObjectName(QStringLiteral("mainWindow"));
+
+    if (!primaryWindow)
+        primaryWindow = this;
 
     buildCentralWidget();
     buildMenus();
@@ -250,6 +337,8 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    if (primaryWindow == this)
+        primaryWindow = nullptr;
     delete ui;
 }
 
@@ -271,25 +360,48 @@ void MainWindow::buildCentralWidget()
     // empty case gets a page of its own.
     stack = new QStackedWidget(central);
 
-    tabs = new QTabWidget(stack);
+    tabs = new DocumentTabWidget(stack);
     tabs->setObjectName(QStringLiteral("documentTabs"));
     tabs->setDocumentMode(true);
-    tabs->setMovable(false); // M3: dragging tabs between windows
+    // The bar owns its own drag (reorder / detach / merge), so the widget's
+    // built-in reordering is off -- the two would fight over the same gesture.
+    tabs->setMovable(false);
     tabs->setTabsClosable(true);
     // One document is the common case, and a single tab adds a strip of chrome
     // over the page for nothing.
     tabs->setTabBarAutoHide(true);
 
-    // QTabBar scrolls through its tabs when the wheel turns over it, and that
-    // is off here on purpose. The strip sits directly above the page, so a
-    // reader whose hand is still on the wheel from scrolling a page changes
-    // document the moment the pointer drifts up -- and the page they were
-    // reading is not the page they come back to. Everything else in this
-    // program scrolls what is under the pointer; the one control that switches
-    // documents as a side effect is not a useful exception.
-    //
+    // DocumentTabWidget installs a DocumentTabBar in its constructor; find it here
+    // to give it the questions it cannot ask itself (what a tab is showing) and to
+    // route its gestures back to this window.
+    if (auto *tabBar = tabs->findChild<DocumentTabBar *>()) {
+        tabBar->pathForIndex = [this](int index) {
+            auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
+            return tab ? tab->documentPath() : QString();
+        };
+        tabBar->pageForIndex = [this](int index) {
+            auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
+            return tab ? tab->currentPage() : 0;
+        };
+        connect(tabBar, &DocumentTabBar::reorderRequested, this, &MainWindow::reorderTab);
+        connect(tabBar, &DocumentTabBar::detachRequested, this,
+                &MainWindow::detachTabToNewWindow);
+        connect(tabBar, &DocumentTabBar::mergeRequested, this, &MainWindow::mergeTabIn);
+        // Handed off to another window, which has already opened it: just drop ours.
+        connect(tabBar, &DocumentTabBar::handedOff, this, &MainWindow::closeTab);
+        // The same for a whole window. Direct, and closed by emptying the strip
+        // rather than by closing the window outright, because that is the path the
+        // single-tab hand-off already takes and is known to unwind correctly from
+        // inside the drag: closing the last tab closes the window on its own.
+        connect(tabBar, &DocumentTabBar::handedOffWindow, this,
+                &MainWindow::handOffWholeWindow);
+        connect(tabBar, &DocumentTabBar::windowMergeRequested, this,
+                &MainWindow::mergeWindowIntoTargetAt);
+    }
+
     // QTabWidget::tabBar() is protected, which is why the strip is found as a
-    // child rather than asked for.
+    // child rather than asked for. It is the DocumentTabBar installed above; the
+    // wheel is blocked and the middle button closes a tab -- see eventFilter().
     if (QTabBar *bar = tabs->findChild<QTabBar *>())
         bar->installEventFilter(this);
 
@@ -584,10 +696,11 @@ void MainWindow::buildMenus()
     });
     viewMenu->addAction(bookModeAction);
 
-    // The bookmark sidebar. Checkable and per-tab like the layout modes: the
-    // toggle drives whichever document is in front, and a document with no
-    // bookmarks has nothing to show, so the item is disabled there.
-    outlineSidebarAction = makeAction(tr("书签大纲侧栏"),
+    // The reading sidebar (bookmarks + page thumbnails). Checkable and per-tab
+    // like the layout modes: the toggle drives whichever document is in front.
+    // Offered for any open document, since thumbnails exist even when the file
+    // has no bookmarks.
+    outlineSidebarAction = makeAction(tr("导航侧栏"),
                                       QKeySequence(QStringLiteral("Ctrl+Shift+B")));
     outlineSidebarAction->setCheckable(true);
     connect(outlineSidebarAction, &QAction::toggled, this, [this](bool on) {
@@ -622,6 +735,20 @@ void MainWindow::buildMenus()
     goToPageAction = makeAction(tr("跳转到页码…"), QKeySequence(QStringLiteral("Ctrl+G")));
     connect(goToPageAction, &QAction::triggered, this, &MainWindow::goToPageDialog);
     goMenu->addAction(goToPageAction);
+
+    // ---- 窗口 ----
+    //
+    // Its own menu because M3 made this program able to have more than one, and
+    // the first thing somebody who has ended up with four does is look for the
+    // way back to one. It is also the honest answer to a merge that went astray:
+    // dragging a tab between windows needs aim, and this needs a click.
+    QMenu *windowMenu = menuBar()->addMenu(tr("窗口(&N)"));
+
+    QAction *mergeAllWindowsAction = makeAction(tr("合并所有窗口(&G)"), QKeySequence());
+    mergeAllWindowsAction->setObjectName(QStringLiteral("mergeAllWindowsAction"));
+    mergeAllWindowsAction->setToolTip(tr("把其它窗口里打开的文档全部并进这个窗口"));
+    connect(mergeAllWindowsAction, &QAction::triggered, this, &MainWindow::mergeAllWindows);
+    windowMenu->addAction(mergeAllWindowsAction);
 
     // ---- 语言 ----
     //
@@ -1325,6 +1452,165 @@ void MainWindow::closeCurrentTab()
         closeTab(tabs->currentIndex());
 }
 
+void MainWindow::reorderTab(int from, int to)
+{
+    if (from < 0 || from >= tabs->count() || to < 0 || to > tabs->count() || from == to)
+        return;
+    // removeTab does not delete the page -- it only takes it out of the strip --
+    // so the same DocumentTab (with its scroll, zoom and running work intact) can
+    // be re-inserted elsewhere. The drop index was measured before the removal, so
+    // a move past the source shifts it down by one.
+    QWidget *page = tabs->widget(from);
+    const QString label = tabs->tabText(from);
+    tabs->removeTab(from);
+    const int insertAt = qBound(0, to > from ? to - 1 : to, tabs->count());
+    tabs->insertTab(insertAt, page, label);
+    tabs->setCurrentWidget(page);
+}
+
+void MainWindow::detachTabToNewWindow(int index, QPoint globalPos)
+{
+    auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
+    if (!tab)
+        return;
+    const QString path = tab->documentPath();
+    const int page = tab->currentPage();
+    if (path.isEmpty())
+        return;
+
+    // The drag ended without a window taking it as a merge. Before concluding
+    // "pull it out into a new window", look at where the button was let go: if it
+    // is over a different one of our own windows, that window is where the tab
+    // belongs, whether or not its drop handler ran. Merging from here -- rather
+    // than only through the drag-and-drop delivery -- is what makes a drop land
+    // reliably: the strip, a toolbar, a child that ignored the event, or the
+    // window simply not being the drop site all used to fall through to a stray
+    // new window instead of combining.
+    if (QWidget *under = QApplication::widgetAt(globalPos)) {
+        if (auto *other = qobject_cast<MainWindow *>(under->window()); other && other != this) {
+            if (auto *bar = other->tabs->findChild<DocumentTabBar *>())
+                bar->takeMergedTab(path, page); // opens it there
+            closeTab(index);                    // and drops it here
+            return;
+        }
+    }
+
+    // A new window, on the heap and self-deleting: it is a second top-level of the
+    // same process, not a second instance (the gateway stays with the first
+    // window). The document is opened there by path, then dropped here -- the tab
+    // appears to move without a live renderer crossing windows.
+    auto *window = new MainWindow;
+    window->setDetachedWindow(true);
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->openDocument(path, page);
+    window->move(globalPos - QPoint(60, 20)); // roughly under the cursor
+    window->show();
+    closeTab(index);
+}
+
+void MainWindow::mergeTabIn(const QString &path, int page, int index)
+{
+    Q_UNUSED(index); // appended; the exact drop slot is a refinement
+    if (!path.isEmpty())
+        openDocument(path, page);
+}
+
+void MainWindow::setDetachedWindow(bool detached)
+{
+    detachedWindow = detached;
+
+    // A window pulled out of another carries one tab, and one tab under
+    // setTabBarAutoHide(true) hides the strip -- which strands it: a hidden bar
+    // takes no mouse events, so its tab cannot be grabbed to merge back or drag
+    // on. A window the user is managing by hand should always show what it is
+    // holding, so the strip stays put here; the common one-document window keeps
+    // the chrome-free look.
+    if (detached && tabs)
+        tabs->setTabBarAutoHide(false);
+}
+
+QList<QPair<QString, int>> MainWindow::openDocumentRefs() const
+{
+    QList<QPair<QString, int>> docs;
+    if (!tabs)
+        return docs;
+    for (int index = 0; index < tabs->count(); ++index) {
+        auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
+        if (!tab)
+            continue;
+        const QString path = tab->documentPath();
+        if (path.isEmpty())
+            continue;
+        docs.append(qMakePair(path, tab->currentPage()));
+    }
+    return docs;
+}
+
+void MainWindow::handOffWholeWindow()
+{
+    // Shed the tabs one at a time rather than closing the window outright: the
+    // last one closes the window by the rule that an empty reader is a window that
+    // does nothing, and that is the route the single-tab hand-off already takes.
+    while (tabs->count() > 0)
+        closeTab(0);
+}
+
+void MainWindow::mergeWindowIntoTargetAt(QPoint globalPos)
+{
+    // A whole window was dragged by its blank strip and let go where no drop was
+    // ever taken. If that somewhere is one of our other windows, its tabs belong
+    // there and this window follows them out; if it is the desktop or another
+    // program, nothing was asked for and the window stays the window it is.
+    QWidget *under = QApplication::widgetAt(globalPos);
+    auto *other = under ? qobject_cast<MainWindow *>(under->window()) : nullptr;
+    if (!other || other == this)
+        return;
+
+    const QList<QPair<QString, int>> docs = openDocumentRefs();
+    for (const auto &doc : docs)
+        other->openDocument(doc.first, doc.second);
+    handOffWholeWindow();
+}
+
+void MainWindow::mergeAllWindows()
+{
+    // Everything ends up in the window that owns the process. main.cpp builds
+    // that one on the stack and returns when it goes, so closing it as part of a
+    // merge would take every other window down with it -- including the one the
+    // user just asked to merge into.
+    MainWindow *target = primaryWindow ? primaryWindow : this;
+
+    QList<MainWindow *> others;
+    const QWidgetList windows = QApplication::topLevelWidgets();
+    for (QWidget *window : windows) {
+        auto *other = qobject_cast<MainWindow *>(window);
+        if (other && other != target && other->isVisible())
+            others.append(other);
+    }
+
+    if (others.isEmpty()) {
+        target->setStatusMessage(tr("没有其他窗口可以合并"), 4000);
+        return;
+    }
+
+    int moved = 0;
+    for (MainWindow *other : std::as_const(others)) {
+        const QList<QPair<QString, int>> docs = other->openDocumentRefs();
+        for (const auto &doc : docs) {
+            target->openDocument(doc.first, doc.second);
+            ++moved;
+        }
+        other->close();
+    }
+
+    target->raise();
+    target->activateWindow();
+    target->setStatusMessage(tr("已把 %1 个窗口的 %2 个标签并入当前窗口")
+                                 .arg(others.size())
+                                 .arg(moved),
+                             5000);
+}
+
 void MainWindow::chooseTool(PageView::Tool tool)
 {
     rememberedTool = tool;
@@ -1417,7 +1703,10 @@ void MainWindow::updateForCurrentTab()
             const QSignalBlocker blocker(outlineSidebarAction);
             outlineSidebarAction->setChecked(tab->sidebarVisible());
         }
-        outlineSidebarAction->setEnabled(tab->hasOutline());
+        // The sidebar is useful for any open document now (thumbnails always
+        // exist), so it is enabled whenever there is a document -- not only when
+        // the file has bookmarks.
+        outlineSidebarAction->setEnabled(true);
 
         statusPage->setText(tr("%1 / %2").arg(tab->currentPage() + 1).arg(count));
         statusZoom->setText(tr("%1%").arg(percent));

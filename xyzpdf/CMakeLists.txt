@@ -224,6 +224,8 @@ set(XYZPDF_SOURCES
     src/translate/translator.h
     src/translate/translator.cpp
 
+    src/ui/documenttabbar.h
+    src/ui/documenttabbar.cpp
     src/ui/findbar.h
     src/ui/findbar.cpp
     src/ui/imageexportdialog.h
@@ -238,6 +240,8 @@ set(XYZPDF_SOURCES
     src/ui/printdialog.cpp
     src/ui/thirdpartydialog.h
     src/ui/thirdpartydialog.cpp
+    src/ui/thumbnailpanel.h
+    src/ui/thumbnailpanel.cpp
     src/ui/translatedialog.h
     src/ui/translatedialog.cpp
     src/ui/wrappingtoolbararea.h
@@ -520,6 +524,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
+                src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
@@ -566,12 +571,14 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/render/rendercache.cpp
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
+                src/ui/documenttabbar.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
                 src/ui/languagedialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
+                src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
                 src/ui/thirdpartydialog.cpp
                 src/ui/wrappingtoolbararea.cpp

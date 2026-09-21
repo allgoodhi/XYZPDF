@@ -38,6 +38,8 @@ class OutlinePanel;
 class PageRenderer;
 class PageView;
 class QtPdfBackend;
+class QTabWidget;
+class ThumbnailPanel;
 class TranslateDialog;
 class QAtomicInt;
 
@@ -281,7 +283,12 @@ private:
     RenderCache cache;
     FindBar *findBar = nullptr;
     PageView *pageView = nullptr;
+    // The left reading panel: bookmarks and page thumbnails, one tab each. It is
+    // hidden until the reader opens it (sidebarWanted), and shown for any open
+    // document -- thumbnails exist whether or not the file has bookmarks.
+    QTabWidget *sidebar = nullptr;
     OutlinePanel *outlinePanel = nullptr;
+    ThumbnailPanel *thumbnailPanel = nullptr;
     // Whether the reader asked for the sidebar, kept separate from whether it is
     // shown: a document with no bookmarks cannot show one, but the window's menu
     // item still reflects what was asked.

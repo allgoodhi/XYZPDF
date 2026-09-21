@@ -13,7 +13,9 @@
 class WrappingToolBarArea;
 struct WordExportReport;
 
+#include <QList>
 #include <QMainWindow>
+#include <QPair>
 #include <QPointer>
 
 #include <memory>
@@ -93,6 +95,26 @@ private:
     void closeExportProgress();
     void closeTab(int index);
     void closeCurrentTab();
+    // The tab-drag gestures wired from DocumentTabBar: reorder within this
+    // window, detach a tab into a new window, accept a tab merged in from another
+    // window, and drop a tab that another window has taken over.
+    void reorderTab(int from, int to);
+    void detachTabToNewWindow(int index, QPoint globalPos);
+    void mergeTabIn(const QString &path, int page, int index);
+    // A whole window was pulled along by its blank strip. Either another window
+    // takes every tab it holds (this one then goes away), or nothing does and it
+    // stays the window it already was.
+    void mergeWindowIntoTargetAt(QPoint globalPos);
+    // Every tab has been opened by another window: shed them all. Closing the
+    // last one closes the window, which is the same route a single handed-off tab
+    // takes.
+    void handOffWholeWindow();
+    // The 窗口 menu: bring every other window's tabs into this one and close them.
+    void mergeAllWindows();
+    // What this window has open, as the drag carries it: path and page per tab.
+    QList<QPair<QString, int>> openDocumentRefs() const;
+    // A window opened from a detached tab closes itself when its last tab goes.
+    void setDetachedWindow(bool detached);
     // Asks for the password of an encrypted document, and retries.
     bool promptForPassword(DocumentTab *tab, const QString &path);
 
@@ -141,6 +163,12 @@ private:
     // answer costs a stat() per URL, and a drag move arrives continuously.
     // Empty means the drag is not one this window can do anything with.
     QStringList pendingDrop;
+
+    // Set while a tab dragged from another window is over this one, so the body
+    // (not just the thin strip) takes the merge and the exit knows to clear the
+    // cue. The tab drag is a different animal from a file drop and never touches
+    // pendingDrop.
+    bool tabDragOver = false;
 
 
     Ui::MainWindow *ui;
@@ -213,4 +241,8 @@ private:
     // Set while closing a tab on purpose, so that "the last tab is gone" closes
     // the window instead of showing the empty state.
     bool closingLastTabClosesWindow = true;
+    // A window born from dragging a tab out. It is allocated on the heap and
+    // deletes itself on close, and it has no single-instance gateway (that stays
+    // with the first window) -- so it is just another top-level of the process.
+    bool detachedWindow = false;
 };

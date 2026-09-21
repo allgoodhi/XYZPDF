@@ -253,6 +253,7 @@ private:
     QAction *twoPageAction = nullptr;
     QAction *bookModeAction = nullptr;
     QAction *outlineSidebarAction = nullptr;
+    QAction *nightReadingAction = nullptr;
     QAction *fullScreenAction = nullptr;
     QAction *presentationAction = nullptr;
 

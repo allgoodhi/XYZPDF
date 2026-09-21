@@ -159,6 +159,12 @@ public:
     // item checked to match, and an empty document simply has nothing to reveal.
     void setSidebarVisible(bool visible);
     bool sidebarVisible() const { return sidebarWanted; }
+
+    // Night reading for this document. The view inverts the paper as it paints;
+    // this also chooses the surround, because the desk a black page lies on has
+    // to be dark too or the effect reads as a bug.
+    void setNightInverted(bool inverted);
+    bool nightInverted() const;
     // Whether this document actually has bookmarks to show, so the window can
     // disable the toggle on a document that has none.
     bool hasOutline() const;

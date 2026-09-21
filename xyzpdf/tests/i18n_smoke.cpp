@@ -145,6 +145,56 @@ int main(int argc, char **argv)
               "and with the catalogue gone the source string is back");
     }
 
+    // ---- every feature added since the catalogue was last refreshed ----
+    //
+    // The gap this closes is silent: lupdate adds a new source string as an empty
+    // unfinished entry, the .qm still compiles, the .ts still loads, and English
+    // shows Chinese for that one string -- one at a time, wherever a reader happens
+    // to look. Checking a handful of the newest strings is what turns "the
+    // catalogue exists" into "the catalogue covers the program".
+    {
+        QTranslator translator;
+        check(translator.load(Languages::catalogueResource(QStringLiteral("en"))),
+              "the English catalogue loads for the sweep");
+        QCoreApplication::installTranslator(&translator);
+
+        struct Probe {
+            const char *context;
+            const char *source;
+        };
+        const Probe probes[] = {
+            { "MainWindow", "夜间阅读(&G)" },      { "MainWindow", "全屏(&L)" },
+            { "MainWindow", "演示(&P)" },          { "MainWindow", "合并所有窗口(&G)" },
+            { "MainWindow", "书籍模式" },          { "MainWindow", "导出为图片(&G)…" },
+            { "MainWindow", "松开以在此窗口合并 %1 个文档" },
+            { "MainWindow", "已把 %1 个窗口的 %2 个标签并入当前窗口" },
+            { "DocumentTab", "缩略图" },           { "DocumentTab", "正在导出为图片…" },
+            { "ImageExportDialog", "分辨率" },     { "ImageExportDialog", "保存到文件夹" },
+            { "PrintDialog", "每页版数" },         { "PrintDialog", "适应可打印区域" },
+            { "TranslateDialog", "复制译文" },     { "OcrDialog", "文字识别" },
+            { "SettingsDialog", "翻译服务" },      { "FindBar", "区分大小写" },
+        };
+
+        for (const Probe &probe : probes) {
+            const QString source = QString::fromUtf8(probe.source);
+            const QString english =
+                QCoreApplication::translate(probe.context, probe.source);
+            check(english != source
+                      && !hasChinese(english),
+                  QStringLiteral("%1: \"%2\" is translated (got \"%3\")")
+                      .arg(QString::fromLatin1(probe.context), source, english));
+            // A translation that dropped a placeholder would be worse than no
+            // translation: the arg list would not match the string any more.
+            if (source.contains(QStringLiteral("%1"))) {
+                check(english.contains(QStringLiteral("%1")),
+                      QStringLiteral("%1: \"%2\" keeps its first placeholder")
+                          .arg(QString::fromLatin1(probe.context), source));
+            }
+        }
+
+        QCoreApplication::removeTranslator(&translator);
+    }
+
     // ---- which language a setting means ----
     {
         // A code this build has: used as it is.

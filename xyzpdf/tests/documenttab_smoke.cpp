@@ -994,6 +994,61 @@ int main(int argc, char **argv)
         QObject::disconnect(listening);
     }
 
+    // ---- night reading ----
+    //
+    // Asserted off the pixels because the pixels are the feature. The setting
+    // existed for milestones with nothing reading it -- a stored preference that
+    // changed nothing on screen -- and that is precisely the defect that reading
+    // the code cannot catch and sampling the widget can.
+    {
+        tab.setNightInverted(false);
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }),
+              "the first page is drawn for the day");
+
+        const QRectF page = view->pageRectInViewport(0);
+        check(!page.isNull(), "and it is somewhere that can be sampled");
+
+        // The viewport's own centre, not a corner of the page: this fixture is
+        // laid out far larger than the test viewport, so the page's top-left
+        // corner sits at a negative x and a point taken from it falls outside the
+        // grabbed image -- where pixelColor answers with an invalid colour whose
+        // channels all read 0, which looks exactly like a black page.
+        const QPoint paper = view->viewport()->rect().center();
+        check(page.contains(paper),
+              "the point sampled is on the page, not the surround");
+        const QImage dayShot = view->grab().toImage();
+        const QColor day = dayShot.pixelColor(paper);
+        check(day.isValid(), QStringLiteral("and the sample is a real pixel (%1)")
+                                 .arg(day.isValid() ? day.name() : QStringLiteral("invalid")));
+
+        tab.setNightInverted(true);
+        check(view->nightInverted(), "the view reports itself inverted");
+        check(waitFor([view] { return view->isRendered(0); }),
+              "the page is re-rendered rather than left as a placeholder");
+        const QColor nightColour = view->grab().toImage().pixelColor(paper);
+
+        // Asserted as a relationship between the two samples rather than against
+        // a colour, because by this point in the file the tab holds whichever
+        // fixture the last block opened, and what that pixel is -- paper, ink, or
+        // a black bar in a graphic -- is that fixture's business. What must hold
+        // for any pixel is that inversion takes each channel to its complement.
+        check(day != nightColour,
+              QStringLiteral("the toggle changed what is on screen (%1,%2,%3 became %4,%5,%6)")
+                  .arg(day.red()).arg(day.green()).arg(day.blue())
+                  .arg(nightColour.red()).arg(nightColour.green()).arg(nightColour.blue()));
+        check(day.red() + nightColour.red() == 255
+                  && day.green() + nightColour.green() == 255
+                  && day.blue() + nightColour.blue() == 255,
+              QStringLiteral("and every channel went to its complement (%1,%2,%3 / %4,%5,%6)")
+                  .arg(day.red()).arg(day.green()).arg(day.blue())
+                  .arg(nightColour.red()).arg(nightColour.green()).arg(nightColour.blue()));
+
+        // Back the way it was, so that anything added after this sees a day page.
+        tab.setNightInverted(false);
+        check(waitFor([view] { return view->isRendered(0); }), "and it comes back");
+    }
+
     if (failures == 0) {
         std::cout << "the view and the tab hold together\n";
         return 0;

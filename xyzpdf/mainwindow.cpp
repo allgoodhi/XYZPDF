@@ -783,6 +783,22 @@ void MainWindow::buildMenus()
     });
     viewMenu->addAction(outlineSidebarAction);
 
+    // Night reading. A setting of the whole program rather than of the document:
+    // the reason it is turned on is the room, not the file, and a reader who
+    // opens a second tab in the dark should not have to ask again.
+    nightReadingAction = makeAction(tr("夜间阅读(&G)"),
+                                    QKeySequence(QStringLiteral("Ctrl+Shift+N")));
+    nightReadingAction->setCheckable(true);
+    nightReadingAction->setObjectName(QStringLiteral("nightReadingAction"));
+    nightReadingAction->setToolTip(tr("把页面反色，暗处阅读时不刺眼"));
+    nightReadingAction->setChecked(AppSettings::nightReading());
+    connect(nightReadingAction, &QAction::toggled, this, [this](bool on) {
+        AppSettings::setNightReading(on);
+        if (DocumentTab *tab = currentTab())
+            tab->setNightInverted(on);
+    });
+    viewMenu->addAction(nightReadingAction);
+
     viewMenu->addSeparator();
 
     // Fullscreen and presentation, as a pair rather than one item with a
@@ -1161,6 +1177,9 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
     // resets itself every time a document is opened is a mode people stop
     // using.
     tab->setTool(rememberedTool);
+    // Night reading is the program's, not the document's: a tab opened while it
+    // is on starts inverted, or the reader is briefly blinded by the first page.
+    tab->setNightInverted(AppSettings::nightReading());
     const int index = tabs->addTab(tab, QFileInfo(path).fileName());
     tabs->setCurrentIndex(index);
 
@@ -1928,6 +1947,13 @@ void MainWindow::updateForCurrentTab()
         {
             const QSignalBlocker blocker(outlineSidebarAction);
             outlineSidebarAction->setChecked(tab->sidebarVisible());
+        }
+        // The same for night reading: the setting is the program's, but what the
+        // tick describes is the page in front, so it is read back rather than
+        // assumed -- and blocked, so reading it cannot write it again.
+        {
+            const QSignalBlocker blocker(nightReadingAction);
+            nightReadingAction->setChecked(tab->nightInverted());
         }
         // The sidebar is useful for any open document now (thumbnails always
         // exist), so it is enabled whenever there is a document -- not only when

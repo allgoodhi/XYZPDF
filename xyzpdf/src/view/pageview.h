@@ -199,6 +199,19 @@ public:
     void setColors(const QColor &background, const QColor &placeholder, const QColor &border,
                    const QColor &selection);
 
+    // Night reading: the paper is rendered inverted.
+    //
+    // A property of the render rather than a filter laid over the paint, because
+    // that is what the rest of this class already assumes: an image is an answer
+    // to a question, and "this page, inverted" is a different question from "this
+    // page". So changing it invalidates what is held -- see setRotation, which is
+    // the same shape for the same reason.
+    //
+    // The inversion itself happens in the tab that holds the renderer. This class
+    // asks for images and draws what it is given, and it is given an answer.
+    void setNightInverted(bool inverted);
+    bool nightInverted() const { return night; }
+
     // ---- search ----
     //
     // The matches to wash over the pages, and which one is being looked at.
@@ -350,6 +363,12 @@ private:
 
     void drawPlaceholder(QPainter &painter, int page, const QRectF &rect) const;
 
+    // The colour of the paper itself. A PDF page carries no background: the
+    // renderer draws content over transparency and whoever shows it supplies the
+    // white -- see the note where it is filled. Night reading has to darken that
+    // too, or inverting the content leaves white text on white paper.
+    QColor paperColour() const;
+
     // The selected text, washed over the pages it covers.
     void drawSelection(QPainter &painter, const QPoint &offset, const QRectF &visible) const;
 
@@ -470,6 +489,8 @@ private:
 
     int rotationDegrees = 0;
     double lastDevicePixelRatio = 1.0;
+    // Night reading. Changes what an image is an answer to (see setNightInverted).
+    bool night = false;
     qint64 prefetchBytes = 0;    // Set while goToPage() moves the scrollbar, so that the scroll handler does
     // not recompute the current page from the new position and announce a
     // different one moments after the jump announced its own.

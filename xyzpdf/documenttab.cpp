@@ -462,8 +462,39 @@ void DocumentTab::applyThemeColors()
     // The selection wash is the accent, not the palette's selection colour: the
     // palette's is a pale blue meant to sit behind a whole row of text in a
     // list, and over black glyphs on white paper it is almost invisible.
-    pageView->setColors(colors.pageBackdrop, colors.pagePlaceholder, colors.pageBorder,
-                        colors.accent);
+    QColor backdrop = colors.pageBackdrop;
+    QColor placeholder = colors.pagePlaceholder;
+    QColor edge = colors.pageBorder;
+    if (pageView->nightInverted()) {
+        // Night reading inverts the paper in the paint pass, which leaves the
+        // surround and the placeholder alone -- and a near-black page floating
+        // on a light grey field is exactly what makes the mode look broken. The
+        // placeholder is "paper not yet drawn", so it has to match the paper.
+        backdrop = QColor(28, 29, 32);
+        placeholder = QColor(52, 54, 58);
+        edge = QColor(74, 76, 82);
+    }
+    pageView->setColors(backdrop, placeholder, edge, colors.accent);
+}
+
+void DocumentTab::setNightInverted(bool inverted)
+{
+    if (pageView->nightInverted() == inverted)
+        return;
+
+    // The cache holds images, and an image of a page is now a different image.
+    // Cleared before the view is told, because telling it re-asks for the pages in
+    // view -- and a re-ask that found the old answer still in the cache would
+    // paint the colours the reader has just turned away from.
+    cache.clear();
+    pageView->setNightInverted(inverted);
+    applyThemeColors();
+    Q_EMIT cacheChanged(cache.usedBytes(), cache.maximumBytes());
+}
+
+bool DocumentTab::nightInverted() const
+{
+    return pageView->nightInverted();
 }
 
 void DocumentTab::changeEvent(QEvent *event)
@@ -746,13 +777,23 @@ void DocumentTab::onPageRendered(const RenderToken &token, const QImage &image)
     if (!token.isCurrent(renderer->generation()))
         return;
 
+    // Night reading: the inversion belongs to the image, not to the paint, so it
+    // happens once here and everything after it -- the cache, the view, the count
+    // of bytes held -- sees the page as it will be shown.
+    //
+    // InvertRgb rather than the default, because these images carry an alpha
+    // channel and inverting that would flip the transparency along with the ink.
+    QImage shown = image;
+    if (!shown.isNull() && pageView->nightInverted())
+        shown.invertPixels(QImage::InvertRgb);
+
     // The cache keeps only what came back, and only when it is worth keeping:
     // an image that produced nothing is not a result to remember, and the view
     // has to hear about it so that the page is asked for again.
-    if (!image.isNull())
-        cache.insert(token, image);
+    if (!shown.isNull())
+        cache.insert(token, shown);
     if (opened && token.page < pageCount())
-        pageView->setPageImage(token, image);
+        pageView->setPageImage(token, shown);
     Q_EMIT cacheChanged(cache.usedBytes(), cache.maximumBytes());
 }
 

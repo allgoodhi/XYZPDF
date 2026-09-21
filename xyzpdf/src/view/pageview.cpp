@@ -425,6 +425,26 @@ void PageView::setColors(const QColor &backgroundColour, const QColor &placehold
     viewport()->update();
 }
 
+void PageView::setNightInverted(bool inverted)
+{
+    if (night == inverted)
+        return;
+    night = inverted;
+
+    // Before the requests, exactly as a rotation does it: an inverted page is a
+    // different image from the same page, so whatever is in flight has to be told
+    // it is no longer wanted before anything asks again.
+    Q_EMIT invalidated();
+
+    dropAllImages();
+    requestVisiblePages();
+}
+
+QColor PageView::paperColour() const
+{
+    return night ? QColor(0, 0, 0) : QColor(255, 255, 255);
+}
+
 // ---- text ----
 
 void PageView::setDocument(Document *document)
@@ -1352,7 +1372,7 @@ void PageView::paintEvent(QPaintEvent *event)
             // straight onto the surround and the page comes out whatever colour
             // the surround is: measured at (214, 218, 222) on this machine,
             // which is the report that found it.
-            painter.fillRect(target, Qt::white);
+            painter.fillRect(target, paperColour());
             painter.drawImage(target, entry->image);
             painter.setPen(border);
             painter.drawRect(target.adjusted(0, 0, -1, -1));
@@ -1364,7 +1384,7 @@ void PageView::paintEvent(QPaintEvent *event)
         // instead of it -- and it draws the page's own outline, which the band
         // would otherwise draw as a frame around itself.
         drawPlaceholder(painter, page, pageOnScreen);
-        painter.fillRect(target, Qt::white);
+        painter.fillRect(target, paperColour());
         painter.drawImage(target, entry->image);
     }
 

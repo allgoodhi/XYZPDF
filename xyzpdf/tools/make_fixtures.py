@@ -123,6 +123,107 @@ def write(name, data):
     return data
 
 
+# A4 at 300 dpi, the resolution a scanner defaults to and the one that makes a
+# page big enough to matter: 2480 x 3508 pixels of RGB is 26 MB of samples per
+# page, which is the "单页 10 MB+" docs/PLAN.md §5 asks for.
+SCAN_WIDTH = 2480
+SCAN_HEIGHT = 3508
+
+# The same A4 in points, which is what the MediaBox is measured in.
+SCAN_PAGE_W = 595
+SCAN_PAGE_H = 842
+
+
+def _scanRows(width, offset):
+    """The rows of one page, as a list to be joined.
+
+    Built from two precomputed row images rather than per-pixel loops: a page is
+    3508 rows and eight million pixels, and generating it a pixel at a time in
+    Python takes long enough that nobody runs this script. The rows are chosen by
+    a rule, so the page looks like a scanned text page -- white margins, lines of
+    dark marks, a heading -- and nothing here is a glyph, which is the point: a
+    scan has no text, and that is the case the fixture exists to exercise.
+    """
+    white = b'\xff' * (width * 3)
+
+    def line(dark, light, lead):
+        row = bytearray(b'\xff' * (width * 3))
+        x = lead
+        while x < width - lead:
+            stop = min(x + dark, width - lead)
+            for position in range(x, stop):
+                row[position * 3:position * 3 + 3] = b'\x20\x20\x20'
+            x = stop + light
+        return bytes(row)
+
+    # Two weights, so the "text" is not one uniform bar, and a shorter last line.
+    heavy = line(9, 5, 140)
+    light = line(7, 6, 140)
+    short = line(7, 6, 140)
+    short = short[:int(width * 0.62 * 3)] + white[int(width * 0.62 * 3):]
+
+    rows = []
+    for y in range(SCAN_HEIGHT):
+        band = (y + offset) % 58
+        if y < 240 or y > SCAN_HEIGHT - 240:
+            rows.append(white)                     # the margins
+        elif band < 22 and 300 < y < SCAN_HEIGHT - 300:
+            rows.append(heavy if ((y // 58) + offset) % 3 else light)
+        elif band == 23:
+            rows.append(short)
+        else:
+            rows.append(white)
+    return rows
+
+
+def makeScanPdf(pages):
+    """A document of pure images: one 300 dpi raster per page, and no text."""
+    objects = []
+
+    def add(body):
+        objects.append(body)
+        return len(objects)
+
+    page_ids = []
+    for index in range(pages):
+        raster = b''.join(_scanRows(SCAN_WIDTH, index * 7))
+        compressed = zlib.compress(raster, 6)
+        image = add(b'<< /Type /XObject /Subtype /Image /Width %d /Height %d'
+                    b' /ColorSpace /DeviceRGB /BitsPerComponent 8'
+                    b' /Filter /FlateDecode /Length %d >>\nstream\n'
+                    % (SCAN_WIDTH, SCAN_HEIGHT, len(compressed))
+                    + compressed + b'\nendstream')
+        content = add(b'<< /Length %d >>\nstream\nq %d 0 0 %d 0 0 cm /Im0 Do Q\nendstream'
+                      % (len(b'q %d 0 0 %d 0 0 cm /Im0 Do Q' % (SCAN_PAGE_W, SCAN_PAGE_H)),
+                         SCAN_PAGE_W, SCAN_PAGE_H))
+        page_ids.append(add(
+            b'<< /Type /Page /Parent 0 0 R /MediaBox [0 0 %d %d]'
+            b' /Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>'
+            % (SCAN_PAGE_W, SCAN_PAGE_H, image, content)))
+
+    kids = b' '.join(b'%d 0 R' % page for page in page_ids)
+    pages_id = add(b'<< /Type /Pages /Kids [%s] /Count %d >>' % (kids, len(page_ids)))
+    catalog = add(b'<< /Type /Catalog /Pages %d 0 R >>' % pages_id)
+    for page in page_ids:
+        objects[page - 1] = objects[page - 1].replace(b'/Parent 0 0 R',
+                                                      b'/Parent %d 0 R' % pages_id)
+
+    body = bytearray(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
+    offsets = [0]
+    for number, content in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += b'%d 0 obj\n' % number + content + b'\nendobj\n'
+
+    xref_at = len(body)
+    body += b'xref\n0 %d\n' % (len(objects) + 1)
+    body += b'0000000000 65535 f \n'
+    for offset in offsets[1:]:
+        body += b'%010d 00000 n \n' % offset
+    body += (b'trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n'
+             % (len(objects) + 1, catalog, xref_at))
+    return bytes(body)
+
+
 def main():
     os.makedirs(FIXTURES, exist_ok=True)
 
@@ -148,6 +249,34 @@ def main():
     write('many-pages.pdf', makePdf([
         (595, 842, 0, 'XYZPDF page %d' % (index + 1), b'') for index in range(40)
     ]))
+
+    # Six hundred pages. docs/PLAN.md §5 asks for a fixture of "500+ pages", and
+    # M1's acceptance is "a 500-page document scrolls without lag" -- a claim the
+    # forty-page file above cannot support, because forty pages of layout is a
+    # list short enough that anything is smooth. Whatever the page tree costs to
+    # walk and the cache costs to keep flat only shows up at this size, so this
+    # is the file the performance baseline in docs/perf.md is measured against.
+    #
+    # It stays small on disk: every page is one line of text in a compressed
+    # stream, so the size is the page tree, not the content.
+    write('huge.pdf', makePdf([
+        (595, 842, 0, 'XYZPDF huge page %d' % (index + 1), b'') for index in range(600)
+    ]))
+
+    # A scan: three pages of 300 dpi RGB, and no text anywhere in them. The
+    # property being stood up is the one every other fixture cannot give -- a page
+    # whose every point is "not over a line", so a drag is a box rather than a
+    # selection, a search finds nothing, and the pixels that have to be decoded
+    # and downsampled before the page can be shown are 26 MB of them.
+    #
+    # blank.pdf is also textless, but it is one blank page at screen resolution:
+    # it exercises "there is no text" and nothing else. The M1 acceptance line
+    # "a scan (pure image, 10 MB+ per page) pages normally" needs a page that is
+    # actually big, and docs/perf.md measures this one.
+    #
+    # Small on disk despite the samples: a scanned page is mostly white, and
+    # Flate is good at that. It is the decompressed size that costs.
+    write('scan.pdf', makeScanPdf(3))
 
     # One page with no text on it at all -- the empty string draws nothing. This
     # is the page a scan is: no text layer, so every point on it is "not over a

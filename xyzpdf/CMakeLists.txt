@@ -426,6 +426,23 @@ if(XYZPDF_BUILD_DOCUMENT_SMOKE)
         LIBRARIES Qt6::Pdf)
 endif()
 
+# The performance baseline. Built with everything else and deliberately not run:
+# tools/build_all_tests.py skips any target whose name contains 'bench', because
+# this prints numbers instead of passing or failing, and a threshold weak enough
+# to be a test is a threshold somebody will raise the first time it goes red on a
+# slower machine. See the header comment in tests/perf_bench.cpp and the record it
+# feeds, docs/perf.md.
+option(XYZPDF_BUILD_PERF_BENCH "Build the performance baseline measurement" OFF)
+if(XYZPDF_BUILD_PERF_BENCH)
+    xyzpdf_add_test(perf_bench
+        SOURCES src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+                src/document/textsearch.cpp
+                src/render/rendercache.cpp
+        LIBRARIES Qt6::Pdf)
+endif()
+
 # The tree the bookmark list is turned into, with no PDF anywhere near it.
 option(XYZPDF_BUILD_OUTLINE_SMOKE "Build the bookmark tree smoke test" OFF)
 if(XYZPDF_BUILD_OUTLINE_SMOKE)

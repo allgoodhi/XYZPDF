@@ -30,8 +30,10 @@
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  IgnorableNamespaces="uap rescap com desktop2">
 
   <Identity
     Name="allgoodhi.XYZPDF"
@@ -95,8 +97,31 @@
             <uap:SupportedFileTypes>
               <uap:FileType>.pdf</uap:FileType>
             </uap:SupportedFileTypes>
+            <!-- The same CLSID compiled into src/windows/previewprobe.cpp. This
+                 is what points the preview pane at the handler for this file
+                 type; the server itself is declared below. -->
+            <desktop2:DesktopPreviewHandler Clsid="12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7" />
           </uap:FileTypeAssociation>
         </uap:Extension>
+        <!--
+          The COM server behind the probe. Explorer (or dllhost, which is what
+          usually hosts it) loads bin\xyzpdfpreviewprobe.dll out of the package
+          and asks this CLSID for an IPreviewHandler.
+
+          It is a probe, not the feature: the DLL draws a dark rectangle and the
+          facts about the process it ended up inside. Whether it is reached at
+          all when the package is registered loosely from a directory is the
+          question, and docs/store-submission.md section 5 has the answer.
+        -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="XYZPDF preview probe">
+              <com:Class Id="12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7"
+                         Path="bin\xyzpdfpreviewprobe.dll"
+                         ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
       </Extensions>
     </Application>
   </Applications>

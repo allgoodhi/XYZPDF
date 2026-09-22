@@ -691,6 +691,26 @@ if(XYZPDF_BUILD_SHELLINTEGRATION_SMOKE AND WIN32)
         LIBRARIES Qt6::Widgets)
 endif()
 
+# The preview probe, driven the way Explorer drives it: load the DLL, ask the
+# factory for the class, run the sequence, check a window appeared.
+#
+# This is the half that can be asserted. Whether the shell routes .pdf previews
+# to a server declared by a loosely registered package is the other half, and it
+# is not answerable from here -- nor from the registry, where even a package known
+# to work has no COM key to look at. So the DLL's own correctness is pinned down
+# first, and the routing question is left to the log the handler writes.
+#
+# The DLL is passed on the command line, which tools/build_all_tests.py knows
+# about; a missing argument is reported as a failure rather than skipped.
+# The DLL it drives is defined further down, in the Packaging section, and is
+# unconditional on Windows -- so no "if this target exists" guard here. Such a
+# guard reads as caution and does the opposite: it silently drops the test, and
+# the runner reports one fewer test rather than a failure.
+option(XYZPDF_BUILD_PREVIEWHANDLER_SMOKE "Build the preview handler smoke test" OFF)
+if(XYZPDF_BUILD_PREVIEWHANDLER_SMOKE AND WIN32)
+    xyzpdf_add_test(previewhandler_smoke LIBRARIES ole32)
+endif()
+
 # ---------------------------------------------------------------------------
 # Measuring
 # ---------------------------------------------------------------------------
@@ -723,6 +743,33 @@ endif()
 # ---------------------------------------------------------------------------
 # Packaging
 # ---------------------------------------------------------------------------
+
+# The preview-handler probe, which is a question rather than a feature.
+#
+# A preview handler is a COM server, and for an unpackaged program registering
+# one means writing HKLM keys as an administrator; the packaged way is to declare
+# it in the manifest and let the shell route it. Whether the shell routes it at
+# all when the package is only *loosely registered* from a directory is unknown,
+# and it decides whether the real handler can be built now or has to wait for a
+# signing certificate.
+#
+# So this DLL carries no Qt, no PDFium and no common controls: it draws a dark
+# rectangle, the facts about the process it ended up inside, and appends one line
+# to %LOCALAPPDATA%\xyzpdf-preview-probe.log, which is the half that can be read
+# without a person looking at a screen. If it paints, the plumbing works.
+#
+# Deliberately not behind an option: the package manifest names this file, so a
+# build without it produces a package that cannot register its own extension.
+if(WIN32)
+    add_library(xyzpdfpreviewprobe SHARED
+        src/windows/previewprobe.cpp
+        src/windows/previewprobe.def)
+    target_link_libraries(xyzpdfpreviewprobe PRIVATE ole32 shell32 user32 gdi32)
+    set_target_properties(xyzpdfpreviewprobe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    install(TARGETS xyzpdfpreviewprobe
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 install(TARGETS xyzpdf
     BUNDLE  DESTINATION .

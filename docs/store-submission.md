@@ -109,18 +109,38 @@ bug 报上来，所以让包赢。
   第三方声明页已经在"关于"里（`src/ui/thirdpartydialog.cpp`）。
 - **年龄分级/内容声明**：无用户生成内容、无网络交互入口，填最低档。
 
-## 5. M3 还欠的，顺序上卡在包后面
+## 5. 预览处理器：那道关验过了，答案是可以
 
-预览窗格 `IPreviewHandler` 与缩略图 `IThumbnailProvider` 一行都还没有。
-XYZip 有完整参考实现（`H:\test\XYZip\xyzip\src\shell\xyzippreview.cpp`，1865 行，
-含 delay-load 钩子与 DllHost 的坑位注释），**但它只靠包身份注册** ——
-`com:SurrogateServer` 写在 AppxManifest 里，没有任何注册表回退路径。
+预览窗格 `IPreviewHandler` 与缩略图 `IThumbnailProvider` 一行真正的实现都还没有。
+XYZip 有完整参考（`H:\test\XYZip\xyzip\src\shell\xyzippreview.cpp`，1865 行，含
+delay-load 钩子与 DllHost 的坑位注释），**它只靠包身份注册** —— `com:SurrogateServer`
+写在清单里，没有注册表回退路径。所以先前卡着的未知是：**松散注册的包，外壳收不收这个
+COM 声明**。
 
-顺序上原先卡着的"先要有包"，今天用松散注册解开了（§1.1）。**下一个未知**是：
-`com:SurrogateServer` 这种包内 COM 服务器，在松散注册的包上到底生效不生效 —— 它写在清单里，
-`makeappx` 会验，但外壳装载 COM 服务器的那条路径是否认松散布局，没查过。这决定了预览处理器
-该不该现在就动手：如果只认签名安装的真包，那 1865 行写完也验不了，得先解决证书。
-先花十分钟拿一个最小的 DLL 试这件事，再决定要不要搬 XYZip 的实现。
+2026-09-22 用一个刻意不含任何依赖的探针（`src/windows/previewprobe.cpp`：一块色块、
+几行关于自己所在进程的事实、外加往日志写一行）验过了，结论是**收**：
+
+```
+host=DllHost.exe, 64-bit  package=allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4
+integrity=Medium (0x00002000)
+```
+
+十一行，对应资源管理器里逐个点过去的那十一次预览。三件事由此确定，每件都直接影响真实现
+怎么写：
+
+- **路由成立**，不需要签名包、不需要管理员。预览处理器现在就可以做。
+- **宿主是 DllHost，不是 Explorer**，完整性 Medium。它不能假设自己在本程序进程里，
+  也不能假设能写任意路径。
+- **`%LOCALAPPDATA%` 被重定向了**：探针以为写的是 `%LOCALAPPDATA%\xyzpdf-preview-probe.log`，
+  实际落在 `...\Local\Packages\allgoodhi.XYZPDF_edpkq8hzfe5n4\LocalCache\Local\` 下面。
+  真处理器的临时路径要按这个算；而它旁边的 Qt 与 PDFium 仍要像 XYZip 那样 delay-load，
+  因为宿主进程的工作目录是 System32。
+
+探针回答的是路由问题，不是功能；真处理器落地时替换它，清单里的 CLSID 与 `Path` 两处一起改。
+
+**当前机器状态**：探针仍挂在 `.pdf` 上，而 `.pdf` 的默认程序也已经改成 XYZPDF，所以现在
+预览 PDF 看到的是那块探针色块。撤掉：设置里把 `.pdf` 默认改回 WPS，或
+`Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage`。
 
 ## 6. 本机没有验证的
 
@@ -128,12 +148,14 @@ XYZip 有完整参考实现（`H:\test\XYZip\xyzip\src\shell\xyzippreview.cpp`�
 
 - **签名**：没有代码签名证书，`-Sign` 这条路一次都没跑过；从 `.msix` 安装**必须**它
   （`0x800B0100` / `0x80073D2C`，见 §1.1 的表）。
-- **双击 `.pdf` 会开在谁手里**：未验证。本机当前默认仍是 `KWPS.PDF.9`，包只是让
-  XYZPDF 出现在"打开方式"里；把它设成默认要在设置里点 —— Windows 用只有它自己
-  能算出的哈希保护默认值，程序自己去写就是恶意软件的做法（`shellintegration.cpp:284`
-  那段注释说的就是这件事）。
+- **双击 `.pdf` 会开在谁手里**：本机默认已经改成 XYZPDF（为了验预览那条），但"双击
+  真的开起来"没有观察过。要改默认只能由人在设置里点 —— Windows 用只有它自己能算出的
+  哈希保护默认值，程序自己去写就是恶意软件的做法（`shellintegration.cpp:284` 那段
+  注释说的就是这件事）。
 - **商店认证测试**：`appcertui.exe` 在，包也注册了，但没跑过。
-- **包内 COM 服务器（预览处理器的前提）**：未验证，见 §5。
+
+已经验过、别再当未知的：包内 COM 服务器在松散注册下会被路由（§5）；包能启动
+（§1.1）；`.pdf` 关联登记进了外壳（§1.1）。
 
 ## 7. 命令
 

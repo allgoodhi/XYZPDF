@@ -54,7 +54,12 @@ NOT_A_TEST = ('install', 'bench', 'verify', 'probe')
 # directory they were built in. A missing file is reported rather than passed
 # over quietly -- passing over quietly is how XYZip's two shell tests came to be
 # skipped for months.
-ARGUMENTS_FOR = {}
+ARGUMENTS_FOR = {
+    # The preview probe handler is loaded from the DLL rather than linked, so it
+    # has to be told where that landed. Relative to the build directory, which is
+    # also where the deployment put it.
+    'xyzpdf_previewhandler_smoke': ('xyzpdfpreviewprobe.dll',),
+}
 
 # Where Qt is when the build directory does not know yet. Overridable with
 # --qt, and only used for a directory that has never been configured.

@@ -1,0 +1,4 @@
+LIBRARY xyzpdfpreviewprobe
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

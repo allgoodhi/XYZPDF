@@ -2,3 +2,5 @@ LIBRARY xyzpdfpreview
 EXPORTS
     DllGetClassObject   PRIVATE
     DllCanUnloadNow     PRIVATE
+    ; Only previewhandler_smoke calls this one; see the note where it is defined.
+    XYZPDF_PREVIEW_TEST_LATCH PRIVATE

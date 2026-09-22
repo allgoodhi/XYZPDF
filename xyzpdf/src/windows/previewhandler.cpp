@@ -20,14 +20,38 @@
 // build of that file is the link model, and the reason is recorded in
 // qtpdfbackend.cpp.
 //
+// ---- who renders, and on which thread ----
+//
+// One worker thread owned by this DLL. The reason is the reader's reason: a
+// scanned page is hundreds of milliseconds inside PDFium, and the thread that
+// runs this window procedure belongs to DllHost -- a render inside the paint that
+// wants it is a pane that does not repaint and a host that stops dispatching. The
+// worker calls the same synchronous Document::render() the seam has always
+// offered, then PostMessages the picture back; a paint only ever copies what has
+// already arrived, and a page that is still coming shows paper with its number on
+// it.
+//
+// Deliberately not `PageRenderer` from src/render, which is the reader's machinery
+// for exactly this: Qt delivers its results through a queued connection, which
+// needs a Qt event loop, and the real host runs a Win32 one. Gaining that class by
+// putting a QCoreApplication inside a COM surrogate is the worse trade -- and
+// previewhandler_smoke exists partly to prove this DLL renders without an
+// application object at all, which is a property worth keeping rather than
+// trading.
+//
+// What comes from that arrangement and cannot be engineered away: a render
+// already inside PDFium cannot be cancelled, so work made pointless by a resize is
+// dropped on arrival instead (see beginGeneration), and the thread has to be joined
+// before the document it reads is destroyed (see stopWorker).
+//
 // ---- what this still does not do ----
 //
-// Pages are rendered synchronously, on the host's thread, inside the paint that
-// needs them: the first time a scanned page scrolls into view, the pane waits for
-// PDFium. There is no zoom (the pane's width decides the size, as in every other
-// preview handler), night mode is not honoured -- pages are always white paper --
-// and the DPI question stays open: this DLL declares no manifest, so what it is
-// told about scale factors is whatever the host's context happens to be.
+// There is no zoom (the pane's width decides the size, as in every other preview
+// handler), night mode is not honoured -- pages are always white paper -- and the
+// DPI question stays open: this DLL declares no manifest, so what it is told about
+// scale factors is whatever the host's context happens to be. The render width is
+// still the fixed multiple below rather than one derived from the DPI; now that
+// the size travels with the job, changing that formula is one function.
 //
 // ---- the paper, and the resolution ----
 //
@@ -62,11 +86,19 @@
 #include <QHash>
 #include <QImage>
 #include <QPainter>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
+#include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <utility>
 
 // The class the package manifest declares. The two have to agree, and the
 // manifest is the only place anyone would think to look.
@@ -87,8 +119,18 @@ constexpr int kMinRenderWidth = 600;
 
 // How many rendered pages are held. A scanned A4 at the widths above is a few
 // megabytes each, and a pane that remembered every page it ever showed is how a
-// preview of a 900-page document eats the machine.
+// preview of a 900-page document eats the machine. It is also the queue's length
+// limit: wanting more pages than the cache holds is wanting pictures that are
+// evicted as fast as they arrive.
 constexpr int kCachedPages = 6;
+
+// How far past the last page on screen the worker is told to look, in the
+// direction the pane is being moved. Two is what a person scrolls past while the
+// first of them renders.
+constexpr int kPrefetchPages = 2;
+
+// The worker's "a picture is ready", to the window it was rendered for.
+constexpr UINT kMsgRendered = WM_APP + 1;
 
 // The strip above the pages that says which document this is, and the gaps.
 constexpr int kCaptionHeight = 24;
@@ -147,11 +189,56 @@ void blit(HDC dc, const QImage &page, const RECT &rect)
                   page.constBits(), &info, DIB_RGB_COLORS, SRCCOPY);
 }
 
-// How many handlers are alive, and how many server locks are held. The DLL may
-// not go while either is non-zero: a handler has a window inside somebody else's
-// message loop, and "unload was allowed" is the crash that follows.
+// How many handlers are alive, how many server locks are held, and how many
+// render threads are running. The DLL may not go while any of them is non-zero: a
+// handler has a window inside somebody else's message loop, and "unload was
+// allowed" is the crash that follows.
 long liveHandlers_ = 0;
 long serverLocks_ = 0;
+long liveWorkers_ = 0;
+
+// One page the worker has been asked to draw, and the answer.
+//
+// The job carries its size rather than working it out on arrival because the
+// layout it came from may have changed by the time it is rendered -- and because
+// that is what lets the width formula below change without touching anything else.
+struct PageJob
+{
+    quint64 generation = 0;
+    int page = -1;
+    QSize pixels;
+};
+
+struct PageResult
+{
+    PageJob job;
+    QImage image; // null when the page would not render at all
+};
+
+// ---- the test latch ----
+//
+// "What does the pane show while a page is still being rendered" is the question
+// this whole arrangement is about, and no test can catch a render mid-flight by
+// luck. So the worker can be parked just before it touches PDFium by an export the
+// smoke test looks up by name, the way it looks up DllGetClassObject. Nothing else
+// arms it, and it is inert in every run that does not.
+//
+// The wait is a short sleep loop rather than one long condition-variable wait: a
+// missed wake-up here would be a hang inside DllHost, and a hang in a code path
+// only tests walk is not worth that risk.
+std::atomic<bool> latchArmed_{false};
+std::atomic<bool> latchOpen_{true};
+std::atomic<bool> workerParked_{false};
+
+void parkBeforeRender(const std::atomic<bool> &stopping)
+{
+    if (!latchArmed_.load())
+        return;
+    workerParked_ = true;
+    while (!stopping.load() && !latchOpen_.load())
+        Sleep(5);
+    workerParked_ = false;
+}
 
 // Declared here and defined below the class, which is what it reaches into. Both
 // in this same unnamed namespace, or the two declarations are two functions and
@@ -261,21 +348,35 @@ public:
     {
         if (!window_)
             return E_UNEXPECTED;
-        open();
+        // Joined before the document is reloaded into it: a second DoPreview is a
+        // different file, and the first thread is still inside the old one.
+        stopWorker();
+        const bool usable = open();
         relayout();
         ShowWindow(window_, SW_SHOW);
         InvalidateRect(window_, nullptr, TRUE);
+        if (usable) {
+            startWorker();
+            enqueueVisible();
+        }
         return S_OK;
     }
 
     IFACEMETHODIMP Unload() override
     {
+        // The order is the whole of the safety here: nothing may outlive the
+        // document it is reading, and nothing may post to a window that is gone.
+        stopWorker();
         if (window_) {
             DestroyWindow(window_);
             window_ = nullptr;
         }
         pages_.clear();
+        wanted_.clear();
+        outstanding_.clear();
+        failed_.clear();
         layout_.clear();
+        pageSizes_.clear();
         document_.reset();
         return S_OK;
     }
@@ -321,8 +422,10 @@ public:
     {
         if (pixels == 0 || !window_)
             return;
+        scrollDirection_ = pixels > 0 ? 1 : -1;
         scroll_ = qBound(0, scroll_ + pixels, maximumScroll());
         showScrollPosition();
+        enqueueVisible();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -330,14 +433,21 @@ public:
     {
         if (!window_)
             return;
+        scrollDirection_ = position >= scroll_ ? 1 : -1;
         scroll_ = qBound(0, position, maximumScroll());
         showScrollPosition();
+        enqueueVisible();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
     // Where each page goes, at the current width. Heights come from the page's own
     // box, so a document that mixes portrait and landscape is laid out the way the
     // reader lays it out.
+    //
+    // The sizes come from the cache `open` filled, and never from the document:
+    // `pageSize` takes the same global PDFium lock as a render, so asking the
+    // document here would put this loop -- one call per page, on the host's thread,
+    // on every WM_SIZE -- behind whatever the worker is drawing.
     void relayout()
     {
         layout_.clear();
@@ -351,9 +461,8 @@ public:
             return;
 
         int y = 0;
-        const int pages = document_->pageCount();
-        for (int page = 0; page < pages; ++page) {
-            const QSizeF points = document_->pageSize(page);
+        for (int page = 0; page < pageSizes_.size(); ++page) {
+            const QSizeF points = pageSizes_.at(page);
             if (points.isEmpty() || points.width() <= 0.0 || points.height() <= 0.0) {
                 layout_.append(QRect());
                 continue;
@@ -367,8 +476,42 @@ public:
         // The pages were rendered for a width and this is a different one, so
         // whatever is in the cache no longer fits anything.
         pages_.clear();
+        beginGeneration();
         scroll_ = qBound(0, scroll_, maximumScroll());
         showScrollPosition();
+        enqueueVisible();
+    }
+
+    // A picture that arrived. Called on the host's thread from the message the
+    // worker posts, which is the only way anything gets from one to the other:
+    // there is no Qt event loop here to deliver a signal.
+    void collectRendered()
+    {
+        std::deque<PageResult> arrived;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            arrived.swap(results_);
+        }
+        bool drew = false;
+        for (const PageResult &result : arrived) {
+            outstanding_.remove(result.job.page);
+            if (result.job.generation != generation_)
+                continue; // asked for by a layout that has since gone away
+            if (result.image.isNull()) {
+                // Remembered, because a page that will not render is otherwise a
+                // page asked for again on every paint, by a worker with nothing
+                // better to do.
+                failed_.insert(result.job.page);
+                continue;
+            }
+            cachePage(result.job.page, result.image);
+            drew = true;
+        }
+        if (!window_)
+            return;
+        if (drew)
+            InvalidateRect(window_, nullptr, FALSE);
+        enqueueVisible();
     }
 
 private:
@@ -428,19 +571,24 @@ private:
     }
 
     // The one place the document is opened, and the one place anything about this
-    // file can go wrong in a way worth saying.
-    void open()
+    // file can go wrong in a way worth saying. False when there is nothing to show,
+    // which is also the answer to "may the worker start".
+    bool open()
     {
         caption_ = fileNameOf(path_);
         message_.clear();
         pages_.clear();
+        wanted_.clear();
+        outstanding_.clear();
+        failed_.clear();
         layout_.clear();
+        pageSizes_.clear();
         contentHeight_ = 0;
         scroll_ = 0;
 
         if (path_.isEmpty()) {
             message_ = L"没有给出文件路径";
-            return;
+            return false;
         }
 
         if (!document_)
@@ -452,38 +600,85 @@ private:
             // difference between "this is not a PDF" and "this PDF is not readable",
             // and flattening that here throws the useful half away.
             message_ = document_->lastError().toStdWString();
-            return;
+            return false;
         }
 
         const int pages = document_->pageCount();
         if (pages > 1)
             caption_ += L"  ·  共 " + std::to_wstring(pages) + L" 页";
+
+        // Every page size, asked once here rather than per layout later. This is
+        // the last moment at which nothing is being rendered: the worker is started
+        // below and takes the same global PDFium lock that each of these calls
+        // does, so asking after it starts is a stall with a different name.
+        pageSizes_.reserve(pages);
+        for (int page = 0; page < pages; ++page)
+            pageSizes_.append(document_->pageSize(page));
+        return pages > 0;
     }
 
-    // The rendered page, asked for when it is first needed and kept until the
-    // cache says otherwise.
-    const QImage *pageImage(int page)
+    // ---- the worker ----
+
+    void startWorker()
     {
-        if (!document_ || page < 0 || page >= layout_.size())
-            return nullptr;
+        if (workerRunning_)
+            return;
+        stopping_ = false;
+        worker_ = std::thread([this] { workerLoop(); });
+        workerRunning_ = true;
+    }
 
-        auto found = pages_.find(page);
-        if (found != pages_.end())
-            return &found.value();
+    void stopWorker()
+    {
+        if (!workerRunning_)
+            return;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            stopping_ = true;
+            queue_.clear();
+        }
+        workCv_.notify_all();
+        worker_.join();
+        workerRunning_ = false;
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        results_.clear();
+    }
 
-        const QRect slot = layout_.at(page);
-        if (slot.width() <= 0)
-            return nullptr;
+    void workerLoop()
+    {
+        InterlockedIncrement(&liveWorkers_);
+        for (;;) {
+            PageJob job;
+            {
+                std::unique_lock<std::mutex> lock(stateMutex_);
+                workCv_.wait(lock, [this] { return stopping_.load() || !queue_.empty(); });
+                if (stopping_.load())
+                    break;
+                job = queue_.front();
+                queue_.pop_front();
+            }
+            // Rendering happens with no lock of ours held, which is the point: the
+            // host's thread has to be able to paint while this is going on.
+            parkBeforeRender(stopping_);
+            if (stopping_.load())
+                break;
+            PageResult result;
+            result.job = job;
+            result.image = renderToPaper(job);
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (stopping_.load())
+                break; // nobody is left who would read it
+            results_.push_back(result);
+            PostMessageW(window_, kMsgRendered, 0, 0);
+        }
+        InterlockedDecrement(&liveWorkers_);
+    }
 
-        const QSizeF points = document_->pageSize(page);
-        const int renderWidth = qBound(kMinRenderWidth, slot.width() * kRenderScale,
-                                       kMaxRenderWidth);
-        const int renderHeight = int(qreal(renderWidth) * points.height() / points.width());
-
-        QImage ink = document_->render(page, QSize(renderWidth, renderHeight),
-                                       RenderOptions{});
+    QImage renderToPaper(const PageJob &job)
+    {
+        QImage ink = document_->render(job.page, job.pixels, RenderOptions{});
         if (ink.isNull())
-            return nullptr;
+            return {};
 
         // The compositing step: what comes back from Qt PDF has no paper in it, and
         // GDI is about to copy it as if it did.
@@ -492,17 +687,125 @@ private:
         QPainter flattener(&paper);
         flattener.drawImage(0, 0, ink);
         flattener.end();
+        return paper;
+    }
 
-        // Oldest-page-out rather than least-recently-used: the pane moves in one
-        // direction nearly all the time, and the bookkeeping of the alternative is
-        // not worth what it would buy here.
-        if (pages_.size() >= kCachedPages) {
-            int oldest = page;
-            for (auto it = pages_.constBegin(); it != pages_.constEnd(); ++it)
-                oldest = qMin(oldest, it.key());
-            pages_.remove(oldest);
+    // Everything in flight was asked for by a layout that is now gone. A render
+    // already inside PDFium cannot be cancelled, so it is dropped when it arrives
+    // instead -- which costs the render and nothing else.
+    void beginGeneration()
+    {
+        ++generation_;
+        outstanding_.clear();
+        failed_.clear();
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        queue_.clear();
+    }
+
+    // The size a page is drawn at: the width it is shown at, several times over,
+    // kept inside the limits, with the page's own aspect from the cached points.
+    QSize renderSizeFor(int page) const
+    {
+        if (page < 0 || page >= layout_.size() || page >= pageSizes_.size())
+            return {};
+        const int displayWidth = layout_.at(page).width();
+        const QSizeF points = pageSizes_.at(page);
+        if (displayWidth <= 0 || points.isEmpty() || points.width() <= 0.0)
+            return {};
+        const int width = qBound(kMinRenderWidth, displayWidth * kRenderScale,
+                                 kMaxRenderWidth);
+        return QSize(width, int(qreal(width) * points.height() / points.width()));
+    }
+
+    // The pages worth having a picture of: the ones on screen, then
+    // kPrefetchPages more at the end the pane is being moved towards, and never
+    // more than the cache holds.
+    void computeWanted()
+    {
+        wanted_.clear();
+        if (layout_.isEmpty())
+            return;
+
+        const RECT view = viewport();
+        const int viewTop = view.top + scroll_;
+        const int viewBottom = view.bottom + scroll_;
+        int first = -1;
+        int last = -1;
+        for (int page = 0; page < layout_.size(); ++page) {
+            const QRect &slot = layout_.at(page);
+            if (slot.height() <= 0 || slot.bottom() <= viewTop || slot.top() >= viewBottom)
+                continue;
+            if (first < 0)
+                first = page;
+            last = page;
         }
-        return &pages_.insert(page, paper).value();
+        if (first < 0)
+            return;
+
+        const bool upwards = scrollDirection_ < 0;
+        const int from = qMax(0, first - (upwards ? kPrefetchPages : 0));
+        const int to = qMin(int(layout_.size()) - 1,
+                            last + (upwards ? 0 : kPrefetchPages));
+        for (int page = from; page <= to && wanted_.size() < kCachedPages; ++page) {
+            if (layout_.at(page).height() > 0)
+                wanted_.insert(page);
+        }
+    }
+
+    // Asks the worker for the wanted pages it does not already have on the way.
+    void enqueueVisible()
+    {
+        if (!workerRunning_)
+            return;
+        computeWanted();
+
+        QVector<int> order;
+        for (const int page : std::as_const(wanted_)) {
+            if (!pages_.contains(page) && !outstanding_.contains(page)
+                && !failed_.contains(page))
+                order.append(page);
+        }
+        // In page order, so that the first picture a person scrolling down sees is
+        // the page at the top of the view rather than one of the prefetches.
+        std::sort(order.begin(), order.end());
+
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (stopping_.load())
+            return;
+        for (const int page : std::as_const(order)) {
+            if (queue_.size() >= kCachedPages)
+                break;
+            PageJob job;
+            job.generation = generation_;
+            job.page = page;
+            job.pixels = renderSizeFor(page);
+            if (job.pixels.isEmpty())
+                continue;
+            outstanding_.insert(page);
+            queue_.push_back(job);
+        }
+        workCv_.notify_one();
+    }
+
+    void cachePage(int page, const QImage &image)
+    {
+        // Oldest-page-out among the pages nobody is asking for, and only then the
+        // lowest-numbered one there is. Dropping the lowest unconditionally is what
+        // the synchronous pane could get away with, because it only ever rendered
+        // the page it was drawing; with a queue it evicts the page it is about to
+        // ask for again, and a scroll back up thrashes.
+        pages_.insert(page, image);
+        while (pages_.size() > kCachedPages) {
+            int victim = -1;
+            for (auto it = pages_.constBegin(); it != pages_.constEnd(); ++it) {
+                if (wanted_.contains(it.key()))
+                    continue;
+                victim = victim < 0 ? it.key() : qMin(victim, it.key());
+            }
+            if (victim < 0)
+                break;
+            pages_.remove(victim);
+        }
     }
 
     long references_ = 1;
@@ -511,13 +814,28 @@ private:
     QString path_;
     std::unique_ptr<Document> document_;
     QVector<QRect> layout_;
+    QVector<QSizeF> pageSizes_;
     QHash<int, QImage> pages_;
     int contentHeight_ = 0;
     int scroll_ = 0;
+    int scrollDirection_ = 1;
     std::wstring caption_;
     std::wstring message_;
     COLORREF background_ = RGB(255, 255, 255);
     COLORREF text_ = RGB(0, 0, 0);
+
+    QSet<int> wanted_;
+    QSet<int> outstanding_;
+    QSet<int> failed_;
+    quint64 generation_ = 1;
+
+    std::thread worker_;
+    bool workerRunning_ = false;
+    std::atomic<bool> stopping_{false};
+    std::mutex stateMutex_;
+    std::condition_variable workCv_;
+    std::deque<PageJob> queue_;
+    std::deque<PageResult> results_;
 };
 
 // Outside any namespace: it is a member of a class that is not in one, and the
@@ -569,16 +887,25 @@ void PreviewHandler::draw(HDC dc, const RECT &area)
             continue;
         RECT onScreen{slot.left(), slot.top() - scroll_, slot.right(),
                       slot.bottom() - scroll_};
-        const QImage *image = pageImage(page);
-        if (image && !image->isNull()) {
-            blit(dc, *image, onScreen);
+        const auto rendered = pages_.find(page);
+        if (rendered != pages_.end() && !rendered.value().isNull()) {
+            blit(dc, rendered.value(), onScreen);
             continue;
         }
-        // A page that could not be rendered is left as paper rather than skipped: a
-        // pane in which page 4 has simply vanished reads as a bug in the pane.
+        // Paper and the page's number. A page that has simply vanished reads as a
+        // bug in the pane, and now that rendering is not part of the paint there is
+        // a third case to cover: the picture is on its way. Since the two look the
+        // same from here, the number is what makes the wait legible -- it says
+        // which page to keep looking at either way.
         HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
         FillRect(dc, &onScreen, white);
         DeleteObject(white);
+        RECT shown = {};
+        IntersectRect(&shown, &onScreen, &view);
+        ::SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+        const std::wstring number = std::to_wstring(page + 1);
+        DrawTextW(dc, number.c_str(), -1, &shown,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
     }
 
     RestoreDC(dc, saved);
@@ -627,6 +954,12 @@ LRESULT CALLBACK previewWindowProc(HWND window, UINT message, WPARAM wParam, LPA
         // Painted in full by WM_PAINT; erasing separately is what makes a pane
         // flash while it is being resized.
         return 1;
+    case kMsgRendered:
+        // The worker's way of handing something over without a Qt event loop to
+        // deliver a signal: this queue is the host's, and it is already pumping it.
+        if (handler)
+            handler->collectRendered();
+        return 0;
     case WM_SIZE:
         if (handler)
             handler->relayout();
@@ -737,7 +1070,36 @@ extern "C" HRESULT STDAPICALLTYPE DllGetClassObject(REFCLSID id, REFIID interfac
 
 extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow()
 {
+    // A handler joins its own worker before it lets go of anything else, so the
+    // thread count is already covered by the handler count in the code as written.
+    // It is counted here because the one thing this must never get wrong is saying
+    // "you may unload" while something is still running: a leaked render thread
+    // would keep the file mapped for the session and look exactly like a pane that
+    // simply stopped drawing.
     const bool idle = InterlockedCompareExchange(&liveHandlers_, 0, 0) == 0
-                   && InterlockedCompareExchange(&serverLocks_, 0, 0) == 0;
+                   && InterlockedCompareExchange(&serverLocks_, 0, 0) == 0
+                   && InterlockedCompareExchange(&liveWorkers_, 0, 0) == 0;
     return idle ? S_OK : S_FALSE;
+}
+
+// The test latch, for previewhandler_smoke and nothing else: 1 parks the worker
+// before every render, 2 lets it go, 3 reports whether one is parked right now --
+// which is the positive control, since a paint that shows paper proves nothing if
+// the render had already finished by other means. Looked up by name from a PRIVATE
+// export the way DllGetClassObject is, so the test still links nothing.
+extern "C" BOOL STDAPICALLTYPE XYZPDF_PREVIEW_TEST_LATCH(int action)
+{
+    switch (action) {
+    case 1:
+        latchArmed_ = true;
+        latchOpen_ = false;
+        return TRUE;
+    case 2:
+        latchOpen_ = true;
+        return TRUE;
+    case 3:
+        return workerParked_.load() ? TRUE : FALSE;
+    default:
+        return FALSE;
+    }
 }

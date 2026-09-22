@@ -289,6 +289,35 @@ delay-load。位置在 `uap:FileTypeAssociation` 里面，紧挨着 `DesktopPrev
 **当前机器状态**：`.pdf` 的默认程序已改成 XYZPDF，WPS 的预览被关掉了。撤掉：设置里把
 `.pdf` 默认改回 WPS，或 `Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage`。
 
+### 5.2 预览窗格改成工作线程渲染（2026-09-22）
+
+PLAN §3.3 那条验收写的是"预览窗格在 DllHost 里不锁死、不泄漏"。原来那版撑不起"不锁死"的
+强意义：页是在 `WM_PAINT` 里向 PDFium 同步要的，一张扫描页几百毫秒就是窗格几百毫秒不重绘，
+而宿主那个消息循环也被我们一起占住。现在改成 DLL 自己的一条工作线程：它调同一个同步的
+`Document::render()`，画完 `PostMessage` 给窗格自己的窗口；绘制只贴已经回来的图，没回来的
+页给白纸＋页码。
+
+三条不是顺手做的设计决定，记下来免得后人以为是简化空间：
+
+- **不复用 `src/render` 的 `PageRenderer`**：Qt 的 `QPdfPageRenderer` 用排队连接把结果送回
+  owner 线程，那要有 Qt 事件循环，DllHost 里只有 Win32 的一个。为了这个类去给 COM 代理塞
+  `QCoreApplication`，代价大于收益；而且门禁用例存在的理由之一就是"没有 app object 也渲染
+  得动"，不该反过来把这条性质废掉。
+- **`relayout()` 不再逐页问 `pageSize()`**：Qt PDF 那把全局递归锁（`src/render/pagerenderer.h`
+  开头）渲染也要拿。渲染搬到别的线程之后，每次 WM_SIZE 一页一问就会排在工作线程后面 ——
+  卡顿换了个名字而已。页尺寸现在在 `open()` 里一次问完存下来。
+- **卸载顺序**：`Unload()` 先 join 工作线程，再 `DestroyWindow`，再 `document_.reset()`。
+  顺序反了任何一种都是别人进程里的 use-after-free。`DllCanUnloadNow` 现在也数工作线程。
+
+已经测到的（`tests/previewhandler_smoke.cpp`）：可以把工作线程停在"正要渲染"那一步（导出的
+`XYZPDF_PREVIEW_TEST_LATCH`，只为这件事存在）；停住的时候连画两次像素指纹不变、标题栏以下
+没有墨，而滚动条范围照样发布 —— 所以版式不依赖渲染器；放开之后不必再触发绘制，墨自己回来；
+被停住的时候调 `Unload()` 仍然返回，最后 `DllCanUnloadNow` 回到 `S_OK`（工作线程没泄漏，
+否则那个计数永远不为 0）。这些断言等的都是条件，不是时间。
+
+**还没看的**：真 Explorer 窗格里的观感 —— 白纸存在多久、往下滚后面的页跟不跟得上。这台机器
+现在装着的那一份还是同步渲染的，要看得到得重打重装（§1 那条流水线）。
+
 ## 6. 本机没有验证的
 
 说清楚，免得下文被当成已确认的事实。今天从"未验证"挪走的三条在 §1.1。

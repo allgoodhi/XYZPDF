@@ -8,7 +8,7 @@
 // drawn. It cannot say the shell routes .pdf previews to it -- that was measured
 // by hand and is recorded in docs/store-submission.md section 5.
 //
-// ---- the two things that make it worth having ----
+// ---- the three things that make it worth having ----
 //
 // First: PATH is restricted to System32 before the DLL is loaded. The handler's
 // own libraries sit beside it, not beside the executable, and the only reason
@@ -23,6 +23,12 @@
 // constructed one would be testing a condition that does not occur. Whether Qt PDF
 // renders without an application object is therefore answered here rather than in
 // Explorer at 11pm.
+//
+// Third: it can say what the pane shows while a page is still being rendered, which
+// is the property the worker thread exists to buy. The handler will park that
+// thread on request -- XYZPDF_PREVIEW_TEST_LATCH, exported for this one purpose --
+// so "the paint does not wait for PDFium" is a checked fact here rather than an
+// impression got by scrolling a real Explorer pane and hoping to catch it.
 //
 // The DLL is passed in as an argument rather than found relative to this test,
 // because where it was built is a fact about the build directory. tools/
@@ -49,6 +55,10 @@ namespace {
 // {12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7}
 const CLSID kPreviewHandlerClsid = {
     0x12df01c2, 0x01d6, 0x4af8, {0xad, 0x5f, 0x96, 0x9c, 0x3c, 0x3f, 0x88, 0xd7}};
+
+// 1 parks the render thread before it touches PDFium, 2 lets it go, 3 asks whether
+// one is parked. Defined in previewhandler.cpp, and exported for no other reason.
+using LatchProc = BOOL(STDAPICALLTYPE *)(int);
 
 int failures = 0;
 
@@ -173,6 +183,101 @@ bool drewSomething(HWND child, int width, int height)
     return varied;
 }
 
+// How much ink is below the caption strip, counting pixels rather than asking
+// whether the pane "looks loaded".
+//
+// Counting variation is not enough any more: rendering happens on the handler's own
+// thread now, so a pane that has drawn nothing but paper still varies -- the
+// caption's text and the grey page numbers are not one flat colour. Ink is
+// separable from that. The caption is 24 pixels tall and drawn in whatever colour
+// the host asked for, which this test does set to near-black, so the count starts
+// below it; a page that is still coming is white with grey numerals, and grey is
+// lighter than the threshold.
+int inkBelowCaption(HWND child, int width, int height)
+{
+    HDC screen = GetDC(nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void *bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    int ink = 0;
+    if (bitmap && bits) {
+        HGDIOBJ previous = SelectObject(dc, bitmap);
+        // Filled with paper, not with a sentinel darker than everything: an
+        // unhandled message has to read as "nothing was drawn", not as a page
+        // covered in ink.
+        RECT all{0, 0, width, height};
+        HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
+        FillRect(dc, &all, white);
+        DeleteObject(white);
+
+        SendMessageW(child, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), 0);
+
+        auto *pixels = static_cast<unsigned char *>(bits);
+        for (int y = 30; y < height; ++y) {
+            const unsigned long *row = reinterpret_cast<unsigned long *>(
+                static_cast<unsigned char *>(bits) + std::size_t(y) * width * 4);
+            for (int x = 0; x < width; ++x) {
+                const unsigned long colour = row[x];
+                // BGRA in memory, so the bytes are the channels in reverse.
+                if ((colour & 0xFFu) < 0x50 && ((colour >> 8) & 0xFFu) < 0x50
+                    && ((colour >> 16) & 0xFFu) < 0x50)
+                    ++ink;
+            }
+        }
+        SelectObject(dc, previous);
+    }
+    if (bitmap)
+        DeleteObject(bitmap);
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+    return ink;
+}
+
+void pumpMessages()
+{
+    MSG message = {};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+}
+
+// Waits for a render that is on another thread now, so the answer is a bounded wait
+// on a condition rather than a pause and a hope: this pumps until the pane shows ink
+// and reports whether it got there. The handler parks on request (see the latch
+// below), which is what makes the other half -- "it does not show ink yet" -- a
+// fact rather than a race.
+bool waitForInk(HWND child, int width, int height, DWORD milliseconds)
+{
+    const ULONGLONG deadline = GetTickCount64() + milliseconds;
+    for (;;) {
+        pumpMessages();
+        if (inkBelowCaption(child, width, height) > 0)
+            return true;
+        if (GetTickCount64() >= deadline)
+            return false;
+        Sleep(10);
+    }
+}
+
+// Catching the thread at the latch is a wait on a condition, not a guess about
+// timing; the polling is only for however long starting a thread takes.
+bool waitUntilParked(LatchProc latch)
+{
+    for (int attempt = 0; attempt < 300; ++attempt) {
+        if (latch && latch(3))
+            return true;
+        Sleep(10);
+    }
+    return false;
+}
+
 void writeJunkDocument(const std::wstring &path)
 {
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -222,6 +327,11 @@ int main(int argc, char **argv)
     check(getClassObject != nullptr, "the DLL exports DllGetClassObject, as the manifest claims");
     check(GetProcAddress(module, "DllCanUnloadNow") != nullptr,
           "and exports DllCanUnloadNow too");
+    auto latch = reinterpret_cast<LatchProc>(
+        GetProcAddress(module, "XYZPDF_PREVIEW_TEST_LATCH"));
+    check(latch != nullptr,
+          "and exports the render latch, without which the assertions below about a "
+          "page that has not arrived yet cannot be made at all");
     if (!getClassObject) {
         FreeLibrary(module);
         CoUninitialize();
@@ -295,19 +405,37 @@ int main(int argc, char **argv)
         child = GetWindow(host, GW_CHILD);
         check(child != nullptr, "and it created a window of its own inside ours");
         check(SUCCEEDED(handler->SetRect(&area)), "SetRect succeeds");
+
+        // Park the render thread before it draws anything, so that the next few
+        // assertions are about a pane whose pages have definitely not arrived
+        // rather than about whichever order this machine happened to run in.
+        if (latch)
+            latch(1);
         check(SUCCEEDED(handler->DoPreview()), "DoPreview succeeds");
-        MSG message = {};
-        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
+        pumpMessages();
+
         if (child) {
-            check(drewSomething(child, 420, 560),
-                  "a real document produced a page with ink on it, not a flat rectangle");
+            const bool parked = waitUntilParked(latch);
+            check(parked,
+                  "the render thread can be caught before it touches PDFium");
+
+            // The point of the whole arrangement, and the positive control for it:
+            // with a render held back, the paint still answers, and what it answers
+            // with is paper. A pane that drew ink here would be a pane that had
+            // rendered inside the paint after all.
+            check(inkBelowCaption(child, 420, 560) == 0,
+                  "while the render is held the pane shows paper and no ink");
+            const unsigned long paper = colourAt(child, 420, 560);
+            check(colourAt(child, 420, 560) == paper,
+                  "and painting it again shows the same paper, because nothing "
+                  "arrives on its own");
 
             // The scroll bar is the state a person can actually use, so it is the
             // state worth asserting: a nine-page document whose range is one
             // viewport tall is a pane that cannot be turned, however well it draws.
+            // Asked here, while nothing is rendered, it is also the assertion that
+            // the layout does not depend on the renderer -- the page sizes were
+            // taken once at open() rather than per paint.
             SCROLLINFO info = {};
             info.cbSize = sizeof(info);
             info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
@@ -316,13 +444,20 @@ int main(int argc, char **argv)
             check(int(info.nMax) > int(info.nPage),
                   "and it is longer than one viewport, which is what makes it scrollable");
 
+            if (latch)
+                latch(2);
+            check(waitForInk(child, 420, 560, 20000),
+                  "let go, the page arrives by itself and the pane shows ink without "
+                  "being asked to draw again");
+            check(latch && !latch(3), "and the thread is not parked any more");
+            check(colourAt(child, 420, 560) != paper,
+                  "what it shows now is not the paper it showed while held");
+            check(drewSomething(child, 420, 560),
+                  "a real document produced a page with ink on it, not a flat rectangle");
+
             const unsigned long before = colourAt(child, 420, 560);
             SendMessageW(child, WM_VSCROLL, MAKEWPARAM(SB_PAGEDOWN, 0), 0);
-            MSG wheel = {};
-            while (PeekMessageW(&wheel, nullptr, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&wheel);
-                DispatchMessageW(&wheel);
-            }
+            pumpMessages();
             SCROLLINFO moved = {};
             moved.cbSize = sizeof(moved);
             moved.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
@@ -345,6 +480,23 @@ int main(int argc, char **argv)
         check(drewSomething(child, 420, 560),
               "and it draws the sentence that says what went wrong");
         DeleteFileW(junk.c_str());
+    }
+
+    // The same door from the other side: Unload has to join a thread that is parked
+    // in the middle of a render. A join that waited for the page instead would hang
+    // DllHost rather than fail a test, which is the failure this is here to catch --
+    // and the reason the park is a sleep loop the handler can wake on its own.
+    if (child && latch) {
+        latch(1);
+        if (initialise)
+            initialise->Initialize(fixture.c_str(), STGM_READ);
+        check(SUCCEEDED(handler->DoPreview()),
+              "previewing a real file after a broken one works again");
+        check(waitUntilParked(latch), "and the worker can be caught held a second time");
+        check(SUCCEEDED(handler->Unload()),
+              "while it is held, Unload still returns: it stops the thread rather "
+              "than waiting for the page");
+        latch(2);
     }
 
     check(SUCCEEDED(handler->Unload()), "Unload succeeds");

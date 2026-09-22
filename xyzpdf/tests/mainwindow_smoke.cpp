@@ -434,6 +434,17 @@ int main(int argc, char **argv)
         if (box && count && front) {
             check(box->isEnabled(), "the box is enabled while a document is open");
 
+            // Where the reader is decides where a search starts: the first hit at
+            // or after the page in view, which is what a reader expects and not a
+            // detail the test gets to ignore. This fixture has one hit per page,
+            // so without pinning the page the count below is "1 / 2" or "2 / 2"
+            // depending on which earlier block last scrolled this document -- a
+            // fact about the order of the file rather than about the search, and
+            // the reason this assertion used to fail about half the runs.
+            front->setCurrentPage(0);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            check(front->currentPage() == 0, "the view is on the first page before searching");
+
             // Typing searches, which is the whole of the box's behaviour.
             box->setText(QStringLiteral("XYZPDF"));
             check(waitFor([front] { return !front->isSearching() && front->searchMatchCount() == 2; }),

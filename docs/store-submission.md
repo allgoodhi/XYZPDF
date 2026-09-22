@@ -29,6 +29,35 @@ powershell -File packaging/build-package.ps1                         # 出包
 `E:\Windows Kits\10\App Certification Kit\`，**不在 PATH 上**，脚本按名字找它。
 同一目录里还有 `appcertui.exe`，也就是本机可以跑商店认证测试（见 §4）。
 
+### 1.1 装上也验过了（2026-09-22，开发人员模式打开之后）
+
+装的是**暂存目录的松散注册**，不是那个 .msix：
+
+```
+Add-AppxPackage -Register build-local-release\package\app\AppxManifest.xml
+```
+
+三条都是撞出来的，值得写下来，因为每一条的报错都在指别处：
+
+| 做法 | 结果 |
+| --- | --- |
+| `Add-AppxPackage -Path <msix>` | `0x800B0100` 包未签名 —— 开发人员模式也拦 |
+| 加 `-AllowUnsigned` | 走到下一步：`0x80073D2C` 发布者证书不受信任（`CN=allgoodhi` 是自签） |
+| `-Register` 暂存清单 **带** `-DisableDevelopmentMode` | `0x80073CF9`"清单没有位于程序包目录中"，看着像路径问题，其实不是 |
+| `-Register` 暂存清单，不带那个开关 | 成功，`Status: Ok` |
+
+装好之后观察到的（都是读系统状态，不是读我们自己的清单）：
+
+- `Get-StartApps` 报出 `allgoodhi.XYZPDF_edpkq8hzfe5n4!XYZPDF`，用它
+  `explorer.exe shell:AppsFolder\<那个 id>` **真的起来了**：PID 6860，窗口标题
+  `XYZPDF`，`Path` 是 `package\app\bin\xyzpdf.exe`。`bin\` + `qt.conf Prefix=..` +
+  包根 `plugins\` 这套布局是通的 —— 这条之前只是推理。
+- `HKCU\Software\Classes\.pdf\OpenWithProgids` 里多了一项 `AppX…`，顺着查下去：
+  `AppUserModelID = allgoodhi.XYZPDF_edpkq8hzfe5n4!XYZPDF`、
+  `PackageRelativeExecutable = bin\xyzpdf.exe`、图标指向包里的 `Assets\Square44x44Logo.png`。
+- 同一时刻 `HKCU\Software\Classes` 下我们自己的 `xyzpdf` 与 `xyzpdf.Document` 键**消失了**，
+  正是 §3.2 说的那次清理。
+
 ## 2. 提交前必须换掉的：发布者身份
 
 清单写的是 `Publisher="CN=allgoodhi"`。这是自签占位，只够在本机装自己玩的包。
@@ -45,9 +74,8 @@ powershell -File packaging/build-package.ps1                         # 出包
 
 两个清单现在都带 `windows.fileTypeAssociation`（`.pdf`，带 `DisplayName`、`InfoTip`
 与 `<uap:Logo>`），`makeappx` 接受 —— 它会按 `AppXManifestValidationRules` 拒掉不该
-注册的扩展名（XYZip 的记录里 `.chm` 就是被直接拒绝的），所以"能打包"这一步是验证，
-不是猜测。装包之后 设置 → 应用 → 默认应用 与 打开方式 里应当出现本程序，
-但**这条要等真装一次才算数**（见 §6）。
+注册的扩展名（XYZip 的记录里 `.chm` 就是被直接拒绝的）。装上之后外壳确实登记了它，
+观察结果见 §1.1。
 
 ### 3.2 为什么它必须写在清单里
 
@@ -55,13 +83,21 @@ powershell -File packaging/build-package.ps1                         # 出包
 清掉注册表里的那份 —— 因为包里那份和注册表那份会并排出现两个同名菜单项，用户会当成
 bug 报上来，所以让包赢。
 
-这段逻辑假设"包自带菜单"，而那个假设今天只对了一半：**关联与"打开方式"由 §3.1 补上
-了，右键菜单里那条"用 XYZPDF 打开"仍然没有替代**。它需要一个 `IExplorerCommand`
-处理器作为 DLL 打进包里（XYZip 就是这么做的：`src/shell/xyzipshell.cpp`，632 行，
-清单里用 `com:SurrogateServer` 注册，没有注册表回退）。所以在那之前，装包的实际效果是
-少一项菜单、多一个默认应用候选 —— 这个差值要在装包前告知，别等用户报上来。
+注册表那套一共写三样（`shellintegration.cpp:225-293`），装上包之后是一换一换一加一丢：
 
-清单里那段注释说的就是这件事，两边不要只改一处。
+| 注册表版本提供的 | 包版本 |
+| --- | --- |
+| `.pdf\OpenWithProgids` 里的 `xyzpdf.Document` | 换成 `AppX…` 一项，实测在 §1.1 |
+| `xyzpdf.Document` 这个 ProgID（图标与命令都在它下面） | 由包的 `FileTypeAssociation` 与 `ApplicationIcon` 承担 |
+| 成为"默认应用"候选 | **多了**：注册表那套从来没打算抢默认（见 284-286 行的注释），包可以 |
+| `HKCU\Software\Classes\xyzpdf\shell\0001_open`，即右键菜单里那条"用 XYZPDF 打开"（`Position=Top`、`AppliesTo` 限定 `*.pdf`） | **丢了**：包里没有替代 |
+
+丢的那一项需要一个 `IExplorerCommand` 处理器作为 DLL 打进包（XYZip 就是这么做的：
+`src/shell/xyzipshell.cpp`，632 行，清单里用 `com:SurrogateServer` 注册，没有注册表回退）。
+在那之前，"装了包"对用户的意思就是：**打开方式里还在、图标还在、能设成默认了，
+但右键少了一项**。这句要说在前面，别等用户报上来。
+
+清单里那段注释说的是同一件事，两边不要只改一处。
 
 ## 4. 提审时要填的说明，不是代码但会拒审
 
@@ -80,22 +116,24 @@ XYZip 有完整参考实现（`H:\test\XYZip\xyzip\src\shell\xyzippreview.cpp`�
 含 delay-load 钩子与 DllHost 的坑位注释），**但它只靠包身份注册** ——
 `com:SurrogateServer` 写在 AppxManifest 里，没有任何注册表回退路径。
 
-所以顺序是死的：先把包做出来并装上（§3、§6），预览处理器才有地方挂。
-这也意味着 §3.2 那个决定要一起做，别分两次踩。
+顺序上原先卡着的"先要有包"，今天用松散注册解开了（§1.1）。**下一个未知**是：
+`com:SurrogateServer` 这种包内 COM 服务器，在松散注册的包上到底生效不生效 —— 它写在清单里，
+`makeappx` 会验，但外壳装载 COM 服务器的那条路径是否认松散布局，没查过。这决定了预览处理器
+该不该现在就动手：如果只认签名安装的真包，那 1865 行写完也验不了，得先解决证书。
+先花十分钟拿一个最小的 DLL 试这件事，再决定要不要搬 XYZip 的实现。
 
 ## 6. 本机没有验证的
 
-说清楚，免得下文被当成已确认的事实：
+说清楚，免得下文被当成已确认的事实。今天从"未验证"挪走的三条在 §1.1。
 
-- **签名**：没有代码签名证书，`-Sign` 这条路一次都没跑过。
-- **安装**：`Add-AppxPackage` 会改机器（注册包身份、改默认应用候选），没有跑过。
-  要跑需要明确同意，而且未签名包只在开发模式机器上装得进去。
-- **商店认证测试**：`appcertui.exe` 在，但没跑过 —— 它要求包已安装。
-- **双击 `.pdf` 是否真走包里的关联**：未验证。清单已经声明了（§3.1），但"打包接受"与
-  "Windows 真的把它登记为默认应用候选"是两件事，后者要装一次包才知道。
-- **包里的程序能否启动**：没有观察过。布局本身查过 —— `bin\qt.conf` 写的是
-  `Prefix = ..`，于是插件解析到包根的 `plugins\platforms\qwindows.dll`，那里确实有它。
-  但"路径推得通"和"跑起来看得见窗口"不是一回事，装包之前这条只能算半个。
+- **签名**：没有代码签名证书，`-Sign` 这条路一次都没跑过；从 `.msix` 安装**必须**它
+  （`0x800B0100` / `0x80073D2C`，见 §1.1 的表）。
+- **双击 `.pdf` 会开在谁手里**：未验证。本机当前默认仍是 `KWPS.PDF.9`，包只是让
+  XYZPDF 出现在"打开方式"里；把它设成默认要在设置里点 —— Windows 用只有它自己
+  能算出的哈希保护默认值，程序自己去写就是恶意软件的做法（`shellintegration.cpp:284`
+  那段注释说的就是这件事）。
+- **商店认证测试**：`appcertui.exe` 在，包也注册了，但没跑过。
+- **包内 COM 服务器（预览处理器的前提）**：未验证，见 §5。
 
 ## 7. 命令
 
@@ -105,9 +143,13 @@ python tools/makeappicon.py
 python tools/build_all_tests.py
 powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build-package.ps1
 
-# 签名并安装（改机器，需明确同意；开发模式下可省 -Sign）
-powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build-package.ps1 `
-    -Publisher "CN=<商店账户的发布者>" -Sign -Cert <证书指纹> -Install
+# 装上暂存布局（改机器：注册包身份，并清掉我们自己写的 HKCU 项）
+Add-AppxPackage -Register build-local-release\package\app\AppxManifest.xml
+# 装完用真实 id 启动，id 从 Get-StartApps 读，别手抄
+Get-StartApps | Where-Object Name -match XYZPDF
+
+# 撤掉
+Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage
 
 # 认证测试（装完之后）
 & 'E:\Windows Kits\10\App Certification Kit\appcertui.exe'

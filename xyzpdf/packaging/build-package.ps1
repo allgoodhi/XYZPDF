@@ -213,9 +213,23 @@ if ($Sign) {
 }
 
 if ($Install) {
-    if (-not $Sign) { Write-Warning 'an unsigned package installs only on a machine in developer mode' }
-    Add-AppxPackage -Package $package
-    Write-Host "installed; Settings > Apps will list it as $($identity.Name)"
+    # Loose registration of the staged layout, not the .msix. Three ways this was
+    # found by failing rather than by reading:
+    #
+    #   * the .msix route refuses an unsigned package (0x800B0100) even with
+    #     developer mode on, and with -AllowUnsigned it goes one step further and
+    #     then refuses the publisher certificate (0x80073D2C), because
+    #     CN=allgoodhi is a self-signed name the machine does not trust;
+    #   * -Register takes the manifest of the unpacked directory and works;
+    #   * and it works only WITHOUT -DisableDevelopmentMode. Passing that flag
+    #     makes the registration fail as "the manifest is not located in a package
+    #     directory", which reads like a path problem and is not one.
+    #
+    # So this installs what is on disk, which is also what makes the source of a
+    # bug the file that was just built rather than a copy nobody can read.
+    Add-AppxPackage -Register (Join-Path $Stage 'AppxManifest.xml')
+    Write-Host "installed; launch it with: explorer.exe shell:AppsFolder\$($identity.Name)_<publisherhash>!XYZPDF"
+    Write-Host '          Get-StartApps shows the exact id once it is registered.'
 }
 
 Write-Host ''

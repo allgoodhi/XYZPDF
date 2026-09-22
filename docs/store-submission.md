@@ -18,9 +18,10 @@ python tools/build_all_tests.py                                      # 26 项目
 powershell -File packaging/build-package.ps1                         # 出包
 ```
 
-结果：`build-local-release/package/XYZPDF_0.1.0.0_x64.msix`，26.7 MB / 91 个文件，
-`makeappx pack` 报 `Package creation succeeded`。体积与文件数在 §9.2 那一步（磁贴补上
-多尺寸变体、包里加 `resources.pri`）之后变过，其余不变。清单声明的文件仍然是 8 个 ——
+结果：`build-local-release/package/XYZPDF_0.1.0.0_x64.msix`，15.8 MB（解包 36.1 MB / 59 个
+文件），`makeappx pack` 报 `Package creation succeeded`。体积与文件数在 §9.2 那一步（磁贴补上
+多尺寸变体、包里加 `resources.pri`）之后变过，又在 §9.6 末尾那一步（剥掉 29.3 MB 用不上的
+Qt 负载）之后变小了一半，其余不变。清单声明的文件仍然是 8 个 ——
 多出来的那些图不在清单里，是 `resources.pri` 负责解析的，见 §9.2。
 
 打包脚本不信任自己盖的版本号，而是把清单从 `.msix`（就是个 zip）里**读回来**核对：
@@ -303,11 +304,13 @@ delay-load。位置在 `uap:FileTypeAssociation` 里面，紧挨着 `DesktopPrev
   本机替不了服务端的：它跑的是同一套测试的哪一个版本、`#88 已阻止的可执行文件`（可选那条）
   它认不认 full-trust 桌面应用的豁免，都只有提交之后才知道。
 - **`makeappx` 没有静态校验可当替身**：本想拿 `makeappx validate` 顶一下 WACK，这个版本
-  （10.0.26100.8249）没有 `validate` 这个子命令，只回一屏 usage。所以包结构的校验目前
-  就到 `makeappx pack` 自己那一步，加上打包脚本从 `.msix` 里把清单读回来核对（§1）。
+  （10.0.26100.8249）没有 `validate` 这个子命令，只回一屏 usage。所以包结构的校验是本地自己
+  写的三条：打包脚本从 `.msix` 里把清单读回来核对（§1）、清单点名的文件逐个确认在（§1）、
+  以及 `verify-package.ps1` 解开成品包问的三个问题（§9.5）。
 - **商店包本身**：出得来、解得开、离开这台机起得来（§9.6），但它**从没被 Windows 装过**，
   也没跑过 WACK —— 因为发布者身份还是开发值（§2、§9.3 那条拒绝）。带真身份之后这两步要补。
-  另外本机现在装着的那一份是 `resources.pri` 之前打的，"图标真的出来了"这一眼还没看。
+  本机现在装着的是剥完负载之后重打的那一份，`InstallLocation` 下 `resources.pri` 已经在（§9.7）。
+  还欠三眼：开始菜单/设置里的图标、没有软件 OpenGL 还起不起得来、预览窗格与缩略图照旧。
 
 已经验过、别再当未知的：包内 COM 服务器在松散注册下会被路由（§5）；包能启动
 （§1.1）；`.pdf` 关联登记进了外壳（§1.1）；三个处理器的 CLSID 在装好之后各自指向
@@ -625,6 +628,11 @@ D3Dcompiler_47.dll / opengl32sw.dll / Qt6Core.dll / Qt6Gui.dll / Qt6Pdf.dll / qt
 应用允许这些 API，商店里每个 Qt 应用都带这一串 —— 而这一条是 `OPTIONAL=TRUE`，所以它没有把
 `OVERALL_RESULT` 拉到 FAIL。真要清楚知道答案，只有提交之后看 Partner Center 那一遍。
 
+这一轮之后包变了：上面那三行里的 `opengl32sw.dll`、`D3Dcompiler_47.dll` 与全部 Qt 自带的
+`.qm` 已经不在包里（见 §9.6 末尾）。重跑一次 #88 的名单会短一截，`qt_sv.qm` 那条字符串误报
+也跟着消失，剩下的是 `Qt6Core.dll` 的进程启动 API 与我们自己那一条 `CreateProcessW`。没有
+重跑 —— 结果已经拍板接受（"暂时就这样"），换不来的那一半只有商店签发的包能给。
+
 **#92** 是唯一 `OPTIONAL=FALSE` 却只给 WARNING 的，而它两句话自己就打了架：
 
 ```
@@ -768,7 +776,9 @@ makepri new /pr <暂存目录> /cf priconfig.xml /mn <暂存清单> /of <暂存>
   本地包不带这个开关（本机有 redistributable，要它反而是在报一个不是问题的"问题"）。
 - **不该在的在不在**：`vc_redist.x64.exe`（windeployqt 对"编译器运行库"的理解：一个 18 MB
   的安装器，塞进一个不能跑安装器的包里）、`*.lib/*.pdb/*.ilk/*.obj`、任何 `*_smoke.exe` /
-  `*_bench.exe`。glob 出来的负载第一次露馅通常是提交体积翻倍。
+  `*_bench.exe`，以及 `bin\opengl32sw.dll`、`bin\D3Dcompiler_47.dll` 和 `translations\` 下
+  任何 `.qm` —— 这三样 `build-package.ps1` 第 2b 步会扔出去（见 §9.6 末尾），它们回来就说明
+  那条路被谁改过。glob 出来的负载第一次露馅通常是提交体积翻倍。
 - **能不能独立起来**：把包解到临时目录，`PATH` 只剩 `system32;Windows;Wbem`，起它，然后把
   它加载的每个模块往回追是谁给的 —— 只要有一个来自解包目录之外就算失败。**判据是窗口的
   标题**，因为缺 DLL 与缺 Qt 平台插件都会弹窗，而弹窗也是个窗口，"起了并出现一个窗口"在每
@@ -776,8 +786,10 @@ makepri new /pr <暂存目录> /cf priconfig.xml /mn <暂存清单> /of <暂存>
   个脚本里（XYZip 那条踩的正是写死：两个版本共用一份检查脚本，付费版的显示名不是 `XYZip`）。
 
 两条与本项目特别相关的：跑之前先看有没有 XYZPDF 在跑 —— 单实例网关会让第二个进程把参数
-交出去就退，脚本会把这读成"包里的程序一启动就退"，所以它拒绝猜。以及它会把"带着但用不上"
-的东西报成一个 note 而不是问题，见 §9.6 最后一条。
+交出去就退，脚本会把这读成"包里的程序一启动就退"，所以它拒绝猜。以及它现在对那三样用不上的
+东西是**报错**而不是 note —— 早先是只报个数不拦，因为"能不能不装它"这句话脚本答不了；打包脚本
+第 2b 步既然已经把它们扔了，它们回到包里就只可能是出错了（§9.6 末尾）。仍然留作 note 的是
+`dxcompiler.dll` / `dxil.dll`：今天的包里根本没有这两个，它们回来与否则取决于 Qt 的版本。
 
 ### 9.6 今天本机跑出来的数
 
@@ -798,24 +810,40 @@ powershell -File packaging/verify-package.ps1 -Package 'build-local-release/pack
 - 实验做完：cache 里的四个身份值改回开发值、重编、门禁 26 项目标全过、`package-store` 与
   临时解包目录都删了。`grep -c` 过，stand-in 那三个值在 `CMakeCache.txt` 里已经是 0 处
 
-一条待你决定的：`verify-package.ps1` 每次都会 note 出 **34 个文件、29.3 MB「带着但可能用不上」**，
-量过：`bin\opengl32sw.dll` 19.7 MB、`bin\D3Dcompiler_47.dll` 4.0 MB、`translations\` 下 32 份
-Qt 自带的 `.qm` 共 5.6 MB（程序的界面翻译是自己那两份，走的是另一条路）。这三样是
+上面那两个包的体积是**剥掉之前**的数。`verify-package.ps1` 每次都 note 出来的 **34 个文件、
+29.3 MB「带着但可能用不上」**，同日量过并决定扔：`bin\opengl32sw.dll` 19.7 MB、
+`bin\D3Dcompiler_47.dll` 4.0 MB、`translations\` 下 32 份 Qt 自带的 `.qm` 共 5.6 MB（程序的
+界面翻译是自己那两份，`qt_add_translations` 编译进二进制、`src/core/languages.cpp` 只加载
+`:/translations/xyzpdf_*.qm`，所以 Qt 那 32 份程序一次都不打开）。这三样是
 `qt_generate_deploy_app_script` 装的，不是 `CMakeLists.txt` 里那行 windeployqt 的
-`--no-opengl-sw --no-system-d3d-compiler` 管的那条路 —— 那两条开关在，东西照样进了包。
-剥掉能省掉包体近一半（65 MB 解包 → 36 MB），但这要**看一眼启动还正不正常**才算数，所以这一轮
-没动，脚本只把数报出来。要动的时候有两条路：给安装期那次部署传它自己的排除参数，或者在打包
-脚本里删（XYZip 走的是后一条，它连 `dxcompiler.dll` / `dxil.dll` 一起删）。两条本机都没试，
-所以不在这一轮里顺手做 —— 省下的是磁盘，赌上是"装完之后打不开"。
+`--no-opengl-sw --no-system-d3d-compiler --no-translations` 管的那条路 —— 那三条开关在，东西
+照样进了包。
+
+扔在打包脚本的第 2b 步（`build-package.ps1`，`cmake --install` 之后、盖清单之前），没有回到
+CMake 里去，理由是一个真的限制而不是口味：`qt_generate_deploy_app_script` 只暴露
+`NO_TRANSLATIONS` 一个关键字，那两条 DLL 没有对应的开关，所以一半写在 CMake、一半写在打包
+脚本会是一个有洞的清单；一处列全，才有一处可查。商店包走的是同一份 payload 与同一个打包脚本，
+少的是同样这 29.3 MB，没有为它单独重打一次去量。
+
+剥完的本地包：`15.8 MB`，解包 `36.1 MB / 59 个文件`（原来是 26.7 MB / 65.4 MB / 91 个）。
+`verify-package.ps1` 判定通过 —— 这一条顺带回答了"装完之后打不开"那个赌注的一半：解到临时
+目录、`PATH` 只剩 `system32;Windows;Wbem` 起得来，标题对，九个模块全部来自解包目录。另一半
+（有真显卡驱动、真用户点开的这台机器上，缩略图与预览窗格要不要软件 OpenGL）只有眼睛能回答，
+见 §9.7。
+
+踩到的一个 PowerShell 坑，记在这里因为它会让一条检查永远说假话：`FileInfo` 对象在其文件被
+`Remove-Item` 之后仍留在数组里、`Count` 仍然对，但 `Length` 读回来是 `0` —— 这条第一次跑出来
+印的是 `threw away 34 file(s), 0 MB`。所以先量 `$thrownBytes` 再删。
 
 ### 9.7 这条链路还没验的部分
 
 - 名字没 reserve，所以商店包**从没被 Windows 装过**：上面那包只是解到临时目录直接跑的，
   没有 `Add-AppxPackage`，也没有对它跑 WACK。带真身份的包出来之后，这两步跟 §1.3、§8 一样
   要重跑一遍（签名证书得换成与那个发布者同名的）。
-- 本机现在装着的那一份是 `resources.pri` 之前打的，这句是查出来的不是推的：
+- 本机现在装的是剥完之后重打的那一份（同日 `Remove-AppxPackage` → `build-package.ps1 -Sign
+  -Cert <指纹>` → `Add-AppxPackage -Path`）。`resources.pri` 这一项是查出来的：
   `Test-Path (Join-Path (Get-AppxPackage -Name allgoodhi.XYZPDF).InstallLocation resources.pri)`
-  回 `False`。所以"开始菜单/设置里图标对不对"这一眼要用新包重装一次才看得见（脚本那边
-  §9.2 与 §9.5 已经判定通过，剩下的只有眼睛）。装法见 §7：先 `Remove-AppxPackage`，再
-  `build-package.ps1 -Sign -Cert <指纹>`，再 `Add-AppxPackage -Path`。
+  现在回 `True`（装进 WindowsApps 的是 58 个文件，比解包数少一个是 `AppxBlockMap.xml` 之类
+  不进安装目录的）。脚本那边 §9.2 与 §9.5 都已判定通过，还欠的是三眼：开始菜单/设置里图标
+  在不在、双击打开正不正常（软件 OpenGL 没了）、预览窗格与缩略图在剥完之后还出不出来。
 - 商店那一边还要填的元数据（隐私声明、截图、年龄分级、`Product identity` 里的实际值）在 §4。

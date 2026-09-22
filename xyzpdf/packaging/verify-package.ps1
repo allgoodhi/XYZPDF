@@ -17,7 +17,10 @@
 
     Is everything there that should *not* be? A test executable or a .pdb means
     the payload was globbed rather than listed, and the first sign of that is a
-    submission twice the size it should be.
+    submission twice the size it should be. The other half of this question is
+    the software OpenGL fallback, the Qt Quick shader compiler and Qt's own
+    catalogues, which build-package.ps1 strips and which landing back in the
+    package means something changed under its nose.
 
     And does it run standalone? The program is started from the unpacked folder
     with a PATH holding nothing but Windows, and every module it loads is traced
@@ -153,19 +156,33 @@ foreach ($test in @($files | Where-Object { $_.Name -like '*_smoke.exe' -or $_.N
     $problems += "test executable in the package: $($test.Name)"
 }
 
-# Carried, and probably not needed -- reported rather than failed, because proving
-# it takes running the program on a machine where the answer is visible, and a
-# script that guesses here would be worse than one that says the number out loud.
+# build-package.ps1 step 2b throws these out, so their presence means that step
+# did not run or the tree changed under it -- 29.3 MB of a 65 MB package, which is
+# the sort of thing a submission notices as a size rather than as a bug. Checked
+# by name because the check is cheap and the packer's own report is not read by
+# anyone who did not just run it.
+foreach ($relative in @('bin\opengl32sw.dll', 'bin\D3Dcompiler_47.dll')) {
+    if (Test-Path -LiteralPath (Join-Path $UnpackTo $relative)) {
+        $problems += "should not be here (step 2b of build-package.ps1 strips it): $relative"
+    }
+}
+$catalogues = @($files | Where-Object { $_.Directory.Name -eq 'translations' -and $_.Extension -eq '.qm' })
+if ($catalogues) {
+    $problems += ("{0} Qt catalogue(s) in translations\, which the package should not carry: " `
+                  -f $catalogues.Count) + (($catalogues | Select-Object -First 3 | ForEach-Object { $_.Name }) -join ', ')
+}
+
+# Still carried, and still only worth a number out loud: neither appears in
+# today's package, and proving whether they would be needed takes a machine
+# without the hardware they fall back on.
 $doubtful = @($files | Where-Object {
-    $_.Name -in @('opengl32sw.dll', 'D3Dcompiler_47.dll', 'dxcompiler.dll', 'dxil.dll') })
-$doubtful += @($files | Where-Object { $_.Directory.Name -eq 'translations' -and $_.Extension -eq '.qm' })
+    $_.Name -in @('dxcompiler.dll', 'dxil.dll') })
 if ($doubtful) {
     $waste = [math]::Round((($doubtful | Measure-Object Length -Sum).Sum) / 1MB, 1)
     $notes += ("{0} file(s) totalling {1} MB are carried and may not be needed: " `
                -f $doubtful.Count, $waste) +
-              (($doubtful | Select-Object -First 4 | ForEach-Object { $_.Name }) -join ', ') +
-              $(if ($doubtful.Count -gt 4) { " and $($doubtful.Count - 4) more" } else { '' }) +
-              '. This program paints with the raster engine and keeps its own catalogues.'
+              (($doubtful | ForEach-Object { $_.Name }) -join ', ') +
+              '. This program paints with the raster engine.'
 }
 
 # ---------------------------------------------------------------------------

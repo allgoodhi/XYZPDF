@@ -3,12 +3,13 @@
     Builds a local MSIX out of what has already been compiled.
 
 .DESCRIPTION
-    Stages the deployed program, stamps the identity and the version into a copy
-    of the manifest, indexes the pictures into resources.pri, and asks makeappx
-    to pack it. Nothing here installs or signs anything unless told to with
-    -Install or -Sign, because both change the machine: a package that is signed
-    with a test certificate makes Windows trust an author, and a package that is
-    installed changes what double-clicking a PDF does.
+    Stages the deployed program, throws away the twenty-nine megabytes of Qt the
+    program never opens, stamps the identity and the version into a copy of the
+    manifest, indexes the pictures into resources.pri, and asks makeappx to pack
+    it. Nothing here installs or signs anything unless told to with -Install or
+    -Sign, because both change the machine: a package that is signed with a test
+    certificate makes Windows trust an author, and a package that is installed
+    changes what double-clicking a PDF does.
 
     This is the one packer for both packages in the project. The -Manifest,
     -IdentityName, -DisplayName, -PublisherDisplayName and -CrtDirectory
@@ -138,6 +139,53 @@ if (-not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
 Write-Host 'installing the program into the staging directory'
 & $cmake --install $buildDir --prefix $Stage
 if ($LASTEXITCODE -ne 0) { throw "cmake --install failed ($LASTEXITCODE)" }
+
+# ---------------------------------------------------------------------------
+# 2b. What the package throws away
+#
+# The install step runs Qt's own deploy script, and that script cannot be told
+# that this program paints with the raster engine. It brings in
+# bin\opengl32sw.dll (19.7 MB, a software OpenGL fallback), bin\D3Dcompiler_47.dll
+# (4.0 MB, for Qt Quick) and translations\*.qm (32 files, 5.6 MB, every locale Qt
+# has) -- 29.3 MB of the 65 MB unpacked package, and the program never opens any
+# of it: its own catalogues are compiled into the binary by qt_add_translations
+# with RESOURCE_PREFIX, and src/core/languages.cpp loads only those.
+#
+# CMakeLists.txt already refuses all three on the POST_BUILD windeployqt line,
+# with the reasons written out there. Only this install-time path did not listen,
+# so the list lives here instead of in both places. That is a real constraint
+# rather than a preference: qt_generate_deploy_app_script exposes NO_TRANSLATIONS
+# but has no keyword for the two DLLs, so one list in the packer is one list, and
+# half a list in CMake plus half here is a list with a hole in it.
+#
+# Thrown away at staging rather than deleted from the build tree, because the
+# build directory is where somebody runs the program from with Qt's bin on PATH,
+# and a file missing there is a different problem from a file shipped needlessly.
+# ---------------------------------------------------------------------------
+
+$thrown = @()
+$named = @('bin\opengl32sw.dll', 'bin\D3Dcompiler_47.dll')
+$named += @(Get-ChildItem -LiteralPath (Join-Path $Stage 'translations') -Filter *.qm -ErrorAction SilentlyContinue |
+            ForEach-Object { 'translations\' + $_.Name })
+foreach ($relative in $named) {
+    $file = Get-Item -LiteralPath (Join-Path $Stage $relative) -ErrorAction SilentlyContinue
+    if ($file) { $thrown += $file }
+}
+# Sized before the delete, not after: a FileInfo whose file has gone still has
+# Count and still reports Length 0, so measuring afterwards printed "threw away 34
+# file(s), 0 MB" for twenty-nine megabytes on the first run of this step.
+$thrownBytes = ($thrown | Measure-Object Length -Sum).Sum
+foreach ($file in $thrown) { Remove-Item -LiteralPath $file.FullName -Force }
+if (-not $thrown) {
+    # Silence here would mean the install step stopped producing them, which is
+    # not a thing to shrug at: the packing below would then be shipping a program
+    # whose OpenGL fallback went missing somewhere else, and nobody would know
+    # which step did it.
+    Write-Host 'WARNING: none of the files step 2b strips were in the staging tree'
+} else {
+    Write-Host ("threw away {0} file(s), {1} MB, that the program never opens" -f
+                $thrown.Count, [math]::Round(($thrownBytes / 1MB), 1))
+}
 
 # The C runtime, app-local, into bin\ beside the executable that imports it.
 # Checked for by name rather than copied and hoped over: a machine installing

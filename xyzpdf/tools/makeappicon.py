@@ -19,6 +19,16 @@ missing, so those four are written here as well. They come from the same
 rasteriser as the .ico, which is the only way the icon in the taskbar and the
 tile in the Start menu are the same drawing rather than two that drifted.
 
+Each of the four is written at every scale Windows can ask for, and a file per
+scale rather than one file resized at runtime: a 44-pixel logo shown on a 200%
+display is a 44-pixel bitmap stretched to 88, and the thin red rule in the page
+artwork lands between two device pixels and goes grey. The names are how the
+scale is chosen (`Square44x44Logo.scale-200.png`), which is also why the packing
+scripts have to index them into `resources.pri` -- with no PRI there is nothing
+mapping the name in the manifest onto the five files that exist for it, and what
+the user then sees is an entry with the right name and no picture at all, on a
+package that installs and reports Status Ok.
+
 There is no image library on the build machine (no Pillow, no ImageMagick), and
 adding one to build an icon would be a dependency to install before the project
 could ever be built. What is needed is a few hundred lines of geometry, which is
@@ -52,6 +62,18 @@ TILES = (
     ('Square150x150Logo.png', 150, 150),
     ('Wide310x150Logo.png', 310, 150),
 )
+
+# The display scales Windows may pick a tile at. 100 is the plain name; a
+# package that offers nothing else is what every scaled display then stretches.
+SCALES = (100, 125, 150, 200, 400)
+
+# Exact pixel sizes some surfaces ask for instead of a scale, and only for the
+# 44 tile: the Start menu's small icons and the app list want one of these.
+# There is no `_altform-unplated` set beside them, unlike XYZip's assets,
+# because that form asks for the logo without its background plate and this
+# artwork's red rounded square *is* the drawing -- an unplated copy would be the
+# same pixels, so the plated file is what every surface is offered.
+TARGETS = (16, 24, 32, 48, 256)
 
 # Supersampling. Edges drawn at 16 pixels are mostly edge, and without this the
 # tree icon is a red blob with a white smear in it.
@@ -181,6 +203,18 @@ def centred(width, height, art):
     return canvas
 
 
+def write_asset(name, width, height):
+    """One tile, drawn at the size `name` asks for rather than resized into it."""
+    art = min(width, height)
+    data = png(centred(width, height, art) if width != height else render(art),
+               width, height)
+    path = os.path.join(ASSETS, name)
+    with open(path, 'wb') as handle:
+        handle.write(data)
+    print('wrote %s (%d bytes, %dx%d)'
+          % (os.path.relpath(path, ROOT), len(data), width, height))
+
+
 def main():
     frames = [(size, png(render(size), size, size)) for size in SIZES]
 
@@ -203,15 +237,33 @@ def main():
              ', '.join(str(size) for size in SIZES)))
 
     os.makedirs(ASSETS, exist_ok=True)
+    written = set()
     for name, width, height in TILES:
-        art = min(width, height)
-        data = png(centred(width, height, art) if width != height else render(art),
-                   width, height)
-        path = os.path.join(ASSETS, name)
-        with open(path, 'wb') as handle:
-            handle.write(data)
-        print('wrote %s (%d bytes, %dx%d)'
-              % (os.path.relpath(path, ROOT), len(data), width, height))
+        stem = name[:-len('.png')]
+        for scale in SCALES:
+            # Round half up, because Python's round() is banker's rounding:
+            # round(62.5) answers 62, and 62.5 is what three of the four tiles
+            # come to at 125% (50, 150 and 310 all end in a half). One pixel over
+            # is only ever a pixel of transparent margin; one pixel under is a
+            # logo with its edge cut off on every 125% display.
+            w = int(width * scale / 100 + 0.5)
+            h = int(height * scale / 100 + 0.5)
+            out = name if scale == 100 else '%s.scale-%d.png' % (stem, scale)
+            written.add(out)
+            write_asset(out, w, h)
+
+        if name == 'Square44x44Logo.png':
+            for target in TARGETS:
+                out = 'Square44x44Logo.targetsize-%d.png' % target
+                written.add(out)
+                write_asset(out, target, target)
+
+    # A picture left over from an older scheme would be packed anyway --
+    # makeappx takes the whole directory -- so it goes.
+    for stale in sorted(os.listdir(ASSETS)):
+        if stale.endswith('.png') and stale not in written:
+            os.remove(os.path.join(ASSETS, stale))
+            print('removed stale %s' % os.path.relpath(os.path.join(ASSETS, stale), ROOT))
     return 0
 
 

@@ -3,11 +3,19 @@
     Builds a local MSIX out of what has already been compiled.
 
 .DESCRIPTION
-    Stages the deployed program, stamps the version into a copy of the manifest,
-    and asks makeappx to pack it. Nothing here installs or signs anything unless
-    told to with -Install or -Sign, because both change the machine: a package
-    that is signed with a test certificate makes Windows trust an author, and a
-    package that is installed changes what double-clicking a PDF does.
+    Stages the deployed program, stamps the identity and the version into a copy
+    of the manifest, indexes the pictures into resources.pri, and asks makeappx
+    to pack it. Nothing here installs or signs anything unless told to with
+    -Install or -Sign, because both change the machine: a package that is signed
+    with a test certificate makes Windows trust an author, and a package that is
+    installed changes what double-clicking a PDF does.
+
+    This is the one packer for both packages in the project. The -Manifest,
+    -IdentityName, -DisplayName, -PublisherDisplayName and -CrtDirectory
+    parameters exist so that build-store-package.ps1 can make the Store package
+    out of this same staging rather than carrying a second copy of it, and the
+    defaults are the local test package: same manifest, committed identity, no
+    C runtime (this machine has the redistributable; a customer's may not).
 
     The version comes from one place, as everywhere else in this project: the
     project(... VERSION ...) line in CMakeLists.txt. The committed manifest keeps
@@ -37,6 +45,23 @@ param(
     [string]$Build = 'build-local-release',
     [string]$Out = '',
     [string]$Publisher = '',
+    # The identity of the package, and which manifest describes it. Both exist
+    # for build-store-package.ps1 to pass: the Store package is this same payload
+    # with a different identity and a different manifest, and two copies of the
+    # staging, indexing and packing steps is two chances to fix one of them.
+    [string]$Manifest = 'AppxManifest.xml',
+    [string]$IdentityName = '',
+    # The two names a package shows: Properties/DisplayName is the installed-apps
+    # list, uap:VisualElements/@DisplayName is the Start menu. Both come from
+    # XYZPDF_PACKAGE_DISPLAY_NAME in the build, because the program's own strings
+    # come from that same variable and a package that calls itself something the
+    # binary does not is one of the two wearing the other's name.
+    [string]$DisplayName = '',
+    [string]$PublisherDisplayName = '',
+    # Folder holding vcruntime140.dll and friends, copied in app-local. Empty
+    # means the package does not carry the C runtime, which is fine on the
+    # machine that built it and not fine on a customer's.
+    [string]$CrtDirectory = '',
     [switch]$Sign,
     [string]$Cert = '',
     [switch]$Install
@@ -45,6 +70,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Project = Split-Path -Parent $PSScriptRoot
 Set-Location $Project
+. (Join-Path $PSScriptRoot 'windowskit.ps1')
 
 # ---------------------------------------------------------------------------
 # 1. The version, from the one line that owns it
@@ -100,7 +126,11 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 $cmake = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
 if (-not $cmake) { $cmake = 'E:\qt\Tools\CMake_64\bin\cmake.exe' }
 if (-not (Test-Path $cmake)) { throw 'cmake was not found' }
-$buildDir = Join-Path $Project $Build
+# Same rooted-or-relative question as $StageRoot above, and joining blindly is
+# what a caller passing an absolute path used to get: Join-Path glues the two
+# together into H:\test\XYZPDF\xyzpdf\H:\test\..., which then fails as "this
+# build directory has not been configured" about a directory that plainly has.
+$buildDir = if ([IO.Path]::IsPathRooted($Build)) { $Build } else { Join-Path $Project $Build }
 if (-not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
     throw "$Build has not been configured; run python tools/build_all_tests.py first"
 }
@@ -109,11 +139,30 @@ Write-Host 'installing the program into the staging directory'
 & $cmake --install $buildDir --prefix $Stage
 if ($LASTEXITCODE -ne 0) { throw "cmake --install failed ($LASTEXITCODE)" }
 
+# The C runtime, app-local, into bin\ beside the executable that imports it.
+# Checked for by name rather than copied and hoped over: a machine installing
+# from the Store is not required to have a redistributable, and a missing
+# vcruntime140.dll is a dialog box at startup rather than anything the program
+# can report -- which the user then cannot connect to this package.
+if ($CrtDirectory) {
+    Write-Host "copying the Visual C++ runtime from $CrtDirectory"
+    Copy-Item -Path (Join-Path $CrtDirectory '*.dll') -Destination (Join-Path $Stage 'bin') -Force
+    foreach ($needed in @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')) {
+        if (-not (Test-Path (Join-Path $Stage "bin\$needed"))) {
+            throw "$needed is not in $CrtDirectory, and xyzpdf.exe imports it"
+        }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # 3. The manifest and the pictures it names, then a check that both agree
 # ---------------------------------------------------------------------------
 
-Copy-Item (Join-Path $Project 'packaging\AppxManifest.xml') (Join-Path $Stage 'AppxManifest.xml')
+$manifestSource = Join-Path $Project (Join-Path 'packaging' $Manifest)
+if (-not (Test-Path -LiteralPath $manifestSource)) {
+    throw "there is no manifest at $manifestSource"
+}
+Copy-Item $manifestSource (Join-Path $Stage 'AppxManifest.xml')
 Copy-Item -Recurse (Join-Path $Project 'packaging\Assets') (Join-Path $Stage 'Assets')
 
 # Read as UTF-8 explicitly. The manifest carries Chinese in the tile
@@ -125,6 +174,25 @@ Copy-Item -Recurse (Join-Path $Project 'packaging\Assets') (Join-Path $Stage 'As
 $identity = $manifest.Package.Identity
 $identity.Version = $Version
 if ($Publisher) { $identity.Publisher = $Publisher }
+if ($IdentityName) { $identity.Name = $IdentityName }
+if ($PublisherDisplayName) { $manifest.Package.Properties.PublisherDisplayName = $PublisherDisplayName }
+if ($DisplayName) {
+    $manifest.Package.Properties.DisplayName = $DisplayName
+    # The name the Start menu shows lives on the application element, not in
+    # Properties, and the two are easy to set one at a time.
+    $visual = $manifest.Package.Applications.Application.VisualElements
+    $visual.DisplayName = $DisplayName
+    if ($visual.DisplayName -cne $manifest.Package.Properties.DisplayName) {
+        # Both were just assigned from one variable, so this cannot fail on the
+        # names disagreeing. What it can fail on is a path into the manifest that
+        # no longer lands on an element: that reads back as $null, and a silent
+        # $null here is a package whose Start menu entry keeps the old name while
+        # its installed-apps entry has the new one.
+        throw ("the application's display name is '$($visual.DisplayName)' but the package's is " `
+               + "'$($manifest.Package.Properties.DisplayName)'. One of the two paths into the " `
+               + 'manifest is wrong, or the manifest has lost an element it should have.')
+    }
+}
 
 # Every path the manifest declares. Attributes and the text of the Logo
 # elements, which is all of them; the element *text* of everything else is not
@@ -151,34 +219,57 @@ Write-Host ("the manifest names {0} files and all of them are in the package" -f
 $manifest.Save((Join-Path $Stage 'AppxManifest.xml'))
 
 # ---------------------------------------------------------------------------
+# 3b. The resource index
+#
+# Windows does not open Assets\Square44x44Logo.png by that path. It asks the
+# resource system for the logo, and the resource system answers out of
+# resources.pri -- the file that maps one name onto the several that exist for
+# it: tools/makeappicon.py writes four tiles at five scales each (and five exact
+# pixel sizes for the 44 one), while the manifest names only the four plain
+# files.
+#
+# With no PRI there is no answer, and what the user sees is an entry in the Start
+# menu with the right name and no picture at all -- while the package installs,
+# reports Status Ok, and contains every tile it should. XYZip shipped exactly
+# that before this step was added, and the symptom is the reason it is generated
+# here and then checked for in the packed file below rather than trusted.
+#
+# The manifest is indexed too (/mn), because its <Resource Language> entries are
+# resolved the same way the pictures are. The qualifier list is read out of the
+# manifest rather than written here: tools/add_language.py is the thing that
+# learns a new language, and a list in this script would be a second place to
+# remember it.
+# ---------------------------------------------------------------------------
+
+# By the element name, which is Resource: Language is its attribute, and asking
+# for an element called Language finds nothing and reads as "the manifest has no
+# languages" on a manifest that has two.
+$languages = @($manifest.GetElementsByTagName('Resource') |
+               ForEach-Object { $_.GetAttribute('Language') })
+if (-not $languages) {
+    throw 'the manifest declares no <Resource Language>, so there is nothing to index'
+}
+$makepri = Find-WindowsKitTool 'makepri.exe'
+# The config is an input, so it goes beside the staging directory rather than
+# inside it: a file in $Stage would be packed into the package.
+$priConfig = Join-Path $StageRoot 'priconfig.xml'
+& $makepri createconfig /cf $priConfig /dq ('lang-' + ($languages -join '_lang-')) /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "makepri createconfig failed ($LASTEXITCODE)" }
+& $makepri new /pr $Stage /cf $priConfig /mn (Join-Path $Stage 'AppxManifest.xml') `
+              /of (Join-Path $Stage 'resources.pri') /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "makepri new failed ($LASTEXITCODE)" }
+Remove-Item -Path $priConfig -Force -ErrorAction SilentlyContinue
+if (-not (Test-Path (Join-Path $Stage 'resources.pri'))) {
+    throw 'makepri reported success but wrote no resources.pri'
+}
+Write-Host ("wrote resources.pri over {0} pictures in Assets" -f
+            (Get-ChildItem (Join-Path $Stage 'Assets') -Filter *.png).Count)
+
+# ---------------------------------------------------------------------------
 # 4. Pack
 # ---------------------------------------------------------------------------
 
-function Find-KitTool([string]$name) {
-    $found = (Get-Command $name -ErrorAction SilentlyContinue).Source
-    if ($found) { return $found }
-    # Two places the Windows SDK has installed this to over the years, and on
-    # this machine it is neither: the App Certification Kit directory, which is
-    # not on PATH.
-    $guesses = @(
-        'E:\Windows Kits\10\App Certification Kit',
-        'C:\Program Files (x86)\Windows Kits\10\App Certification Kit'
-    )
-    foreach ($base in $guesses) {
-        if (Test-Path (Join-Path $base $name)) { return (Join-Path $base $name) }
-    }
-    foreach ($base in @('C:\Program Files (x86)\Windows Kits\10\bin',
-                        'E:\Windows Kits\10\bin')) {
-        if (-not (Test-Path $base)) { continue }
-        $hit = Get-ChildItem -Path $base -Recurse -Filter $name -ErrorAction SilentlyContinue |
-               Select-Object -First 1
-        if ($hit) { return $hit.FullName }
-    }
-    return $null
-}
-
-$makeappx = Find-KitTool 'makeappx.exe'
-if (-not $makeappx) { throw 'makeappx.exe was not found; the Windows SDK is not installed' }
+$makeappx = Find-WindowsKitTool 'makeappx.exe'
 
 $package = Join-Path $StageRoot ("XYZPDF_{0}_x64.msix" -f $Version)
 Write-Host 'packing'
@@ -211,6 +302,9 @@ try {
     $reader = New-Object System.IO.StreamReader($entry.Open())
     [xml]$packed = $reader.ReadToEnd()
     $reader.Close()
+    # Asked of the package rather than of the staging directory, because the
+    # pack is the step that decides what a user's machine ever sees.
+    $hasPri = [bool]$zip.GetEntry('resources.pri')
 } finally {
     $zip.Dispose() }
 $packedVersion = $packed.Package.Identity.Version
@@ -218,6 +312,9 @@ if ($packedVersion -ne $Version) {
     throw "the package says version $packedVersion, which is not $Version"
 }
 Write-Host "the package's own manifest says version $packedVersion"
+if (-not $hasPri) {
+    throw 'the package has no resources.pri, so Windows cannot resolve its tile images'
+}
 
 # ---------------------------------------------------------------------------
 # 5. Sign and install, both opt-in because both change the machine
@@ -225,8 +322,7 @@ Write-Host "the package's own manifest says version $packedVersion"
 
 if ($Sign) {
     if (-not $Cert) { throw '-Sign needs -Cert with the thumbprint of a code-signing certificate' }
-    $signtool = Find-KitTool 'signtool.exe'
-    if (-not $signtool) { throw 'signtool.exe was not found' }
+    $signtool = Find-WindowsKitTool 'signtool.exe'
 
     # The signing certificate has to be one whose subject is the manifest's
     # Publisher, and that is worth checking here because signtool does not say

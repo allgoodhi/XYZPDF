@@ -18,8 +18,10 @@ python tools/build_all_tests.py                                      # 26 项目
 powershell -File packaging/build-package.ps1                         # 出包
 ```
 
-结果：`build-local-release/package/XYZPDF_0.1.0.0_x64.msix`，26.6 MB，
-`makeappx pack` 报 `Package creation succeeded`。
+结果：`build-local-release/package/XYZPDF_0.1.0.0_x64.msix`，26.7 MB / 91 个文件，
+`makeappx pack` 报 `Package creation succeeded`。体积与文件数在 §9.2 那一步（磁贴补上
+多尺寸变体、包里加 `resources.pri`）之后变过，其余不变。清单声明的文件仍然是 8 个 ——
+多出来的那些图不在清单里，是 `resources.pri` 负责解析的，见 §9.2。
 
 打包脚本不信任自己盖的版本号，而是把清单从 `.msix`（就是个 zip）里**读回来**核对：
 `the package's own manifest says version 0.1.0.0`。清单声明的 8 个文件（exe、四张图、
@@ -117,7 +119,23 @@ Get-AppxPackage  →  allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4
 **上架之后不可改** —— 改了就不是更新，是一个新应用，评价、下载量、评分全部留在旧的里面。
 所以这两个值要在第一次提交之前一次定死，别等到那时才发现账户里的 CN 写法不同。
 
-`-Publisher` 参数就是为这一步留的：打包时盖进去，仓库里的清单永远保持占位。
+这两个值不敲命令行，写在 CMake 的 cache 变量里，由打包脚本从生成的头里读回去盖进清单：
+
+```
+cmake -B build-store -DXYZPDF_PACKAGE_IDENTITY_NAME=<保留名> `
+             -DXYZPDF_PACKAGE_PUBLISHER="CN=<分配的发布者>" `
+             -DXYZPDF_PACKAGE_DISPLAY_NAME=<显示名> `
+             -DXYZPDF_PACKAGE_PUBLISHER_DISPLAY_NAME=<发布者显示名>
+```
+
+为什么绕这一道而不是直接给打包脚本传参：程序自己在运行时要靠这四个值算出**它以为**自己
+住在哪个包族里（`src/windows/packageidentity.cpp`），显示名还进了窗口标题与 About。清单
+与二进制不一致时，症状分别是"资源管理器菜单里出现两条同名项"（程序以为自己是散装，又往
+注册表写了一份）和"开始菜单叫 A、标题栏叫 B"。见 §9.4。
+
+`packaging/build-store-package.ps1` 在发布者还是 `CN=allgoodhi` 的时候**直接拒绝出包**，
+不是警告 —— 理由见 §9.3。
+
 
 ## 3. 提交前必须补上的：文件关联
 
@@ -287,6 +305,9 @@ delay-load。位置在 `uap:FileTypeAssociation` 里面，紧挨着 `DesktopPrev
 - **`makeappx` 没有静态校验可当替身**：本想拿 `makeappx validate` 顶一下 WACK，这个版本
   （10.0.26100.8249）没有 `validate` 这个子命令，只回一屏 usage。所以包结构的校验目前
   就到 `makeappx pack` 自己那一步，加上打包脚本从 `.msix` 里把清单读回来核对（§1）。
+- **商店包本身**：出得来、解得开、离开这台机起得来（§9.6），但它**从没被 Windows 装过**，
+  也没跑过 WACK —— 因为发布者身份还是开发值（§2、§9.3 那条拒绝）。带真身份之后这两步要补。
+  另外本机现在装着的那一份是 `resources.pri` 之前打的，"图标真的出来了"这一眼还没看。
 
 已经验过、别再当未知的：包内 COM 服务器在松散注册下会被路由（§5）；包能启动
 （§1.1）；`.pdf` 关联登记进了外壳（§1.1）；三个处理器的 CLSID 在装好之后各自指向
@@ -335,6 +356,30 @@ Start-Process 'E:\Windows Kits\10\App Certification Kit\appcertui.exe' -Verb Run
 & 'E:\Windows Kits\10\App Certification Kit\appcert.exe' reset
 & 'E:\Windows Kits\10\App Certification Kit\appcert.exe' test -packagefullname (Get-AppxPackage -Name allgoodhi.XYZPDF).PackageFullName -reportoutputpath build-local-release\wack-deployed.xml
 # 注意：appcert 跑完会自己把包撤掉，想继续验外壳就重新 Add-AppxPackage -Path
+```
+
+### 7.0 商店那一个包（§9）
+
+```powershell
+# 身份与名字在配置时给，之后程序、清单、提交说的才是同一套（见 §2）。
+# 先让门禁脚本建这棵树（它知道 generator 与 Qt 的位置；手工 cmake -B 一个新目录在这台机器上
+# 会拿到默认的 NMake，而构建脚本与 CMakeLists 都按 Ninja 写），然后把四个值盖进它的 cache：
+python tools/build_all_tests.py --build-only --build-dir build-store
+E:\qt\Tools\CMake_64\bin\cmake.exe -B build-store -DXYZPDF_PACKAGE_IDENTITY_NAME=<保留名> `
+    -DXYZPDF_PACKAGE_PUBLISHER="CN=<分配的发布者>" -DXYZPDF_PACKAGE_DISPLAY_NAME=<显示名> `
+    -DXYZPDF_PACKAGE_PUBLISHER_DISPLAY_NAME=<发布者显示名>
+# 重编一次：这四个值是编译进二进制的，只改 cache 不改二进制 = 清单与程序分家（§9.4）
+python tools/build_all_tests.py --build-only --build-dir build-store
+
+# 出包（不改机器；包与暂存布局落在 build-store\package-store）
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build-store-package.ps1 -Build build-store
+
+# 验它：解包、清单点名的东西在不在、有没有 glob 进来的垃圾、去掉 PATH 之后起不起得来
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging/verify-package.ps1 `
+    -Package build-store\package-store\XYZPDF_0.1.0.0_x64.msix -CarriesCrt
+
+# 名字还没 reserve 之前想先把这条链路跑通：同上，只是那四个值换成一看就是假的 stand-in，
+# 跑完把 cache 改回开发值、重编、删掉 package-store。今天这一遍就是这么做的，见 §9.6。
 ```
 
 ### 7.1 三个处理器：哪个 CLSID 在哪个 DLL 里
@@ -607,3 +652,170 @@ D3Dcompiler_47.dll / opengl32sw.dll / Qt6Core.dll / Qt6Gui.dll / Qt6Pdf.dll / qt
 一句边界：这一遍证明的是"包在本机能签名安装、并且过了本机这套 kit"。它**不是**"WACK 通过
 = 商店会认证通过"，服务端那一遍我们没跑过（§6）。
 
+
+---
+
+## 9. 商店包那一条链路
+
+§1 到 §8 讲的都已经验过了。这一节是"提交给商店的那一个包"：它的图从哪来、它的身份由谁
+盖、以及本机拿什么验它。今天之前这条链路是不存在的 —— 有两个清单、一个 `build-package.ps1`，
+商店那个清单**没有任何脚本会读它**。
+
+### 9.1 仓库里那个商店身份是编出来的
+
+`packaging/StoreAppxManifest.xml` 之前写着
+`Publisher="CN=3C3318D2-C146-4BCB-AE5B-29787FFF4D89"`。这个 GUID 在仓库里**别处找不到**，
+也没有任何后台有它 —— 是写那个文件那天顺手填的。现在改回 `CN=allgoodhi`，跟散装清单一致。
+改它的理由不是整齐：
+
+- 身份本来就要被打包脚本盖掉（§9.3），所以这个字段的唯一作用是"让读的人以为它说明了
+  什么"，而它说明的是"名字已经在 Partner Center 保留过了"。这件事没有发生。
+- 假 GUID 比明显的占位更难查：`CN=allgoodhi` 谁一眼都知道是自签，`CN=<36 位>` 看着像从
+  后台抄来的。真去 reserve 的时候，人更容易相信一个像真货的值。
+
+顺带把两个清单的关系写进文件头了：内容上它们是**同一份**，只有语言表由
+`tools/add_language.py` 同时写两边，其余（尤其是三个 CLSID）没有东西在替我们盯着。
+
+### 9.2 四张图不够，而且 Windows 不是按路径找磁贴的
+
+`tools/makeappicon.py` 现在出 25 张：四张基础图各带 `scale-125/150/200/400`，
+`Square44x44Logo` 再补 `targetsize-16/24/32/48/256`（按像素要的场合：树、任务栏、标题栏）。
+两件事值得记：
+
+- **不生成 `_altform-unplated`**，虽然 XYZip 有。unplated 是"把底板去掉只留图案"的那种磁贴，
+  而这张画的红色圆角方块本身就是图案 —— 给它一个 unplated 版本等于自己盖自己一层底板。
+- 尺寸算的是 `int(w*scale/100+0.5)`，不是 `round(w*scale/100)`。Python 的 `round` 是"四舍
+  六入五成双"，`round(62.5)` 给 62 而不是 63，于是 `StoreLogo.scale-125.png`（50 的 125%）
+  会小一个像素。文件名里的 scale 是给人看的，Windows 按那个数去要像素，少一个就是拿一张由
+  它自己再缩放过的图。四张基础图的尺寸与 XYZip 那套一致（`StoreLogo` 两边都是 50×50）。
+
+清单里点名的还是那 4 个文件（外加 `Properties/Logo`，也是 `StoreLogo.png`）。多出来的 21 张
+靠 `resources.pri`：Windows 拿着 `Assets\Square44x44Logo.png` 这个名字**不是去开这个路径**，
+而是问资源系统，资源系统再按当前 DPI/尺寸从那 25 张里挑 —— 名字里带 `.scale-150` 那类后缀
+的才是候选。所以 `build-package.ps1` 现在多两步 `makepri`：
+
+```
+makepri createconfig /cf priconfig.xml /dq lang-zh-CN_lang-en /o
+makepri new /pr <暂存目录> /cf priconfig.xml /mn <暂存清单> /of <暂存>/resources.pri /o
+```
+
+`/dq` 那个语言列表是从清单的 `<Resource Language>` 里读出来的，不是写死 —— 但读的方式踩过
+一次：`GetElementsByTagName('Language')` 什么都没有，因为 `Language` 是 `<Resource>` 的
+**属性**而不是元素。当时的表现是脚本抛"清单里没有 <Resource Language>"，一份有两个的清单。
+两个坑记完：`priconfig.xml` 要放在暂存的 `app` 目录**外面**，否则它自己会被打进包。
+
+缺 `resources.pri` 长什么样，值得再说一遍，因为它跟成功一模一样：包装得上、`Status Ok`、
+25 张图一张不缺，开始菜单那条有名字、**没有图案**。没有报错可追，所以 §9.5 那个脚本把它
+列成硬性检查项。
+
+### 9.3 身份与名字都只有一个来源：build 生成的那两头文件
+
+`packaging/build-store-package.ps1` 只做商店独有的三件事，其余全部交给
+`build-package.ps1`（它因此多了 `-Manifest / -IdentityName / -DisplayName /
+-PublisherDisplayName / -CrtDirectory` 五个参数 —— 抄两份暂存与索引代码等于两次机会只修
+其中一份）。三件事是：
+
+1. **身份从 build 里读，不从命令行传**：`build/generated/xyzpdf/packageconfig.h` 里的
+   `XYZPDF_PACKAGE_IDENTITY_NAME` / `_PUBLISHER` / `_DISPLAY_NAME` /
+   `_PUBLISHER_DISPLAY_NAME`，加上 `version.h` 的 `XYZPDF_VERSION_QUAD`。这样二进制与清单
+   说的必然是同一套（§2 说的两个症状就是这么来的）。版本还要与 `CMakeLists.txt` 的
+   `project(... VERSION ...)` 交叉核对一次 —— 不一致就是这棵树没重新配置，报"树过期"，
+   而不是悄悄出一个自相矛盾的包。
+2. **算出包族名，并在身份还是开发值的时候拒绝出包**。算法：发布者按 UTF-16LE 取 SHA-256，
+   前 8 字节按高位在前摊成一个整数，末尾补一位，写成 Crockford base32
+   （字母表 `0123456789abcdefghjkmnpqrstvwxyz`，没有 i/l/o/u）。这套算法与它自带的自校验一起
+   从 XYZip 搬来（那边是拿两对已知值反推出来的，见它 `build-store-package.ps1` 的同名函数）；
+   本机跑的是那条自校验：微软那个发布者必须算出 `8wekyb3d8bbwe`，算不出来就直接停 —— 因为
+   下面所有的判断都要用它。拒绝的条件只看发布者：`Identity/@Publisher` 是包族名的一半，而推导
+   是单向哈希，用 `CN=allgoodhi` 签出来的包**永远不可能**等于 reserve 的那个族名，提交被打回来
+   时只会说一句很短的话。（XYZip 第一版这检查要求两个值都是开发值才拒绝，于是"先填保留名、
+   publisher 忘了改"这个最自然的顺序反而静默通过。）今天对着开发身份实跑过一遍，报的就是那段
+   话，而且它在暂存之前就停住，没留下 `package-store`。
+3. **把 C 运行库带进包**。机器装商店包不要求装过 redistributable，缺 `vcruntime140.dll` 是
+   启动时一个弹窗，程序自己报不出来。找它的目录优先用 `$env:VCToolsRedistDir`，没有就问
+   `vswhere`（它待在一个固定路径上就是为了在没有初始化的 shell 里也能找到）；挑工具集版本
+   按 `[version]` 排，不按文本排 —— 按文本 `14.9` 会赢过 `14.51`。
+
+`windowskit.ps1` 是这一节共用的找工具代码：先 PATH，再读注册表 `KitsRoot10\bin`（64 位机器
+上两份都要看：`WOW6432Node` 那份和直读那份），再猜 Program Files，并且过滤掉路径里带
+`\x86\ \arm\ \arm64\` 的命中。这台机器上 `makeappx` / `signtool` / `appcert` 在
+`E:\Windows Kits\10\App Certification Kit\`（不在 PATH 上，§1 早写过），但 **`makepri` 不在
+那里**，它在 `bin\10.0.<x>\x64\` —— 这就是不能沿用旧查找表的原因。
+
+### 9.4 名字也只有一个来源，正反两次都验过
+
+`Edition::productName()` 之前写死 `QStringLiteral("XYZPDF")`。现在它返回
+`XYZPDF_PACKAGE_DISPLAY_NAME` —— 也就是同一个配置值同时进窗口标题、About、清单
+`Properties/DisplayName`（"设置 > 应用"里那个）与 `uap:VisualElements/@DisplayName`
+（开始菜单里那个）。这不是整洁癖：`build-package.ps1` 会盖清单里的两个显示名，如果标题栏
+还是字面量，两者就会分家，而分家的表现是"开始菜单叫 A、标题栏叫 B"。
+
+这条通道有牙，两个方向都跑了：
+
+| 跑法 | 结果 |
+| --- | --- |
+| 把 stand-in 显示名 `XYZPDF Standin` 配置进去、重编、出包、`verify-package.ps1` | 通过（标题与清单一致） |
+| 只把 `productName()` 改回字面量 `"XYZPDF"`、重编、出同一个包 | 报 1 条：`xyzpdf.exe put up a window titled 'XYZPDF' rather than 'XYZPDF Standin'` |
+
+第二次就是这条检查存在的理由 —— 也是为什么它比"看到有个窗口"强：见 §9.5。
+
+### 9.5 `verify-package.ps1`：验的是"离开这台机它起不起得来"
+
+三个问题，逐条来自踩过的坑（脚本文件头有全版）：
+
+- **该在的在不在**：`resources.pri`、`bin\` 下的 exe 与三个处理器 DLL、七个 Qt DLL、四个
+  `plugins\` 子目录、清单点名的图与两张 `scale-150`；带 `-CarriesCrt` 时再要那三个运行库。
+  本地包不带这个开关（本机有 redistributable，要它反而是在报一个不是问题的"问题"）。
+- **不该在的在不在**：`vc_redist.x64.exe`（windeployqt 对"编译器运行库"的理解：一个 18 MB
+  的安装器，塞进一个不能跑安装器的包里）、`*.lib/*.pdb/*.ilk/*.obj`、任何 `*_smoke.exe` /
+  `*_bench.exe`。glob 出来的负载第一次露馅通常是提交体积翻倍。
+- **能不能独立起来**：把包解到临时目录，`PATH` 只剩 `system32;Windows;Wbem`，起它，然后把
+  它加载的每个模块往回追是谁给的 —— 只要有一个来自解包目录之外就算失败。**判据是窗口的
+  标题**，因为缺 DLL 与缺 Qt 平台插件都会弹窗，而弹窗也是个窗口，"起了并出现一个窗口"在每
+  一个失败场景里都成立。标题取的是解出来的清单里的 `Properties/DisplayName`，不是写死在这
+  个脚本里（XYZip 那条踩的正是写死：两个版本共用一份检查脚本，付费版的显示名不是 `XYZip`）。
+
+两条与本项目特别相关的：跑之前先看有没有 XYZPDF 在跑 —— 单实例网关会让第二个进程把参数
+交出去就退，脚本会把这读成"包里的程序一启动就退"，所以它拒绝猜。以及它会把"带着但用不上"
+的东西报成一个 note 而不是问题，见 §9.6 最后一条。
+
+### 9.6 今天本机跑出来的数
+
+```
+配置一个 stand-in 身份（XYZPDFStoreTest / CN=B2E1D3F4-… / 显示名 XYZPDF Standin）
+python tools/build_all_tests.py --build-only          # 全部目标重编，身份编译进去
+powershell -File packaging/build-store-package.ps1    # 出包
+powershell -File packaging/verify-package.ps1 -Package 'build-local-release/package-store/…' -CarriesCrt
+```
+
+- 包族名：`allgoodhi.XYZPDFStoreTest_wnj647vny8s1j`（算法与微软 `8wekyb3d8bbwe` 自校验都过）
+- 商店包：27.4 MB / 101 个文件 / 解包 67.3 MB，`resources.pri` 在，25 张磁贴全在，
+  运行库落在 `bin\` 下（跟 exe 同级才是 app-local）：`vcruntime140.dll`、`vcruntime140_1.dll`、
+  `vcruntime140_threads.dll` 与 5 个 `msvcp140*`
+- 本地包（同一棵树、`CN=allgoodhi`、不带运行库）：26.7 MB / 91 个文件 / 解包 65.4 MB
+- 两个包 `verify-package.ps1` 都过：从解包目录起来、`PATH` 上没有 Qt，9（+3）个模块全部
+  来自解包目录，窗口标题与清单一致
+- 实验做完：cache 里的四个身份值改回开发值、重编、门禁 26 项目标全过、`package-store` 与
+  临时解包目录都删了。`grep -c` 过，stand-in 那三个值在 `CMakeCache.txt` 里已经是 0 处
+
+一条待你决定的：`verify-package.ps1` 每次都会 note 出 **34 个文件、29.3 MB「带着但可能用不上」**，
+量过：`bin\opengl32sw.dll` 19.7 MB、`bin\D3Dcompiler_47.dll` 4.0 MB、`translations\` 下 32 份
+Qt 自带的 `.qm` 共 5.6 MB（程序的界面翻译是自己那两份，走的是另一条路）。这三样是
+`qt_generate_deploy_app_script` 装的，不是 `CMakeLists.txt` 里那行 windeployqt 的
+`--no-opengl-sw --no-system-d3d-compiler` 管的那条路 —— 那两条开关在，东西照样进了包。
+剥掉能省掉包体近一半（65 MB 解包 → 36 MB），但这要**看一眼启动还正不正常**才算数，所以这一轮
+没动，脚本只把数报出来。要动的时候有两条路：给安装期那次部署传它自己的排除参数，或者在打包
+脚本里删（XYZip 走的是后一条，它连 `dxcompiler.dll` / `dxil.dll` 一起删）。两条本机都没试，
+所以不在这一轮里顺手做 —— 省下的是磁盘，赌上是"装完之后打不开"。
+
+### 9.7 这条链路还没验的部分
+
+- 名字没 reserve，所以商店包**从没被 Windows 装过**：上面那包只是解到临时目录直接跑的，
+  没有 `Add-AppxPackage`，也没有对它跑 WACK。带真身份的包出来之后，这两步跟 §1.3、§8 一样
+  要重跑一遍（签名证书得换成与那个发布者同名的）。
+- 本机现在装着的那一份是 `resources.pri` 之前打的，这句是查出来的不是推的：
+  `Test-Path (Join-Path (Get-AppxPackage -Name allgoodhi.XYZPDF).InstallLocation resources.pri)`
+  回 `False`。所以"开始菜单/设置里图标对不对"这一眼要用新包重装一次才看得见（脚本那边
+  §9.2 与 §9.5 已经判定通过，剩下的只有眼睛）。装法见 §7：先 `Remove-AppxPackage`，再
+  `build-package.ps1 -Sign -Cert <指纹>`，再 `Add-AppxPackage -Path`。
+- 商店那一边还要填的元数据（隐私声明、截图、年龄分级、`Product identity` 里的实际值）在 §4。

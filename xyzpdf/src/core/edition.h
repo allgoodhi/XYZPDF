@@ -15,6 +15,8 @@
 #include <QCoreApplication>
 #include <QString>
 
+#include <xyzpdf/packageconfig.h>
+
 namespace Edition {
 
 #ifdef XYZPDF_PRO
@@ -29,9 +31,13 @@ constexpr bool Pro = false;
 inline QString productName()
 {
     // A product name is not an interface string, so it does not go through
-    // tr(); but it does go through here, so the two editions cannot end up
-    // calling themselves different things in different windows.
-    return QStringLiteral("XYZPDF");
+    // tr(); but it does come from the generated identity rather than being
+    // written here, so that the title bar, the About box and the manifest's
+    // DisplayName (which is what the Start menu and 设置 > 应用 show) cannot end
+    // up calling themselves different things. packaging/verify-package.ps1
+    // starts the packed program and compares its window title with the manifest
+    // it just unpacked; that check is only meaningful while this is one value.
+    return QStringLiteral(XYZPDF_PACKAGE_DISPLAY_NAME);
 }
 
 } // namespace Edition

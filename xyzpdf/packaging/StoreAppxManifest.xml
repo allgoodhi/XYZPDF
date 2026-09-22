@@ -2,18 +2,31 @@
 <!--
   The Store package.
 
-  Same shape as AppxManifest.xml and deliberately a separate file rather than
-  the same one with substitutions: a Store submission is the one thing here that
-  cannot be redone quietly, and the values that decide whether it is accepted
-  (Identity/@Name and @Publisher, which Partner Center assigns and reserves)
-  should be visible in the file they are in rather than assembled from
-  variables at pack time.
+  In its substance this is AppxManifest.xml, and the duplication is a cost:
+  anything added to the layout (an association, a handler, a language) has to be
+  added to both files, and nothing checks that it was. Only the language list is
+  scripted; tools/add_language.py writes both. The CLSIDs are the ones to watch,
+  because each has to equal a number compiled into a DLL. The handler smoke tests
+  check that the compiled numbers are the ones this project settled on, so a
+  mismatch introduced only here would surface as a preview pane that says nothing
+  at all rather than as a failing test.
 
-  Nothing has been reserved in Partner Center for this program yet, so the
-  identity below is still the development one. packaging/build-store-package.ps1
-  overrides the three identity values on the command line once they exist; see
-  src/core/packageconfig.h.in for how the program is told the same thing.
+  It is paid anyway because the two are packed for different audiences: this one
+  is what a Store submission is built from, and a submission is the one thing here
+  that cannot be taken back quietly.
 
+  The identity below is the development one, and it is a starting point rather
+  than a claim. packaging/build-store-package.ps1 overwrites Name, Publisher and
+  both display names with the values stamped into the build's generated
+  packageconfig.h, so what a package carries is what the build was configured
+  with, never what happens to be committed here. The placeholder is therefore the
+  local publisher and not a plausible-looking reserved one: nothing has been
+  reserved in Partner Center for this program yet, and a GUID in that field would
+  read as if it had. Stamping rather than checking is safe because that script
+  refuses to pack at all while the header still says CN=allgoodhi, which is the
+  only way this file's values could have reached a submission by accident.
+
+  src/core/packageconfig.h.in is where the program is told the same thing.
   Version is the placeholder that gets stamped, as in AppxManifest.xml.
 -->
 <Package
@@ -28,7 +41,7 @@
 
   <Identity
     Name="allgoodhi.XYZPDF"
-    Publisher="CN=3C3318D2-C146-4BCB-AE5B-29787FFF4D89"
+    Publisher="CN=allgoodhi"
     Version="0.0.0.0"
     ProcessorArchitecture="x64" />
 

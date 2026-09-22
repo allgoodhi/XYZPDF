@@ -31,7 +31,7 @@ powershell -File packaging/build-package.ps1                         # 出包
 工具的位置值得记一下：`makeappx.exe` 与 `signtool.exe` 在
 `E:\Windows Kits\10\App Certification Kit\`，**不在 PATH 上**，脚本按名字找它。
 同一目录里还有 `appcert.exe` 与 `appcertui.exe`，即商店认证测试的工具 —— 工具在，
-但跑不了那么便宜：它要提权，细节见 §6。
+但跑不了那么便宜：它要提权，而跑完之后另有文章，见 §8。
 
 ### 1.1 装上也验过了（2026-09-22，开发人员模式打开之后）
 
@@ -256,12 +256,10 @@ delay-load。位置在 `uap:FileTypeAssociation` 里面，紧挨着 `DesktopPrev
   真的开起来"没有观察过。要改默认只能由人在设置里点 —— Windows 用只有它自己能算出的
   哈希保护默认值，程序自己去写就是恶意软件的做法（`shellintegration.cpp:284` 那段
   注释说的就是这件事）。
-- **商店认证测试（WACK）**：工具在（`appcert.exe` 与 `appcertui.exe`，就是 §1 说的那个
-  不在 PATH 上的目录），包也注册了，但一次都没跑完。拦路的是权限不是配置：非提权的
-  PowerShell 里连 `appcert.exe /?` 都启动不了，`Start-Process` 回"此操作需要提升"（Git
-  Bash 更干脆，一句 `Permission denied` —— 它的清单里写着 `requireAdministrator`）。
-  既然参数表只能在管理员 shell 里读到，这里就不抄一份网上来的命令行充作已验证；要跑的
-  人请先在提权窗口里让 `appcert.exe` 自己吐一次用法，按这一份的参数来。
+- **商店认证测试（WACK）**：提权跑完了，见 §8。一句话结论：跑是跑得动，但它对我们这个
+  包**没下判词** —— 松散注册的包它在 `程序清单` 那一步就看不见，改从 `.msix` 入口进它
+  又明说"在不部署应用程序的运行情况下运行测试"，于是那 21 条 FAIL 是它自己拿不到路径。
+  要真判词得先把包装进系统，而装包要签名（上面第一条）。
 - **`makeappx` 没有静态校验可当替身**：本想拿 `makeappx validate` 顶一下 WACK，这个版本
   （10.0.26100.8249）没有 `validate` 这个子命令，只回一屏 usage。所以包结构的校验目前
   就到 `makeappx pack` 自己那一步，加上打包脚本从 `.msix` 里把清单读回来核对（§1）。
@@ -291,8 +289,10 @@ Get-StartApps | Where-Object Name -match XYZPDF
 # 撤掉
 Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage
 
-# 认证测试（装完之后）。appcert 只能提权跑，见 §6 —— 从当前窗口拉起：
+# 认证测试。appcert 只能提权跑，结果怎么读见 §8 —— 从当前窗口拉起：
 Start-Process 'E:\Windows Kits\10\App Certification Kit\appcertui.exe' -Verb RunAs
+# 命令行版（同一个工具，跑完直接出 xml；参数含义与两条死路见 §8.1–§8.3）
+& 'E:\Windows Kits\10\App Certification Kit\appcert.exe' test -appxpackagepath build-local-release\package\XYZPDF_0.1.0.0_x64.msix -reportoutputpath build-local-release\wack.xml
 ```
 
 ### 7.1 三个处理器：哪个 CLSID 在哪个 DLL 里
@@ -328,5 +328,123 @@ class  8AFE6540-7E46-4349-BE06-ECD418310E42  bin\xyzpdfshell.dll
 ref    desktop2:DesktopPreviewHandler  12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7
 ref    desktop2:ThumbnailHandler  4032B809-B50E-4F0A-AFC1-D300803A81CE
 ref    desktop5:Verb  8AFE6540-7E46-4349-BE06-ECD418310E42
+```
+
+## 8. WACK：跑完了，但它没给我们的包下判词
+
+2026-09-22 提权跑了好几轮（`appcert.exe`，kit 版本 10.0.26100.8249）。PLAN 里 M3 的验收线
+写着"WACK 通过"，**这一条今天没有达到**，而差的原因不在包上。写清楚，免得下一份文档
+把这 21 条 FAIL 抄成"清单有 21 处毛病"。
+
+先说权限那关（§6 记的就是它）：`appcert.exe` 与 `appcertui.exe` 都要求提权，非提权的
+PowerShell 里连 `/?` 都启动不了（`Start-Process` 回"此操作需要提升"，Git Bash 一句
+`Permission denied` —— 它的内嵌清单写着 `requireAdministrator`）。
+
+### 8.1 参数表（提权之后从工具自己嘴里读的，不是网上抄的）
+
+```
+appcert [ test | finalizereport | reset | querytestids ] [options]
+test  -packagefullname <包全名>   或   -appxpackagepath <.msix 文件>
+      [-testid '[31]'] [-apptype ...] [-setuppath ...] [-waittimeout ...]
+      [-reportoutputpath <xml>]
+```
+
+两个坑：`-testid` 的方括号是语法的一部分（`-testid 31` 顶回来"实际参数格式不正确"）；
+退出码 0 是跑完，1 是要再调 `finalizereport`，-1 是命令行或**生成报告阶段**的错 —— 也就是
+下面那条"报告不完整"的信号。
+
+### 8.2 松散注册的包，WACK 的 `程序清单`（ProgramInventory）任务看不见它
+
+`Add-AppxPackage -Register` 注册出来的包，`appcert test -packagefullname <全名>` 会走到：
+
+```
+INFO:ProgramInventory Inventorying application allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4
+WARNING:Failed to find the package root path for allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4
+ERROR[Infrastructure]: Method name: "ExecuteTask"  Error: The specified Windows Store App was not found.
+```
+
+它落盘的清单文件是个空壳：`programinventory_<guid>.xml` 里只有 `<ProgramList/>`。往后所有
+靠它取路径的任务统一报"找不到此应用包的清单文件"，最后 `尝试创建报告时出错 / An error
+occurred while additional data was being added to the report`，exit=-1，报告里没有
+`APP_NAME`/`APP_VERSION`。
+
+排掉的三个假说，都留了证据：
+
+- **"包在 H: 上它找不到根目录"** —— 把整个暂存目录复制到 `C:\Users\allgoodhi\xyzpdf-wack-stage\app`
+  再注册，`Get-AppxPackage` 回的 `InstallLocation` 就是 C:，工具自己的 `global_data.xml`
+  里 `appTypeDetectManifestPath` 也确实写成了那个 C: 路径，`程序清单` 照旧失败。**盘符不是变量。**
+- **"`reset` 把状态冲掉了"** —— 同一条命令行，加 `reset` 与不加 `reset` 都失败。
+- **"是前置任务 `在 IDE 方案中执行应用包部署/清理` 半路把注册撤了"** —— 提权脚本里挂了个
+  每 500 ms 采一次的轮询任务，整场 74 个采样点一次都没掉过注册（`registered
+  C:\Users\allgoodhi\xyzpdf-wack-stage\app` 从头到尾），失败照旧。**它没撤，它就是看不见。**
+
+### 8.3 `-appxpackagepath` 能出完整报告，但它是"不部署"的那种跑法
+
+把包从注册里撤掉、改用 `-appxpackagepath <.msix>`，工具第一句话就说明了模式：
+
+```
+注意: 在不部署应用程序的运行情况下运行测试。
+```
+
+这一回 `程序清单` 成功，exit=0，报告是完整的（`APP_NAME=allgoodhi.XYZPDF`、
+`APP_VERSION=0.1.0.0`、`VALIDATION_TYPE=CommandLine`）。结果 **2 PASS / 21 FAIL / 1 WARNING**，
+24 条。可是那 21 条里几乎没有一条是对包本身的判词，按工具吐的原文分一下：
+
+| 原文 | 条数 | 是什么 |
+| --- | --- | --- |
+| `System.ArgumentException: 路径的形式不合法` | 5 | #2 #11 #86 #87 #89：`Path.GetDirectoryName(空)` —— 没部署就没有根目录 |
+| `平台元数据目录 不存在或不是目录` | 6 | #53–#58 整族元数据校验，工具自己的目录是空的 |
+| `找不到此应用包的清单文件` | 4 | #52 #61 #62 #91：又回去查注册表里的包，见 §8.2 |
+| `未将对象引用设置到对象的实例` / `该字符串无法识别为有效的 Uri` / `测试受阻` / `无法…提取已导入的 API 信息` | 6 | #77 #63 #45 #46 #70 #88，同一类：拿不到输入 —— #88 那半句是真的，见下 |
+
+也就是说：**真正跑完并且给出结论的只有两条半** —— `#31 应用清单` PASS、`#90 资源包` PASS，
+外加 `#92 DPIAwarenessValidation` 一条 WARNING。而 `#31` 这条是 PLAN 里"清单正确"那件事的
+正面证据（它跑的是我们自己那份 `AppxManifest.xml`）。
+
+WARNING 那条值得单独说，因为它看着像真缺陷：`#92` 先说"应用程序清单无效"，接着说"应用
+allgoodhi.XYZPDF_… 不是 DPI 感知应用"。**它的前提不成立**，把暂存包里那份 exe 的内嵌清单
+抠出来看：
+
+```powershell
+& 'E:\Windows Kits\10\bin\10.0.26100.0\x64\mt.exe' '-inputresource:build-local-release\package\app\bin\xyzpdf.exe;#1' '-out:exe-manifest.xml'
+```
+
+里面明明白白写着 `dpiAware=true/pm` 和 `dpiAwareness=PerMonitorV2`（还有 `longPathAware`），
+是 `xyzpdf.manifest` 经 `/MANIFESTINPUT` 合进链接器默认清单的结果 —— 见 `CMakeLists.txt:281`
+那段注释，它记的就是 WACK 这一条。所以这次"不是 DPI 感知"是它自己没读到清单，不是我们漏了。
+
+唯一一条讲的是我们文件的话，来自 `#88 已阻止的可执行文件`：
+
+```
+opengl32sw.dll / Qt6Core.dll / plugins\platforms\qwindows.dll  引用 kernel32!CreateProcessW、shell32!ShellExecuteW/ShellExecuteExW
+bin\xyzpdfshell.dll  引用 kernel32!CreateProcessW
+```
+
+Qt 自己的进程启动路径，加上我们右键那一行为拉起阅读器用的 `CreateProcessW`。桌面型
+（full trust）Centennial 应用允许这些 API，商店里每个 Qt 应用都带这一串 —— 记下备查，
+今天不动它。
+
+### 8.4 要真判词，缺的还是签名
+
+两条路走到同一个前提：**包得真的装进系统**（`-packagefullname` + 已部署），而不是松散注册。
+装 `.msix` 要签名，本机没有证书（§6 第一条）。SDK 这两件东西倒是都在
+`E:\Windows Kits\10\bin\10.0.26100.0\x64\`：`signtool.exe`、`MakeCert.exe`，也就是说"自签一张
+测试证书 → 塞进 `LocalMachine\TrustedPeople` → 签 `.msix` → `Add-AppxPackage` 装 → 重跑
+`-packagefullname`"这条路在这台机器上是走得通的。**没走过**，而且它动的是系统的信任根，
+得由人点头；商店提交要的还是真证书，自签那张只为在本地拿一份完整的 WACK 判词。
+
+### 8.5 报告怎么读
+
+工具自己的目录：`%LOCALAPPDATA%\Microsoft\AppCertKit\`（`AppCert_Trace_YYMMDDHHMM.txt` 是
+trace，`global_data.xml` 是它这一轮实际拿到的路径与包名，`TaskSchedule.xml` 是任务顺序，
+`Log_<任务名>_POST-PROCESS.xml` 是每个任务自己的落盘结果）。两个格式坑：trace 里中文和
+英文被 NUL 串起来，直接读只看见中文，要按"连续 ≥4 个 ASCII 字节"抠才看得见 `WARNING:`
+那些行；`appcert` 的 stdout 是 UTF-8 带 BOM，`Out-File` 之前别按 UTF-16 解。
+
+报告 XML 里 `RESULT` 的结论是**元素文本**，不是属性（`<RESULT>FAIL</RESULT>`），拿属性去读
+会全空。核对计数：
+
+```powershell
+python -c "import xml.etree.ElementTree as ET; r=ET.parse('wack.xml').getroot(); print([ (t.attrib.get('INDEX'), t.find('RESULT').text) for t in r.iter('TEST') ])"
 ```
 

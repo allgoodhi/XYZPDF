@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Writes packaging/app.ico, the icon Explorer reads off the executable.
+"""Writes the pictures the package needs: packaging/app.ico, the icon Explorer
+reads off the executable, and the tile images in packaging/Assets/.
 
     python tools/makeappicon.py
 
@@ -12,15 +13,21 @@ and the .ico has to contain several sizes: 16 for the tree, 32 for the taskbar,
 48 for the desktop, 256 for the large views. One bitmap scaled down is visibly
 wrong at 16 -- the artwork turns to mush -- so each size is drawn.
 
+The package has the same requirement in a different form: AppxManifest.xml names
+four tile images and `makeappx` refuses a package whose declared files are
+missing, so those four are written here as well. They come from the same
+rasteriser as the .ico, which is the only way the icon in the taskbar and the
+tile in the Start menu are the same drawing rather than two that drifted.
+
 There is no image library on the build machine (no Pillow, no ImageMagick), and
 adding one to build an icon would be a dependency to install before the project
 could ever be built. What is needed is a few hundred lines of geometry, which is
 what this is: the same shapes as Resources/icons/app.svg, rasterised by hand and
-written out as PNG-compressed ICO frames.
+written out as PNG-compressed ICO frames and plain PNGs.
 
-The window icon is the SVG (see main.cpp) and this is the file Explorer reads.
-They are kept in step by hand, which is why both files carry the same colours
-written down once each.
+The window icon is the SVG (see main.cpp) and these are the files Explorer and
+the shell read. They are kept in step by hand, which is why all three carry the
+same colours written down once each.
 """
 import os
 import struct
@@ -32,8 +39,19 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT = os.path.join(ROOT, 'packaging', 'app.ico')
+ASSETS = os.path.join(ROOT, 'packaging', 'Assets')
 
 SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+# The names AppxManifest.xml uses, and the size each one has to be. The wide
+# tile is the only non-square one: the artwork is drawn square and centred on
+# it, which is what the Start menu expects of a logo rather than a banner.
+TILES = (
+    ('StoreLogo.png', 50, 50),
+    ('Square44x44Logo.png', 44, 44),
+    ('Square150x150Logo.png', 150, 150),
+    ('Wide310x150Logo.png', 310, 150),
+)
 
 # Supersampling. Edges drawn at 16 pixels are mostly edge, and without this the
 # tree icon is a red blob with a white smear in it.
@@ -128,23 +146,43 @@ def render(size):
     return rows
 
 
-def png(size):
-    """A PNG of one frame. PNG rather than a raw BMP because Vista and later
+def png(rows, width, height):
+    """A PNG of one picture. PNG rather than a raw BMP because Vista and later
     read PNG frames in an ICO, and 256x256 as a BMP would be 256 KB on its own.
     """
-    raw = b''.join(b'\x00' + row for row in render(size))
+    raw = b''.join(b'\x00' + row for row in rows)
 
     def chunk(kind, data):
         return (struct.pack('>I', len(data)) + kind + data
                 + struct.pack('>I', zlib.crc32(kind + data) & 0xFFFFFFFF))
 
-    header = struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0)
+    header = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
     return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header)
             + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b''))
 
 
+def centred(width, height, art):
+    """The square artwork, drawn at `art` pixels and pasted into the middle of a
+    transparent canvas. The wide tile wants a logo in the middle of it, not a
+    stretched one: a page that is twice as wide as it is tall is not this page.
+    """
+    rows = render(art)
+    left = (width - art) // 2
+    top = (height - art) // 2
+    blank = bytes(width * 4)
+    canvas = []
+    for y in range(height):
+        source = y - top
+        if 0 <= source < art:
+            canvas.append(b'\x00' * (left * 4) + rows[source]
+                          + b'\x00' * ((width - left - art) * 4))
+        else:
+            canvas.append(blank)
+    return canvas
+
+
 def main():
-    frames = [(size, png(size)) for size in SIZES]
+    frames = [(size, png(render(size), size, size)) for size in SIZES]
 
     directory = struct.pack('<HHH', 0, 1, len(frames))
     offset = len(directory) + 16 * len(frames)
@@ -163,6 +201,17 @@ def main():
     print('wrote %s (%d bytes, %s)'
           % (os.path.relpath(OUTPUT, ROOT), os.path.getsize(OUTPUT),
              ', '.join(str(size) for size in SIZES)))
+
+    os.makedirs(ASSETS, exist_ok=True)
+    for name, width, height in TILES:
+        art = min(width, height)
+        data = png(centred(width, height, art) if width != height else render(art),
+                   width, height)
+        path = os.path.join(ASSETS, name)
+        with open(path, 'wb') as handle:
+            handle.write(data)
+        print('wrote %s (%d bytes, %dx%d)'
+              % (os.path.relpath(path, ROOT), len(data), width, height))
     return 0
 
 

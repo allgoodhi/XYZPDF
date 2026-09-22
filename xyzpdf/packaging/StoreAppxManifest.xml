@@ -45,7 +45,9 @@
   </Resources>
 
   <Applications>
-    <Application Id="XYZPDF" Executable="xyzpdf.exe" EntryPoint="Windows.FullTrustApplication">
+    <!-- bin\ is where the install step puts the executable; see the note in
+         AppxManifest.xml, which the two have to agree with. -->
+    <Application Id="XYZPDF" Executable="bin\xyzpdf.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="XYZPDF"
         Description="Windows PDF 阅读器"

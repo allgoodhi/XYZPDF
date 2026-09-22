@@ -17,6 +17,12 @@
   M4, and each of them has to agree with what the program does at startup. See
   src/windows/shellintegration.cpp for the registry half.
 
+  Before any of them is added, read docs/store-submission.md section 3.2: the
+  program already removes its own registry entries when it detects an installed
+  package, so a package that declares nothing takes the menu away and gives
+  nothing back. That is why the associations have to land with the package, not
+  after it.
+
   (No double hyphens anywhere in these comments: an XML comment may not contain
   two in a row, and a reader refuses the whole file when it does. That is
   exactly what this file did on its first build, which the version test caught.)
@@ -56,7 +62,11 @@
   </Resources>
 
   <Applications>
-    <Application Id="XYZPDF" Executable="xyzpdf.exe" EntryPoint="Windows.FullTrustApplication">
+    <!-- bin\ because that is where the install step puts the executable, which
+         is where packaging/build-package.ps1 stages the package from. A path
+         here that disagrees with the layout is a pack failure about a missing
+         file, which the script checks for before calling makeappx. -->
+    <Application Id="XYZPDF" Executable="bin\xyzpdf.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="XYZPDF"
         Description="Windows PDF 阅读器"

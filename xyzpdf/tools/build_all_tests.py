@@ -55,10 +55,12 @@ NOT_A_TEST = ('install', 'bench', 'verify', 'probe')
 # over quietly -- passing over quietly is how XYZip's two shell tests came to be
 # skipped for months.
 ARGUMENTS_FOR = {
-    # The preview probe handler is loaded from the DLL rather than linked, so it
-    # has to be told where that landed. Relative to the build directory, which is
-    # also where the deployment put it.
+    # The shell handlers are loaded from a DLL rather than linked, so they have to
+    # be told where it landed. Relative to the build directory, which is also where
+    # the deployment put it.
     'xyzpdf_previewhandler_smoke': ('xyzpdfpreview.dll',),
+    'xyzpdf_thumbnailprovider_smoke': ('xyzpdfthumbnail.dll',),
+    'xyzpdf_shellverb_smoke': ('xyzpdfshell.dll',),
 }
 
 # Where Qt is when the build directory does not know yet. Overridable with

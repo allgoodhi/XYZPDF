@@ -711,6 +711,28 @@ if(XYZPDF_BUILD_PREVIEWHANDLER_SMOKE AND WIN32)
     xyzpdf_add_test(previewhandler_smoke LIBRARIES ole32)
 endif()
 
+# The thumbnail provider, driven the same way and for the same reason: it is a DLL
+# whose only caller is a shell that cannot be instrumented from here.
+#
+# What this one pins down that the preview test cannot: the bitmap comes back at a
+# size that fits the requested box with the page's aspect kept, and its pixels are
+# mostly white with ink in them. A provider that returns a black square, or a
+# stretched one, or nothing at all, passes a compile and fails a folder.
+option(XYZPDF_BUILD_THUMBNAILPROVIDER_SMOKE "Build the thumbnail provider smoke test" OFF)
+if(XYZPDF_BUILD_THUMBNAILPROVIDER_SMOKE AND WIN32)
+    xyzpdf_add_test(thumbnailprovider_smoke LIBRARIES ole32 gdi32)
+endif()
+
+# The context menu verb, both halves: the command line building is compiled in and
+# called, and the COM object is loaded from the DLL and asked the eight questions
+# the shell asks.
+option(XYZPDF_BUILD_SHELLVERB_SMOKE "Build the shell verb smoke test" OFF)
+if(XYZPDF_BUILD_SHELLVERB_SMOKE AND WIN32)
+    xyzpdf_add_test(shellverb_smoke
+        SOURCES src/windows/shellverb.cpp
+        LIBRARIES ole32 shell32)
+endif()
+
 # ---------------------------------------------------------------------------
 # Measuring
 # ---------------------------------------------------------------------------
@@ -774,7 +796,7 @@ if(WIN32)
         Qt6::Core Qt6::Gui Qt6::Pdf
         ole32 shell32 user32 gdi32 delayimp)
     target_compile_definitions(xyzpdfpreview PRIVATE QT_NO_VERSION_TAGGING
-                                                    XYZPDF_PREVIEW_HANDLER)
+                                                    XYZPDF_SHELL_HANDLER)
     # Every library that is ours rather than Windows', because the loader looks
     # beside the executable and DllHost.exe lives in System32. The list is what
     # "dumpbin /nologo /dependents xyzpdfpreview.dll" reports minus the system
@@ -787,6 +809,57 @@ if(WIN32)
     set_target_properties(xyzpdfpreview PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     install(TARGETS xyzpdfpreview
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+    # The thumbnail provider: what a PDF looks like in Explorer's icon views.
+    #
+    # Its own DLL because that is the layout docs/PLAN.md §3.3 prescribes, and
+    # because COM gives each surrogate CLSID its own DllHost process -- the two are
+    # never in the same process whatever the file layout, so splitting them costs
+    # nothing but the three document sources below, which is the price of the
+    # seam being the only place Qt PDF is named.
+    #
+    # The delay-load options and QT_NO_VERSION_TAGGING are the same argument as the
+    # one recorded on the target above; previewdependencies.cpp is compiled into
+    # both, and is the only thing in either handler that is shared as source.
+    add_library(xyzpdfthumbnail SHARED
+        src/windows/thumbnailprovider.cpp
+        src/windows/previewdependencies.h
+        src/windows/previewdependencies.cpp
+        src/windows/thumbnailprovider.def
+        src/document/qtpdfbackend.cpp
+        src/document/outline.cpp
+        src/document/pagemetrics.cpp)
+    target_link_libraries(xyzpdfthumbnail PRIVATE
+        Qt6::Core Qt6::Gui Qt6::Pdf
+        ole32 gdi32 delayimp)
+    target_compile_definitions(xyzpdfthumbnail PRIVATE QT_NO_VERSION_TAGGING
+                                                       XYZPDF_SHELL_HANDLER)
+    target_link_options(xyzpdfthumbnail PRIVATE
+        /DELAYLOAD:Qt6Core.dll
+        /DELAYLOAD:Qt6Gui.dll
+        /DELAYLOAD:Qt6Pdf.dll)
+    set_target_properties(xyzpdfthumbnail PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    install(TARGETS xyzpdfthumbnail
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+    # The context menu verb: the row that says 用 XYZPDF 打开.
+    #
+    # No Qt, and deliberately so. The other two handlers read a PDF and so carry a
+    # renderer; this one reads a file extension and starts a process, and it is
+    # activated on somebody's right-click, where loading Qt would be the cost of a
+    # menu opening. That is why it is a third DLL rather than a class inside the
+    # preview one, and why nothing below mentions delay loading.
+    add_library(xyzpdfshell SHARED
+        src/windows/shellcommand.cpp
+        src/windows/shellverb.h
+        src/windows/shellverb.cpp
+        src/windows/shellcommand.def)
+    target_link_libraries(xyzpdfshell PRIVATE ole32 shell32)
+    set_target_properties(xyzpdfshell PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    install(TARGETS xyzpdfshell
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 

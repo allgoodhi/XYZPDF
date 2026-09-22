@@ -3,7 +3,7 @@
 #include <QPdfBookmarkModel>
 #include <QPdfDocument>
 #include <QPdfDocumentRenderOptions>
-#ifndef XYZPDF_PREVIEW_HANDLER
+#ifndef XYZPDF_SHELL_HANDLER
 #include <QPdfLink>
 #include <QPdfLinkModel>
 #endif
@@ -516,14 +516,15 @@ Outline QtPdfBackend::outline() const
 
 QVector<Link> QtPdfBackend::links(int page) const
 {
-#ifdef XYZPDF_PREVIEW_HANDLER
-    // Built out of the preview pane's copy of this file, and only there.
+#ifdef XYZPDF_SHELL_HANDLER
+    // Built out of the shell handlers' copy of this file -- the preview pane and
+    // the thumbnail icon -- and only there.
     //
     // QPdfLink's metatype is an imported *data* symbol, and a data symbol cannot
-    // be delay-loaded, which is the one thing that keeps this DLL loadable inside
-    // DllHost -- see the note on the xyzpdfpreview target in CMakeLists.txt. The
-    // pane draws a page and has nothing to click, so what is left out is a
-    // capability the caller cannot use rather than one it expects.
+    // be delay-loaded, which is the one thing that keeps those DLLs loadable
+    // inside DllHost -- see the note on the xyzpdfpreview target in
+    // CMakeLists.txt. A handler draws a page and has nothing to click, so what is
+    // left out is a capability the caller cannot use rather than one it expects.
     Q_UNUSED(page)
     return {};
 #else

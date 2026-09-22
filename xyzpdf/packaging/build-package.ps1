@@ -15,10 +15,14 @@
     precisely so that no one can bump a number in two places and have them
     disagree. Stamping happens on the copy inside the staging directory.
 
-    The manifest names four tile images and the executable. makeappx reports a
-    missing file as a pack failure with a message about the layout, which is
+    The manifest names the executable, four tile images and the three shell
+    handler DLLs (preview pane, thumbnail, context menu verb). makeappx reports
+    a missing file as a pack failure with a message about the layout, which is
     harder to read than the plain "the manifest names X, X is not there" that
-    step 3 below prints, so the check is done before packing.
+    step 3 below prints, so the check is done before packing. The DLLs count as
+    much as the pictures do: a handler that is named in the manifest but absent
+    from the package is not a pack failure anyone would notice -- the preview
+    pane just says "no preview", and that reads like a bug in the handler.
 
 .EXAMPLE
     powershell -File packaging/build-package.ps1
@@ -120,7 +124,7 @@ foreach ($node in $manifest.GetElementsByTagName('*')) {
     $values = @($node.Attributes | ForEach-Object { $_.Value })
     if ($node.LocalName -eq 'Logo') { $values += $node.InnerText }
     foreach ($value in $values) {
-        if ($value -match '^[A-Za-z0-9_\-\\.]+\.(exe|png|ico|jpg)$' -and $declared -notcontains $value) {
+        if ($value -match '^[A-Za-z0-9_\-\\.]+\.(exe|png|ico|jpg|dll)$' -and $declared -notcontains $value) {
             $declared += $value
         }
     }

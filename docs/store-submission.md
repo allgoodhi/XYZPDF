@@ -14,20 +14,24 @@ M4 的最后一格。这份文件不是模板，也不是商店文档的摘要 �
 
 ```
 python tools/makeappicon.py                                          # 图标 + 四张 tile
-python tools/build_all_tests.py                                      # 23 项目标，21 通过
+python tools/build_all_tests.py                                      # 26 项目标，24 通过
 powershell -File packaging/build-package.ps1                         # 出包
 ```
 
-结果：`build-local-release/package/XYZPDF_0.1.0.0_x64.msix`，26.5 MB，
+结果：`build-local-release/package/XYZPDF_0.1.0.0_x64.msix`，26.6 MB，
 `makeappx pack` 报 `Package creation succeeded`。
 
 打包脚本不信任自己盖的版本号，而是把清单从 `.msix`（就是个 zip）里**读回来**核对：
-`the package's own manifest says version 0.1.0.0`。清单声明的 5 个文件（exe 与四张图）
-也逐个确认在包里 —— `makeappx` 遇到缺文件只报一句布局不对，看不出缺哪个。
+`the package's own manifest says version 0.1.0.0`。清单声明的 8 个文件（exe、四张图、
+三个外壳处理器的 DLL）也逐个确认在包里 —— `makeappx` 遇到缺文件只报一句布局不对，
+看不出缺哪个。DLL 也要算进来：清单里写着、包里却没有，是一个谁都不会注意到的出包
+结果，预览窗格只会说"没有预览"，看起来像处理器自己的 bug。这一条在 2026-09-22 加上
+三个处理器之前并不成立 —— 脚本只认 `.exe/.png/.ico/.jpg`，那天它报的是 5 个。
 
 工具的位置值得记一下：`makeappx.exe` 与 `signtool.exe` 在
 `E:\Windows Kits\10\App Certification Kit\`，**不在 PATH 上**，脚本按名字找它。
-同一目录里还有 `appcertui.exe`，也就是本机可以跑商店认证测试（见 §4）。
+同一目录里还有 `appcert.exe` 与 `appcertui.exe`，即商店认证测试的工具 —— 工具在，
+但跑不了那么便宜：它要提权，细节见 §6。
 
 ### 1.1 装上也验过了（2026-09-22，开发人员模式打开之后）
 
@@ -90,12 +94,34 @@ bug 报上来，所以让包赢。
 | `.pdf\OpenWithProgids` 里的 `xyzpdf.Document` | 换成 `AppX…` 一项，实测在 §1.1 |
 | `xyzpdf.Document` 这个 ProgID（图标与命令都在它下面） | 由包的 `FileTypeAssociation` 与 `ApplicationIcon` 承担 |
 | 成为"默认应用"候选 | **多了**：注册表那套从来没打算抢默认（见 284-286 行的注释），包可以 |
-| `HKCU\Software\Classes\xyzpdf\shell\0001_open`，即右键菜单里那条"用 XYZPDF 打开"（`Position=Top`、`AppliesTo` 限定 `*.pdf`） | **丢了**：包里没有替代 |
+| `HKCU\Software\Classes\xyzpdf\shell\0001_open`，即右键菜单里那条"用 XYZPDF 打开"（`Position=Top`、`AppliesTo` 限定 `*.pdf`） | 一度**丢了**，现在由 §3.3 那个 `IExplorerCommand` 补回 |
 
-丢的那一项需要一个 `IExplorerCommand` 处理器作为 DLL 打进包（XYZip 就是这么做的：
-`src/shell/xyzipshell.cpp`，632 行，清单里用 `com:SurrogateServer` 注册，没有注册表回退）。
-在那之前，"装了包"对用户的意思就是：**打开方式里还在、图标还在、能设成默认了，
-但右键少了一项**。这句要说在前面，别等用户报上来。
+### 3.3 右键那条已经补回来：包里带一个 IExplorerCommand
+
+丢的那一项在 2026-09-22 补上了：`src/windows/shellcommand.cpp`（COM 外壳）加
+`src/windows/shellverb.{h,cpp}`（判断与命令行，不带 COM，所以能直接编进测试里调用），
+打成 `bin\xyzpdfshell.dll`，清单里三处一起声明 —— `com:SurrogateServer` 给出类，
+`desktop4:Extension Category="windows.fileExplorerContextMenus"` 里的
+`desktop5:ItemType Type=".pdf"` 给出"在哪些文件上出现"，`desktop5:Verb Id="xyzpdfopen"`
+把两者连起来。
+
+两条与 XYZip 不同的决定，都写在了文件头：
+
+- **这个 DLL 不带 Qt**，因此也不需要 `previewdependencies.cpp` 那个 delay-load 钩子。
+  它不读文档，只看扩展名然后起一个进程；在人家右键的那一下里加载 Qt 是菜单变慢的
+  成本。这也是它单独成一个 DLL、而不是塞进 `xyzpdfpreview.dll` 的原因。
+- **只有一个动词，不是子菜单**：`GetFlags` 回 `ECF_DEFAULT`，`EnumSubCommands` 回
+  `E_NOTIMPL`。将来要加第二项（导出为图片之类）才需要 `IObjectWithSelection` 把选中项
+  往下传给子命令。
+
+非 PDF 的选择是**隐藏**而不是灰掉：`GetState` 对混合选择一律回 `ECS_HIDDEN`，因为灰掉
+的行是一个没有答案的问题 —— 外壳这里不给 tooltip 的位置，而 `GetToolTip` 明确回
+`E_NOTIMPL`（回空串和回"没有"是两件事）。
+
+实测（2026-09-22，装包并注册之后）：右键一个 `.pdf`，主菜单里出现"用 XYZPDF 打开"，
+点了把选中的都开成标签；右键非 PDF 时那一行不出现。语言取
+`GetUserDefaultUILanguage()`，中文系统是"用 XYZPDF 打开"，其余是 "Open with XYZPDF"
+—— 这个 DLL 没有 Qt，`tr()` 不存在，一种新语言要在这里加一行而不是加进 `.ts`。
 
 清单里那段注释说的是同一件事，两边不要只改一处。
 
@@ -109,7 +135,7 @@ bug 报上来，所以让包赢。
   第三方声明页已经在"关于"里（`src/ui/thirdpartydialog.cpp`）。
 - **年龄分级/内容声明**：无用户生成内容、无网络交互入口，填最低档。
 
-## 5. 预览处理器：路由验过了，现在跑的是真实现
+## 5. 包里的外壳处理器：路由怎么验的、预览窗格、缩略图
 
 XYZip 有完整参考（`H:\test\XYZip\xyzip\src\shell\xyzippreview.cpp`，1865 行，含
 delay-load 钩子与 DllHost 的坑位注释），**它只靠包身份注册** —— `com:SurrogateServer`
@@ -162,6 +188,38 @@ Get-Process DllHost | ForEach-Object { $_.Modules } |
 肉眼也有一条可辨的：标题行的 `· 共 N 页` 与往下滚的多页排版是我们自己的，页面上没有别家
 会加的水印。
 
+**这条取证方法的边界**：代理进程是用完就退的（`DllCanUnloadNow` 说可以退，宿主就真的退），
+所以采样要赶在用之前。2026-09-22 再查一次时只剩预览那个宿主还活着，缩略图与右键的已经
+退了 —— 那不是"没生效"的证据，只是没在跑。那两样的凭据是另外的：门禁用例把 DLL 当宿主
+一样加载并跑一遍外壳的调用序列（`tests/thumbnailprovider_smoke.cpp`、
+`tests/shellverb_smoke.cpp`），生效与否看人眼：图标视图里是第一页、右键菜单里有那一行。
+
+### 5.1 缩略图处理器：包内注册是 schema 允许的，且必须是代理
+
+`IThumbnailProvider` 在 Windows SDK 的 `thumbcache.h` 里（不在 `shobjidl_core.h`，
+按预览处理器那次包含会找不到），IID `{e357fccd-a995-4576-b01f-234630154e96}`，
+一个方法：`GetThumbnail(UINT cx, HBITMAP*, WTS_ALPHATYPE*)`。
+
+包内怎么声明，是查 SDK 自带的 schema 而不是查文档得到的：
+`FoundationManifestSchema.xsd` 里 `desktop2:ThumbnailHandler` 的 keyref 指向
+`ComServer_SurrogateServer_Class_IdKey` —— 比预览处理器那条（`ComServer_Class_IdKey`，
+代理与 exe 服务器都算）**更严**，只认 `com:SurrogateServer` 下的类。而打包用的
+`com:ComServer` 里根本没有"进程内类"这个元素（只有 SurrogateServer / ExeServer /
+TreatAsClass），所以包里的缩略图处理器必然跑在 DllHost 里，跟预览窗格一样要
+delay-load。位置在 `uap:FileTypeAssociation` 里面，紧挨着 `DesktopPreviewHandler`
+（`UapManifestSchema.xsd:188-189`）。
+
+实现是 `src/windows/thumbnailprovider.cpp`，走同一条 `Document` 接缝。两处决定：
+
+- **超采样只给 2 倍**，不是预览窗格那个 3 倍：缩略图最大也就 256 像素，而一个文件夹
+  打开时是一次要几十张，成本要算。
+- **打不开就不给图**（回 `E_FAIL`、`*phbmp` 置空），让外壳退回文件图标。回一张白图
+  看着像"这个文档是空的"，那是假答案。
+
+实测：图标视图/大图标下 PDF 显示第一页。注意外壳有它自己的缩略图缓存
+（`%LOCALAppData%\Microsoft\Windows\Explorer\thumbcache_*.db`），改过处理器之后旧图
+可能还在，先换文件夹或清缓存再看。
+
 **当前机器状态**：`.pdf` 的默认程序已改成 XYZPDF，WPS 的预览被关掉了。撤掉：设置里把
 `.pdf` 默认改回 WPS，或 `Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage`。
 
@@ -175,10 +233,19 @@ Get-Process DllHost | ForEach-Object { $_.Modules } |
   真的开起来"没有观察过。要改默认只能由人在设置里点 —— Windows 用只有它自己能算出的
   哈希保护默认值，程序自己去写就是恶意软件的做法（`shellintegration.cpp:284` 那段
   注释说的就是这件事）。
-- **商店认证测试**：`appcertui.exe` 在，包也注册了，但没跑过。
+- **商店认证测试（WACK）**：工具在（`appcert.exe` 与 `appcertui.exe`，就是 §1 说的那个
+  不在 PATH 上的目录），包也注册了，但一次都没跑完。拦路的是权限不是配置：非提权的
+  PowerShell 里连 `appcert.exe /?` 都启动不了，`Start-Process` 回"此操作需要提升"（Git
+  Bash 更干脆，一句 `Permission denied` —— 它的清单里写着 `requireAdministrator`）。
+  既然参数表只能在管理员 shell 里读到，这里就不抄一份网上来的命令行充作已验证；要跑的
+  人请先在提权窗口里让 `appcert.exe` 自己吐一次用法，按这一份的参数来。
+- **`makeappx` 没有静态校验可当替身**：本想拿 `makeappx validate` 顶一下 WACK，这个版本
+  （10.0.26100.8249）没有 `validate` 这个子命令，只回一屏 usage。所以包结构的校验目前
+  就到 `makeappx pack` 自己那一步，加上打包脚本从 `.msix` 里把清单读回来核对（§1）。
 
 已经验过、别再当未知的：包内 COM 服务器在松散注册下会被路由（§5）；包能启动
-（§1.1）；`.pdf` 关联登记进了外壳（§1.1）。
+（§1.1）；`.pdf` 关联登记进了外壳（§1.1）；三个处理器的 CLSID 在装好之后各自指向
+自己的 DLL（§7 末尾那条查询）。
 
 ## 7. 命令
 
@@ -201,6 +268,42 @@ Get-StartApps | Where-Object Name -match XYZPDF
 # 撤掉
 Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage
 
-# 认证测试（装完之后）
-& 'E:\Windows Kits\10\App Certification Kit\appcertui.exe'
+# 认证测试（装完之后）。appcert 只能提权跑，见 §6 —— 从当前窗口拉起：
+Start-Process 'E:\Windows Kits\10\App Certification Kit\appcertui.exe' -Verb RunAs
 ```
+
+### 7.1 三个处理器：哪个 CLSID 在哪个 DLL 里
+
+一个 CLSID 写错不会报错，只会让外壳"没有预览""没有缩略图""菜单里没那一行"，而三处
+都要一致（源文件里一份、清单里两处）。三张对照：
+
+| 生效于 | CLSID | 声明在 | DLL |
+| --- | --- | --- | --- |
+| 预览窗格 | `12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7` | `desktop2:DesktopPreviewHandler` | `bin\xyzpdfpreview.dll` |
+| 图标视图缩略图 | `4032B809-B50E-4F0A-AFC1-D300803A81CE` | `desktop2:ThumbnailHandler` | `bin\xyzpdfthumbnail.dll` |
+| 右键那一行 | `8AFE6540-7E46-4349-BE06-ECD418310E42` | `desktop5:Verb Id="xyzpdfopen"` | `bin\xyzpdfshell.dll` |
+
+查"装好之后外壳实际收到了什么"，读的是注册后的那份清单，不是仓库里的：
+
+```powershell
+$loc = (Get-AppxPackage -Name allgoodhi.XYZPDF).InstallLocation
+[xml]$m = Get-Content (Join-Path $loc 'AppxManifest.xml')
+foreach ($n in $m.GetElementsByTagName('com:Class')) {
+    'class  {0}  {1}' -f $n.GetAttribute('Id'), $n.GetAttribute('Path')
+}
+foreach ($t in 'desktop2:DesktopPreviewHandler', 'desktop2:ThumbnailHandler', 'desktop5:Verb') {
+    foreach ($n in $m.GetElementsByTagName($t)) { 'ref    {0}  {1}' -f $t, $n.GetAttribute('Clsid') }
+}
+```
+
+2026-09-22 实测（六行，三个 class 对上三个引用，没有孤儿）：
+
+```
+class  12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7  bin\xyzpdfpreview.dll
+class  4032B809-B50E-4F0A-AFC1-D300803A81CE  bin\xyzpdfthumbnail.dll
+class  8AFE6540-7E46-4349-BE06-ECD418310E42  bin\xyzpdfshell.dll
+ref    desktop2:DesktopPreviewHandler  12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7
+ref    desktop2:ThumbnailHandler  4032B809-B50E-4F0A-AFC1-D300803A81CE
+ref    desktop5:Verb  8AFE6540-7E46-4349-BE06-ECD418310E42
+```
+

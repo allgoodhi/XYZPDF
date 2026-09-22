@@ -1,0 +1,4 @@
+LIBRARY xyzpdfthumbnail
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

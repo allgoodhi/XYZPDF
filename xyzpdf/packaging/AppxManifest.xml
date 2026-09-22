@@ -97,27 +97,28 @@
             <uap:SupportedFileTypes>
               <uap:FileType>.pdf</uap:FileType>
             </uap:SupportedFileTypes>
-            <!-- The same CLSID compiled into src/windows/previewprobe.cpp. This
+            <!-- The same CLSID compiled into src/windows/previewhandler.cpp. This
                  is what points the preview pane at the handler for this file
                  type; the server itself is declared below. -->
             <desktop2:DesktopPreviewHandler Clsid="12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7" />
           </uap:FileTypeAssociation>
         </uap:Extension>
         <!--
-          The COM server behind the probe. Explorer (or dllhost, which is what
-          usually hosts it) loads bin\xyzpdfpreviewprobe.dll out of the package
+          The COM server behind the preview pane. Explorer (or dllhost, which is
+          what actually hosts it) loads bin\xyzpdfpreview.dll out of the package
           and asks this CLSID for an IPreviewHandler.
 
-          It is a probe, not the feature: the DLL draws a dark rectangle and the
-          facts about the process it ended up inside. Whether it is reached at
-          all when the package is registered loosely from a directory is the
-          question, and docs/store-submission.md section 5 has the answer.
+          That this works at all with the package registered loosely from a
+          directory was measured, not assumed: docs/store-submission.md section 5
+          records the probe that measured it, and the two facts that came with it:
+          the host is DllHost, and the DLL's own libraries have to be delay-loaded
+          because the loader looks beside System32.
         -->
         <com:Extension Category="windows.comServer">
           <com:ComServer>
-            <com:SurrogateServer DisplayName="XYZPDF preview probe">
+            <com:SurrogateServer DisplayName="XYZPDF 预览">
               <com:Class Id="12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7"
-                         Path="bin\xyzpdfpreviewprobe.dll"
+                         Path="bin\xyzpdfpreview.dll"
                          ThreadingModel="STA" />
             </com:SurrogateServer>
           </com:ComServer>

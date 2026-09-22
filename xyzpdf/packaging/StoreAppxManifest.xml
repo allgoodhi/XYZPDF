@@ -73,14 +73,14 @@
             <desktop2:DesktopPreviewHandler Clsid="12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7" />
           </uap:FileTypeAssociation>
         </uap:Extension>
-        <!-- The preview probe, declared the same way as in AppxManifest.xml;
-             the two have to agree or the store package would ship a manifest
-             promising an extension the local one does not have. -->
+        <!-- The preview handler, declared the same way as in AppxManifest.xml;
+             the two have to agree. docs/store-submission.md section 5 records how
+             it was established that the shell routes this at all. -->
         <com:Extension Category="windows.comServer">
           <com:ComServer>
-            <com:SurrogateServer DisplayName="XYZPDF preview probe">
+            <com:SurrogateServer DisplayName="XYZPDF 预览">
               <com:Class Id="12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7"
-                         Path="bin\xyzpdfpreviewprobe.dll"
+                         Path="bin\xyzpdfpreview.dll"
                          ThreadingModel="STA" />
             </com:SurrogateServer>
           </com:ComServer>

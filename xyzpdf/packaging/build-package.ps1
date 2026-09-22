@@ -69,7 +69,11 @@ if (Test-Path $StageRoot) {
             break
         } catch {
             if ($attempt -eq 10) {
-                throw "$StageRoot is still held after 10 tries. Close whatever reads it (an Explorer window, a virus scan) and run again."
+                # The usual reason is not another program reading the directory: it
+                # is that the package registered from it is still installed, which
+                # keeps the layout in use -- DllHost has the handler mapped. So the
+                # message says the two words that actually help.
+                throw "$StageRoot is still held after 10 tries. If a package registered from it is installed, that is the holder: Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage, then run this again."
             }
             Start-Sleep -Milliseconds 500
         }

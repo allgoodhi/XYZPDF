@@ -109,12 +109,11 @@ bug 报上来，所以让包赢。
   第三方声明页已经在"关于"里（`src/ui/thirdpartydialog.cpp`）。
 - **年龄分级/内容声明**：无用户生成内容、无网络交互入口，填最低档。
 
-## 5. 预览处理器：那道关验过了，答案是可以
+## 5. 预览处理器：路由验过了，现在跑的是真实现
 
-预览窗格 `IPreviewHandler` 与缩略图 `IThumbnailProvider` 一行真正的实现都还没有。
 XYZip 有完整参考（`H:\test\XYZip\xyzip\src\shell\xyzippreview.cpp`，1865 行，含
 delay-load 钩子与 DllHost 的坑位注释），**它只靠包身份注册** —— `com:SurrogateServer`
-写在清单里，没有注册表回退路径。所以先前卡着的未知是：**松散注册的包，外壳收不收这个
+写在清单里，没有注册表回退路径。所以先卡着的未知是：**松散注册的包，外壳收不收这个
 COM 声明**。
 
 2026-09-22 用一个刻意不含任何依赖的探针（`src/windows/previewprobe.cpp`：一块色块、
@@ -136,11 +135,35 @@ integrity=Medium (0x00002000)
   真处理器的临时路径要按这个算；而它旁边的 Qt 与 PDFium 仍要像 XYZip 那样 delay-load，
   因为宿主进程的工作目录是 System32。
 
-探针回答的是路由问题，不是功能；真处理器落地时替换它，清单里的 CLSID 与 `Path` 两处一起改。
+探针回答的是路由问题，不是功能；同一天真处理器落地时把它替换掉了
+（`src/windows/previewhandler.cpp`，走 `Document` 接缝，和阅读器同一个后端；清单里的
+CLSID 与 `Path` 两处一起改）。
 
-**当前机器状态**：探针仍挂在 `.pdf` 上，而 `.pdf` 的默认程序也已经改成 XYZPDF，所以现在
-预览 PDF 看到的是那块探针色块。撤掉：设置里把 `.pdf` 默认改回 WPS，或
-`Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage`。
+**怎么确认窗格里看到的是我们的，而不是 WPS 的**：外壳把处理器装在哪个进程里，那个进程
+就映射着哪个 DLL，这是硬证据，不靠肉眼认图。开着预览窗格的时候：
+
+```powershell
+Get-Process DllHost | ForEach-Object { $_.Modules } |
+    Where-Object ModuleName -match 'xyzpdf|preview' |
+    Select-Object -ExpandProperty FileName
+```
+
+2026-09-22 实测：
+
+```
+...\build-local-release\package\app\bin\xyzpdfpreview.dll
+...\package\app\bin\Qt6Core.dll   Qt6Gui.dll   Qt6Pdf.dll   Qt6Network.dll
+```
+
+这一条同时正控了 delay-load 那个坑：Qt 的库全部来自包里的 `bin\`，而不是 System32 —— 钩子
+确实把加载器带对了地方（否则处理器根本进不来，窗格只会说"没有预览"）。XYZip 的
+`xyzippreview.dll` 在另一个 DllHost 进程里，两个处理器各占一个宿主，互不影响。
+
+肉眼也有一条可辨的：标题行的 `· 共 N 页` 与往下滚的多页排版是我们自己的，页面上没有别家
+会加的水印。
+
+**当前机器状态**：`.pdf` 的默认程序已改成 XYZPDF，WPS 的预览被关掉了。撤掉：设置里把
+`.pdf` 默认改回 WPS，或 `Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage`。
 
 ## 6. 本机没有验证的
 
@@ -166,6 +189,11 @@ python tools/build_all_tests.py
 powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build-package.ps1
 
 # 装上暂存布局（改机器：注册包身份，并清掉我们自己写的 HKCU 项）
+#
+# 注意顺序：松散注册的包会占住它注册的那个目录（DllHost 把里面的处理器映射着），
+# 所以重新打包之前必须先撤注册，否则脚本清不掉暂存目录会失败并说明原因。
+Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build-package.ps1
 Add-AppxPackage -Register build-local-release\package\app\AppxManifest.xml
 # 装完用真实 id 启动，id 从 Get-StartApps 读，别手抄
 Get-StartApps | Where-Object Name -match XYZPDF

@@ -744,30 +744,49 @@ endif()
 # Packaging
 # ---------------------------------------------------------------------------
 
-# The preview-handler probe, which is a question rather than a feature.
+# The preview handler: Explorer's pane, showing page 1 of a PDF.
 #
-# A preview handler is a COM server, and for an unpackaged program registering
-# one means writing HKLM keys as an administrator; the packaged way is to declare
-# it in the manifest and let the shell route it. Whether the shell routes it at
-# all when the package is only *loosely registered* from a directory is unknown,
-# and it decides whether the real handler can be built now or has to wait for a
-# signing certificate.
+# It is a DLL loaded into DllHost.exe by way of the com:SurrogateServer entry in
+# the package manifest, which is why it is here rather than inside xyzpdf.exe:
+# the pane has to work when the reader is not running.
 #
-# So this DLL carries no Qt, no PDFium and no common controls: it draws a dark
-# rectangle, the facts about the process it ended up inside, and appends one line
-# to %LOCALAPPDATA%\xyzpdf-preview-probe.log, which is the half that can be read
-# without a person looking at a screen. If it paints, the plumbing works.
+# It goes through the same Document seam as the reader, so a page cannot look one
+# way in the window and another way in the pane. That is three source files of the
+# document layer, which is the cost of the seam being the only place Qt PDF is
+# named -- and the proof that it is a usable seam, being a second consumer that
+# asked for no changes to it.
 #
-# Deliberately not behind an option: the package manifest names this file, so a
-# build without it produces a package that cannot register its own extension.
+# QT_NO_VERSION_TAGGING: Qt's version tag is an imported *data* symbol, and a data
+# symbol cannot be delay loaded -- with it, /DELAYLOAD:Qt6Core.dll is rejected
+# outright. The tag exists to produce a clearer message when a binary meets the
+# wrong Qt; this DLL loads the Qt that sits beside it, by full path, so there is
+# no wrong Qt for it to meet. See previewdependencies.cpp for why the full path.
 if(WIN32)
-    add_library(xyzpdfpreviewprobe SHARED
-        src/windows/previewprobe.cpp
-        src/windows/previewprobe.def)
-    target_link_libraries(xyzpdfpreviewprobe PRIVATE ole32 shell32 user32 gdi32)
-    set_target_properties(xyzpdfpreviewprobe PROPERTIES
+    add_library(xyzpdfpreview SHARED
+        src/windows/previewhandler.cpp
+        src/windows/previewdependencies.h
+        src/windows/previewdependencies.cpp
+        src/windows/previewhandler.def
+        src/document/qtpdfbackend.cpp
+        src/document/outline.cpp
+        src/document/pagemetrics.cpp)
+    target_link_libraries(xyzpdfpreview PRIVATE
+        Qt6::Core Qt6::Gui Qt6::Pdf
+        ole32 shell32 user32 gdi32 delayimp)
+    target_compile_definitions(xyzpdfpreview PRIVATE QT_NO_VERSION_TAGGING
+                                                    XYZPDF_PREVIEW_HANDLER)
+    # Every library that is ours rather than Windows', because the loader looks
+    # beside the executable and DllHost.exe lives in System32. The list is what
+    # "dumpbin /nologo /dependents xyzpdfpreview.dll" reports minus the system
+    # DLLs, and previewhandler_smoke loads the DLL with PATH restricted to
+    # System32 so that a missed entry fails here rather than in Explorer.
+    target_link_options(xyzpdfpreview PRIVATE
+        /DELAYLOAD:Qt6Core.dll
+        /DELAYLOAD:Qt6Gui.dll
+        /DELAYLOAD:Qt6Pdf.dll)
+    set_target_properties(xyzpdfpreview PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-    install(TARGETS xyzpdfpreviewprobe
+    install(TARGETS xyzpdfpreview
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 

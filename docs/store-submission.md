@@ -85,6 +85,30 @@ namespace 函数，context 是写死的字面量，与 `.ts` 里记的类名一�
 `qtpdfbackend.cpp` 拉进 moc，而它同时编进预览与缩略图两个代理 DLL —— 那正是
 `QPdfLink::staticMetaObject` 踩过的位置。理由已写进 `qtpdfbackend.cpp` 的注释。
 
+### 1.3 签了、真装进系统了、WACK 也真下判词了（同一天晚些）
+
+§1.1 那套是松散注册。这一回拿到自签测试证书，`.msix` 走的是**真安装**：
+
+```
+build-package.ps1 -Sign -Cert <指纹>     →  signtool verify /pa  rc=0
+Add-AppxPackage -Path <那个 .msix>       →  exit=0
+Get-AppxPackage  →  allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4
+                    InstallLocation=C:\Program Files\WindowsApps\…  Status=Ok  SignatureKind=Developer
+```
+
+| 事 | 结果 |
+| --- | --- |
+| `signtool sign` 签 `.msix` | 用 `CN=XYZPDF Test Signing` 那张：`0x8007000b`；换成 subject 就等于清单 `Publisher` 的 `CN=allgoodhi`：rc=0，一次过 |
+| `signtool verify /pa /v`（证书进了 `LocalMachine\TrustedPeople` 之后） | rc=0，签名与时间戳都验过 |
+| `Add-AppxPackage -Path`（已签名） | exit=0，装进 `WindowsApps`，`SignatureKind=Developer` |
+| WACK `-packagefullname`（已部署） | 33.3 秒跑完 24 条，exit=0，`OVERALL_RESULT=WARNING`，**22 PASS / 1 FAIL / 1 WARNING**，判词见 §8.6 |
+| `程序清单`（ProgramInventory）任务 | 成功 —— §8.2 那条"松散注册的包它看不见"由此反向坐实 |
+| 跑完之后包还在不在 | **不在了**：`appcert` 自己那个"部署/清理"任务收尾会把包撤掉，所以验完得重新 `Add-AppxPackage` |
+
+这台机器的当前状态因此和 §5 末尾那句不一样了：装着的是**签名并部署**的那份，不是松散注册。
+证书留在 `LocalMachine\TrustedPeople`（`CN=allgoodhi`，指纹 `221C6B38D487167AD5709C8AEBC64554714A0A83`），
+那是为了拿本地判词加的，不是提交用的。
+
 ## 2. 提交前必须换掉的：发布者身份
 
 清单写的是 `Publisher="CN=allgoodhi"`。这是自签占位，只够在本机装自己玩的包。
@@ -250,16 +274,16 @@ delay-load。位置在 `uap:FileTypeAssociation` 里面，紧挨着 `DesktopPrev
 
 说清楚，免得下文被当成已确认的事实。今天从"未验证"挪走的三条在 §1.1。
 
-- **签名**：没有代码签名证书，`-Sign` 这条路一次都没跑过；从 `.msix` 安装**必须**它
-  （`0x800B0100` / `0x80073D2C`，见 §1.1 的表）。
+- **代码签名证书**：本机自签那张已经走通（§1.3、§8.4），但那只能证明"这条流水线没有别的
+  坑"。商店要的是买来的 EV/公司身份证书，那一栏还是空的，而且 §2 说的发布者身份也得跟着换。
 - **双击 `.pdf` 会开在谁手里**：本机默认已经改成 XYZPDF（为了验预览那条），但"双击
   真的开起来"没有观察过。要改默认只能由人在设置里点 —— Windows 用只有它自己能算出的
   哈希保护默认值，程序自己去写就是恶意软件的做法（`shellintegration.cpp:284` 那段
   注释说的就是这件事）。
-- **商店认证测试（WACK）**：提权跑完了，见 §8。一句话结论：跑是跑得动，但它对我们这个
-  包**没下判词** —— 松散注册的包它在 `程序清单` 那一步就看不见，改从 `.msix` 入口进它
-  又明说"在不部署应用程序的运行情况下运行测试"，于是那 21 条 FAIL 是它自己拿不到路径。
-  要真判词得先把包装进系统，而装包要签名（上面第一条）。
+- **WACK 那一遍在 Partner Center 服务端会怎么说**：本机这遍是真判词了（包已签名、已部署，
+  见 §1.3 与 §8.6）—— `OVERALL_RESULT=WARNING`，22 PASS / 1 条可选 FAIL / 1 条 WARNING。
+  本机替不了服务端的：它跑的是同一套测试的哪一个版本、`#88 已阻止的可执行文件`（可选那条）
+  它认不认 full-trust 桌面应用的豁免，都只有提交之后才知道。
 - **`makeappx` 没有静态校验可当替身**：本想拿 `makeappx validate` 顶一下 WACK，这个版本
   （10.0.26100.8249）没有 `validate` 这个子命令，只回一屏 usage。所以包结构的校验目前
   就到 `makeappx pack` 自己那一步，加上打包脚本从 `.msix` 里把清单读回来核对（§1）。
@@ -286,6 +310,20 @@ Add-AppxPackage -Register build-local-release\package\app\AppxManifest.xml
 # 装完用真实 id 启动，id 从 Get-StartApps 读，别手抄
 Get-StartApps | Where-Object Name -match XYZPDF
 
+# 签名 + 真装进系统（改机器：往本机信任根里加一张测试证书）。坑见 §8.4。
+# 证书 subject 必须就是清单的 Publisher（CN=allgoodhi），否则 signtool 只回 0x8007000b。
+$c = New-SelfSignedCertificate -Type Custom -Subject 'CN=allgoodhi' -KeyUsage DigitalSignature `
+      -FriendlyName 'XYZPDF publisher match test' -CertStoreLocation 'Cert:\CurrentUser\My' `
+      -NotAfter (Get-Date).AddYears(3) `
+      -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3','2.5.29.19={text}')
+Export-Certificate -Cert $c -FilePath publisher-match.cer
+# 下面两行要在提权窗口里跑
+Import-Certificate -FilePath publisher-match.cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople'
+Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage   # 松散注册占着暂存目录
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build-package.ps1 -Sign -Cert $c.Thumbprint
+Add-AppxPackage -Path build-local-release\package\XYZPDF_0.1.0.0_x64.msix
+signtool verify /pa build-local-release\package\XYZPDF_0.1.0.0_x64.msix
+
 # 撤掉
 Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage
 
@@ -293,6 +331,10 @@ Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage
 Start-Process 'E:\Windows Kits\10\App Certification Kit\appcertui.exe' -Verb RunAs
 # 命令行版（同一个工具，跑完直接出 xml；参数含义与两条死路见 §8.1–§8.3）
 & 'E:\Windows Kits\10\App Certification Kit\appcert.exe' test -appxpackagepath build-local-release\package\XYZPDF_0.1.0.0_x64.msix -reportoutputpath build-local-release\wack.xml
+# 想要真判词就得给它已部署的包名（§8.6）；跑之前先 reset，否则它可能还在用上一轮的缓存
+& 'E:\Windows Kits\10\App Certification Kit\appcert.exe' reset
+& 'E:\Windows Kits\10\App Certification Kit\appcert.exe' test -packagefullname (Get-AppxPackage -Name allgoodhi.XYZPDF).PackageFullName -reportoutputpath build-local-release\wack-deployed.xml
+# 注意：appcert 跑完会自己把包撤掉，想继续验外壳就重新 Add-AppxPackage -Path
 ```
 
 ### 7.1 三个处理器：哪个 CLSID 在哪个 DLL 里
@@ -330,11 +372,13 @@ ref    desktop2:ThumbnailHandler  4032B809-B50E-4F0A-AFC1-D300803A81CE
 ref    desktop5:Verb  8AFE6540-7E46-4349-BE06-ECD418310E42
 ```
 
-## 8. WACK：跑完了，但它没给我们的包下判词
+## 8. WACK：两遍 —— 前一遍它没看见我们的包，后一遍是真判词
 
-2026-09-22 提权跑了好几轮（`appcert.exe`，kit 版本 10.0.26100.8249）。PLAN 里 M3 的验收线
-写着"WACK 通过"，**这一条今天没有达到**，而差的原因不在包上。写清楚，免得下一份文档
-把这 21 条 FAIL 抄成"清单有 21 处毛病"。
+2026-09-22 提权跑了好几轮（`appcert.exe`，kit 版本 10.0.26100.8249）。这一节分两层，别混着
+读：**§8.2、§8.3 是包还没签名、只能松散注册那一阵的记录**，那 21 条 FAIL 是工具自己拿不到
+路径，不是包的毛病；**§8.4 起是补上签名、真装进系统之后的**，那一遍才给出结论（§8.6，
+22 PASS / 1 可选 FAIL / 1 WARNING）。写清楚这两层的差别，正是为了下一份文档别把前一遍的
+FAIL 抄成"清单有 21 处毛病"，也别把后一遍那条 WARNING 当成缺了 DPI 声明。
 
 先说权限那关（§6 记的就是它）：`appcert.exe` 与 `appcertui.exe` 都要求提权，非提权的
 PowerShell 里连 `/?` 都启动不了（`Start-Process` 回"此操作需要提升"，Git Bash 一句
@@ -424,14 +468,67 @@ Qt 自己的进程启动路径，加上我们右键那一行为拉起阅读器�
 （full trust）Centennial 应用允许这些 API，商店里每个 Qt 应用都带这一串 —— 记下备查，
 今天不动它。
 
-### 8.4 要真判词，缺的还是签名
+### 8.4 签名这一步：`0x8007000b` 说的是"证书名字不对"，不是"格式不对"
 
 两条路走到同一个前提：**包得真的装进系统**（`-packagefullname` + 已部署），而不是松散注册。
-装 `.msix` 要签名，本机没有证书（§6 第一条）。SDK 这两件东西倒是都在
-`E:\Windows Kits\10\bin\10.0.26100.0\x64\`：`signtool.exe`、`MakeCert.exe`，也就是说"自签一张
-测试证书 → 塞进 `LocalMachine\TrustedPeople` → 签 `.msix` → `Add-AppxPackage` 装 → 重跑
-`-packagefullname`"这条路在这台机器上是走得通的。**没走过**，而且它动的是系统的信任根，
-得由人点头；商店提交要的还是真证书，自签那张只为在本地拿一份完整的 WACK 判词。
+装 `.msix` 要签名。这一段是补上签名时撞出来的，因为它的报错一路都在指错地方。
+
+自签一张能签包的开发证书，参数只能写到这个最小集：
+
+```powershell
+# -Provider / -KeyAlgorithm / -HashAlgorithm 任加一个就 0x80090017 (NTE_PROV_TYPE_NOT_DEF)
+$c = New-SelfSignedCertificate -Type Custom -Subject 'CN=allgoodhi' -KeyUsage DigitalSignature `
+      -FriendlyName 'XYZPDF publisher match test' -CertStoreLocation 'Cert:\CurrentUser\My' `
+      -NotAfter (Get-Date).AddYears(3) `
+      -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3','2.5.29.19={text}')
+# 导成 .cer，提权塞进本机计算机的"受信任的人"，装包与 verify /pa 才认
+Import-Certificate -FilePath publisher-match.cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople'
+```
+
+**`-Subject` 必须等于清单里的 `Publisher`。** 一开始那张写的是 `CN=XYZPDF Test Signing`，
+`signtool sign` 打在 `.msix` 上就是：
+
+```
+Done Adding Additional Store
+Error information: "Error: SignerSign() failed." (-2147024885/0x8007000b)
+SignTool Error: An unexpected internal error has occurred.
+```
+
+`0x8007000b` 是 `ERROR_BAD_FORMAT` —— "企图载入的程序格式不对"。它把注意力整个搬到"appx SIP
+装坏了 / 32 位 64 位搞混 / 包损坏"上去，而这三条**都逐一排除了**才找到真因：
+
+| 试过 / 排除 | 证据 |
+| --- | --- |
+| 不是包坏了 | 同一张证书签 `bin\xyzpdf.exe`：rc=0，`verify /pa` 也过 —— 证书与私钥本身没问题 |
+| 不是 `/o`（优化打包，会生成 block map） | 加 `/o` 与不加，出来的包**字节数一模一样**（27917453），签名同样失败 |
+| 不是扩展名 | 改名 `.appx` 再签：一样 `0x8007000b` |
+| 不是工具目录里那份 `appxsip.dll` 遮蔽了系统那份 | 把 `signtool.exe` 复制到一个干净目录（旁边没有 appxsip）再签：一样失败 |
+| 不是 32/64 位 | x64 与 x86 两份 `signtool.exe` 都试过，表现一致；`.zip` 扩展名则老实报"这个文件格式无法签名"，说明 `.msix` 那条路上 SIP **是**加载成功了的 |
+| 不是"SIP 没注册"（我一度这样记过） | 注册表键名是 **`CryptSIPDllCreateIndirectData`**，不是 `CryptSIPDllCreateIndirect`；按错名去查当然得 0 条，按真名查 appx/msix 六个回调全在（61 条，`AppxSip.dll`） |
+| **就是发布者名字** | 重新签一张 `-Subject 'CN=allgoodhi'`（与清单 `Publisher` 一致），同一个包：`Successfully signed`，rc=0，一次过 |
+
+`/fd SHA1` 那次还回了一个**不同**的错（`0x80091005`），进一步说明签名体内化在跑，只是它拒绝
+的不是格式。appx SIP 在写入签名前会拿证书 subject 与清单 `Publisher` 比对，不匹配就用一个
+与原因无关的 `ERROR_BAD_FORMAT` 失败。
+
+所以 `build-package.ps1` 现在自己先比一遍，把这句话摆在人面前（比较按前缀，不按全等：
+商店发的证书 subject 比清单里的 `CN=` 长，这是打包 API 自己的规则）：
+
+```
+the certificate subject is 'CN=XYZPDF Test Signing' but the package Publisher is 'CN=allgoodhi'.
+signtool would fail with a meaningless 0x8007000b. Either make the certificate with -Subject 'CN=allgoodhi'
+or pass -Publisher 'CN=XYZPDF Test Signing'.
+```
+
+同一天从 `-Sign` 这条路里还掉出来一个真 bug：脚本里 `$StageRoot` 是相对路径，而第 3、4 步用
+的是 .NET 调用（`manifest.Save`、`ZipFile::OpenRead`）—— .NET 解析相对路径看的是**进程**
+工作目录，不是 PowerShell 的位置。提权 `Start-Process` 起来的进程工作目录是
+`C:\Windows\System32`，于是清单被存去 `C:\Windows\System32\build-local-release\package\app`，
+报"未能找到路径的一部分"，而前三步全成功了，看着像清单坏了。现在 `StageRoot` 在拼任何子
+路径之前先绝对化。修法是从 `C:\Users\Public` 用相对 `-Build` 跑通整条流水线验出来的。
+
+自签那张只为在本地拿一份完整的 WACK 判词；商店提交要的还是真证书（§6）。它动的是系统的
+信任根，得由人点头 —— 这一次是点过了的，机器现状见 §1.3 末段。
 
 ### 8.5 报告怎么读
 
@@ -447,4 +544,66 @@ trace，`global_data.xml` 是它这一轮实际拿到的路径与包名，`TaskS
 ```powershell
 python -c "import xml.etree.ElementTree as ET; r=ET.parse('wack.xml').getroot(); print([ (t.attrib.get('INDEX'), t.find('RESULT').text) for t in r.iter('TEST') ])"
 ```
+
+### 8.6 包真装进系统之后：22 PASS / 1 可选 FAIL / 1 WARNING
+
+```powershell
+# 提权。签名并装好之后（§1.3），把已部署的那个包名交给它：
+& 'E:\Windows Kits\10\App Certification Kit\appcert.exe' test `
+    -packagefullname allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4 `
+    -reportoutputpath build-local-release\wack-deployed3.xml
+```
+
+33.3 秒，exit=0。`OVERALL_RESULT=WARNING`、`APP_TYPE=Centennial`、`VALIDATION_TYPE=CommandLine`、
+`PARTIAL_RUN=FALSE`、kit 10.0.26100.8249、`ReportGenerationTime 2026/9/22 17:02:37`。
+
+`appcert` 打出来的 24 个任务**全部"执行结果成功"** —— 与 §8.2 那一轮（`程序清单` 直接失败）
+是质的区别。逐条：
+
+| 结果 | 条数 | 编号 |
+| --- | --- | --- |
+| PASS | 22 | #2 #11 #31 #45 #46 #52 #53 #54 #55 #56 #57 #58 #61 #62 #63 #70 #77 #86 #87 #89 #90 #91 |
+| FAIL（`OPTIONAL=TRUE`，不拦提交） | 1 | #88 已阻止的可执行文件 |
+| WARNING | 1 | #92 DPIAwarenessValidation |
+
+**#88** 报的是"引用了进程启动 API"与"扫到了可疑字符串"两类：
+
+```
+bin\opengl32sw.dll / bin\Qt6Core.dll / plugins\platforms\qwindows.dll  → kernel32!CreateProcessW、shell32!ShellExecuteW / ShellExecuteExW
+bin\xyzpdfshell.dll                                                    → kernel32!CreateProcessW
+D3Dcompiler_47.dll / opengl32sw.dll / Qt6Core.dll / Qt6Gui.dll / Qt6Pdf.dll / qt_sv.qm  → 对 "cmd"/"Reg"/"CSI"/"CdB"/"reG" 的"不可执行引用"
+```
+
+第一类里属于我们自己的只有一处：右键那一条命令要用 `CreateProcessW` 把阅读器拉起来
+（§3.3 那个 `IExplorerCommand`）。其余是 Qt 自带的运行库，搬不掉。第二类连 `qt_sv.qm`（一份
+翻译文件）都被算进去了，说明它是按字节串扫的启发式，不是调用图。full-trust 桌面 Centennial
+应用允许这些 API，商店里每个 Qt 应用都带这一串 —— 而这一条是 `OPTIONAL=TRUE`，所以它没有把
+`OVERALL_RESULT` 拉到 FAIL。真要清楚知道答案，只有提交之后看 Partner Center 那一遍。
+
+**#92** 是唯一 `OPTIONAL=FALSE` 却只给 WARNING 的，而它两句话自己就打了架：
+
+```
+未能处理二进制文件 C:\Program Files\WindowsApps\…\bin\xyzpdf.exe。
+应用 allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4 不是 DPI 感知应用。
+```
+
+第一句是它的解析器读不了那个 exe，第二句是读不到之后的默认结论。而这一次不是拿暂存那份
+凑数 —— 直接对**已装进系统的那份** exe 抠内嵌清单：
+
+```powershell
+& 'E:\Windows Kits\10\bin\10.0.26100.0\x64\mt.exe' `
+  '-inputresource:C:\Program Files\WindowsApps\allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4\bin\xyzpdf.exe;#1' `
+  '-out:installed-manifest.xml'          # rc=0，普通权限也读得动 WindowsApps 里这个文件
+```
+
+出来的是 `dpiAware=true/pm`、`dpiAwareness=PerMonitorV2`、`longPathAware=true`。所以这条按
+"工具没读到"记，不按"我们没声明"记；它也没拦整体结果（`OVERALL_RESULT=WARNING` 而不是 FAIL）。
+
+还有一件只有跑了才知道的事：**`appcert` 收尾会把包撤掉**。它那个"在 IDE 方案中执行应用包
+部署/清理"任务在测试之后把注册清干净了，所以跑完 `Get-AppxPackage` 是空的 —— 想接着验预览
+窗格或右键，得再 `Add-AppxPackage -Path` 装一次。第二轮就是栽在这上面：脚本先 `reset` 再查
+包，直接 "not installed, stopping"。
+
+一句边界：这一遍证明的是"包在本机能签名安装、并且过了本机这套 kit"。它**不是**"WACK 通过
+= 商店会认证通过"，服务端那一遍我们没跑过（§6）。
 

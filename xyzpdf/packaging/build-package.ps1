@@ -27,6 +27,10 @@
 .EXAMPLE
     powershell -File packaging/build-package.ps1
     powershell -File packaging/build-package.ps1 -Sign -Cert 2A1B... -Install
+
+    -Sign wants a certificate whose subject is the manifest's Publisher, which for
+    a local test package means making it as -Subject 'CN=allgoodhi'; step 5 says
+    why that is not something signtool will tell you.
 #>
 [CmdletBinding()]
 param(
@@ -60,6 +64,14 @@ Write-Host "packing version $Version"
 # ---------------------------------------------------------------------------
 
 $StageRoot = if ($Out) { $Out } else { Join-Path $Build 'package' }
+# Make it absolute before anything joins onto it. Two of the consumers below are
+# .NET calls (manifest.Save, ZipFile::OpenRead) rather than cmdlets, and a .NET
+# call resolves a relative path against the *process* working directory, which is
+# not PowerShell's location: run this from an elevated Start-Process and the
+# staged manifest is saved to C:\Windows\System32\build-local-release\package\app,
+# failing as a "path not found" that names a directory nobody typed. Steps 1 to 3
+# all succeed first, so it looks like the manifest broke rather than the path.
+if (-not [IO.Path]::IsPathRooted($StageRoot)) { $StageRoot = Join-Path $Project $StageRoot }
 $Stage = Join-Path $StageRoot 'app'
 # The delete is retried because the previous run's makeappx can still be holding
 # a read on the staging tree when this one starts, and the raw error -- another
@@ -215,31 +227,74 @@ if ($Sign) {
     if (-not $Cert) { throw '-Sign needs -Cert with the thumbprint of a code-signing certificate' }
     $signtool = Find-KitTool 'signtool.exe'
     if (-not $signtool) { throw 'signtool.exe was not found' }
+
+    # The signing certificate has to be one whose subject is the manifest's
+    # Publisher, and that is worth checking here because signtool does not say
+    # so. What it says instead is "SignerSign() failed" with -2147024885 /
+    # 0x8007000b -- ERROR_BAD_FORMAT, "an attempt was made to load a program with
+    # an incorrect format" -- which reads as a broken appx SIP, a 32/64-bit mixup
+    # or a corrupt package. All three were chased on this machine, and the real
+    # cause only showed up when the same package was signed with a certificate
+    # minted as -Subject 'CN=allgoodhi': rc=0, first try. So a test certificate
+    # must carry the name the manifest declares, not a friendlier one.
+    #
+    # Compared as a prefix rather than for equality because that is the rule the
+    # packaging API uses: a certificate subject may carry more distinguished-name
+    # parts than the manifest names, and a Store-issued cert does exactly that.
+    $certObj = Get-ChildItem "Cert:\CurrentUser\My\$Cert" -ErrorAction SilentlyContinue
+    if (-not $certObj) { $certObj = Get-ChildItem "Cert:\LocalMachine\My\$Cert" -ErrorAction SilentlyContinue }
+    if (-not $certObj) { throw "there is no certificate $Cert in My, current user or machine" }
+    $publisher = $packed.Package.Identity.Publisher
+    if (-not $certObj.Subject.StartsWith($publisher, [StringComparison]::Ordinal)) {
+        throw ("the certificate subject is '$($certObj.Subject)' but the package Publisher is '$publisher'. " `
+               + 'signtool would fail with a meaningless 0x8007000b. Either make the certificate with ' `
+               + "-Subject '$publisher' or pass -Publisher '$($certObj.Subject)'.")
+    }
+
     & $signtool sign /fd SHA256 /sha1 $Cert /tr http://timestamp.digicert.com /td SHA256 $package
     if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
     Write-Host 'signed'
 }
 
 if ($Install) {
-    # Loose registration of the staged layout, not the .msix. Three ways this was
-    # found by failing rather than by reading:
-    #
-    #   * the .msix route refuses an unsigned package (0x800B0100) even with
-    #     developer mode on, and with -AllowUnsigned it goes one step further and
-    #     then refuses the publisher certificate (0x80073D2C), because
-    #     CN=allgoodhi is a self-signed name the machine does not trust;
-    #   * -Register takes the manifest of the unpacked directory and works;
-    #   * and it works only WITHOUT -DisableDevelopmentMode. Passing that flag
-    #     makes the registration fail as "the manifest is not located in a package
-    #     directory", which reads like a path problem and is not one.
-    #
-    # So this installs what is on disk, which is also what makes the source of a
-    # bug the file that was just built rather than a copy nobody can read.
-    Add-AppxPackage -Register (Join-Path $Stage 'AppxManifest.xml')
-    Write-Host "installed; launch it with: explorer.exe shell:AppsFolder\$($identity.Name)_<publisherhash>!XYZPDF"
-    Write-Host '          Get-StartApps shows the exact id once it is registered.'
+    if ($Sign) {
+        # A signed package goes in through its own path, because that is the only
+        # way to get a deployed package, which is what the certification tests
+        # need; the loose registration below cannot give it.
+        Add-AppxPackage -Path $package
+        Write-Host "installed from $package"
+    } else {
+        # Loose registration of the staged layout, not the .msix. Three ways this
+        # was found by failing rather than by reading:
+        #
+        #   * the .msix route refuses an unsigned package (0x800B0100) even with
+        #     developer mode on, and with -AllowUnsigned it goes one step further and
+        #     then refuses the publisher certificate (0x80073D2C), because
+        #     CN=allgoodhi is a self-signed name the machine does not trust;
+        #   * -Register takes the manifest of the unpacked directory and works;
+        #   * and it works only WITHOUT -DisableDevelopmentMode. Passing that flag
+        #     makes the registration fail as "the manifest is not located in a package
+        #     directory", which reads like a path problem and is not one.
+        #
+        # The .msix route does open up once there is a certificate whose subject is
+        # the manifest's Publisher and that certificate sits in
+        # LocalMachine\TrustedPeople -- which is what the -Sign branch above makes
+        # possible, and why it is the branch the certification tests need: a loosely
+        # registered layout is not a deployed package, and the tests can only see a
+        # deployed one.
+        #
+        # So this installs what is on disk, which is also what makes the source of a
+        # bug the file that was just built rather than a copy nobody can read.
+        Add-AppxPackage -Register (Join-Path $Stage 'AppxManifest.xml')
+        Write-Host "installed; launch it with: explorer.exe shell:AppsFolder\$($identity.Name)_<publisherhash>!XYZPDF"
+        Write-Host '          Get-StartApps shows the exact id once it is registered.'
+    }
 }
 
 Write-Host ''
 Write-Host "next: the package is $package"
-Write-Host '      it is not installed, and nothing about the system has changed.'
+if ($Install) {
+    Write-Host '      it is installed, so Settings and double-clicking a PDF now see it.'
+} else {
+    Write-Host '      it is not installed, and nothing about the system has changed.'
+}

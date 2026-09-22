@@ -56,12 +56,12 @@
         <translation>(no document)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1008"/>
+        <location filename="../../documenttab.cpp" line="1017"/>
         <source>打开链接</source>
         <translation>Open Link</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1009"/>
+        <location filename="../../documenttab.cpp" line="1018"/>
         <source>要在浏览器中打开这个地址：
 %1
 
@@ -72,40 +72,40 @@
 Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1034"/>
+        <location filename="../../documenttab.cpp" line="1043"/>
         <source>正在打印…</source>
         <translation>Printing…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1034"/>
-        <location filename="../../documenttab.cpp" line="1080"/>
+        <location filename="../../documenttab.cpp" line="1043"/>
+        <location filename="../../documenttab.cpp" line="1089"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1052"/>
+        <location filename="../../documenttab.cpp" line="1061"/>
         <source>打印</source>
         <translation>Print</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1066"/>
-        <location filename="../../documenttab.cpp" line="1071"/>
-        <location filename="../../documenttab.cpp" line="1100"/>
+        <location filename="../../documenttab.cpp" line="1075"/>
+        <location filename="../../documenttab.cpp" line="1080"/>
+        <location filename="../../documenttab.cpp" line="1109"/>
         <source>导出为图片</source>
         <translation>Export as Images</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1066"/>
+        <location filename="../../documenttab.cpp" line="1075"/>
         <source>请先选择保存文件夹。</source>
         <translation>Choose a folder to save into first.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1071"/>
+        <location filename="../../documenttab.cpp" line="1080"/>
         <source>页码范围里没有可导出的页面。</source>
         <translation>The page range has no pages to export.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1080"/>
+        <location filename="../../documenttab.cpp" line="1089"/>
         <source>正在导出为图片…</source>
         <translation>Exporting images…</translation>
     </message>
@@ -891,47 +891,52 @@ Continue?</translation>
 <context>
     <name>OcrDialog</name>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="14"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="16"/>
         <source>文字识别</source>
         <translation>Text Recognition</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="30"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="32"/>
         <source>识别出的文字会出现在这里。</source>
         <translation>The recognized text appears here.</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="34"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="36"/>
         <source>复制文字</source>
         <translation>Copy Text</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="42"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="44"/>
+        <source>复制图片</source>
+        <translation>Copy Image</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/ocrdialog.cpp" line="56"/>
         <source>翻译</source>
         <translation>Translate</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="48"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="62"/>
         <source>关闭</source>
         <translation>Close</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="58"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="101"/>
         <source>正在识别框选区域内的文字…</source>
         <translation>Recognizing the text in the box…</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="69"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="112"/>
         <source>识别失败。</source>
         <translation>Recognition failed.</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="78"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="121"/>
         <source>框选的区域里没有识别出文字。</source>
         <translation>Nothing was recognized in the boxed area.</translation>
     </message>
     <message>
-        <location filename="../../src/ui/ocrdialog.cpp" line="84"/>
+        <location filename="../../src/ui/ocrdialog.cpp" line="127"/>
         <source>识别完成，可以复制或翻译：</source>
         <translation>Recognized. Copy it or translate it:</translation>
     </message>
@@ -1085,7 +1090,7 @@ Continue?</translation>
     <message>
         <location filename="../../src/print/printjob.cpp" line="123"/>
         <source>打印机的可打印区域无效。</source>
-        <translation>The printer's printable area is not usable.</translation>
+        <translation>The printer&apos;s printable area is not usable.</translation>
     </message>
     <message>
         <location filename="../../src/print/printjob.cpp" line="135"/>
@@ -1101,47 +1106,47 @@ Continue?</translation>
 <context>
     <name>QtPdfBackend</name>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="154"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="156"/>
         <source>此文档已加密，需要密码。</source>
         <translation>This document is encrypted and needs a password.</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="157"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="159"/>
         <source>这个文件不是有效的 PDF，或者已经损坏。</source>
         <translation>This file is not a valid PDF, or it is damaged.</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="164"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="166"/>
         <source>这个 PDF 使用了不支持的加密方式，无法打开。</source>
         <translation>This PDF uses an encryption method that is not supported.</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="167"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="169"/>
         <source>找不到文件：%1</source>
         <translation>File not found: %1</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="170"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="172"/>
         <source>文件还没有读完，无法打开。</source>
         <translation>The file could not be read to the end.</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="173"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="175"/>
         <source>打开 %1 时出错：%2</source>
         <translation>Error opening %1: %2</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="174"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="176"/>
         <source>文件无法解析</source>
         <translation>the file cannot be parsed</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="175"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="177"/>
         <source>文件不存在</source>
         <translation>the file is not there</translation>
     </message>
     <message>
-        <location filename="../../src/document/qtpdfbackend.cpp" line="184"/>
+        <location filename="../../src/document/qtpdfbackend.cpp" line="186"/>
         <source>%1 没有读完，无法打开。</source>
         <translation>%1 could not be read to the end.</translation>
     </message>
@@ -1247,7 +1252,7 @@ Continue?</translation>
     <message>
         <location filename="../../src/settings/settingsdialog.cpp" line="127"/>
         <source>翻译会把选中的文字发送到所选服务。密钥以明文保存在本机设置中。</source>
-        <translation>Translating sends the selected text to the service chosen. The key is kept in plain text in this machine's settings.</translation>
+        <translation>Translating sends the selected text to the service chosen. The key is kept in plain text in this machine&apos;s settings.</translation>
     </message>
     <message>
         <location filename="../../src/settings/settingsdialog.cpp" line="153"/>

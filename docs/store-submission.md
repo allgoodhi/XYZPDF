@@ -62,6 +62,29 @@ Add-AppxPackage -Register build-local-release\package\app\AppxManifest.xml
 - 同一时刻 `HKCU\Software\Classes` 下我们自己的 `xyzpdf` 与 `xyzpdf.Document` 键**消失了**，
   正是 §3.2 说的那次清理。
 
+### 1.2 M4 那条"双语完整"是查出来的，不是感觉出来的
+
+```
+cmake --build build-local-release --target update_translations
+  Found 271 source text(s) (1 new and 270 already existing)
+```
+
+缺的那一条是区域截图（`66fccc5`）带进来的按钮 `复制图片`，英文目录里当时**根本没有**这一
+条。已填成 "Copy Image"（与同一目录里的 `复制文字` → "Copy Text" 对称），并把两个按钮一起
+加进门禁的扫描表（`tests/i18n_smoke.cpp` 的 probes）。
+
+漏掉的形状值得写下来，因为它不出事：`lupdate` 只往 `.ts` 里加一条空的 `type="unfinished"`，
+`.qm` 照样编得出来、照样加载得了，英文界面就那一个词是中文 —— 一次一个，出现在读者刚好
+看到的地方。扫描表本来就是为这个写的，但表里最新的一条停在 `文字识别`，没跟着 M3 后面每
+一个新按钮走。这条通道有没有牙是正控过的：把一条 probe 换成目录里不存在的字符串，门禁立刻
+红 —— `FAIL: OcrDialog: "复制图片X" is translated (got "复制图片X")`。
+
+顺带一条别被误导：`lupdate` 报的三行 `Class ... lacks Q_OBJECT macro`（`QtPdfBackend`、
+`ThirdPartyNotices`、`ShellIntegration`）不是待办。那三处的 `tr` 是各自写的 lambda /
+namespace 函数，context 是写死的字面量，与 `.ts` 里记的类名一致；真去加 `Q_OBJECT` 会把
+`qtpdfbackend.cpp` 拉进 moc，而它同时编进预览与缩略图两个代理 DLL —— 那正是
+`QPdfLink::staticMetaObject` 踩过的位置。理由已写进 `qtpdfbackend.cpp` 的注释。
+
 ## 2. 提交前必须换掉的：发布者身份
 
 清单写的是 `Publisher="CN=allgoodhi"`。这是自签占位，只够在本机装自己玩的包。

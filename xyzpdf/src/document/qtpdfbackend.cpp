@@ -141,6 +141,13 @@ Document::Status QtPdfBackend::load(const QString &path, const QString &password
 
     const QPdfDocument::Error error = document->load(path);
     if (error != QPdfDocument::Error::None) {
+        // A lambda named `tr`, not QObject::tr. This class has no Q_OBJECT
+        // macro and must not gain one: qtpdfbackend.cpp is compiled into the
+        // preview and thumbnail surrogates too, and a moc-generated
+        // staticMetaObject there is the same delay-load trouble QPdfLink is (see
+        // links() below). lupdate warns about the missing macro anyway and files
+        // these strings under "QtPdfBackend" regardless, which is the context
+        // the literal below asks for -- so the warning is noise, not a to-do.
         const auto tr = [](const char *text) {
             return QCoreApplication::translate("QtPdfBackend", text);
         };

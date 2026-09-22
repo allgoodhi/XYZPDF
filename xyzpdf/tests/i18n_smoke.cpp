@@ -172,6 +172,7 @@ int main(int argc, char **argv)
             { "ImageExportDialog", "分辨率" },     { "ImageExportDialog", "保存到文件夹" },
             { "PrintDialog", "每页版数" },         { "PrintDialog", "适应可打印区域" },
             { "TranslateDialog", "复制译文" },     { "OcrDialog", "文字识别" },
+            { "OcrDialog", "复制文字" },           { "OcrDialog", "复制图片" },
             { "SettingsDialog", "翻译服务" },      { "FindBar", "区分大小写" },
         };
 

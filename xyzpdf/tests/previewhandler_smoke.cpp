@@ -278,6 +278,42 @@ bool waitUntilParked(LatchProc latch)
     return false;
 }
 
+// The same catch for when something has to be dispatched first -- a timer, which is
+// how a resize finds out it is over. The wait is still on the park, not on a clock.
+bool pumpUntilParked(LatchProc latch)
+{
+    for (int attempt = 0; attempt < 600; ++attempt) {
+        pumpMessages();
+        if (latch && latch(3))
+            return true;
+        Sleep(10);
+    }
+    return false;
+}
+
+// Until the picture stops moving. Used where a change has to be attributable to one
+// thing: the condition is a whole second of nothing arriving.
+bool waitForStable(HWND child, int width, int height, DWORD milliseconds)
+{
+    const ULONGLONG deadline = GetTickCount64() + milliseconds;
+    unsigned long last = colourAt(child, width, height);
+    ULONGLONG steady = GetTickCount64();
+    for (;;) {
+        pumpMessages();
+        const unsigned long now = colourAt(child, width, height);
+        const ULONGLONG tick = GetTickCount64();
+        if (now != last) {
+            last = now;
+            steady = tick;
+        } else if (tick - steady >= 1000) {
+            return true;
+        }
+        if (tick >= deadline)
+            return false;
+        Sleep(10);
+    }
+}
+
 void writeJunkDocument(const std::wstring &path)
 {
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -288,6 +324,18 @@ void writeJunkDocument(const std::wstring &path)
     DWORD wrote = 0;
     WriteFile(file, junk, sizeof(junk) - 1, &wrote, nullptr);
     CloseHandle(file);
+}
+
+// Another fixture in the same folder as the one this run was given. Where the
+// fixtures are is a fact about the invocation (the default is a relative path, and
+// the gate runs from the project directory), so a second document is found by
+// walking beside the first rather than by naming the folder again.
+std::wstring siblingFixture(const std::wstring &fixture, const wchar_t *name)
+{
+    const size_t cut = fixture.find_last_of(L"\\/");
+    if (cut == std::wstring::npos)
+        return name;
+    return fixture.substr(0, cut + 1) + name;
 }
 
 } // namespace
@@ -418,6 +466,11 @@ int main(int argc, char **argv)
             const bool parked = waitUntilParked(latch);
             check(parked,
                   "the render thread can be caught before it touches PDFium");
+            // What the narrow pane asked the worker to draw at, kept for the resize
+            // below so that its assertion compares two widths instead of guessing
+            // what formula produced one.
+            const int narrowJob = latch ? latch(4) : 0;
+            check(narrowJob > 0, "and the latch can be asked what size was asked for");
 
             // The point of the whole arrangement, and the positive control for it:
             // with a render held back, the paint still answers, and what it answers
@@ -465,6 +518,87 @@ int main(int argc, char **argv)
             check(moved.nPos > info.nPos, "a page down moves the position");
             check(colourAt(child, 420, 560) != before,
                   "and what the pane shows afterwards is different from before");
+
+            // Dragging the pane's width. What a resize shows is the pages drawn for
+            // the width it came from, stretched -- never fresh paper, and never a
+            // queue of renders at every transient width the drag passes through.
+            // Held at the latch nothing can arrive after the resize, so the ink below
+            // is the fix or its absence with no timing in it; and a pane that only
+            // ever stretched would fail the last two, which is what keeps this from
+            // being a licence to stop drawing.
+            if (latch) {
+                // Drained first, because the page down above has the worker busy: an
+                // armed latch would then catch a job that has nothing to do with the
+                // resize, and the width read below would be somebody else's.
+                latch(2);
+                check(waitForStable(child, 420, 560, 20000),
+                      "the queue empties, so what follows is the resize's doing");
+                latch(1);
+
+                constexpr int wide = 700;
+                const RECT wider{0, 0, wide, 560};
+                check(SUCCEEDED(handler->SetRect(&wider)), "the pane can be widened");
+                pumpMessages();
+                check(inkBelowCaption(child, wide, 560) > 0,
+                      "and a wider pane still shows the page it had, not paper");
+
+                SCROLLINFO grown = {};
+                grown.cbSize = sizeof(grown);
+                grown.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+                GetScrollInfo(child, SB_VERT, &grown);
+                check(int(grown.nMax) > int(moved.nMax),
+                      "the pages were laid out again for the new width");
+
+                const bool sharpened = pumpUntilParked(latch);
+                check(sharpened,
+                      "once the width holds still the pages are asked for again");
+                check(sharpened && latch(4) > narrowJob,
+                      "and at the resolution the new width wants, not the old one");
+                latch(2);
+                // Back to the size every assertion below this one reads the pane at.
+                handler->SetRect(&area);
+                pumpMessages();
+
+                // The other half of a resize, and the half the first version of this
+                // fix got wrong: a page the new geometry has just pulled into view has
+                // no picture to stretch, so waiting for the width to settle buys it
+                // nothing and only lengthens the blank that is already on screen.
+                // Nothing is dispatched while waiting for the park, so a job that
+                // appears there is one the resize message itself handed over -- which
+                // is the difference between asking during the drag and asking after it.
+                //
+                // This needs a document with more pages than the cache holds. The two
+                // page fixture cannot show it at all: whatever its geometry, every page
+                // of it is on the way after the first render, so "nothing drawn yet"
+                // never happens there -- which is exactly the case that was deferred by
+                // mistake, and why it took a person dragging the pane to find it.
+                const std::wstring longDoc = siblingFixture(fixture, L"many-pages.pdf");
+                const bool haveLong =
+                    GetFileAttributesW(longDoc.c_str()) != INVALID_FILE_ATTRIBUTES;
+                check(haveLong, "the forty-page fixture is beside the two-page one, "
+                                "because this part needs more pages than the cache holds");
+                if (initialise && haveLong) {
+                    initialise->Initialize(longDoc.c_str(), STGM_READ);
+                    check(SUCCEEDED(handler->DoPreview()),
+                          "a longer document previews at the narrow width");
+                    check(waitForStable(child, 420, 560, 20000),
+                          "and what it wants at that width is drawn before the resize");
+
+                    latch(1);
+                    const RECT tall{0, 0, 200, 1600};
+                    check(SUCCEEDED(handler->SetRect(&tall)),
+                          "the pane can be made narrower and much taller");
+                    const bool askedAtOnce = waitUntilParked(latch);
+                    check(askedAtOnce,
+                          "a page with nothing drawn is asked for during the drag, "
+                          "without waiting for the width to settle");
+                    check(askedAtOnce && latch(4) < narrowJob,
+                          "at the size the new width wants, not the one it came from");
+                    latch(2);
+                    handler->SetRect(&area);
+                    pumpMessages();
+                }
+            }
         }
     }
 

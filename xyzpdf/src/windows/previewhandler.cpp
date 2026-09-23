@@ -44,6 +44,27 @@
 // dropped on arrival instead (see beginGeneration), and the thread has to be joined
 // before the document it reads is destroyed (see stopWorker).
 //
+// ---- dragging the pane's width ----
+//
+// A resize is the one moment the cache holds pictures drawn for some other width,
+// and it is also the moment the pane is asked to redraw the most: dragging the
+// splitter is a continuous stream of WM_SIZE. Neither of those is a reason to throw
+// the pictures away, which is what the first asynchronous version did and what read
+// as a white flash on every drag. `blit` has always stretched, so what a drag shows
+// is the page that was already there at the new width, and the request for pages at
+// the width being dragged *towards* waits until the width stops moving
+// (kSettleMs). Two details carry that: a cached page drawn *wider* than the pane now
+// asks for is still the sharper picture, so shrinking re-renders nothing at all,
+// and the timer belongs to the window rather than to this object, so a pane that
+// closes mid-drag has nothing left to fire.
+//
+// The wait covers only what is on screen to cover. A page the resize has just pulled
+// into view has no picture to stretch, so the blank is being looked at from that
+// moment either way, and asking for it early is the only way the wait can be made
+// shorter -- which is why the debounce holds back *soft* pages and never *missing*
+// ones (see PageFit). Deferring both is what this file did for one round, and the
+// report that came back was the white flash again: "只有页码，没有内容".
+//
 // ---- what this still does not do ----
 //
 // There is no zoom (the pane's width decides the size, as in every other preview
@@ -141,6 +162,13 @@ constexpr int kPageGap = 10;
 constexpr int kLineScroll = 30;
 constexpr int kWheelNotch = 90;
 
+// How long the pane's width has to hold still before it is worth drawing pages for
+// it. See the note at the top of the file: the stretch covers the drag, so this
+// delays only the sharpening. Long enough that a whole drag of the splitter fits
+// inside it, short enough that it is not a second wait after one.
+constexpr UINT kSettleMs = 150;
+constexpr UINT_PTR kSettleTimer = 0x5a1;
+
 HMODULE moduleHandle()
 {
     HMODULE self = nullptr;
@@ -229,11 +257,15 @@ struct PageResult
 std::atomic<bool> latchArmed_{false};
 std::atomic<bool> latchOpen_{true};
 std::atomic<bool> workerParked_{false};
+// The page size the worker is held on, so that a test can ask "what width did that
+// resize end up asking for" instead of inferring it from pixels.
+std::atomic<int> workerJobWidth_{0};
 
-void parkBeforeRender(const std::atomic<bool> &stopping)
+void parkBeforeRender(const std::atomic<bool> &stopping, int jobWidth)
 {
     if (!latchArmed_.load())
         return;
+    workerJobWidth_ = jobWidth;
     workerParked_ = true;
     while (!stopping.load() && !latchOpen_.load())
         Sleep(5);
@@ -448,6 +480,10 @@ public:
     // `pageSize` takes the same global PDFium lock as a render, so asking the
     // document here would put this loop -- one call per page, on the host's thread,
     // on every WM_SIZE -- behind whatever the worker is drawing.
+    //
+    // Nothing drawn is dropped here. The pages were rendered for another width and
+    // are shown stretched to this one until the width settles; see the note at the
+    // top of the file.
     void relayout()
     {
         layout_.clear();
@@ -473,12 +509,51 @@ public:
         }
         contentHeight_ = y;
 
-        // The pages were rendered for a width and this is a different one, so
-        // whatever is in the cache no longer fits anything.
-        pages_.clear();
-        beginGeneration();
         scroll_ = qBound(0, scroll_, maximumScroll());
         showScrollPosition();
+        InvalidateRect(window_, nullptr, FALSE);
+
+        // Two halves of one decision, and the split is the whole of it: what the
+        // pane already has a picture of can wait out the drag, because that picture
+        // is being shown stretched and the wait changes nothing a person can see.
+        // What it has no picture of cannot wait -- the blank is on screen from this
+        // message onwards either way, so asking for it is the only thing that makes
+        // the wait shorter.
+        computeWanted();
+        if (anyWantedPageSoft()) {
+            sharpenPending_ = true;
+            ::SetTimer(window_, kSettleTimer, kSettleMs, nullptr);
+        }
+        enqueueVisible(); // what is missing goes out now; the soft pages are held by
+                          // sharpenPending_ until the width settles
+    }
+
+    // Is any page the pane is showing on file, but at a lower resolution than this
+    // width would draw it.
+    bool anyWantedPageSoft() const
+    {
+        for (const int page : std::as_const(wanted_)) {
+            if (pageFit(page) == PageFit::Soft)
+                return true;
+        }
+        return false;
+    }
+
+    // The width stopped moving: ask for the pages at the size they are now shown at.
+    void sizeSettled()
+    {
+        if (!document_ || !window_)
+            return;
+        ::KillTimer(window_, kSettleTimer);
+        sharpenPending_ = false;
+        computeWanted();
+        if (!anyWantedPageSoft())
+            return;
+        // Anything still in flight was asked for by one of the widths the drag
+        // passed through. It cannot be cancelled, so it is dropped on arrival --
+        // and `outstanding_` has to be emptied with it, or those pages would be
+        // written off as already coming.
+        beginGeneration();
         enqueueVisible();
     }
 
@@ -585,6 +660,7 @@ private:
         pageSizes_.clear();
         contentHeight_ = 0;
         scroll_ = 0;
+        sharpenPending_ = false;
 
         if (path_.isEmpty()) {
             message_ = L"没有给出文件路径";
@@ -659,7 +735,7 @@ private:
             }
             // Rendering happens with no lock of ours held, which is the point: the
             // host's thread has to be able to paint while this is going on.
-            parkBeforeRender(stopping_);
+            parkBeforeRender(stopping_, job.pixels.width());
             if (stopping_.load())
                 break;
             PageResult result;
@@ -717,6 +793,26 @@ private:
         return QSize(width, int(qreal(width) * points.height() / points.width()));
     }
 
+    // Whether a page has to be drawn again, as opposed to being shown as it is.
+    // Three answers because the two ways a page is not right are not worth the same
+    // wait: absent, so there is nothing on screen to improve and every millisecond
+    // of a defer is a blank page someone sees; or present but drawn for a narrower
+    // pane than this one, which is a picture that is merely softer than it could be
+    // and can wait for the width to stop moving. So a shrink costs nothing, and a
+    // widening is the only resize that owes work.
+    enum class PageFit { Missing, Soft, Current };
+
+    PageFit pageFit(int page) const
+    {
+        const auto rendered = pages_.find(page);
+        if (rendered == pages_.end() || rendered.value().isNull())
+            return PageFit::Missing;
+        const QSize wanted = renderSizeFor(page);
+        if (!wanted.isEmpty() && rendered.value().width() < wanted.width())
+            return PageFit::Soft;
+        return PageFit::Current;
+    }
+
     // The pages worth having a picture of: the ones on screen, then
     // kPrefetchPages more at the end the pane is being moved towards, and never
     // more than the cache holds.
@@ -761,9 +857,17 @@ private:
 
         QVector<int> order;
         for (const int page : std::as_const(wanted_)) {
-            if (!pages_.contains(page) && !outstanding_.contains(page)
-                && !failed_.contains(page))
-                order.append(page);
+            if (outstanding_.contains(page) || failed_.contains(page))
+                continue;
+            const PageFit fit = pageFit(page);
+            if (fit == PageFit::Current)
+                continue;
+            // The one thing the resize debounce actually holds back: a page that is
+            // on screen and merely soft. A page with nothing drawn at all is never
+            // worth waiting for, because waiting is what the blank page is.
+            if (fit == PageFit::Soft && sharpenPending_)
+                continue;
+            order.append(page);
         }
         // In page order, so that the first picture a person scrolling down sees is
         // the page at the top of the view rather than one of the prefetches.
@@ -828,6 +932,10 @@ private:
     QSet<int> outstanding_;
     QSet<int> failed_;
     quint64 generation_ = 1;
+    // The pane's width is still moving and the pages on file are the ones the drag
+    // is showing stretched. Set by a resize, cleared when the width settles; while
+    // it is set, `enqueueVisible` holds back only the pages that are merely soft.
+    bool sharpenPending_ = false;
 
     std::thread worker_;
     bool workerRunning_ = false;
@@ -964,6 +1072,15 @@ LRESULT CALLBACK previewWindowProc(HWND window, UINT message, WPARAM wParam, LPA
         if (handler)
             handler->relayout();
         return 0;
+    case WM_TIMER:
+        // The width stopped moving. A timer with no callback function is owned by
+        // the window, so one that was armed just before the pane closed has nowhere
+        // to fire and DestroyWindow drops it with the rest of the queue.
+        if (handler && wParam == kSettleTimer) {
+            handler->sizeSettled();
+            return 0;
+        }
+        break;
     case WM_VSCROLL: {
         if (!handler)
             break;
@@ -1099,6 +1216,11 @@ extern "C" BOOL STDAPICALLTYPE XYZPDF_PREVIEW_TEST_LATCH(int action)
         return TRUE;
     case 3:
         return workerParked_.load() ? TRUE : FALSE;
+    case 4:
+        // Not a yes/no: the width the held job was asked to draw at. A BOOL is an
+        // int, and a page is never wider than the cap, so this travels over the
+        // same one-argument door as the rest of the latch.
+        return workerJobWidth_.load();
     default:
         return FALSE;
     }

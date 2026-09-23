@@ -14,7 +14,10 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
 - Visual Studio Community：`E:\Microsoft Visual Studio\Community`，MSVC 14.51.36231
 - 生成器 Ninja；cmake 用 `E:\qt\Tools\CMake_64\bin\cmake.exe`
 - Python 3.14 在 PATH 上
-- vcpkg：参照 `H:\test\XYZip\vcpkg.json` 与 `vcpkg_installed`（triplet `x64-windows`）
+- vcpkg 在 `H:\test\vcpkg\vcpkg.exe`；本仓库自己带 `vcpkg.json`（第一个原生依赖是 qpdf，M5 用）。
+  **新克隆先在仓库根跑 `vcpkg.exe install --triplet x64-windows`**，否则 CMake 配置就停住（它不
+  用 vcpkg 的 toolchain file，路径写死在 `vcpkg_installed/`，那个目录已 gitignore）。目录布局、
+  打包与测试方式照 `H:\test\XYZip`。
 
 **不要删构建树的 CMakeCache.txt** —— 项目不带 CMakePresets，Qt 的位置只存在于缓存里。
 

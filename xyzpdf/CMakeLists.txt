@@ -78,10 +78,11 @@ find_package(Qt6 6.7 REQUIRED COMPONENTS Pdf)
 # kit. Prefer that installation when it is there, while still allowing a regular
 # vcpkg toolchain configuration to supply packages from elsewhere.
 #
-# v1 has no dependencies of its own -- everything it uses is Qt -- so this finds
-# nothing today. It is here because the paths and the triplet are the part that
-# is forgotten when the first dependency arrives, and because XYZip's build is
-# laid out the same way.
+# QPDF is the first dependency this program has of its own (docs/PLAN.md §4 M5:
+# 结构编辑先上 QPDF，它不碰页面内容流). Everything Qt uses is still Qt. The
+# install is `vcpkg install` run from the repository root, which is where
+# vcpkg.json is; XYZip's build is laid out the same way, including the
+# ../vcpkg_installed/<triplet> location that the block below looks for.
 set(XYZPDF_VCPKG_TRIPLET "${VCPKG_TARGET_TRIPLET}")
 if (XYZPDF_VCPKG_TRIPLET STREQUAL "")
     set(XYZPDF_VCPKG_TRIPLET "x64-windows")
@@ -91,6 +92,24 @@ set(XYZPDF_LOCAL_VCPKG_PREFIX
 if (EXISTS "${XYZPDF_LOCAL_VCPKG_PREFIX}/share")
     list(PREPEND CMAKE_PREFIX_PATH "${XYZPDF_LOCAL_VCPKG_PREFIX}")
 endif()
+
+# Said out loud because the alternative is CMake's own message, which does not
+# know that this project keeps its packages in the repository rather than in a
+# toolchain file: a fresh clone that never ran vcpkg fails here, and the fix is
+# one command in one directory.
+find_package(qpdf CONFIG QUIET)
+if (NOT qpdf_FOUND)
+    message(FATAL_ERROR
+        "QPDF was not found. Run `vcpkg install --triplet ${XYZPDF_VCPKG_TRIPLET}` "
+        "from the repository root (the directory holding vcpkg.json).")
+endif()
+
+# The release DLLs, globbed the way XYZip globs them. Nothing links QPDF into
+# xyzpdf.exe yet -- there is no call site until the first write feature -- so this
+# is not a deploy list; it is what puts a working qpdf30.dll beside a test
+# executable, which has no other way to find it (tools/build_all_tests.py puts
+# only Qt's bin on PATH).
+file(GLOB XYZPDF_VCPKG_RUNTIME_DLLS "${XYZPDF_LOCAL_VCPKG_PREFIX}/bin/*.dll")
 
 if(MSVC)
     # rc.exe decodes its input with the system ANSI codepage unless told
@@ -386,6 +405,15 @@ function(xyzpdf_add_test NAME)
     target_link_libraries(xyzpdf_${NAME} PRIVATE Qt6::Core Qt6::Gui ${TEST_LIBRARIES})
     set_target_properties(xyzpdf_${NAME} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    # A test that links a vcpkg library cannot start without its DLL, and the
+    # harness gives it only Qt's bin on PATH. Copying them into <build>/tests is
+    # what XYZip does for the same reason.
+    if(WIN32 AND XYZPDF_VCPKG_RUNTIME_DLLS)
+        add_custom_command(TARGET xyzpdf_${NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${XYZPDF_VCPKG_RUNTIME_DLLS} "${CMAKE_BINARY_DIR}/tests"
+            VERBATIM)
+    endif()
 endfunction()
 
 # The version, and the manifest it is stamped into.
@@ -424,6 +452,18 @@ if(XYZPDF_BUILD_DOCUMENT_SMOKE)
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES Qt6::Pdf)
+endif()
+
+# The first native dependency, proven to work before the program uses it. Linked
+# against Qt PDF as well as qpdf because the claim being tested is the handoff
+# between them, not either one alone -- see tests/qpdf_smoke.cpp.
+option(XYZPDF_BUILD_QPDF_SMOKE "Build the QPDF round-trip smoke test" OFF)
+if(XYZPDF_BUILD_QPDF_SMOKE)
+    xyzpdf_add_test(qpdf_smoke
+        SOURCES src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES Qt6::Pdf qpdf::libqpdf)
 endif()
 
 # The performance baseline. Built with everything else and deliberately not run:

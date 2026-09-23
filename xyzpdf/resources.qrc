@@ -27,5 +27,6 @@
         <file alias="licenses/GPL-3.0.txt">Resources/licenses/GPL-3.0.txt</file>
         <file alias="licenses/pdfium.txt">Resources/licenses/pdfium.txt</file>
         <file alias="licenses/qt.txt">Resources/licenses/qt.txt</file>
+        <file alias="licenses/qpdf.txt">Resources/licenses/qpdf.txt</file>
     </qresource>
 </RCC>

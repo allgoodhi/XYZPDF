@@ -972,3 +972,208 @@ M5（编辑）的第一步不是功能，是把依赖接进来 —— 记在这�
 - **下一片要补的两件**：第一处调用落地时，`build-package.ps1` 要把那三个 DLL 拷进包（并且
   `verify-package.ps1` 该反过来盯着它们在不在）；`src/core/thirdpartynotices.*` 要加一条
   `Apache-2.0 AND MIT` 的条目 —— PLAN §4 M4 那栏"第三方声明页"，商店会看。
+  两件都在 §11 里做掉了，但**包还没有带着那三个 DLL 打过一次**，见 §11 末尾。
+
+## 11. 删页：第一处真的调用 QPDF 的功能（2026-09-23）
+
+PLAN §10 那条"下一片"就是这一片。落地的东西：`src/edit/documenteditor.{h,cpp}`（§7.3 里那个
+"修改接口"，故意不是 `Document` 的方法）、`src/ui/deletepagesdialog.*`、菜单栏多一个**文档**、
+`DocumentTab::deletePages()` 把三者串起来 —— 结果开在**新标签**里，原来那份继续在屏幕上，可以
+当场对一下。PLAN §4 M5 那句"另存为默认不覆盖原件"到这一片才算有实现；**修改模型和撤销栈还
+没有**，所以现在是"改一次、存一次、不能反悔"。
+
+- **它只写新文件**：`saveAs()` 第一件事是拒绝"目的地就是刚打开的那份"（`sameFile()` 先比规范化
+  字符串，再比 `canonicalFilePath()` 一遍，后者只会得出"相同"、永远说不出"不同"，因为不存在的
+  路径返回空串，而那正是另存为的常态）。口令由 `DocumentTab` 记下来再递第二次：阅读器已经用
+  它解开过一次，口令本来就在内存里，不是从用户那里再要一遍。
+- **暂存写、一次落位，以及为什么不是 `QTemporaryFile`**：第一版用 `QTemporaryFile` 生成暂存名，
+  `QPDFWriter` 对着一个本函数三毫秒前刚建出来的文件报 `open …xyzpdf-save-….pdf: Permission
+  denied` —— Qt 6.11 的 `QTemporaryFile` 到对象析构之前一直握着创建时那个句柄，而 `closeHandle()`
+  在 Qt 6 已经不是公开成员（这一条是编不过才知道的，不是想出来的）。现在改成**只挑名字、不建
+  文件**（照 XYZip `ArchiveModify::temporaryOutputPath` 那个写法，名字里带毫秒戳，撞上了就顺延，
+  已存在的文件从来不会被截断），写完再用一次 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`
+  落位。`QFile::rename` 不够：它拒绝踩已存在的目标，而保存对话框刚刚问过"这个位置已经有文件
+  了，要覆盖吗" —— 用户说是，然后程序说他不行，那比不问还糟。失败时那份已经写好的文件**留着**
+  并且在消息里点名，因为"目标被别的程序占着"这件事比任何一个对话框都活得久。
+- **测到了什么**（`tests/documenteditor_smoke.cpp`，门禁 26/26）：都是"删三页、写到临时目录"，
+  量的是 open + delete + write 三步。
+
+  | 文档 | 页数 | 大小 | 时间 |
+  |---|---|---|---|
+  | `many-pages.pdf`（合成） | 40 | 12 KB | 2 ms |
+  | `CH340.PDF`（含照片的数据手册） | 6 | 168 KB | 6 ms |
+  | `huge.pdf`（合成，每页一行字） | 600 | 186 KB | 39–42 ms（冷启动那一次 91 ms） |
+  | `VerilogHDL硬件描述语言.pdf` | 172 | 4.85 MB | 63 ms |
+
+  钱花在**字节**上，不在页数上：6 页 168 KB 比 600 页 186 KB 便宜一个数量级，因为整本文档是
+  重新一份一份写出去的。数量级在几十毫秒，所以一个等待光标就够，这一片不起线程。真实文档那
+  两行是喂命令行量的（`xyzpdf_documenteditor_smoke.exe <路径>`，与 perf.md 那两张表同一个套路），
+  文件不在仓库里，别人复现不了；不喂参数时这一段根本不跑，门禁不依赖 `H:\pdf_test\`。跑完照旧
+  断言那份真实文件的哈希一个字节没变 —— 仓库外的文件是唯一一份，这条不许靠信任。
+- **加密的两份都是量出来的，不是假设的**：带用户口令的 —— QPDF 直接 `invalid password`（读者
+  那边已经输过口令打开了，所以功能没坏，只是必须把口令再递一次，这就是 `documentPassword` 那个
+  成员存在的理由）；递了口令之后写得出去，**写出来的那份仍然要口令**、且确实少一页 —— 保护不会
+  经过一次编辑就掉。"谁都能读、但写着不许修改"的那一份（空用户口令 + modify forbidden）：读得出、
+  写得成，副本不要口令就能打开。这一份的权限标志到底传没传到输出，当时**没测**，是欠账 —— §11.2
+  第一条把它测了。
+- **反证**：i18n 那一轮把一条新探针的源文改成目录里不存在的字符串 → `DocumentEditor: "…" is
+  translated` 立刻一红，所以新加的 8 条探针不是摆设（`type="unfinished"` 的条目 lupdate 照收、
+  lrelease 照编、装载照成功，只有查字符串才看得见）。落位那一步没有反证 —— 反证要真的占住目标
+  文件，测试里做了（`QFile holder` 握着它），Windows 让不让替换不由这个进程决定，所以两种结果
+  都印出来、只断言两边都成立的那条不变量。
+- **§10 欠的两件做掉了**：`build-package.ps1` 现在按名字拷 `qpdf30.dll / z.dll / jpeg62.dll`
+  （不 glob，`turbojpeg.dll` 那种没人导入的别想搭车，见 §9.4），`verify-package.ps1` 的
+  `$required` 与 `$traced` 各自盯住它们；`Resources/licenses/qpdf.txt`（上游 NOTICE + Apache-2.0
+  全文，从 `vcpkg_installed/.../share/qpdf/copyright` 原样取的）进 `resources.qrc`，第三方声明
+  页多一条 QPDF。
+- **这一轮没验的**：包没重打 —— 15.8 MB / 57 个条目那个数自 §9.6 之后没动过，三个 DLL 一进包
+  就是新的数，而 `xyzpdf.exe` 现在**确实**导入 `qpdf30.dll`（不再是 §10 那种"链接了但没人调用"），
+  所以带着它们跑不起来是一种会发生的失败；GUI 一次没手点（对话框、菜单项、另存为、结果开新
+  标签、状态栏那句回执），删页是这个程序第一次往用户的文件夹里写东西，值得手点一遍再谈完成。
+
+### 11.1 上面那两条补上了（同一天，"验证下"）
+
+- **包重打了**：`build-package.ps1`（不带 `-Sign`、不带 `-Install`，机器一点没变）出
+  **16.9 MB / 17,701,043 字节**，`verify-package.ps1` 全绿 —— 解包 **39.2 MB / 60 个文件**，对着
+  §9.6 那次的 36.1 MB / 57 个，多的正好是那三个文件、3.1 MB。"跑不起来"这一条排掉了：PATH 上
+  只有 Windows 的情况下它开出了窗，而 `qpdf30.dll` 是被**追到包内路径**的，不是这台机器的 PATH
+  喂的。**装进系统的那一份还是 `863ddca` 的**，这一片没重装 —— 装要签名、签名要改机器。（这一条
+  到 §11.2 作废。）
+- **GUI 真点了一遍**（`build-local-release/xyzpdf.exe`，40 页的合成文档）：Alt+D → E 开出**删除
+  页面**；范围空着时"删除这些页"是灰的，回执行说"这样一页也不剩了"；敲 `2-4` 之后回执变成
+  "共 40 页：删除 3 页，剩下 37 页。"、按钮亮了；另存为是**原生**对话框，起点是源文件所在文件夹、
+  文件名填着 `sample 删页.pdf`、类型 `PDF 文档 (*.pdf)`。
+- **覆盖原件那条链，在真界面上走到底了**：把文件名改成正在打开的 `sample.pdf` → Windows 自己先
+  问"确认另存为"→ 点是 → 程序回一句"另存为不能覆盖正在打开的文件。请换一个文件名。"，磁盘上
+  那份哈希 `aa2cf697…` 一个字节没动。这一步值得单独记：测试里 `sameFile()` 挡的是函数调用，这里
+  挡的是"用户已经对着系统的覆盖确认说了是"之后的那一次写。
+- **成功路径**：新标签 `sample 删页.pdf` 自动激活，状态栏"已删掉 3 页，剩下 37 页，写成了一个
+  新文件"，右下角页码 `1 / 37`。这个 37 是 **Qt PDF 重新读了一遍 QPDF 写出的文件**报出来的 ——
+  §10 那套"两个库对账"第二次发生在真程序里，不在测试里。再把写出文件的内容流逐个 inflate 出来
+  数页面上的字：留下的正好是 1 和 5–40，**删掉的正是 2、3、4**（只数 `/Count` 说不出这个）。
+  暂存文件没留残渣，`xyzpdf-save-*.pdf` 一个都没有。
+- **驱动方式的坑，记下来免得下次重踩**：`SendKeys` 打的是前台窗口，而前台会被无关程序抢走 ——
+  这台机器上就有一个 XYZip 的"解压完成"框抢了过去，那几个数字进了它的对话框。改成往**具体
+  hwnd** 发消息之后根本不需要前台。两处细节都是量出来的：Qt 对 `WM_KEYDOWN` 自己会做
+  `ToUnicodeEx`，再补一条 `WM_CHAR` 就是每个字符进两遍（截图里真的出现 `22--44`）；`BM_CLICK`
+  用 `SendMessage` 会卡在按钮点出来的那个模态循环里（"确认另存为"那一次就是这么挂住的），
+  要用 `PostMessage`。
+- **收尾**：scratch 目录删了；顺手把被这次验证改到的两处程序设置恢复回去（最近文件列表里那两条
+  `gui-verify` 路径、`lastOpenDirectory`），因为注册表是装在系统里那份共用的。
+- **下一件**：M5 地基的另外两件（文档修改模型 + 撤销栈），然后才是"就地保存"和重排/旋转持久化。
+
+### 11.2 欠的两件：权限标志，和带着删页的签名包（同一天，"继续处理剩下的两件"）
+
+- **权限标志传到输出了，而且是两份都传**：带口令的那一份 `R6 P-1028`（raw 也是 -1028）
+  `assembly=0 annotate=1 other=1`，删一页写出来还是这三个数；"谁都能读、写着不许修改"的那一份
+  `R6 P-1036` `other=0`，写出来还是 `P-1036 other=0`。**副本没有在一次编辑之后悄悄改口**。
+  两个 fixture 正好差一个 bit（值 8，"改正文"），这就是 `P-1028` 与 `P-1036` 的全部区别。
+- **这些新断言不是摆设，反证做了**：在 `DocumentEditor::saveAs()` 里加一行
+  `writer.setPreserveEncryption(false)` → 门禁红 **9 条**：8 条是新加的（`the copy's /P is the
+  original's…`、`same R, same P…`、两组 modify flag、"这份 fixture 自己到底允许什么"），第 9 条是
+  本来就有的 `the copy is still encrypted`。红得最老实的是那句跨 fixture 的防自洽检查：
+  `the two fixtures disagree about modification (0 vs 0)`。删掉那一行，回到 **26 passed / 0 failed**。
+  - **反证顺带量出这一条自己的边界**：`check(!after.modifyOther, "the copy still says … may not be
+    modified")` 在控制下**没有红** —— 一份完全不加密的文件，`allowModifyOther()` 报的就是 false，
+    "不许修改"于是显得成立。它单独看是一句假话，只有和同一块里 `after.encrypted` 那半句一起才说得
+    通。写下来是为了让下一个人不把这条当成守得住的那道门。
+- **为什么"传到输出"是一件要盯的事，而不是一条读读文档就完事的性质**：QPDFWriter 的加密默认是
+  *保留*，但这个默认会被三样东西悄悄关掉 —— prefiltering、内容规范化、QDF 模式 —— 而且只要调用
+  过 `setR6EncryptionParameters` 就不保留了（`QPDFWriter.hh` 自己写着）。也就是说，将来任何一行
+  为了"输出更好看"而加的开关，都可能把删页变成一台"进去是受保护文档、出来是 unprotected 副本"的
+  机器，而且**没有任何一处会报错**。所以 `saveAs()` 里现在有一条注释指着这件事，测试里那两个数
+  指着它。
+- **`rawPermissionBits()`：同一个数读第二遍**。上面每对数字都还从 `isEncrypted(R, P)` 之外又量了
+  一次 —— 直接把文件里的 `/Encrypt n 0 obj … /P m` 那几个字节抠出来。理由是这两份文件是**同一个
+  解析器**读的：假如写的时候字典整个掉了、读的时候又默默报一个默认值，只问 QPDF 会把同一个错答案
+  听两遍。`/Encrypt` 字典本身从不加密、也从不进对象流，所以这些字节就是写进去的那些。两个数一个
+  来自原始、一个来自库 —— 上面那两条 raw 与解析值相等，就是在说这条通道活着。
+- **签名包重打并装上了**：`build-package.ps1 -Sign -Cert 221C…0A83 -Install` 出
+  **16.9 MB / 17,713,093 字节**，比 §11.1 那次不签名多 **12,050 字节** —— 那是签名本身。
+  Authenticode 查回来 `status=Valid`、签名人 `CN=allgoodhi`、时间戳戳到了 DigiCert。
+  - **装的时候先撞上 0x80073CFB**：`Add-AppxPackage -Path` 说"同一标识已经装着、且不允许装旧的
+    或同版本"。版本号只有一个来源（`project(... VERSION ...)` 还是 0.1.0.0），所以每次重打都是
+    同版本 —— 这条不是 bug，是这台机器上重装必经的一步：`Get-AppxPackage -Name allgoodhi.XYZPDF |
+    Remove-AppxPackage` 再 add，装完 `Status = Ok`。
+  - **装进去的就是刚编出来的那份**：`bin\` 下七个文件（`xyzpdf.exe` 加三个 shell 处理器 DLL 加
+    `qpdf30 / z / jpeg62`）在 `C:\Program Files\WindowsApps\allgoodhi.XYZPDF_0.1.0.0_x64__…\bin`
+    与包内暂存树两边 SHA-256 逐个相同。没跟上一次部署的那份比哈希 —— 重新链接一次哈希就变，比了
+    也说明不了源码；这一轮 `src/windows/` 一个文件没动（`git status`）。
+  - **包内清单**：解包 **39.2 MB / 62 个文件**，比 §11.1 的 60 多两个，多的正是签名造出来的
+    `appxsignature.p7x` 与 `appxmetadata\codeintegrity.cat`（把解包树与暂存树做集合对比列出来的：
+    暂存 58 + `appxblockmap.xml` + `[content_types].xml` + 那两个 = 62）。负载一个字节没多没少。
+  - **装好的那份真的在跑，QPDF 真的从包里加载**：`explorer.exe shell:AppsFolder\
+    allgoodhi.XYZPDF_edpkq8hzfe5n4!XYZPDF` 开出 `XYZPDF` 窗口，进程模块表里
+    `qpdf30.dll / z.dll / jpeg62.dll` 三条的路径全在 `WindowsApps\…\bin` 底下 —— 不是这台机器的
+    PATH 喂的。看完 `CloseMainWindow()` 关掉了，最近文件列表没被这次启动改到。
+  - `verify-package.ps1` 也对着**签名后的**这个 .msix 重跑了一遍：全绿。
+- **这一轮仍然没验的**：Explorer 的预览窗格与缩略图在这次重装之后没有再手点一遍（§11.1 点的是
+  `build-local-release/xyzpdf.exe`，那是开发树不是包）；同理，**装在系统里的这一份没走过删页**，
+  走通的是开发树那份。两者的 `xyzpdf.exe` 现在是同一次编译的字节，所以这条欠的是"部署链路"而不是
+  "代码路径" —— 但它是这个程序第一次往用户文件夹里写东西，商店包真装真用之前值得点一次。
+
+## 12. 修改模型 + 撤销栈 + 脏标记 + 旋转（2026-09-23）
+
+§11 欠的那两件里的"下一件"，做完的正是它：**M5 地基的修改模型和撤销栈**，加上第一处把
+`/Rotate` 写进文件的旋转页面。PLAN §4 M5 那句"增量保存"在这一片划掉了，理由写在 §4 原地。
+
+- **模型是"一串操作"，不是"一份改过的文档"**：`DocumentEditor` 里现在只有 `pending` / `undone`
+  两条 `Operation` 列表，加一份从列表**重算**出来的 `live`（哪些原始页还在、按什么顺序写）。
+  `record()` 是唯一入口（追加、清掉 redo 分支、`rebuildLive()`），`undo()` / `redo()` 只是在两条
+  列表之间搬一次再重算 —— 这是 `live` 唯一不可能和 `pending` 打架的原因，而打架的样子是"撤销之后
+  页码数和对不对得上一串操作"。`pageCount()` 读的就是 `live`，所以内存里那个数跟着删掉的页走，磁盘上
+  那份永远不动。
+- **操作记的是"原始页号"，不是"当时的位置"** —— 这一片唯一真正的坑，也是 `live` 存在的理由：
+  读者看着的始终是**打开那一份**（下面一条说为什么），所以"删掉第 4 页"永远指他屏幕上那第 4 页，
+  哪怕前面已经删过两页、它在待写列表里已经排到第 2 位。写盘时 `apply()` 一边重放一边用
+  `positionsOf()` 把原始号换成当时的位置。**反证**：把两处换算改成"直接当位置用"（`at = original`
+  / `at = page`）→ `documenteditor_smoke` 一跑就是 **5 条 FAIL**，红的全是钉这一件事的断言：
+  `and the one after it skips the page that was named second, not the one that happened to sit at
+  that position by then`、`and the third page of the result is the sixth of the original, which was
+  numbered against the screen it was named on, not against the list`、`and the turn landed on the
+  page that was named`、`the page turned right says 90`、`the one turned left says 270, which is
+  what a left turn is`。改回来 **26 passed / 0 failed**。
+- **保存时重新打开源文件、整份重放**（§4 划掉增量保存之后的必然形状）：两个数各自的计时区间不一样，
+  分开记 —— 40 页 12 KB 的 **3 ms** 只套着 `saveAs()` 一步（它自己包含"重开源文件 + 按列表重放 +
+  整份写出"）；600 页 186 KB 的 **62 ms** 套的是 `open` + 删 3 页 + `saveAs` 三段，和 §11 那次
+  39–42 ms 是同一个区间，量级没动。被测的这两次列表里都只有 1 个操作；"删两页 → 转两页 → 再删一页
+  → 转一页"那条四步序列另存了一个文件、**没单独计时**，所以"列表长几倍会不会变慢"这一条还是没数。
+  钱花在字节上而不是页数上，这点和 §11 一样；所以还是只有一个等待光标，不起线程。
+- **屏幕不动**（这一片定下来的一条，不是没做完）：编辑不会改 `QtPdfBackend` 里那份，也不重启
+  文档。代价是"撤销/重做在屏幕上看不见"，换来的是页码不会在读者眼皮底下重新编号 —— 而模型记的
+  本来就是原始页号，所以两者不会不一致。要落盘还是走 `保存修改为`，结果开在**新标签**里（§11 的
+  行为，一个字没改）。
+- **旋转落在 `/Rotate` 上**：`QPDFPageObjectHelper::rotatePage(quarterTurns * 90, relative=true)`。
+  两处是踩出来的：这个成员函数**不是 const**（`const std::vector<QPDFPageObjectHelper>` 编不过），
+  而 `rotatePage` 加的度数只接受 90 的整倍数，所以 `rotatePages()` 先拒掉 1/2/3 之外的输入 ——
+  PDF 存不下别的角度，替读者"就近取整"是让他从页面上发现。
+- **三个读数，两个引擎**（同一个防自洽的理由）：页面**身份**用 Qt PDF 的 `text()`（fixture 自己
+  印着 `XYZPDF page N`）；转了**没有**用 `pageSize()`（595×842 ↔ 842×595，渲染器把 `/Rotate` 折进
+  尺寸里，见 `qtpdfbackend.cpp` 那段注释）；转了**哪个方向**只能回头用 QPDF 读原始 `/Rotate` 整数，
+  因为右转 90 和左转 90 在尺寸上一模一样。读 `/Rotate` 那一遍先要 `isInteger()`：没写这个键的页
+  是个 null 对象，对它调 `getIntValue()` 每页印一条 QPDF WARNING —— 加了守卫之前一次跑出 35 条。
+- **界面上多出来的**：`旋转页面…` 对话框（一组方向 + 与删页同款的页码范围框，两处解析都走
+  `Print::parsePageRange`，所以"1-3,5,8-10"这种写法在两个对话框里是同一个意思）、**文档**菜单里的
+  `撤销 / 重做`（标题带着对象名："撤销 删除 3 页"，做菜的词来自 `DocumentEditor` 的
+  `undoDescription()`）、`保存修改为…` 只在脏的时候亮、标签标题带 ` *`。关标签和关窗口各有一道
+  **丢弃确认**（`closeTab()` 与 `closeEvent()`，后者先数有几个标签带着没写进文件的修改）。
+- **双语**：lupdate 之后 48 条空的 `type="unfinished"` 全部填了，`tests/i18n_smoke.cpp` 的探针表里
+  4 条换掉了 —— 它们的源文在这一片被改走（`已删掉 %1 页，剩下 %2 页…`、`删掉这些页，另存为`、
+  `%1 删页.pdf`、`共 %1 页：删除 %2 页…`，四句在目录里 `grep -F` 都是 0 命中），留着就是一句永远
+  查不到东西的假探针；同时补进旋转对话框、`保存修改为`、丢弃确认与撤销名字的探针。**反证**：把
+  `删除 %1 页` 那条在 .ts 里退回 `type="unfinished"`（就是 lupdate 刚跑完的样子）→
+  `DocumentEditor: "删除 %1 页" is translated (got "删除 %1 页")` 一红；还原 → 26/26。这一轮还修掉
+  一个不在测试里就会静默的洞：撤销名字原来写在匿名命名空间的自由函数里，lupdate 对它只留一句
+  `tr() cannot be called without context` 就**不收进目录**（那一遍的 337 条里没有它），英文菜单会把
+  中文的"删除 3 页"原样印出来；现在 `describeOperation()` 是 `DocumentEditor` 的成员，上下文才对
+  得上 —— 第二遍 lupdate 是 341 条（4 new）。
+- **一道确认顺手管到的另一件事**：把标签**拖到别的窗口**（`detachTabToNewWindow`）走的也是
+  `closeTab()` —— 那边按路径重开一份、这边关掉，所以带着未保存修改的标签被拖走时也会问一句。句子
+  本身没说错（"关掉这个标签就会把这些修改丢掉"），但读者心里那一下是"移动"不是"关闭"，这一问在
+  拖拽之后会显得突兀；要不要为拖拽单独改措辞，留给他看一眼再定。
+- **这一轮没验的**：整片的 GUI **一次没点** —— 旋转对话框、菜单里的撤销/重做标题会不会太长、
+  脏标记那个 ` *`、两道丢弃确认、以及"保存之后新标签"在新菜单下的样子，全是读过代码不是看过窗口。
+  包里装的仍是 §11.2 那份，不带这一片。删页那一条上一轮在开发树里点通过，这一轮的改动动的是它
+  脚下的模型，所以值得再点一次再谈完成。
+- **仍然欠的**：M5 的**重排**（`live` 的注释里给它留着位置：一个会打乱顺序的操作）；就地保存；
+  加密文档走编辑时"必须把口令再递一次"这件事在界面上怎么交代。

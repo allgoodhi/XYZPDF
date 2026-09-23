@@ -174,6 +174,32 @@ int main(int argc, char **argv)
             { "TranslateDialog", "复制译文" },     { "OcrDialog", "文字识别" },
             { "OcrDialog", "复制文字" },           { "OcrDialog", "复制图片" },
             { "SettingsDialog", "翻译服务" },      { "FindBar", "区分大小写" },
+            // Strings one feature at a time, and each one written out in full:
+            // translate() matches on the whole source, so a probe that is only a
+            // prefix of its sentence would report the source back and read as an
+            // untranslated string. That is why none of these is one of the two
+            // sentences with a blank line inside it -- those carry the build's
+            // line endings, which is a worse thing to pin in a test than a long
+            // string is.
+            { "MainWindow", "文档(&D)" },          { "MainWindow", "删除页面(&E)…" },
+            { "MainWindow", "旋转页面(&R)…" },     { "MainWindow", "保存修改为(&S)…" },
+            { "MainWindow", "还有没保存的修改" },
+            { "MainWindow", "已写成一个新文件（%1 页）：%2" },
+            { "DocumentTab", "把这些修改存成一个新文件" },
+            { "DocumentTab", "%1 已修改.pdf" },
+            { "DeletePagesDialog", "当前页（第 %1 页）" },
+            { "DeletePagesDialog", "现在这份有 %1 页：再删 %2 页，剩下 %3 页。" },
+            { "DeletePagesDialog", "还没有说出要删哪几页。" },
+            // The rotation dialog and the names the undo menu is built out of:
+            // both are newer than the sweep above, and the second is the one that
+            // a free helper function can drop out of the catalogue without any
+            // build step noticing.
+            { "RotatePagesDialog", "旋转这些页" },
+            { "RotatePagesDialog", "%1。说好的 %2 页里有 %3 页还在，只转那 %3 页。" },
+            { "DocumentEditor", "删除 %1 页" },
+            { "DocumentEditor", "向右转 90°（%1 页）" },
+            { "DocumentEditor", "另存为不能覆盖正在打开的文件。请换一个文件名。" },
+            { "DocumentEditor", "还没有打开任何文档。" },
         };
 
         for (const Probe &probe : probes) {

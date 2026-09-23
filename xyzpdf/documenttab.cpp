@@ -4,16 +4,19 @@
 #include "src/core/windowdialogs.h"
 #include "src/document/pagemetrics.h"
 #include "src/document/qtpdfbackend.h"
+#include "src/edit/documenteditor.h"
 #include "src/export/imageexport.h"
 #include "src/print/printjob.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
 #include "src/translate/translator.h"
+#include "src/ui/deletepagesdialog.h"
 #include "src/ui/findbar.h"
 #include "src/ui/imageexportdialog.h"
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
 #include "src/ui/printdialog.h"
+#include "src/ui/rotatepagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
 #include "src/ui/translatedialog.h"
 #include "src/view/pageview.h"
@@ -566,6 +569,13 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         return status;
     opening = true;
     drainRenders();
+    // A tab is one document at a time, and an undo list belongs to the document,
+    // not to the tab: operations recorded against pages of the file that used to be
+    // here would be replayed onto the new one.
+    if (editor) {
+        editor.reset();
+        Q_EMIT editStateChanged();
+    }
 
     const Document::Status result = backend->load(path, password);
     status = result;
@@ -573,6 +583,7 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
 
     if (result != Document::Status::Ready) {
         opened = false;
+        documentPassword.clear();
         clearSearch();
         // The view is emptied rather than left showing the previous document:
         // a page from another file under a tab named after this one is worse
@@ -621,6 +632,9 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
     // page a grey placeholder until something else happened to reschedule it.
     // documenttab_smoke catches it by opening a document and waiting for it.
     opened = true;
+    // Only ever the password that produced a Ready document, and it goes back to
+    // empty with the next failed open above.
+    documentPassword = password;
 
     pageView->setPageSizes(sizes);
 
@@ -654,7 +668,11 @@ QString DocumentTab::title() const
     const QString path = backend->path();
     if (path.isEmpty())
         return tr("（空标签）");
-    return QFileInfo(path).fileName();
+    // The star is the whole of the unsaved-edits warning: it has to be visible
+    // while the reader is still looking at the tab, which is the only moment at
+    // which "don't close that yet" is of any use to them.
+    return hasUnsavedEdits() ? QFileInfo(path).fileName() + QStringLiteral(" *")
+                             : QFileInfo(path).fileName();
 }
 
 int DocumentTab::pageCount() const
@@ -1111,6 +1129,149 @@ void DocumentTab::exportImages()
     }
     AppSettings::setLastOpenDirectory(directory);
     Q_EMIT imageExportFinished(report.directory, report.pages);
+}
+
+DocumentEditor *DocumentTab::editSession()
+{
+    if (!opened)
+        return nullptr;
+    if (!editor) {
+        auto session = std::make_unique<DocumentEditor>();
+        QString error;
+        // The reader is looking at this document through the renderer right now,
+        // so a refusal here cannot be "the file is broken" -- it is "what you can
+        // read, this program cannot write", which is what the sentence says.
+        if (!session->open(documentPath(), documentPassword, &error)) {
+            WindowDialogs::warning(window(), tr("修改这份文档"), error);
+            return nullptr;
+        }
+        editor = std::move(session);
+    }
+    return editor.get();
+}
+
+void DocumentTab::deletePages()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    DeletePagesDialog dialog(window(), pageView->currentPage(), document);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QString error;
+    if (!document->deletePages(dialog.pagesToDelete(), &error)) {
+        // The dialog ran the same arithmetic on the same editor, so this is the
+        // case where the two disagree -- and the editor's answer is the one that
+        // stands, since it is what a save would replay.
+        WindowDialogs::warning(window(), tr("删除页面"), error);
+        return;
+    }
+    Q_EMIT editStateChanged();
+}
+
+void DocumentTab::rotatePages()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    RotatePagesDialog dialog(window(), pageView->currentPage(), document);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QString error;
+    if (!document->rotatePages(dialog.pagesToRotate(), dialog.quarterTurns(), &error)) {
+        WindowDialogs::warning(window(), tr("旋转页面"), error);
+        return;
+    }
+    Q_EMIT editStateChanged();
+}
+
+void DocumentTab::undoEdit()
+{
+    if (editor && editor->undo())
+        Q_EMIT editStateChanged();
+}
+
+void DocumentTab::redoEdit()
+{
+    if (editor && editor->redo())
+        Q_EMIT editStateChanged();
+}
+
+bool DocumentTab::canUndoEdits() const
+{
+    return editor && editor->canUndo();
+}
+
+bool DocumentTab::canRedoEdits() const
+{
+    return editor && editor->canRedo();
+}
+
+QString DocumentTab::undoEditName() const
+{
+    return editor ? editor->undoDescription() : QString();
+}
+
+QString DocumentTab::redoEditName() const
+{
+    return editor ? editor->redoDescription() : QString();
+}
+
+bool DocumentTab::hasUnsavedEdits() const
+{
+    return editor && editor->isDirty();
+}
+
+QString DocumentTab::pendingEditsSummary() const
+{
+    return editor ? editor->pendingSummary() : QString();
+}
+
+bool DocumentTab::saveEdits()
+{
+    if (!editor || !editor->isDirty())
+        return false;
+
+    // Seeded with the source document's own name plus a suffix, in the folder it
+    // came from -- the same shape the Word export uses. The name is part of the
+    // interface, so it goes through the catalogue: what a reader should see in a
+    // save box is a word in their own language, not one in somebody else's.
+    const QFileInfo source(documentPath());
+    QString suggested = tr("%1 已修改.pdf").arg(source.completeBaseName());
+    if (!source.absolutePath().isEmpty())
+        suggested = source.absolutePath() + QLatin1Char('/') + suggested;
+
+    const QString destination = WindowDialogs::getSaveFileName(
+        window(), tr("把这些修改存成一个新文件"), suggested, tr("PDF 文档 (*.pdf)"));
+    if (destination.isEmpty())
+        return false;
+
+    // Synchronous, with the wait cursor over it, rather than off the thread that
+    // draws: QPDF reads the file's structure and copies its streams, and neither
+    // needs a renderer, a lock shared with one, or a progress report -- there is
+    // one page-tree to read and one file to write, so the dialog this would go in
+    // could only spin. docs/store-submission.md §10 has the measured cost.
+    const QString changes = editor->pendingSummary();
+    QString error;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool done = editor->saveAs(destination, &error);
+    QApplication::restoreOverrideCursor();
+
+    if (!done) {
+        WindowDialogs::warning(window(), tr("保存修改"), error);
+        return false;
+    }
+    AppSettings::setLastOpenDirectory(QFileInfo(destination).absolutePath());
+    // The list is still pending, so the star stays on this tab and 撤销 still has
+    // something to take back: what was written is a copy of the source with the
+    // operations played onto it, not the document being read.
+    Q_EMIT editStateChanged();
+    Q_EMIT documentSavedAs(destination, changes, editor->pageCount());
+    return true;
 }
 
 void DocumentTab::startTranslation(const QString &text, QPointer<TranslateDialog> dialog)

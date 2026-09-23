@@ -63,6 +63,10 @@ param(
     # means the package does not carry the C runtime, which is fine on the
     # machine that built it and not fine on a customer's.
     [string]$CrtDirectory = '',
+    # Where the vcpkg runtime DLLs live. Empty means the location this repository
+    # keeps them in -- vcpkg_installed\<triplet>\bin, which is what `vcpkg install`
+    # run from the repository root produces and what CMakeLists.txt looks in.
+    [string]$VcpkgBin = '',
     [switch]$Sign,
     [string]$Cert = '',
     [switch]$Install
@@ -201,6 +205,43 @@ if ($CrtDirectory) {
         }
     }
 }
+
+# ---------------------------------------------------------------------------
+# 2c. The other runtime: QPDF
+#
+# xyzpdf.exe has imported qpdf30.dll since the first write feature landed in
+# src/edit, and windeployqt knows nothing about a library that is not Qt. Listed one
+# by one rather than globbed out of vcpkg_installed\bin, because the glob would also
+# pick up turbojpeg.dll, which nothing in this build imports -- step 2b's mistake
+# arrived at from the other direction. z.dll and jpeg62.dll are qpdf30.dll's own
+# imports: leave one of them out and the package installs, launches, and dies in a
+# dialog box about a missing DLL, which the reader cannot connect back to this
+# script.
+#
+# Checked for after the copy, and in the staging tree rather than in the folder they
+# came from, because what is being proved is that they are in the package.
+# ---------------------------------------------------------------------------
+if (-not $VcpkgBin) {
+    $VcpkgBin = Join-Path $Project '..\vcpkg_installed\x64-windows\bin'
+}
+if (-not [IO.Path]::IsPathRooted($VcpkgBin)) { $VcpkgBin = Join-Path $Project $VcpkgBin }
+if (-not (Test-Path -LiteralPath $VcpkgBin)) {
+    throw "$VcpkgBin does not exist; run vcpkg install from the repository root first"
+}
+$qpdfRuntime = @('qpdf30.dll', 'z.dll', 'jpeg62.dll')
+foreach ($name in $qpdfRuntime) {
+    $file = Join-Path $VcpkgBin $name
+    if (-not (Test-Path -LiteralPath $file)) {
+        throw "$name is not in $VcpkgBin, and xyzpdf.exe imports it"
+    }
+    Copy-Item -LiteralPath $file -Destination (Join-Path $Stage 'bin') -Force
+}
+foreach ($name in $qpdfRuntime) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage "bin\$name"))) {
+        throw "$name did not land in the staging tree"
+    }
+}
+Write-Host ("copied the QPDF runtime, {0} file(s), from $VcpkgBin" -f $qpdfRuntime.Count)
 
 # ---------------------------------------------------------------------------
 # 3. The manifest and the pictures it names, then a check that both agree

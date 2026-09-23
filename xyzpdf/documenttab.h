@@ -32,6 +32,7 @@
 
 #include <memory>
 
+class DocumentEditor;
 class FindBar;
 class OcrDialog;
 class OutlinePanel;
@@ -61,8 +62,10 @@ public:
     bool isOpen() const { return opened; }
     QString documentPath() const;
 
-    // What the tab shows: the file name, and an asterisk-free name because v1
-    // never modifies the file.
+    // What the tab shows: the file name, with a trailing star while this tab is
+    // holding edits that no file has been written for. The star is the only
+    // warning a reader gets before closing a tab, and it has to be on the tab
+    // strip while they are still deciding rather than in a dialog afterwards.
     QString title() const;
 
     int pageCount() const;
@@ -180,6 +183,44 @@ public:
     // with a cancel-able progress dialog, like printing.
     void exportImages();
 
+    // ---- 编辑（M5）----
+    //
+    // Structural edits -- taking pages out, turning them -- recorded against this
+    // document and written out only when the reader names a file for them to go
+    // into. The document on screen is not what this changes: there is no path from
+    // here back onto the file being read (docs/PLAN.md §7.3: 写盘只发生在编辑模式
+    // 的显式保存, and AGENTS.md's 永不写用户的 PDF 文件), and the saved result
+    // opens in a tab of its own rather than replacing the one under the reader.
+    //
+    // What ties these together is that they share one list: 删除页面 and 旋转页面
+    // record an operation, 撤销 takes the last one back, and 保存修改为 writes
+    // whatever the list says. Each of the first two can be run again before
+    // anything is saved.
+    void deletePages();
+    void rotatePages();
+    void undoEdit();
+    void redoEdit();
+    // Names the file to write into, replays the list onto the source and writes
+    // it. Returns false when there was nothing to save, the reader backed out of
+    // the save box, or the write failed -- in the last case the reason has
+    // already been said, since every caller of this is a menu item.
+    bool saveEdits();
+
+    bool canUndoEdits() const;
+    bool canRedoEdits() const;
+    // "删除 3 页" -- what the next undo (or redo) would take back, for the menu
+    // item that names it. Empty when there is nothing to undo.
+    QString undoEditName() const;
+    QString redoEditName() const;
+    // The whole list in one line, for the question a reader gets when closing a
+    // tab would throw it away: naming the edits is the only way that question can
+    // be answered. Empty when there are none.
+    QString pendingEditsSummary() const;
+    // Whether this tab is holding edits that no file has yet. What the window
+    // asks before closing a tab or a window: the edits live only here, so
+    // closing is losing them, and nothing else tells the reader.
+    bool hasUnsavedEdits() const;
+
     // ---- 导出 ----
     //
     // Writes the whole document's text out as a Word file, off the UI thread:
@@ -220,6 +261,14 @@ Q_SIGNALS:
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
+    // An edit wrote a new document: where it is, what the list of operations was
+    // ("删除 3 页"), and how many pages came out. The window opens the result in a
+    // tab of its own -- the tab this came from is still showing the file the edits
+    // were made against, which is the whole design.
+    void documentSavedAs(const QString &path, const QString &changes, int pageCount);
+    // The list of pending edits changed: something to undo, or nothing left to
+    // undo. What the window redraws the 文档 menu and the tab's title from.
+    void editStateChanged();
 
 protected:
     // Theming: the page surface paints itself, so the application stylesheet
@@ -278,6 +327,15 @@ private:
     // export reports from a worker, and this is how the report gets here.
     void notifyExportProgress(int done, int total);
 
+    // The editor for this document, opening it on the first call. Null when the
+    // document cannot be edited -- and the reason has already been said to the
+    // reader, because every caller of this is a menu item they just pressed.
+    //
+    // Made on the first edit command rather than with the tab, because §7.3 makes
+    // the editor the mark of edit mode: a tab that is only being read holds no
+    // parser, no undo list, and no claim on the file it was opened from.
+    DocumentEditor *editSession();
+
     // Declared before the renderer, and therefore destroyed after it: the
     // renderer holds a pointer to this document, and a document that goes away
     // first leaves it holding freed memory. Members are destroyed in reverse
@@ -334,6 +392,17 @@ private:
 
     Document::Status status = Document::Status::FileError;
     bool opened = false;
+    // What is being edited, when it is being edited: null until the first 文档
+    // command, reset by every open(). Held rather than made per command, because
+    // the operations pile up across dialog boxes and 撤销 has to reach the whole
+    // list -- see the notes at the edit commands above.
+    std::unique_ptr<DocumentEditor> editor;
+    // The password the reader typed for this document, empty when it needed none.
+    // Kept for the edit path, which opens the same file a second time through a
+    // different library: asking again, in the same window, for a password that was
+    // already given is a worse trade than holding it for as long as the document
+    // is open -- where it is already held anyway, by the renderer.
+    QString documentPassword;
     // Set while open() is draining renders, so that a stray event delivered from
     // inside that wait cannot start a second open on this tab.
     bool opening = false;

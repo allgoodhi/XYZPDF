@@ -26,6 +26,14 @@ QVector<Component> components()
          tr("v1 的渲染引擎：页面光栅化、文本提取、书签与链接都由它完成。"
             "由 Qt PDF 编入 Qt6Pdf.dll，未做修改。")},
 
+        {QStringLiteral("QPDF"),
+         QStringLiteral("qpdf30.dll, z.dll, jpeg62.dll"),
+         QStringLiteral("Apache-2.0"),
+         QStringLiteral("https://github.com/qpdf/qpdf"),
+         QStringLiteral(":/licenses/qpdf.txt"),
+         tr("结构编辑器：删除页面后的文档由它写出。以动态库形式随包分发，未做修改。"
+            "z.dll 与 jpeg62.dll 是它自带的依赖（zlib、libjpeg），一并动态链接。")},
+
         {QStringLiteral("Qt 内置的第三方库"),
          QStringLiteral("（编入 Qt6Gui.dll、Qt6Core.dll）"),
          QStringLiteral("各自的原许可证，见许可证全文"),

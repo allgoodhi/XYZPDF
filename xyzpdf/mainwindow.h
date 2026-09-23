@@ -27,6 +27,7 @@ namespace Ui {
 class MainWindow;
 }
 class QAction;
+class QCloseEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -96,6 +97,13 @@ private:
     void showExportProgress(DocumentTab *tab, int done, int total);
     void closeExportProgress();
     void closeTab(int index);
+    // False when the reader said they did not mean to lose the edits this tab is
+    // holding -- which is the only thing closeTab and the drag hand-off can do with
+    // them, since nothing else writes them anywhere.
+    bool confirmDiscardingEdits(DocumentTab *tab);
+    // The same question asked once for the window, counting the tabs that hold
+    // something. Used by closeEvent.
+    bool confirmDiscardingEditsInAllTabs();
     void closeCurrentTab();
     // The tab-drag gestures wired from DocumentTabBar: reorder within this
     // window, detach a tab into a new window, accept a tab merged in from another
@@ -181,6 +189,11 @@ protected:
     // its Escape first -- see eventFilter().
     void keyPressEvent(QKeyEvent *event) override;
 
+    // The last chance to stop a window closing while a tab in it is holding edits
+    // no file has. Closing a single tab asks in closeTab; this covers the X, 关闭,
+    // and anything else that takes the window whole.
+    void closeEvent(QCloseEvent *event) override;
+
 private:
     // What a drag in progress is carrying: the local files among its URLs,
     // decided once when the drag arrives rather than on every move -- the
@@ -230,6 +243,14 @@ private:
     QAction *exportWordAction = nullptr;
     QAction *printAction = nullptr;
     QAction *exportImagesAction = nullptr;
+    // 文档: the list of edits this tab is holding, seen from its three ends --
+    // what can be recorded, what the list can be moved back to, and the one
+    // command that writes a file.
+    QAction *deletePagesAction = nullptr;
+    QAction *rotatePagesAction = nullptr;
+    QAction *undoEditAction = nullptr;
+    QAction *redoEditAction = nullptr;
+    QAction *saveEditsAction = nullptr;
     QAction *findAction = nullptr;
     QAction *findNextAction = nullptr;
     QAction *findPreviousAction = nullptr;

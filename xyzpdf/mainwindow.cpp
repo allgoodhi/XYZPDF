@@ -580,9 +580,11 @@ void MainWindow::buildMenus()
 
     // ---- 编辑 ----
     //
-    // Two entries, and only two, because this is a reader: everything else that
-    // would go here -- cut, paste, delete -- is editing, which is M5. Copy is
-    // disabled until something is selected, so the menu says what state the
+    // What a reader does with a selection, and the search bar that finds one more.
+    // Everything else a text editor's 编辑 menu holds -- cut, paste, delete -- is
+    // editing, and the editing that has arrived (M5) is under 文档 below, where
+    // changing the document is not confused with changing what is highlighted.
+    // Copy is disabled until something is selected, so the menu says what state the
     // selection is in rather than offering an action that would do nothing.
     QMenu *editMenu = menuBar()->addMenu(tr("编辑(&E)"));
 
@@ -817,6 +819,82 @@ void MainWindow::buildMenus()
     presentationAction->setToolTip(tr("从当前页开始放映：点击或方向键翻页，Esc 退出"));
     connect(presentationAction, &QAction::triggered, this, &MainWindow::togglePresentation);
     viewMenu->addAction(presentationAction);
+
+    // ---- 文档 ----
+    //
+    // The commands that change the document. Deliberately not in 编辑: that menu
+    // is what a reader does with a *selection* -- copy, translate, find -- and
+    // putting document commands in it would mean the one menu whose items all grey
+    // out without a drag also holds the one item that needs nothing but an open
+    // file. Acrobat's 文档 menu sits in this same place, and the rest of M5
+    // (重排、拆分、加密) is coming to fill this one out.
+    //
+    // The last three items are the other half of the first two. 删除页面 and
+    // 旋转页面 record an edit, 撤销 and 重做 move along the list those two
+    // recorded into, and 保存修改为… is the only one of the five that writes a
+    // file. They sit in this menu rather than spread across 文件 and 编辑 because
+    // they are one list seen from three ends, and a reader looking for any of them
+    // is looking for this menu.
+    QMenu *documentMenu = menuBar()->addMenu(tr("文档(&D)"));
+
+    deletePagesAction = makeAction(tr("删除页面(&E)…"), QKeySequence());
+    deletePagesAction->setObjectName(QStringLiteral("deletePagesAction"));
+    deletePagesAction->setToolTip(tr("记下要删掉的页，按保存修改为才写成一个新文件；正在读的这份不动"));
+    connect(deletePagesAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->deletePages();
+    });
+    documentMenu->addAction(deletePagesAction);
+
+    rotatePagesAction = makeAction(tr("旋转页面(&R)…"), QKeySequence());
+    rotatePagesAction->setObjectName(QStringLiteral("rotatePagesAction"));
+    // Worded apart from 视图's two rotate buttons on purpose: those turn the pages
+    // on screen and are forgotten with the tab, this one writes the turn into a
+    // file. A reader who pressed the wrong one should still find out before the
+    // save rather than from a file they did not mean to make.
+    rotatePagesAction->setToolTip(tr("记下要转的角度，按保存修改为才写成一个新文件；正在读的这份不动"));
+    connect(rotatePagesAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->rotatePages();
+    });
+    documentMenu->addAction(rotatePagesAction);
+
+    documentMenu->addSeparator();
+
+    // The undo item says what it would take back -- "撤销（删除 3 页）" -- because
+    // an edit that was recorded in a dialog twenty clicks ago is not something a
+    // reader keeps an index of, and a bare 撤销 leaves them guessing which of the
+    // two ways it goes wrong (too little, or the wrong page) they are about to
+    // find out.
+    undoEditAction = makeAction(tr("撤销"), QKeySequence(QStringLiteral("Ctrl+Z")));
+    undoEditAction->setObjectName(QStringLiteral("undoEditAction"));
+    connect(undoEditAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->undoEdit();
+    });
+    documentMenu->addAction(undoEditAction);
+
+    redoEditAction = makeAction(tr("重做"), QKeySequence(QStringLiteral("Ctrl+Y")));
+    redoEditAction->setObjectName(QStringLiteral("redoEditAction"));
+    connect(redoEditAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->redoEdit();
+    });
+    documentMenu->addAction(redoEditAction);
+
+    documentMenu->addSeparator();
+
+    saveEditsAction = makeAction(tr("保存修改为(&S)…"), QKeySequence(QStringLiteral("Ctrl+S")));
+    saveEditsAction->setObjectName(QStringLiteral("saveEditsAction"));
+    // "为" is the whole of the promise: this never writes the file that is open, so
+    // it is not the Ctrl+S a reader's fingers already know. AGENTS.md's 永不写用户的
+    // PDF 文件 is the reason, and the menu has to be honest about it.
+    saveEditsAction->setToolTip(tr("把这些修改写成一个新文件；正在读的这份不动"));
+    connect(saveEditsAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->saveEdits();
+    });
+    documentMenu->addAction(saveEditsAction);
 
     // ---- 转到 ----
     QMenu *goMenu = menuBar()->addMenu(tr("转到(&G)"));
@@ -1236,6 +1314,18 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
         statusBar()->showMessage(tr("已导出 %1 张图片到 %2").arg(pages).arg(directory), 6000);
     });
 
+    connect(tab, &DocumentTab::documentSavedAs, this,
+            [this](const QString &path, const QString &changes, int pages) {
+        // The copy that came out of the edit opens *beside* the document it was
+        // made from, not in its place: the reader asked for a document with those
+        // changes in it, and the quickest way to check that the pages which went
+        // are the pages they meant is to have both on screen, one tab each.
+        openDocument(path);
+        // Ours last, because openDocument puts its own "已打开" up there first and
+        // says less than this does.
+        statusBar()->showMessage(tr("已写成一个新文件（%1 页）：%2").arg(pages).arg(changes), 8000);
+    });
+
     connect(tab, &DocumentTab::searchChanged, this, [this, tab](int, int, bool) {
         if (tab != currentTab())
             return;
@@ -1255,6 +1345,15 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
             tabs->setTabText(at, title);
     };
     connect(tab, &DocumentTab::titleChanged, this, applyTitle);
+    // One signal covers three surfaces, because they all read the same list: the
+    // tab's star, the window title, and what the 文档 menu can offer. The first
+    // two go by the same route the title already takes, so the window bar cannot
+    // say something the tab strip does not.
+    connect(tab, &DocumentTab::editStateChanged, this, [this, tab, applyTitle] {
+        applyTitle(tab->title());
+        if (tab == currentTab())
+            updateForCurrentTab();
+    });
     connect(tab, &DocumentTab::pageChanged, this, [this, tab](int current, int count) {
         Q_UNUSED(current)
         Q_UNUSED(count)
@@ -1549,10 +1648,68 @@ void MainWindow::reportWordExport(const WordExportReport &report)
     WindowDialogs::information(this, tr("导出为 Word"), message);
 }
 
+bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
+{
+    if (!tab->hasUnsavedEdits())
+        return true;
+    // Said in full rather than as "unsaved changes": the edits a reader is about to
+    // throw away are the ones the menu above their hands just recorded, and naming
+    // them is what makes "wait, not those" possible. Closing is the only place this
+    // question can be asked at all -- nothing writes in between.
+    const QString what = tab->pendingEditsSummary();
+    const auto answer = WindowDialogs::question(
+        this, tr("还有没保存的修改"),
+        tr("「%1」还带着没有写进任何文件的修改：%2。\n\n关掉这个标签就会把这些修改丢掉。"
+           "要关掉吗？")
+            .arg(tab->title(), what),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    return answer == QMessageBox::Yes;
+}
+
+bool MainWindow::confirmDiscardingEditsInAllTabs()
+{
+    int holding = 0;
+    for (int index = 0; index < tabs->count(); ++index) {
+        auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
+        if (tab && tab->hasUnsavedEdits())
+            ++holding;
+    }
+    if (holding == 0)
+        return true;
+    // One question for the window rather than one per tab: the reader who closes a
+    // window with three edited documents in it is being asked to give up three
+    // lists, and a dialog that pops three times says nothing about that.
+    const auto answer = WindowDialogs::question(
+        this, tr("还有没保存的修改"),
+        tr("这个窗口里有 %1 个标签带着没有写进任何文件的修改。\n\n关掉窗口就会把这些修改"
+           "丢掉。要关掉吗？").arg(holding),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    return answer == QMessageBox::Yes;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // The last guard on the way out. Closing a tab asks on its own (closeTab); this
+    // is for the routes that take the window instead -- the 关闭 item, the X, and
+    // the rule that the last tab closing closes the window, which by the time it
+    // gets here has already removed the tab that triggered it.
+    if (confirmDiscardingEditsInAllTabs())
+        event->accept();
+    else
+        event->ignore();
+}
+
 void MainWindow::closeTab(int index)
 {
     auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
     if (!tab)
+        return;
+
+    // Before the tab is taken out: the edits live in it and nowhere else, so this is
+    // the last moment at which saying "those were not to be thrown away" is worth
+    // anything. A tab dragged to another window comes through here too, and loses
+    // them the same way -- the other window is being handed a path, not a list.
+    if (!confirmDiscardingEdits(tab))
         return;
 
     tabs->removeTab(index);
@@ -1872,11 +2029,32 @@ void MainWindow::updateForCurrentTab()
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
+                            deletePagesAction, rotatePagesAction,
                             viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)
             action->setEnabled(hasDocument);
     }
+
+    // The other three items in 文档 read this tab's list of edits rather than the
+    // fact that a document is open: there is nothing to undo on a tab that has
+    // recorded none, and nothing to save on one whose list is empty. Undo and redo
+    // say which entry they act on, because a bare 撤销 leaves the reader to
+    // remember a list they never saw.
+    if (undoEditAction) {
+        const bool can = tab && tab->canUndoEdits();
+        const QString what = can ? tab->undoEditName() : QString();
+        undoEditAction->setEnabled(can);
+        undoEditAction->setText(what.isEmpty() ? tr("撤销(&U)") : tr("撤销 %1(&U)").arg(what));
+    }
+    if (redoEditAction) {
+        const bool can = tab && tab->canRedoEdits();
+        const QString what = can ? tab->redoEditName() : QString();
+        redoEditAction->setEnabled(can);
+        redoEditAction->setText(what.isEmpty() ? tr("重做(&O)") : tr("重做 %1(&O)").arg(what));
+    }
+    if (saveEditsAction)
+        saveEditsAction->setEnabled(tab && tab->hasUnsavedEdits());
 
     // The tool buttons show the tool the tab in front is actually using, which
     // is not necessarily the remembered one: the tab may have been given a

@@ -126,6 +126,11 @@ $required = @(
     # The plugins Qt loads by name, so nothing in an import table asks for them.
     'plugins\platforms\qwindows.dll', 'plugins\imageformats\qsvg.dll',
     'plugins\styles\qmodernwindowsstyle.dll', 'plugins\tls\qschannelbackend.dll',
+    # The structural editor's runtime, named one by one the way build-package.ps1
+    # copies them. Not Qt, so windeployqt's answer about what to install does not
+    # cover them, and their absence is a program that will not start -- which is a
+    # dialog box, not anything the reader can connect to this package.
+    'bin\qpdf30.dll', 'bin\z.dll', 'bin\jpeg62.dll',
     # The tiles, one name per size class plus a scaled variant: the variant is
     # what the PRI exists for, so checking it is present checks the index has
     # something to index.
@@ -226,7 +231,12 @@ if ($problems.Count -eq 0) {
 
             $traced = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Pdf.dll',
                         'Qt6Network.dll', 'Qt6PrintSupport.dll', 'Qt6Svg.dll',
-                        'qwindows.dll', 'qsvg.dll')
+                        'qwindows.dll', 'qsvg.dll',
+                        # Imported by xyzpdf.exe itself, so it is there or the
+                        # process never starts -- and if a Qt on this machine's PATH
+                        # were satisfying it, that is the one case where "it ran"
+                        # would be hiding a package that does not.
+                        'qpdf30.dll')
             if ($CarriesCrt) {
                 $traced += @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
             }

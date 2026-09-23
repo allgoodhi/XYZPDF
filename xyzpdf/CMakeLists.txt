@@ -104,11 +104,13 @@ if (NOT qpdf_FOUND)
         "from the repository root (the directory holding vcpkg.json).")
 endif()
 
-# The release DLLs, globbed the way XYZip globs them. Nothing links QPDF into
-# xyzpdf.exe yet -- there is no call site until the first write feature -- so this
-# is not a deploy list; it is what puts a working qpdf30.dll beside a test
-# executable, which has no other way to find it (tools/build_all_tests.py puts
-# only Qt's bin on PATH).
+# The release DLLs, globbed the way XYZip globs them. Two consumers: the copy into
+# <build>/tests further down, which is what lets a test executable start (they are
+# run with only Qt's bin on PATH -- tools/build_all_tests.py), and the copy beside
+# xyzpdf.exe, which is what lets that one be double-clicked in the build directory.
+# The MSIX payload is a third, separate path: packaging/build-package.ps1 stages
+# from an install tree and names the files it needs by hand, because a package that
+# silently drops an imported DLL fails on somebody else's machine.
 file(GLOB XYZPDF_VCPKG_RUNTIME_DLLS "${XYZPDF_LOCAL_VCPKG_PREFIX}/bin/*.dll")
 
 if(MSVC)
@@ -212,6 +214,9 @@ set(XYZPDF_SOURCES
     src/document/textsearch.h
     src/document/textsearch.cpp
 
+    src/edit/documenteditor.h
+    src/edit/documenteditor.cpp
+
     src/export/docxwriter.h
     src/export/docxwriter.cpp
     src/export/imageexport.h
@@ -245,6 +250,8 @@ set(XYZPDF_SOURCES
 
     src/ui/documenttabbar.h
     src/ui/documenttabbar.cpp
+    src/ui/deletepagesdialog.h
+    src/ui/deletepagesdialog.cpp
     src/ui/findbar.h
     src/ui/findbar.cpp
     src/ui/imageexportdialog.h
@@ -257,6 +264,8 @@ set(XYZPDF_SOURCES
     src/ui/outlinepanel.cpp
     src/ui/printdialog.h
     src/ui/printdialog.cpp
+    src/ui/rotatepagesdialog.h
+    src/ui/rotatepagesdialog.cpp
     src/ui/thirdpartydialog.h
     src/ui/thirdpartydialog.cpp
     src/ui/thumbnailpanel.h
@@ -285,6 +294,10 @@ target_link_libraries(xyzpdf PRIVATE
     Qt6::Pdf
     Qt6::Concurrent
     Qt6::PrintSupport
+    # From src/edit, which is the only place it is named: the structural editor
+    # writes, the reader only reads, and the seam between the two is the point of
+    # docs/PLAN.md §7.3.
+    qpdf::libqpdf
 )
 
 if(WIN32)
@@ -378,6 +391,19 @@ if(WIN32)
         message(STATUS
             "windeployqt was not found; xyzpdf.exe will need Qt's bin directory on PATH to start")
     endif()
+
+    # The other runtime, for the same reason and by the same means: xyzpdf.exe
+    # imports qpdf30.dll, and the loader looks beside the executable and on PATH,
+    # neither of which is where vcpkg put it. Without this the program builds and
+    # then will not start, which is exactly the complaint the block above exists to
+    # prevent -- Qt just got there first.
+    if(XYZPDF_VCPKG_RUNTIME_DLLS)
+        add_custom_command(TARGET xyzpdf POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${XYZPDF_VCPKG_RUNTIME_DLLS} "$<TARGET_FILE_DIR:xyzpdf>"
+            COMMENT "Deploying the vcpkg runtime beside xyzpdf.exe"
+            VERBATIM)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -461,6 +487,21 @@ option(XYZPDF_BUILD_QPDF_SMOKE "Build the QPDF round-trip smoke test" OFF)
 if(XYZPDF_BUILD_QPDF_SMOKE)
     xyzpdf_add_test(qpdf_smoke
         SOURCES src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+endif()
+
+# The first thing the program writes with that dependency: pages taken out of a
+# document, saved as a new file. Two halves -- the arithmetic that decides what a
+# range of page numbers means, and the round trip that proves the file which comes
+# out is a PDF the reader opens and the original is still byte for byte what it
+# was. See tests/documenteditor_smoke.cpp.
+option(XYZPDF_BUILD_DOCUMENTEDITOR_SMOKE "Build the page-deletion smoke test" OFF)
+if(XYZPDF_BUILD_DOCUMENTEDITOR_SMOKE)
+    xyzpdf_add_test(documenteditor_smoke
+        SOURCES src/edit/documenteditor.cpp
+                src/document/qtpdfbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES Qt6::Pdf qpdf::libqpdf)
@@ -554,13 +595,14 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     # The tab owns the recognition flow, so the engine comes with it -- which
     # also means this test runs real Windows OCR once, on the region drag it
     # performs below.
-    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport)
+    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
     if(WIN32)
         list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp)
     endif()
     xyzpdf_add_test(documenttab_smoke
         SOURCES documenttab.cpp
                 src/core/windowdialogs.cpp
+                src/edit/documenteditor.cpp
                 src/view/pageview.cpp
                 src/view/pagelayout.cpp
                 src/view/zoomcontroller.cpp
@@ -576,11 +618,13 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ocr/ocrengine.cpp
                 src/print/printjob.cpp
                 src/translate/translator.cpp
+                src/ui/deletepagesdialog.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
+                src/ui/rotatepagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
                 src/render/pagerenderer.cpp
@@ -598,7 +642,7 @@ endif()
 # call to setAcceptDrops(), and neither is visible in the handlers.
 option(XYZPDF_BUILD_MAINWINDOW_SMOKE "Build the window drag-and-drop smoke test" OFF)
 if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
-    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport)
+    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
     if(WIN32)
         list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp)
     endif()
@@ -617,6 +661,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/document/pagemetrics.cpp
                 src/document/textlayer.cpp
                 src/document/textsearch.cpp
+                src/edit/documenteditor.cpp
                 src/export/docxwriter.cpp
                 src/export/imageexport.cpp
                 src/export/wordexport.cpp
@@ -629,12 +674,14 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/documenttabbar.cpp
+                src/ui/deletepagesdialog.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
                 src/ui/languagedialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
+                src/ui/rotatepagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
                 src/ui/thirdpartydialog.cpp

@@ -1657,11 +1657,15 @@ bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
     // them is what makes "wait, not those" possible. Closing is the only place this
     // question can be asked at all -- nothing writes in between.
     const QString what = tab->pendingEditsSummary();
+    // The file name, not the tab's title: the title carries the dirty star, and
+    // 「doc.pdf *」还带着没有写进任何文件的修改 hands the reader the same warning
+    // twice in one sentence.
+    const QString file = QFileInfo(tab->documentPath()).fileName();
     const auto answer = WindowDialogs::question(
         this, tr("还有没保存的修改"),
         tr("「%1」还带着没有写进任何文件的修改：%2。\n\n关掉这个标签就会把这些修改丢掉。"
            "要关掉吗？")
-            .arg(tab->title(), what),
+            .arg(file, what),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     return answer == QMessageBox::Yes;
 }

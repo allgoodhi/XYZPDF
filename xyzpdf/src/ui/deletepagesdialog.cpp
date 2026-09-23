@@ -111,5 +111,12 @@ QVector<int> DeletePagesDialog::pagesToDelete() const
 {
     if (currentChoice->isChecked())
         return {currentPageIndex};
-    return Print::parsePageRange(customEdit->text(), pageTotal);
+    // Blank means "nothing said yet", not "every page" -- see the same guard in the
+    // rotate dialog. Only the delete side has a floor that stops the whole document
+    // from going, and a floor that says "这样一页也不剩了" is a worse answer to a
+    // reader who never typed anything than a greyed button.
+    const QString spec = customEdit->text().trimmed();
+    if (spec.isEmpty())
+        return {};
+    return Print::parsePageRange(spec, pageTotal);
 }

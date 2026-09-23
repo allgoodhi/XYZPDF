@@ -129,7 +129,15 @@ QVector<int> RotatePagesDialog::pagesToRotate() const
 {
     if (currentChoice->isChecked())
         return {currentPageIndex};
-    return Print::parsePageRange(customEdit->text(), pageTotal);
+    // Blank means "nothing said yet" here. The print parser reads a blank range as
+    // the whole document -- which is right for printing, where "no selection" and
+    // "all pages" are the same default -- and this dialog opens with the box empty
+    // and the direction already chosen, so one Enter on a file of four hundred
+    // pages would be four hundred pages turned.
+    const QString spec = customEdit->text().trimmed();
+    if (spec.isEmpty())
+        return {};
+    return Print::parsePageRange(spec, pageTotal);
 }
 
 int RotatePagesDialog::quarterTurns() const

@@ -1388,3 +1388,52 @@ gate：`python tools/build_all_tests.py` → `28 test targets found`、`26 passe
 **仍然欠的**：就地保存；加密文档在界面上怎么交代口令；标签拖去别的窗口时那句措辞；删页小结里那个
 页数跟着谁走（§13 末条）；"改缩放模式后状态条页号与屏幕不一致"（§13 顺手记的）；上面那四条没验到的；
 外加新的一条 —— **M5 这一片的英文菜单在本机安装包上是坏的**，要等下一次重打包才一起出去。
+（那一条由 §16 结掉。）
+
+## 16. §15 欠的那一次重打包，和"装上的就是测过的那一份"怎么证（2026-09-24）
+
+链条还是那三步：`Get-AppxPackage -Name allgoodhi.XYZPDF | Remove-AppxPackage` →
+`build-package.ps1 -Sign -Cert 221C6B38…0A83 -Install` → `verify-package.ps1 -Package …`。
+包 **16.9 MB**（和 §13 一样大），`signtool` 一次过，`verify-package.ps1` 的判词是
+`XYZPDF_0.1.0.0_x64.msix unpacks to 39.3 MB in 62 files`、`starts from the unpacked package with
+no Qt on PATH`、`the package is complete and runs standalone`。
+
+**这一节真正想记的是中间那一步怎么证。** "重打包并装上了"这句话本身不含任何信息 —— 它可能是
+一份旧二进制打了包。能证的是**三个地方的 SHA-256 相同**：
+
+```
+build-local-release/xyzpdf.exe            d5554654e13fdb67…4d4c46d4cfdfbf55d071d7ea62f593d
+包里的 bin/xyzpdf.exe（解到 %TEMP% 那一份）  同上
+C:\Program Files\WindowsApps\...\bin\xyzpdf.exe  同上
+```
+
+第三条是装在系统里的那一份，`certutil` 直接读得动（`WindowsApps` 的 ACL 挡的是写，不是读）。
+哈希相等之后，§15 里"26 个测试跑的是这份字节、真窗口点的是这份字节"才顺带变成"装着的也是这份字节"，
+否则装机这一句只能靠"我重新编译过了"这种话撑着。
+
+**装机之后在屏幕上看的两帧**（部署的那一份，用 `explorer.exe shell:AppsFolder\allgoodhi.XYZPDF_edpkq8hzfe5n4!XYZPDF`
+起的 —— 清单里没有 `AppExecutionAlias`，所以带不了文件参数，这一遍没开文档，三行编辑菜单是灰的）：
+
+- 中文：`删除页面(E)…` / `旋转页面(R)…` / **`移动页面(M)…`**，`撤销(U)`、`重做(O)`、`保存修改为(S)…` 灰着。
+- 英文：`Delete Pages(E)…` / `Rotate Pages(R)…` / `Move Pages(M)…` / `Undo(U) Ctrl+Z` /
+  `Redo(O) Ctrl+Y` / `Save Changes As(S)… Ctrl+S` —— **一个 `&amp;` 都没有**。§15 那六个字面量
+  到此才算真的从这台机器上出去。
+
+**切英文走的不是菜单。** `Language` 那一项没有助记符，`{RIGHT}` 三次和 `{ALT}` + `{RIGHT}` 六次
+都没停在它上面（第一次还把菜单整个关掉了），两轮没点进去就不点了 —— 改成直接写程序开机读的那个值：
+`HKCU\Software\xyzpdf\xyzpdf\appearance\language = en`，重启就是英文。**量的还是同一个界面，
+只是绕开了那个不好点的入口。** 看完把 `appearance` 这个子键删掉（这台机器本来没有它，
+`recent\documents` 还是 8 条、没有 scratch 路径），`verify-package.ps1` 留在 `%TEMP%` 的 39.3 MB
+解包目录也删了。
+
+**顺带一条工具的坑**：`gui-verify/*.ps1` 里写了非 ASCII 字符（一个省略号）就让 Windows PowerShell 5.1
+报 `字符串缺少终止符` —— 它按 ANSI 读没有 BOM 的 `.ps1`，那个字符的字节把引号吃了。这些套子里的脚本
+**只写 ASCII**。
+
+**这一遍没有的**：没在装着的这一份上打开过 PDF，所以重排、删页、旋转在**安装包**上仍然只是"菜单里
+有这三行"，不是"点通过"—— 点通过的是开发树那一份，两份的 exe 逐字节相同，这是这一节能这么说的前提。
+预览窗格和缩略图这次没再看。
+
+**仍然欠的**：就地保存；加密文档在界面上怎么交代口令；标签拖去别的窗口时那句措辞；删页小结里那个
+页数跟着谁走（§13 末条）；状态条页号与屏幕不一致（§13）；§15 那四条没验到的（其中"移动之后关标签的
+标签级确认句"和"锚点掉空档那两句"这一遍仍然没看到）；`gui-verify/*.ps1` 还没搬进 `tools/`。

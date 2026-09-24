@@ -13,9 +13,9 @@
 // ---- what an edit is, and where it reaches disk ----
 //
 // Nothing here touches a page's content stream: no drawing, no text changes.
-// Every operation is structural -- which pages exist, in what order, turned
-// which way. That is the first wave of M5 (docs/PLAN.md §4: 结构编辑先上 QPDF，
-// 这些不碰页面内容流，风险最低), and it is why the implementation is QPDF rather
+// Every operation is structural -- which pages exist, where they came from, in what
+// order, turned which way. That is the first wave of M5 (docs/PLAN.md §4: 结构编辑先上
+// QPDF，这些不碰页面内容流，风险最低), and it is why the implementation is QPDF rather
 // than something built on the renderer.
 //
 // Changes are held as a list of operations and reach the disk only through
@@ -52,6 +52,27 @@
 // moment. Numbers a reader never has to think about are the ones they cannot get
 // wrong.
 //
+// ---- why a page is a pair of numbers, not one ----
+//
+// 合并文件 is what forced `PageRef`. Until it, one number identified a page: the
+// operations were delete, rotate and move, all of which only ever rearrange pages
+// that are already there, and the reader is looking at the file as it was opened, so
+// "第 7 页" meant one thing in every sentence and in every operation.
+//
+// Merging brings in pages that were never in that file, and after that the two
+// questions a reader could mean are different answers -- the 7th page on the screen,
+// or the 7th page of the file a save would write. This program keeps numbering
+// everything by the screen: every range typed into every dialog addresses the opened
+// document, which is the only document a reader can see. So pages that came from
+// another file carry a number from *their own* file, and `source` says which merge
+// put them here.
+//
+// The consequence worth stating out loud, because it is a limit rather than a
+// detail: an imported page has no number a reader can type. It can be moved to the
+// front or the back and it can be taken away by undoing the merge that brought it,
+// but it cannot be named in a 删除页面 or 旋转页面 box -- those pages are not on the
+// screen. A save writes them all the same.
+//
 // ---- why saveAs goes through a temporary file ----
 //
 // QPDFWriter opens its output before it has written anything, so a write that
@@ -87,6 +108,42 @@ public:
         AfterPage
     };
 
+    // Which document a page came from, and where inside it. See the header note:
+    // this is a pair rather than one number because 合并文件 puts pages into the saved
+    // file that the screen never showed.
+    //
+    // `source` names the *merge that brought the page in*, not the file it came from
+    // (Operation::mergeId), and 0 is the document that was opened. A file index would
+    // be one shorter, and would be wrong: merging the same page twice has to produce
+    // two pages with two identities, or the second copy cannot be told apart from the
+    // first when a later move asks where it is.
+    struct PageRef
+    {
+        // Which merge brought this page in, or 0 for a page of the document this editor
+        // was opened from. Every page number a reader types names a page of that file,
+        // so a non-zero source is always one a merge put here -- and no two pages in one
+        // document share a source and a number.
+        int source = 0;
+        int page = -1;
+
+        // Same page of same merge. QVector's indexOf()/removeOne() go through this, and
+        // they are how a pending operation finds the page it was asked about.
+        bool operator==(const PageRef &other) const
+        {
+            return source == other.source && page == other.page;
+        }
+    };
+
+    // A file some operation took pages out of. Entries are never removed, even when
+    // the merge that added one is undone: operations point at these by index, and an
+    // index that shifted under them would silently re-point an undo at a different
+    // file.
+    struct Import
+    {
+        QString path;
+        int pageCount = 0;
+    };
+
     // One structural change, as it waits in the pending list.
     struct Operation
     {
@@ -94,24 +151,38 @@ public:
         {
             DeletePages,
             RotatePages,
-            MovePages
+            MovePages,
+            MergeFile
         };
         Kind kind = Kind::DeletePages;
-        // Original page numbers -- positions in the document as it was opened,
-        // which is what the reader is looking at. See the header note.
+        // Delete/Rotate/Move: original page numbers -- positions in the document as
+        // it was opened, which is what the reader is looking at. See the header note.
+        // MergeFile: page numbers within `imports[importIndex]`, which is the file
+        // the reader was looking at while choosing them.
         QVector<int> pages;
         // RotatePages only: quarter turns to add clockwise, 1 for 右转 90°, 2 for
         // 转 180°, 3 for 左转 90°. PDF stores rotation as /Rotate, which is
         // clockwise, so the direction the reader chose has to be said this way
         // once, here, rather than in two places.
         int quarterTurns = 1;
-        // MovePages only: where the block goes.
+        // MovePages and MergeFile only: where the block goes.
         MoveTarget moveTo = MoveTarget::Back;
-        // MovePages with MoveTarget::AfterPage only: the original number of the
-        // page the block lands behind. Kept as a number rather than resolved to a
-        // position at the time it was asked for, because the page it names may be
-        // one a later undo brings back -- see planMove().
+        // MovePages and MergeFile with MoveTarget::AfterPage only: the original
+        // number of the page the block lands behind -- a page of the opened document
+        // in both cases, so that a merge can be pointed at a page the reader can see.
+        // Kept as a number rather than resolved to a position at the time it was
+        // asked for, because the page it names may be one a later undo brings back --
+        // see planMove().
         int anchor = -1;
+        // MergeFile only: which entry of `imports` names the file, which is what a
+        // save opens to copy out of and what the undo menu says.
+        int importIndex = -1;
+        // MergeFile only: this merge's own number, and the `source` every page it
+        // brings in carries. It is not the file index: a reader can merge the same page
+        // of the same file twice, and the two copies have to be tellable apart by
+        // anything that looks for one of them later. Assigned once, never reused, so
+        // undo and redo move an operation around with its identity intact.
+        int mergeId = -1;
     };
 
     // What a delete request means for the document as it stands, worked out
@@ -125,6 +196,11 @@ public:
         // dropped, repeats count once, and a page an earlier pending operation
         // already took out cannot be taken out again.
         int pagesToRemove = 0;
+        // What the document would have left, and note that once a merge is pending
+        // that number counts pages the screen has never shown. The dialog has to say
+        // so out loud -- see importedPageCount() -- because "剩下 40 页" next to a
+        // 40-page document that is losing three is otherwise a sentence the reader
+        // can check and find wrong.
         int pagesRemaining = 0;
         // True when the request names every page still present. A PDF with no
         // pages is not a PDF -- no reader opens one -- so this is refused rather
@@ -136,9 +212,9 @@ public:
         // them, which is a thing they need to be told rather than contradicted.
         int alreadyGone = 0;
     };
-    // `live` is which of the original pages are still present, in order; the
-    // member below is the one anyone outside this class calls.
-    static DeletePlan planDelete(const QVector<int> &live, const QVector<int> &pages);
+    // `live` is which pages the saved document would have, in order, as `PageRef`s;
+    // the member below is the one anyone outside this class calls.
+    static DeletePlan planDelete(const QVector<PageRef> &present, const QVector<int> &pages);
     DeletePlan planDelete(const QVector<int> &pages) const;
 
     // Which of these page numbers still name a page in the document as it
@@ -158,8 +234,9 @@ public:
     // it, just not the one anybody asked for.
     struct MovePlan
     {
-        // Which original pages are present, in the order they would be written.
-        QVector<int> order;
+        // Which pages the saved document would have, in the order it would have
+        // them.
+        QVector<PageRef> order;
         // Pages named and still there, and pages named that an earlier unsaved
         // change already took out. Same split planDelete() makes, for the same
         // reason: "you named nothing" is the wrong sentence for "you named pages
@@ -186,9 +263,32 @@ public:
         // Whether OK is pressable and the request is worth recording.
         bool usable() const { return pagesMoved > 0 && !anchorIsMoved && changesOrder; }
     };
-    static MovePlan planMove(const QVector<int> &present, const QVector<int> &pages,
+    static MovePlan planMove(const QVector<PageRef> &present, const QVector<int> &pages,
                              MoveTarget to, int anchor = -1);
     MovePlan planMove(const QVector<int> &pages, MoveTarget to, int anchor = -1) const;
+
+    // What a merge request means: the pages that would be added, and where they
+    // would land.
+    //
+    // The landing spot is worked out by the same function planMove() uses, which is
+    // the whole point of this struct's existence: a merge asked for "behind page 12"
+    // has to mean the same place the reorder means by that, and two answers to "where
+    // does this block go" is how a file ends up with a page order nobody was shown.
+    struct MergePlan
+    {
+        QVector<PageRef> order;
+        // Pages this would put into the document. Nothing here can make a merge
+        // request name zero pages -- the dialog bounds its range box by the file's
+        // own page count -- so this has no alreadyGone counterpart, and a file whose
+        // page count changed underneath the dialog is refused rather than clamped.
+        int pagesAdded = 0;
+        int landsAt = 0;
+        int anchorUsed = -1;
+        bool anchorWasGone = false;
+        bool usable() const { return pagesAdded > 0; }
+    };
+    static MergePlan planMerge(const QVector<PageRef> &present, const QVector<int> &pages,
+                               int mergeId, MoveTarget to, int anchor = -1);
 
     // Whether two paths name the same file, which is the question saveAs() has
     // to answer before it writes anything. Two paths can differ in every
@@ -209,7 +309,9 @@ public:
     // not later after the reader has already chosen a destination.
     //
     // Anything pending from a previous document is dropped, which is what makes
-    // calling this twice on one editor safe.
+    // calling this twice on one editor safe. That includes the list of files earlier
+    // merges took pages out of: those indices are what the operations point at, so
+    // they belong to one document's list and to no other.
     bool open(const QString &path, const QString &password, QString *error);
 
     QString path() const { return sourcePath; }
@@ -218,10 +320,32 @@ public:
     // numbered against this, because it is what they can see.
     int sourcePageCount() const { return originalPages; }
 
-    // Pages a save would write: the source, minus whatever the pending
-    // operations take out. Re-read from the list rather than cached, so it cannot
-    // disagree with the operations.
+    // Pages a save would write: the source, minus whatever the pending operations
+    // take out, plus whatever a merge has put in. Re-read from the list rather than
+    // cached, so it cannot disagree with the operations.
     int pageCount() const { return live.size(); }
+
+    // How many of those came from another file. The dialogs need this because their
+    // own page counts are about the document a save would write, which stops being
+    // the same number as the one on the screen the moment a merge is pending -- and a
+    // reader who is told "剩下 40 页" while looking at 40 pages that are losing three
+    // has to be told where the difference came from.
+    int importedPageCount() const;
+
+    // The pages a save would write, in the order it would write them. Read-only, and
+    // here because one dialog needs more than the counts above: 合并文件进来 can be
+    // asked for several files at once, and the summary it shows has to say where the
+    // whole batch lands -- which is planMerge() run over this list, row after row, the
+    // same way a save replays them. Anything else would be two answers to "第几页".
+    QVector<PageRef> pageOrder() const { return live; }
+
+    // Whether a file can be merged into this document, and how many pages it has.
+    // The dialog calls this the moment a name is chosen, because the range box has to
+    // be bounded by the file's own page count rather than by whatever the reader
+    // guesses -- and because a document that needs a password to open is refused here,
+    // in front of the reader who still has time to go and type that password
+    // somewhere else, rather than after they have chosen a destination for the merge.
+    static bool inspectImport(const QString &path, int *pageCount, QString *error);
 
     // ---- the operations ----
     //
@@ -239,6 +363,18 @@ public:
     // travel together and keep the order they have among themselves, which is what
     // makes "第 2-4 页移到最后" one action rather than three.
     bool movePages(const QVector<int> &pagesToMove, MoveTarget to, int anchor, QString *error);
+    // Copying pages out of another file into this document, to the front, to the
+    // back, or behind `anchor` -- where `anchor` is a page of *this* document, the
+    // same numbering every other dialog here uses, because it is the only one a reader
+    // can check. `pages` are page numbers within `path`, which is the file the reader
+    // was looking at while choosing them.
+    //
+    // The file is looked over again here rather than trusted from the dialog: it may
+    // have gone away, been replaced, or shrunk since the range was typed, and a merge
+    // that quietly takes fewer pages than the summary promised is the silent kind of
+    // wrong.
+    bool mergeFile(const QString &path, const QVector<int> &pages, MoveTarget to, int anchor,
+                   QString *error);
 
     // ---- the list, and moving through it ----
     //
@@ -263,9 +399,12 @@ public:
     QString pendingSummary() const;
 
     // Writes the document out: the source, with every pending operation replayed
-    // onto it in the order it was asked for. Refuses `path` when it names the
-    // document this was opened from. Returns false with a sentence when nothing
-    // was written.
+    // onto it in the order it was asked for -- including the merges, which means
+    // opening each file a merge drew from and copying pages out of it here, at the
+    // moment there is somewhere to put them. Refuses `path` when it names the
+    // document this was opened from or any of the files being merged in: both are
+    // documents somebody has open, and one of them is being read while this writes.
+    // Returns false with a sentence when nothing was written.
     //
     // A successful save leaves the list alone. The file this editor is attached to
     // is still the untouched original, so the operations are still pending against
@@ -282,27 +421,60 @@ private:
     // The one way an operation enters the list: appended, the redo branch dropped,
     // and the page list retaken from what the list now says.
     void record(const Operation &op);
+    // Where a block lands among the pages that are already here: the same arithmetic
+    // planMove() and planMerge() both need, and the reason it is one function is the
+    // reason planMove() itself is -- "第 12 页之后" has to mean one place.
+    //
+    // `without` is the list to land in, with the block that is going to be inserted
+    // taken out of it. The anchor names a page of the opened document, so the search
+    // for "the page it was behind" ignores imported pages entirely: they have no
+    // number the reader can see, so a landing spot guessed from them would be a spot
+    // nobody could check. When the named page is gone, the block goes in front of the
+    // first page whose number is larger, which is what planMove() already said about
+    // the gap a delete leaves.
+    struct Landing
+    {
+        int at = 0;
+        int anchorUsed = -1;
+        bool anchorWasGone = false;
+    };
+    static Landing landingSpot(const QVector<PageRef> &without, MoveTarget to, int anchor);
     // One operation, applied to a document being replayed. `present` is the book
-    // keeping: the original numbers still in the document, in their current order.
-    static void apply(const Operation &op, QPDF &document, QVector<int> &present);
+    // keeping: the pages still in the document, in their current order.
+    //
+    // Not static, because a merge copies pages out of another file: `source` is that
+    // file, already open and kept open for the whole save. The pages this copies from
+    // it are not usable before the writer has run, which is why the save -- not the
+    // operation -- owns the lifetime; see the note in saveAs().
+    void apply(const Operation &op, QPDF &document, QVector<PageRef> &present,
+               QPDF *mergeSource);
     // Which of `pages` are in `present`, as positions within `present`.
-    static QVector<int> positionsOf(const QVector<int> &present, const QVector<int> &pages);
+    static QVector<int> positionsOf(const QVector<PageRef> &present, const QVector<int> &pages);
     // A few words for one operation: "删除 3 页". A member rather than a helper in
     // the anonymous namespace, and the reason is the catalogue: lupdate only puts a
     // `tr()` call into a context when it can see which class it sits in, so as a
     // free function these four sentences were compiled out of the translation and
     // the English menu would have shown Chinese undo names straight out of the
     // source. Tests reach them through undoDescription().
-    static QString describeOperation(const Operation &op);
+    QString describeOperation(const Operation &op) const;
 
     QString sourcePath;
     QString sourcePassword;
     int originalPages = 0;
-    // Which original pages are still present, in the order they would be written.
-    // An identity list after open(); deletions take entries out of it and moves
-    // rearrange entries inside it, both of them by replaying the whole list rather
-    // than patching this one.
-    QVector<int> live;
+    // Which pages are still present, in the order they would be written. An identity
+    // list of the opened document's own pages after open(); deletions take entries
+    // out of it, moves rearrange entries inside it, and merges splice in pages from
+    // another file -- all three of them by replaying the whole list rather than
+    // patching this one.
+    QVector<PageRef> live;
+    // Files that merges took pages out of, in the order they were first merged. An
+    // operation names one by index, and the indices never shift, so undoing a merge
+    // leaves the entry in place for whichever operation points at it next.
+    QVector<Import> imports;
+    // The number the next MergeFile operation gets, and with it the `source` of the
+    // pages it brings in. Rising, never reused -- see Operation::mergeId. 0 is left
+    // out because it already means "the document that was opened".
+    int nextMergeId = 1;
     QVector<Operation> pending;
     QVector<Operation> undone;
 };

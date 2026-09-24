@@ -192,13 +192,20 @@ public:
     // 的显式保存, and AGENTS.md's 永不写用户的 PDF 文件), and the saved result
     // opens in a tab of its own rather than replacing the one under the reader.
     //
-    // What ties these together is that they share one list: 删除页面、旋转页面 and
-    // 移动页面 record an operation, 撤销 takes the last one back, and 保存修改为
-    // writes whatever the list says. Each of the first three can be run again
-    // before anything is saved.
+    // What ties these together is that they share one list: 删除页面、旋转页面、
+    // 移动页面 and 合并文件进来 record an operation, 撤销 takes the last one back,
+    // and 保存修改为 writes whatever the list says. Each of the four can be run
+    // again before anything is saved.
+    //
+    // The merge is the one that reaches outside this document: the pages it adds
+    // come from other files, which the reader picks and can give page ranges for.
+    // Those files are read at save time and never written into either -- and the
+    // saved result cannot be named after any of them, which is the editor's rule
+    // rather than this one's.
     void deletePages();
     void rotatePages();
     void movePages();
+    void mergeFiles();
     void undoEdit();
     void redoEdit();
     // Names the file to write into, replays the list onto the source and writes

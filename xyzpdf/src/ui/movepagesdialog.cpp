@@ -81,7 +81,10 @@ MovePagesDialog::MovePagesDialog(QWidget *parent, int currentPage,
     // deleted, and the summary below keeps those two apart.
     anchorEdit->setValidator(new QIntValidator(1, pageTotal < 1 ? 1 : pageTotal, this));
     anchorEdit->setPlaceholderText(tr("页码"));
-    anchorEdit->setFixedWidth(56);
+    // Wide enough for its own placeholder: 56 px fits 页码 but clips "Page number" down
+    // to "Pag…", and this box has no label of its own besides the sentence to its left.
+    anchorEdit->setFixedWidth(qMax(56, anchorEdit->fontMetrics().horizontalAdvance(
+                                          anchorEdit->placeholderText()) + 24));
     behindRow->addWidget(behindChoice);
     behindRow->addWidget(anchorEdit);
     behindRow->addStretch(1);

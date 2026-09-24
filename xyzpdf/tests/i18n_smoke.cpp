@@ -217,6 +217,19 @@ int main(int argc, char **argv)
             { "DocumentEditor", "移到最前（%1 页）" },
             { "DocumentEditor", "移到最后（%1 页）" },
             { "DocumentEditor", "那些页已经在第 %1 页后面了。" },
+            // The merge that came after the reorder: the menu row, the two words a
+            // row of the file list is made of, the sentence the summary ends with,
+            // and the name the undo item is built from. The last of these four is
+            // the one this sweep exists for -- a free helper in DocumentEditor
+            // assembles it, and nothing in the build would notice if its context
+            // were spelled differently from the class.
+            { "MainWindow", "合并文件进来(&F)…" },
+            { "MergePagesDialog", "要合入的页码" },
+            { "MergePagesDialog", "还没有加上要合并进来的文件。" },
+            { "MergePagesDialog",
+              "%1 个文件一共取 %2 页，合到%3，按列表的顺序连着排在第 %4-%5 页。" },
+            { "DocumentEditor", "合入 %2 页（%1）" },
+            { "DocumentEditor", "另存为不能覆盖合并进来的文件（%1）。请换一个文件名。" },
         };
 
         for (const Probe &probe : probes) {

@@ -96,6 +96,17 @@ void DeletePagesDialog::updateSummary()
                    .arg(editor ? editor->pageCount() : 0)
                    .arg(plan.pagesToRemove)
                    .arg(plan.pagesRemaining);
+    // The count above is the document a save writes, while every number in the box
+    // above it is a screen page number. Those two stop being the same as soon as a
+    // merge has run, and a reader who checks "43 页" against a 40-page document they
+    // are looking at needs to be told where the other three came from -- and that
+    // this dialog has no way to reach them.
+    if (editor && editor->importedPageCount() > 0) {
+        line += tr("\n\n这 %1 页里有 %2 页是合并进来的，屏幕上没有它们的页码，"
+                   "这里删不到它们。")
+                    .arg(editor->pageCount())
+                    .arg(editor->importedPageCount());
+    }
     // Said every time, because this is the first command in the program that can
     // make a document smaller, and what a reader needs to know before pressing the
     // button is that the file they opened is not the file that changes -- and that

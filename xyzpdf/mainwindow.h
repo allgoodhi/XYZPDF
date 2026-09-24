@@ -249,6 +249,7 @@ private:
     QAction *deletePagesAction = nullptr;
     QAction *rotatePagesAction = nullptr;
     QAction *movePagesAction = nullptr;
+    QAction *mergeFileAction = nullptr;
     QAction *undoEditAction = nullptr;
     QAction *redoEditAction = nullptr;
     QAction *saveEditsAction = nullptr;

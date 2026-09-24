@@ -13,6 +13,7 @@
 #include "src/ui/deletepagesdialog.h"
 #include "src/ui/findbar.h"
 #include "src/ui/imageexportdialog.h"
+#include "src/ui/mergepagesdialog.h"
 #include "src/ui/movepagesdialog.h"
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
@@ -1207,6 +1208,44 @@ void DocumentTab::movePages()
         return;
     }
     Q_EMIT editStateChanged();
+}
+
+void DocumentTab::mergeFiles()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    MergePagesDialog dialog(window(), document);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    // One operation per row rather than one for the whole list, because 撤销 then
+    // takes back a single file's worth -- which is what a reader who merged three
+    // and liked two of them asks for. The dialog hands back the rows in the order
+    // they have to be recorded in, so the sequence the summary described and the
+    // sequence a save replays are read off the same list.
+    const QVector<MergePagesDialog::Entry> rows = dialog.mergesToRecord();
+    QString error;
+    int recorded = 0;
+    for (const MergePagesDialog::Entry &entry : rows) {
+        if (!document->mergeFile(entry.path, entry.pages, dialog.target(),
+                                 dialog.anchorPage(), &error))
+            break;
+        ++recorded;
+    }
+    if (recorded > 0)
+        Q_EMIT editStateChanged();
+    if (recorded < rows.size()) {
+        // The dialog asked the same question of these files when the reader picked
+        // them, so a refusal now means one of them moved in between -- it is
+        // closing the box that is stale, not the picking. What did go in stays in:
+        // taking rows back behind a reader's back would leave the list disagreeing
+        // with the one sentence they just read, and 撤销 is the way to undo it.
+        if (recorded > 0)
+            error += tr("\n\n列表里前面 %1 个文件已经记下了，要退回去用撤销。").arg(recorded);
+        WindowDialogs::warning(window(), tr("合并文件进来"), error);
+    }
 }
 
 void DocumentTab::undoEdit()

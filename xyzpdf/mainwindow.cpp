@@ -829,12 +829,12 @@ void MainWindow::buildMenus()
     // file. Acrobat's 文档 menu sits in this same place, and the rest of M5
     // (重排、拆分、加密) is coming to fill this one out.
     //
-    // The last three items are the other half of the first three. 删除页面、旋转页面
-    // and 移动页面 record an edit, 撤销 and 重做 move along the list those three
-    // recorded into, and 保存修改为… is the only one of the six that writes a
-    // file. They sit in this menu rather than spread across 文件 and 编辑 because
-    // they are one list seen from four ends, and a reader looking for any of them
-    // is looking for this menu.
+    // The last three items are the other half of the first four. 删除页面、旋转页面、
+    // 移动页面 and 合并文件进来 record an edit, 撤销 and 重做 move along the list
+    // those four recorded into, and 保存修改为… is the only one of the seven that
+    // writes a file. They sit in this menu rather than spread across 文件 and 编辑
+    // because they are one list seen from four ends, and a reader looking for any of
+    // them is looking for this menu.
     QMenu *documentMenu = menuBar()->addMenu(tr("文档(&D)"));
 
     deletePagesAction = makeAction(tr("删除页面(&E)…"), QKeySequence());
@@ -870,6 +870,23 @@ void MainWindow::buildMenus()
             tab->movePages();
     });
     documentMenu->addAction(movePagesAction);
+
+    // (&F), for 文件: the menu's remaining items had taken E/R/M/U/O/S, and the
+    // word the reader is looking for in this row is 合并 -- which has no Latin
+    // letter in it, so the letter goes on the noun instead.
+    mergeFileAction = makeAction(tr("合并文件进来(&F)…"), QKeySequence());
+    mergeFileAction->setObjectName(QStringLiteral("mergeFileAction"));
+    // Says both of the two不动 that matter here: the file under the reader is not
+    // the only one this leaves alone. A reader who is about to merge three files
+    // out of a folder needs to know that none of the three gets written to either.
+    mergeFileAction->setToolTip(
+        tr("记下要把哪几页并进来，按保存修改为才写成一个新文件；正在读的这份和"
+           "合并进来的那些都不动"));
+    connect(mergeFileAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->mergeFiles();
+    });
+    documentMenu->addAction(mergeFileAction);
 
     documentMenu->addSeparator();
 
@@ -2046,6 +2063,7 @@ void MainWindow::updateForCurrentTab()
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
+                            mergeFileAction,
                             viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)

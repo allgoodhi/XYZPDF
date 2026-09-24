@@ -19,14 +19,17 @@
 // appearing on somebody's desktop while their tests run is not.
 
 #include "../documenttab.h"
+#include "../src/edit/documenteditor.h"
 #include "../src/theme/thememanager.h"
 #include "../src/ui/findbar.h"
+#include "../src/ui/mergepagesdialog.h"
 #include "../src/ui/ocrdialog.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDialogButtonBox>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QImage>
@@ -36,8 +39,10 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QScrollBar>
 #include <QString>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QThreadPool>
 
@@ -1113,6 +1118,157 @@ int main(int argc, char **argv)
                   QStringLiteral("and the ink white (%1)")
                       .arg(nightPasted.pixelColor(20, 20).name()));
         }
+    }
+
+    // ---- the merge dialog's order promise ----
+    //
+    // 合并文件进来 is the first dialog here whose answer is a sequence rather than a
+    // number, and the sequence is worked out inside the dialog: a merge lands beside
+    // the target the reader named, not beside the block the row before it added, so
+    // for 最前面 and 指定页之后 the rows have to be recorded in reverse for the list to
+    // be the order the file gets (MergePagesDialog::mergesToRecord). The editor cannot
+    // catch that from the other side -- it is handed one file at a time -- so it is
+    // checked here, with the file picker replaced by the half of 添加文件… that is not
+    // a window.
+    {
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(path, QString(), &error),
+              QStringLiteral("setup: the editor opened %1: %2").arg(path, error));
+        const int onScreen = editor.pageCount();
+
+        MergePagesDialog dialog(&tab, &editor);
+        auto *buttons = dialog.findChild<QDialogButtonBox *>();
+        QPushButton *okay = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+        auto *table = dialog.findChild<QTableWidget *>();
+        check(okay && table, "the merge window has its list and its button");
+
+        auto pickTarget = [&dialog](const QString &words) {
+            const auto radios = dialog.findChildren<QRadioButton *>();
+            for (QRadioButton *radio : radios) {
+                if (radio->text() == words) {
+                    radio->click();
+                    return true;
+                }
+            }
+            return false;
+        };
+        auto summary = [&dialog] {
+            const auto labels = dialog.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        auto baseName = [](const QString &file) { return QFileInfo(file).fileName(); };
+
+        check(okay && !okay->isEnabled(),
+              "with an empty list the button is off, and says why");
+        check(summary().contains(QStringLiteral("还没有加上要合并进来的文件")),
+              QStringLiteral("the empty list is described, not just greyed: %1").arg(summary()));
+
+        const QStringList donors = {directory + QStringLiteral("/many-pages.pdf"),
+                                    directory + QStringLiteral("/dense.pdf"),
+                                    directory + QStringLiteral("/mixed.pdf")};
+        const QStringList refused = dialog.addPaths(donors);
+        check(refused.isEmpty(),
+              QStringLiteral("three ordinary files are taken: %1").arg(refused.join(QStringLiteral("; "))));
+        const QVector<MergePagesDialog::Entry> listed = dialog.mergesToRecord();
+        check(listed.size() == donors.size(), "and one row per file");
+        for (int row = 0; row < listed.size(); ++row) {
+            check(baseName(listed.at(row).path) == baseName(donors.at(row)),
+                  QStringLiteral("row %1 is the file picked at that place: got %2")
+                      .arg(row + 1)
+                      .arg(baseName(listed.at(row).path)));
+            check(listed.at(row).pageCount > 0
+                      && listed.at(row).pages.size() == listed.at(row).pageCount,
+                  QStringLiteral("and a new row says the whole of its own file (%1 of %2)")
+                      .arg(listed.at(row).pages.size())
+                      .arg(listed.at(row).pageCount));
+        }
+
+        check(pickTarget(QStringLiteral("最前面")) && pickTarget(QStringLiteral("指定页之后"))
+                  && pickTarget(QStringLiteral("最后面")),
+              "the three places the reader can aim at are on the dialog");
+
+        // The reversal itself, and what it is for: recorded in list order at 最前面 the
+        // three land 3,2,1, because each one goes in front of the two already there.
+        pickTarget(QStringLiteral("最前面"));
+        QStringList recordOrder;
+        for (const MergePagesDialog::Entry &entry : dialog.mergesToRecord())
+            recordOrder << baseName(entry.path);
+        check(recordOrder == QStringList({baseName(donors.at(2)), baseName(donors.at(1)),
+                                          baseName(donors.at(0))}),
+              QStringLiteral("pointed at 最前面 the rows are recorded so the file gets them "
+                             "in list order: got %1")
+                  .arg(recordOrder.join(QStringLiteral(","))));
+
+        DocumentEditor landing;
+        check(landing.open(path, QString(), &error), "setup: a second editor on the same file");
+        for (const MergePagesDialog::Entry &entry : dialog.mergesToRecord()) {
+            check(landing.mergeFile(entry.path, entry.pages, DocumentEditor::MoveTarget::Front,
+                                    -1, &error),
+                  QStringLiteral("%1 comes in at the front: %2").arg(baseName(entry.path), error));
+        }
+        const QVector<DocumentEditor::PageRef> front = landing.pageOrder();
+        check(front.size() == onScreen + listed.at(0).pages.size() + listed.at(1).pages.size()
+                    + listed.at(2).pages.size(),
+              "and the document is every one of those pages longer");
+        // Each merge carries its own identity, and the last one recorded is the first
+        // of them -- so the front of the file is row 1, then row 2, then row 3.
+        int walking = 0;
+        for (int row = 0; row < listed.size(); ++row) {
+            const int identity = listed.size() - row;
+            for (int page = 0; page < listed.at(row).pages.size(); ++page, ++walking) {
+                check(front.at(walking).source == identity
+                          && front.at(walking).page == page,
+                      QStringLiteral("page %1 of the file is merge %2's page %3, which is row %4 "
+                                     "of the list")
+                          .arg(walking + 1)
+                          .arg(identity)
+                          .arg(page + 1)
+                          .arg(row + 1));
+            }
+        }
+
+        pickTarget(QStringLiteral("最后面"));
+        table->item(0, 2)->setText(QStringLiteral("2"));
+        check(dialog.mergesToRecord().at(0).pages == QVector<int>({1}),
+              "a row's range cell is read as that file's own page numbers");
+        table->item(1, 2)->setText(QStringLiteral(" "));
+        check(okay && !okay->isEnabled(),
+              "and a row left blank stops the button -- blank is nothing said, not everything");
+        check(summary().contains(baseName(donors.at(1))),
+              QStringLiteral("naming which row: %1").arg(summary()));
+        table->item(1, 2)->setText(QStringLiteral("1"));
+
+        pickTarget(QStringLiteral("指定页之后"));
+        check(okay && !okay->isEnabled(),
+              "an 指定页之后 with no number in the box is not an answer yet");
+        check(summary().contains(QStringLiteral("要说合并到第几页之后")),
+              QStringLiteral("and it says that: %1").arg(summary()));
+        auto *anchorBox = dialog.findChild<QLineEdit *>();
+        check(anchorBox != nullptr, "the box beside 指定页之后");
+        if (anchorBox) {
+            anchorBox->setText(QString::number(onScreen + 5));
+            check(okay && !okay->isEnabled(), "a number past the last page of the screen is refused");
+            check(summary().contains(QStringLiteral("没有第 %1 页").arg(onScreen + 5)),
+                  QStringLiteral("and named as the number that was typed: %1").arg(summary()));
+            anchorBox->setText(QStringLiteral("2"));
+            check(okay && okay->isEnabled(), "a page that is there lets the button go back");
+        }
+
+        // The sentence 删除页面 needs too, said where the pages come from: an imported
+        // page has no number on the screen, so a reader has to be told before merging.
+        check(editor.mergeFile(donors.at(0), {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+              QStringLiteral("setup: one page recorded into the editor the dialog reads: %1")
+                  .arg(error));
+        pickTarget(QStringLiteral("最后面"));
+        check(summary().contains(QStringLiteral("已经有 %1 页是合并进来的").arg(1)),
+              QStringLiteral("the summary counts what the screen never showed: %1").arg(summary()));
+        check(summary().contains(QStringLiteral("只能撤销那次合并")),
+              QStringLiteral("and says the only way back out: %1").arg(summary()));
     }
 
     if (failures == 0) {

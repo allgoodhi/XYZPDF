@@ -17,7 +17,9 @@
 #endif
 #include <windows.h>
 
+#include <qpdf/QPDFAcroFormDocumentHelper.hh>
 #include <qpdf/QPDF.hh>
+#include <qpdf/QPDFExc.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
@@ -26,6 +28,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -48,19 +51,35 @@ QString comparablePath(const QString &path)
     return QDir::fromNativeSeparators(QFileInfo(path).absoluteFilePath()).toLower();
 }
 
-// The document as it was opened: every page present, in its own order.
-QVector<int> everyPageInOrder(int pageCount)
+// The document as it was opened: every page present, in its own order, all of them
+// named by the number the reader is looking at.
+QVector<DocumentEditor::PageRef> openedDocumentInOrder(int pageCount)
 {
-    QVector<int> pages;
+    QVector<DocumentEditor::PageRef> pages;
     pages.reserve(pageCount);
     for (int page = 0; page < pageCount; ++page)
-        pages.append(page);
+        pages.append({0, page});
     return pages;
 }
 
-// The pages a request names, as the list an operation holds: deduplicated by the
-// set that built it, and in order, so that two requests for the same pages produce
-// the same operation -- which is what lets a test compare one against the other.
+// Whether a page of a file a merge drew from is one this request names. Repeats
+// count once and the result is ordered by page number, so that two requests for the
+// same pages produce the same operation -- which is what lets a test compare one
+// against the other, and what makes the block arrive in the order the file has it.
+QVector<DocumentEditor::PageRef> refsFrom(const QSet<int> &pages, int source)
+{
+    QVector<DocumentEditor::PageRef> out;
+    out.reserve(pages.size());
+    for (int page : pages)
+        out.append({source, page});
+    std::sort(out.begin(), out.end(), [](const DocumentEditor::PageRef &a,
+                                        const DocumentEditor::PageRef &b) {
+        return a.page < b.page;
+    });
+    return out;
+}
+
+// The pages a request names, as the list an operation holds.
 QVector<int> sortedFrom(const QSet<int> &pages)
 {
     QVector<int> out;
@@ -76,7 +95,7 @@ QVector<int> sortedFrom(const QSet<int> &pages)
 // The words a reader asked for, because these show up in a menu and a menu that
 // says "undo operation 2" is not a menu. A member rather than something in the
 // namespace above, for the sake of the catalogue -- see the declaration.
-QString DocumentEditor::describeOperation(const Operation &op)
+QString DocumentEditor::describeOperation(const Operation &op) const
 {
     const int count = op.pages.size();
     if (op.kind == Operation::Kind::RotatePages) {
@@ -98,6 +117,17 @@ QString DocumentEditor::describeOperation(const Operation &op)
             return tr("移到第 %2 页之后（%1 页）").arg(count).arg(op.anchor + 1);
         return tr("移到最后（%1 页）").arg(count);
     }
+    if (op.kind == Operation::Kind::MergeFile) {
+        // Which file, not just how many: a reader who merged three documents and
+        // sees "撤销 合入 5 页" has no way to know which 5 pages are about to come
+        // back. The name rather than the path, because this is a menu row.
+        const Import &import = imports.value(op.importIndex);
+        return tr("合入 %2 页（%1）")
+            .arg(QFileInfo(import.path).fileName().isEmpty()
+                     ? tr("另一份文件")
+                     : QFileInfo(import.path).fileName())
+            .arg(count);
+    }
     return tr("删除 %1 页").arg(count);
 }
 
@@ -105,8 +135,8 @@ DocumentEditor::DocumentEditor() = default;
 
 DocumentEditor::~DocumentEditor() = default;
 
-DocumentEditor::DeletePlan DocumentEditor::planDelete(const QVector<int> &present,
-                                                       const QVector<int> &pages)
+DocumentEditor::DeletePlan DocumentEditor::planDelete(const QVector<PageRef> &present,
+                                                     const QVector<int> &pages)
 {
     DeletePlan plan;
     QSet<int> named;
@@ -118,10 +148,12 @@ DocumentEditor::DeletePlan DocumentEditor::planDelete(const QVector<int> &presen
     // raises are separate ones: is it still there at all, and how many go if this
     // request is granted. Numbers past the end of the document never reach here --
     // the range parser the dialog uses clamps them -- so anything missing from
-    // `present` is a page an earlier pending operation removed.
+    // `present` is a page an earlier pending operation removed. Pages that came in
+    // from another file cannot be named by these numbers at all, which is what keeps
+    // them out of `removable` and into `pagesRemaining`.
     int removable = 0;
     for (int page : std::as_const(named)) {
-        if (present.contains(page))
+        if (present.contains({0, page}))
             ++removable;
     }
     plan.pagesToRemove = removable;
@@ -143,13 +175,59 @@ int DocumentEditor::pagesStillThere(const QVector<int> &pages) const
 {
     QSet<int> named;
     for (int page : pages) {
-        if (page >= 0 && live.contains(page))
+        if (page >= 0 && live.contains({0, page}))
             named.insert(page);
     }
     return named.size();
 }
 
-DocumentEditor::MovePlan DocumentEditor::planMove(const QVector<int> &present,
+int DocumentEditor::importedPageCount() const
+{
+    int imported = 0;
+    for (const PageRef &ref : live) {
+        if (ref.source != 0)
+            ++imported;
+    }
+    return imported;
+}
+
+DocumentEditor::Landing DocumentEditor::landingSpot(const QVector<PageRef> &without, MoveTarget to,
+                                                   int anchor)
+{
+    Landing spot;
+    spot.at = without.size();
+    if (to == MoveTarget::Front) {
+        spot.at = 0;
+        return spot;
+    }
+    if (to != MoveTarget::AfterPage)
+        return spot;
+
+    const int behind = without.indexOf({0, anchor});
+    if (behind >= 0) {
+        spot.at = behind + 1;
+        spot.anchorUsed = anchor;
+        return spot;
+    }
+    // The page named is gone. Where it was is still a place, and the pages that were
+    // behind it stayed behind it, so the gap is in front of the first page whose
+    // number is larger -- which is what the reader is standing behind now that the
+    // one they named is not there. Pages that came in from another file are skipped in
+    // that search: their numbers belong to their own document, and a landing spot
+    // reasoned from one of them would be a spot the reader cannot find on the screen.
+    for (int index = 0; index < without.size(); ++index) {
+        const PageRef &ref = without.at(index);
+        if (ref.source == 0 && ref.page > anchor) {
+            spot.at = index;
+            spot.anchorUsed = ref.page;
+            break;
+        }
+    }
+    spot.anchorWasGone = true;
+    return spot;
+}
+
+DocumentEditor::MovePlan DocumentEditor::planMove(const QVector<PageRef> &present,
                                                  const QVector<int> &pages, MoveTarget to,
                                                  int anchor)
 {
@@ -164,66 +242,42 @@ DocumentEditor::MovePlan DocumentEditor::planMove(const QVector<int> &present,
     // The block in the order it has where it stands, not the order the numbers were
     // typed in: "第 2、4 页移到最后" moves those two pages as a pair keeping 2 before
     // 4, and a reader who wrote "4,2" did not ask for them swapped.
-    QVector<int> moved;
-    for (int page : present) {
-        if (named.contains(page))
-            moved.append(page);
+    QVector<PageRef> moved;
+    QVector<PageRef> kept;
+    kept.reserve(present.size());
+    for (const PageRef &ref : present) {
+        if (ref.source == 0 && named.contains(ref.page))
+            moved.append(ref);
+        else
+            kept.append(ref);
     }
     plan.pagesMoved = moved.size();
     plan.alreadyGone = named.size() - moved.size();
     if (moved.isEmpty())
         return plan;
-
-    QVector<int> kept;
-    kept.reserve(present.size() - moved.size());
-    for (int page : present) {
-        if (!named.contains(page))
-            kept.append(page);
+    if (to == MoveTarget::AfterPage && moved.contains({0, anchor})) {
+        // The anchor is inside the block, so "behind it" is where the block already
+        // is. Nothing here can be said about where it should go instead -- a reader
+        // who means that types a different page.
+        plan.anchorIsMoved = true;
+        return plan;
     }
 
-    int at = kept.size();
-    if (to == MoveTarget::Front) {
-        at = 0;
-    } else if (to == MoveTarget::AfterPage) {
-        const int behind = kept.indexOf(anchor);
-        if (behind >= 0) {
-            at = behind + 1;
-            plan.anchorUsed = anchor;
-        } else if (moved.contains(anchor)) {
-            // The anchor is inside the block, so "behind it" is where the block
-            // already is. Nothing here can be said about where it should go instead
-            // -- a reader who means that types a different page.
-            plan.anchorIsMoved = true;
-            return plan;
-        } else {
-            // The page named is gone. Where it was is still a place, and the pages
-            // that were behind it stayed behind it, so the gap is in front of the
-            // first page whose number is larger -- which is what the reader is
-            // standing behind now that the one they named is not there.
-            int next = kept.size();
-            for (int index = 0; index < kept.size(); ++index) {
-                if (kept.at(index) > anchor) {
-                    next = index;
-                    break;
-                }
-            }
-            at = next;
-            plan.anchorWasGone = true;
-            plan.anchorUsed = next < kept.size() ? kept.at(next) : -1;
-        }
-    }
+    const Landing spot = landingSpot(kept, to, anchor);
 
-    QVector<int> order;
-    order.reserve(kept.size() + moved.size());
-    for (int index = 0; index < at; ++index)
+    QVector<PageRef> order;
+    order.reserve(present.size());
+    for (int index = 0; index < spot.at; ++index)
         order.append(kept.at(index));
-    for (int page : moved)
-        order.append(page);
-    for (int index = at; index < kept.size(); ++index)
+    for (const PageRef &ref : moved)
+        order.append(ref);
+    for (int index = spot.at; index < kept.size(); ++index)
         order.append(kept.at(index));
 
     plan.order = order;
-    plan.landsAt = at;
+    plan.landsAt = spot.at;
+    plan.anchorUsed = spot.anchorUsed;
+    plan.anchorWasGone = spot.anchorWasGone;
     plan.changesOrder = order != present;
     return plan;
 }
@@ -232,6 +286,49 @@ DocumentEditor::MovePlan DocumentEditor::planMove(const QVector<int> &pages, Mov
                                                  int anchor) const
 {
     return planMove(live, pages, to, anchor);
+}
+
+DocumentEditor::MergePlan DocumentEditor::planMerge(const QVector<PageRef> &present,
+                                                   const QVector<int> &pages, int mergeId,
+                                                   MoveTarget to, int anchor)
+{
+    MergePlan plan;
+    plan.order = present;
+
+    QSet<int> named;
+    for (int page : pages) {
+        if (page >= 0)
+            named.insert(page);
+    }
+    // The block as the file it comes from orders it, so that "取第 2、4 页" arrives as
+    // 2 then 4 and the sentence below about where they land is true. `mergeId` rather
+    // than the file index is what keeps two merges of one page from producing one page
+    // twice over and an identity nobody can resolve.
+    const QVector<PageRef> block = refsFrom(named, mergeId);
+    plan.pagesAdded = block.size();
+    if (block.isEmpty())
+        return plan;
+
+    // The same function a move uses, run over the whole list rather than over what is
+    // left of it: nothing is taken out by a merge, so the landing spot is the one
+    // place the two operations genuinely differ, and sharing it is what makes
+    // "第 12 页之后" mean one thing in this program.
+    const Landing spot = landingSpot(present, to, anchor);
+
+    QVector<PageRef> order;
+    order.reserve(present.size() + block.size());
+    for (int index = 0; index < spot.at; ++index)
+        order.append(present.at(index));
+    for (const PageRef &ref : block)
+        order.append(ref);
+    for (int index = spot.at; index < present.size(); ++index)
+        order.append(present.at(index));
+
+    plan.order = order;
+    plan.landsAt = spot.at;
+    plan.anchorUsed = spot.anchorUsed;
+    plan.anchorWasGone = spot.anchorWasGone;
+    return plan;
 }
 
 bool DocumentEditor::sameFile(const QString &path, const QString &other)
@@ -256,10 +353,16 @@ bool DocumentEditor::sameFile(const QString &path, const QString &other)
 bool DocumentEditor::open(const QString &path, const QString &password, QString *error)
 {
     // Before anything else: a failed open must not leave the previous document's
-    // edits behind, or an error message and a dirty tab arrive together.
+    // edits behind, or an error message and a dirty tab arrive together. The imports
+    // go with them because pending operations name them by index, and an index left
+    // over from another document's list would point at an unrelated file.
     pending.clear();
     undone.clear();
     live.clear();
+    imports.clear();
+    // And the merge identities go with them for the same reason: a number left over
+    // from another document's list would be a page two documents both claim.
+    nextMergeId = 1;
     originalPages = 0;
     sourcePath.clear();
     sourcePassword.clear();
@@ -289,9 +392,51 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
         return false;
     }
 
-    live = everyPageInOrder(originalPages);
+    live = openedDocumentInOrder(originalPages);
     sourcePath = path;
     sourcePassword = password;
+    return true;
+}
+
+bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString *error)
+{
+    if (pageCount)
+        *pageCount = 0;
+    QString reason;
+    int pages = 0;
+    try {
+        // Opened with no password on purpose: a file that needs one is refused below
+        // rather than asked for, and the reason is in the sentence, not in a box that
+        // would have to explain itself.
+        QPDF document;
+        document.processFile(path.toUtf8().constData());
+        pages = int(QPDFPageDocumentHelper(document).getAllPages().size());
+    } catch (const QPDFExc &e) {
+        // QPDF answers a wrong or missing user password the same way it answers a
+        // broken file -- by throwing -- so which of the two this is has to be read off
+        // the error code. Getting it wrong would tell a reader their readable file is
+        // unreadable, or ask them for a password a file never had.
+        const bool needsPassword = e.getErrorCode() == qpdf_e_password;
+        reason = needsPassword
+            ? tr("%1 要用口令才能打开，不知道口令的文档合不进来。\n\n想合并它，先把"
+                 "它本身打开一次，或者去掉它的口令。")
+                  .arg(QFileInfo(path).fileName())
+            : tr("%1 打不开，所以合不进来。\n\n解析器说：%2")
+                  .arg(QFileInfo(path).fileName(), QString::fromUtf8(e.what()));
+    } catch (const std::exception &e) {
+        reason = tr("%1 打不开，所以合不进来。\n\n解析器说：%2")
+                     .arg(QFileInfo(path).fileName(), QString::fromUtf8(e.what()));
+    }
+    if (!reason.isEmpty()) {
+        *error = reason;
+        return false;
+    }
+    if (pages == 0) {
+        *error = tr("%1 一页也没有，没什么可合并的。").arg(QFileInfo(path).fileName());
+        return false;
+    }
+    if (pageCount)
+        *pageCount = pages;
     return true;
 }
 
@@ -319,7 +464,7 @@ bool DocumentEditor::deletePages(const QVector<int> &pagesToDelete, QString *err
 
     QSet<int> named;
     for (int page : pagesToDelete) {
-        if (page >= 0 && live.contains(page))
+        if (page >= 0 && live.contains({0, page}))
             named.insert(page);
     }
     Operation op;
@@ -345,7 +490,7 @@ bool DocumentEditor::rotatePages(const QVector<int> &pagesToRotate, int quarterT
     }
     QSet<int> named;
     for (int page : pagesToRotate) {
-        if (page >= 0 && live.contains(page))
+        if (page >= 0 && live.contains({0, page}))
             named.insert(page);
     }
     if (named.isEmpty()) {
@@ -399,12 +544,90 @@ bool DocumentEditor::movePages(const QVector<int> &pagesToMove, MoveTarget to, i
 
     QSet<int> named;
     for (int page : pagesToMove) {
-        if (page >= 0 && live.contains(page))
+        if (page >= 0 && live.contains({0, page}))
             named.insert(page);
     }
     Operation op;
     op.kind = Operation::Kind::MovePages;
     op.pages = sortedFrom(named);
+    op.moveTo = to;
+    op.anchor = anchor;
+    record(op);
+    return true;
+}
+
+bool DocumentEditor::mergeFile(const QString &path, const QVector<int> &pages, MoveTarget to,
+                               int anchor, QString *error)
+{
+    if (live.isEmpty()) {
+        *error = tr("还没有打开任何文档。");
+        return false;
+    }
+    if (to == MoveTarget::AfterPage && (anchor < 0 || anchor >= originalPages)) {
+        // The same rule 移动页面 enforces, for the same reason: the anchor has to be a
+        // page of the document on the screen, which is the only numbering a reader can
+        // check. A page an earlier change deleted is allowed and lands in the gap.
+        *error = tr("要说合并到第几页之后，而那个页码不在这份文档里。");
+        return false;
+    }
+
+    // Looked over again rather than trusted from the dialog. The file can have been
+    // replaced, shrunk or deleted in the time between choosing it and pressing 合并,
+    // and a merge that quietly brought in fewer pages than the summary promised is the
+    // silent kind of wrong -- the count would look right in the status bar and be wrong
+    // in the file.
+    int importPages = 0;
+    if (!inspectImport(path, &importPages, error))
+        return false;
+
+    QSet<int> named;
+    for (int page : pages) {
+        if (page < 0 || page >= importPages) {
+            *error = tr("%1 一共 %2 页，没有第 %3 页。")
+                         .arg(QFileInfo(path).fileName())
+                         .arg(importPages)
+                         .arg(page + 1);
+            return false;
+        }
+        named.insert(page);
+    }
+    if (named.isEmpty()) {
+        *error = tr("还没有说出要合并 %1 的哪几页。").arg(QFileInfo(path).fileName());
+        return false;
+    }
+
+    // One file, one entry: operations point at files by index, so a second entry for a
+    // path already in the list would make the same document look like two of them --
+    // and would have the save open it twice.
+    int index = -1;
+    for (int candidate = 0; candidate < imports.size(); ++candidate) {
+        if (sameFile(imports.at(candidate).path, path)) {
+            index = candidate;
+            break;
+        }
+    }
+    const bool firstTime = index < 0;
+    if (firstTime)
+        index = imports.size();
+
+    const QVector<int> chosen = sortedFrom(named);
+    // This merge's own identity, taken before the plan is worked out because the plan
+    // is what stamps it onto the pages. A refusal below burns a number, which costs
+    // nothing: the only rule is that no two merges share one.
+    const int mergeId = nextMergeId++;
+    const MergePlan plan = planMerge(live, chosen, mergeId, to, anchor);
+    if (!plan.usable()) {
+        *error = tr("没有页可以合并进来。");
+        return false;
+    }
+    if (firstTime)
+        imports.append({path, importPages});
+
+    Operation op;
+    op.kind = Operation::Kind::MergeFile;
+    op.pages = chosen;
+    op.importIndex = index;
+    op.mergeId = mergeId;
     op.moveTo = to;
     op.anchor = anchor;
     record(op);
@@ -444,11 +667,11 @@ bool DocumentEditor::redo()
 
 void DocumentEditor::rebuildLive()
 {
-    live = everyPageInOrder(originalPages);
+    live = openedDocumentInOrder(originalPages);
     for (const Operation &op : std::as_const(pending)) {
         if (op.kind == Operation::Kind::DeletePages) {
             for (int page : op.pages)
-                live.removeOne(page);
+                live.removeOne({0, page});
         } else if (op.kind == Operation::Kind::MovePages) {
             // The same function the dialog called and the replay below uses, so
             // that the page list in memory and the page tree that gets written can
@@ -456,6 +679,12 @@ void DocumentEditor::rebuildLive()
             // difference between the document somebody asked for and one they did
             // not, with the same number of pages in both.
             live = planMove(live, op.pages, op.moveTo, op.anchor).order;
+        } else if (op.kind == Operation::Kind::MergeFile) {
+            // planMerge() again for the same reason, and note that the pages it adds
+            // here are references to another file, not copies: this list is a promise
+            // about where pages come from, and the bytes are only pulled in by the
+            // save that says so.
+            live = planMerge(live, op.pages, op.mergeId, op.moveTo, op.anchor).order;
         }
     }
 }
@@ -478,19 +707,21 @@ QString DocumentEditor::pendingSummary() const
     return parts.join(QStringLiteral("，"));
 }
 
-QVector<int> DocumentEditor::positionsOf(const QVector<int> &present, const QVector<int> &pages)
+QVector<int> DocumentEditor::positionsOf(const QVector<PageRef> &present,
+                                         const QVector<int> &pages)
 {
     QVector<int> positions;
     positions.reserve(pages.size());
     for (int page : pages) {
-        const int at = present.indexOf(page);
+        const int at = present.indexOf({0, page});
         if (at >= 0)
             positions.append(at);
     }
     return positions;
 }
 
-void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<int> &present)
+void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<PageRef> &present,
+                           QPDF *mergeSource)
 {
     QPDFPageDocumentHelper helper(document);
     // One snapshot per operation: the handles below are what removePage() matches
@@ -500,28 +731,82 @@ void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<int> &pr
     // Not const, and a copy of a handle is still the page itself: these are object
     // references, so rotatePage() on one of them writes into the document.
     std::vector<QPDFPageObjectHelper> pages = helper.getAllPages();
+    // `present` and the snapshot above are index-aligned -- both run through the pages
+    // in the order the tree holds them -- so any page, from either file, can be found
+    // by what the reader asked for. No two entries of `present` are the same reference,
+    // which is what makes indexOf() a safe way to ask: a page merged in twice carries
+    // two identities, so the copy a move leans against is the one that was meant.
+    auto handleOf = [&](const PageRef &ref) { return pages.at(size_t(present.indexOf(ref))); };
 
     if (op.kind == Operation::Kind::RotatePages) {
         for (int original : op.pages) {
-            const int at = present.indexOf(original);
+            const int at = present.indexOf({0, original});
             if (at >= 0 && at < int(pages.size()))
                 pages.at(size_t(at)).rotatePage(op.quarterTurns * 90, /* relative = */ true);
         }
         return;
     }
 
+    if (op.kind == Operation::Kind::MergeFile) {
+        const MergePlan plan = planMerge(present, op.pages, op.mergeId, op.moveTo, op.anchor);
+        // Pages taken out of another document are not object references here: they are
+        // objects in a file that is open beside this one, so each has to be copied
+        // across. Handing the foreign page straight to addPage()/addPageAt() is what
+        // qpdf does for this -- it copies the page and its resources, after pushing any
+        // attributes the other file inherited down into it.
+        QPDFPageDocumentHelper fromHelper(*mergeSource);
+        const std::vector<QPDFPageObjectHelper> fromPages = fromHelper.getAllPages();
+        QPDFAcroFormDocumentHelper toForm(document);
+        QPDFAcroFormDocumentHelper fromForm(*mergeSource);
+
+        // Left to right, the same order planMove() re-inserts a block in, and for the
+        // same reason: the page each insertion leans on is already in the tree. The
+        // tree has changed by then, so the handle of the page before has to be re-asked
+        // every time -- getAllPages() is a snapshot, and a stale one numbers the pages
+        // against the tree as it was.
+        for (int index = plan.landsAt; index < plan.landsAt + plan.pagesAdded; ++index) {
+            const PageRef &ref = plan.order.at(index);
+            // Both of these are refused loudly rather than skipped: the saveAs() above
+            // re-opens each file and checks its page count before anything is staged, so
+            // reaching here with a page that cannot be copied means the two lists have
+            // stopped agreeing, and writing a document that is one page short of the
+            // sentence the reader acted on is the failure this class exists to avoid.
+            if (ref.source != op.mergeId)
+                throw std::runtime_error(tr("要合并的那一页在这份文件里找不到。")
+                                             .toUtf8()
+                                             .constData());
+            const int source = ref.page;
+            if (source < 0 || source >= int(fromPages.size()))
+                throw std::runtime_error(tr("要合并的那一页在这份文件里找不到。")
+                                             .toUtf8()
+                                             .constData());
+            const QPDFPageObjectHelper foreign = fromPages.at(size_t(source));
+            const QPDFObjectHandle fromHandle = foreign.getObjectHandle();
+            if (index == 0)
+                helper.addPage(foreign, /*first=*/true);
+            else
+                helper.addPageAt(foreign, /*before=*/false,
+                                 helper.getAllPages().at(size_t(index - 1)));
+            // A page copied as an object shares its /Annots array with the page it came
+            // from, and its form fields go missing entirely because nothing in this
+            // document's AcroForm points at them. qpdf's own repair for that is this
+            // call, and it is worth making only of a page that has annotations: the
+            // helper this needs is documented as expensive to build, and most pages of
+            // most documents have none.
+            if (fromHandle.hasKey("/Annots"))
+                toForm.fixCopiedAnnotations(helper.getAllPages().at(size_t(index)).getObjectHandle(),
+                                            fromHandle, fromForm);
+        }
+        present = plan.order;
+        return;
+    }
+
     if (op.kind == Operation::Kind::MovePages) {
         const MovePlan plan = planMove(present, op.pages, op.moveTo, op.anchor);
-        // `present` and the snapshot above are index-aligned -- both run through
-        // the pages in the order the tree holds them -- so a page can be found by
-        // the number the reader used.
-        auto handleOf = [&](int original) {
-            return pages.at(size_t(present.indexOf(original)));
-        };
-        QSet<int> moving;
-        for (int page : op.pages) {
-            if (present.contains(page))
-                moving.insert(page);
+        QVector<PageRef> moved;
+        for (const PageRef &ref : present) {
+            if (op.pages.contains(ref.page) && ref.source == 0)
+                moved.append(ref);
         }
 
         // Out of the tree first, with the handles held on to. This matters more for
@@ -529,23 +814,21 @@ void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<int> &pr
         // finds already in the tree so that it does not add it twice, so inserting
         // before removing would duplicate the page rather than move it -- a document
         // with the block in it twice and nothing to say so.
-        for (int original : op.pages) {
-            if (moving.contains(original))
-                helper.removePage(handleOf(original));
-        }
+        for (const PageRef &ref : moved)
+            helper.removePage(handleOf(ref));
         // Then walk the order that was asked for and put each moved page behind
         // whatever precedes it. The pages that were not named are still in their
         // relative order, and the moved ones are inserted left to right, so the page
         // before each insertion is already in the tree -- which makes the result
         // exactly `plan.order`, not merely a document with the same pages in it.
         for (int index = 0; index < plan.order.size(); ++index) {
-            const int original = plan.order.at(index);
-            if (!moving.contains(original))
+            const PageRef &ref = plan.order.at(index);
+            if (!moved.contains(ref))
                 continue;
             if (index == 0)
-                helper.addPage(handleOf(original), /*first=*/true);
+                helper.addPage(handleOf(ref), /*first=*/true);
             else
-                helper.addPageAt(handleOf(original), /*before=*/false,
+                helper.addPageAt(handleOf(ref), /*before=*/false,
                                  handleOf(plan.order.at(index - 1)));
         }
         present = plan.order;
@@ -562,7 +845,7 @@ void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<int> &pr
             helper.removePage(pages.at(size_t(at)));
     }
     for (int original : op.pages)
-        present.removeOne(original);
+        present.removeOne({0, original});
 }
 
 bool DocumentEditor::saveAs(const QString &path, QString *error)
@@ -578,6 +861,18 @@ bool DocumentEditor::saveAs(const QString &path, QString *error)
         // quietly writing a different one.
         *error = tr("另存为不能覆盖正在打开的文件。请换一个文件名。");
         return false;
+    }
+    for (const Import &import : std::as_const(imports)) {
+        if (sameFile(import.path, path)) {
+            // The other half of the same rule. A merge keeps the file it draws from
+            // open as an input for the length of this save, and the reader may well
+            // have that file open in another tab as a document of its own -- so
+            // pointing the destination at it would overwrite a file while this program
+            // is reading pages out of it.
+            *error = tr("另存为不能覆盖合并进来的文件（%1）。请换一个文件名。")
+                         .arg(QFileInfo(import.path).fileName());
+            return false;
+        }
     }
     if (live.isEmpty()) {
         // Cannot be reached through deletePages(), which refuses the request that
@@ -614,6 +909,48 @@ bool DocumentEditor::saveAs(const QString &path, QString *error)
             QStringLiteral("xyzpdf-save-%1-%2.pdf").arg(stamp).arg(attempt));
     }
 
+    // The files the merges draw from, opened here and held open until the last byte is
+    // on disk. They have to outlive the replay: a page copied out of another document
+    // keeps pointing at that file for its stream data, and it is the writer, not the
+    // copy, that reads it (QPDF.hh says so under copyForeignObject). Opening them all
+    // up front rather than one at a time inside the replay also means a file that went
+    // away or changed shape is answered before anything is staged, and that two merges
+    // of one file copy from one handle -- which is what qpdf's copy cache expects.
+    // A std::vector rather than a QVector: this holds unique_ptrs, and Qt's list asks
+    // for a copyable element the moment a non-const operator[] or detach touches it.
+    std::vector<std::unique_ptr<QPDF>> foreign(size_t(imports.size()));
+    for (const Operation &op : std::as_const(pending)) {
+        if (op.kind != Operation::Kind::MergeFile || op.importIndex < 0
+            || size_t(op.importIndex) >= foreign.size())
+            continue;
+        if (foreign[size_t(op.importIndex)])
+            continue;
+        const Import &import = imports.at(op.importIndex);
+        auto source = std::make_unique<QPDF>();
+        try {
+            source->processFile(import.path.toUtf8().constData());
+        } catch (const std::exception &e) {
+            *error = tr("%1 这时候打不开了，所以这些修改写不出来。原来的文件没有改动。\n\n"
+                        "解析器说：%2")
+                         .arg(QFileInfo(import.path).fileName(), QString::fromUtf8(e.what()));
+            return false;
+        }
+        const int nowPages = int(QPDFPageDocumentHelper(*source).getAllPages().size());
+        if (nowPages != import.pageCount) {
+            // Not clamped and not carried on with: the summary the reader acted on
+            // named pages of a file that is no longer that file, and writing a
+            // document that has fewer of them than the sentence promised is the silent
+            // kind of wrong this class keeps refusing.
+            *error = tr("%1 在这些修改记下来之后变了：当时是 %2 页，现在只有 %3 页。"
+                        "请撤销那次合并，重新选一遍页码。")
+                         .arg(QFileInfo(import.path).fileName())
+                         .arg(import.pageCount)
+                         .arg(nowPages);
+            return false;
+        }
+        foreign[size_t(op.importIndex)] = std::move(source);
+    }
+
     try {
         // The replay: the source read again from disk, then every pending operation
         // in the order the reader asked for them. This is where an original page
@@ -623,9 +960,23 @@ bool DocumentEditor::saveAs(const QString &path, QString *error)
         document->processFile(sourcePath.toUtf8().constData(),
                               sourcePassword.isEmpty() ? nullptr
                                                        : sourcePassword.toUtf8().constData());
-        QVector<int> present = everyPageInOrder(originalPages);
+        QVector<PageRef> present = openedDocumentInOrder(originalPages);
         for (const Operation &op : std::as_const(pending))
-            apply(op, *document, present);
+            apply(op, *document, present,
+                  op.importIndex >= 0 && size_t(op.importIndex) < foreign.size()
+                      ? foreign[size_t(op.importIndex)].get()
+                      : nullptr);
+        if (present != live) {
+            // The two ways of working out what the saved file holds -- the in-memory
+            // list and the replay over the real page tree -- have to agree before any
+            // bytes are promised to the reader. They run the same planMerge()/planMove()
+            // functions for that reason, and this is the check that says so: a
+            // disagreement means one of them stopped reading the same list, and the
+            // file about to be written would not be the document the dialogs described.
+            *error = tr("这些修改在内存里是一种页序，写到文件时成了另一种，所以这一份没有写。"
+                        "请把这种情况报上来。");
+            return false;
+        }
 
         // Nothing here sets encryption parameters, so the writer's default
         // (preserveEncryption = true) carries the original's /Encrypt dictionary --

@@ -1,4 +1,5 @@
-// Taking pages out of a PDF, moving the rest around, and what is promised around it.
+// Taking pages out of a PDF, moving the rest around, putting pages from another file
+// in, and what is promised around all three.
 //
 // The feature has one interesting failure mode, and it is not the page count: it
 // is writing over a file the reader owns. So most of what is pinned down here is
@@ -106,6 +107,63 @@ QVector<int> everyPage(int pageCount)
     for (int page = 0; page < pageCount; ++page)
         pages.append(page);
     return pages;
+}
+
+using Ref = DocumentEditor::PageRef;
+
+// The same document as the editor keeps it: every page of the one that was opened,
+// in the order it is on the screen. A page number a reader types is always a page of
+// that file, so every reference below has source 0 -- the tests that need a page from
+// a merged-in file say so themselves.
+QVector<Ref> everyRef(int pageCount)
+{
+    QVector<Ref> refs;
+    refs.reserve(pageCount);
+    for (int page = 0; page < pageCount; ++page)
+        refs.append(Ref{0, page});
+    return refs;
+}
+
+// The same list written out by hand, from the numbers on the screen.
+QVector<Ref> onScreen(std::initializer_list<int> numbers)
+{
+    QVector<Ref> refs;
+    for (int number : numbers)
+        refs.append(Ref{0, number});
+    return refs;
+}
+
+// A page order handed back by a plan, read back as numbers so the assertions can say
+// "2,3,4" instead of naming pairs. A page that came in from a merged file is written
+// as its merge number times a hundred, plus its number in its own file -- the only way
+// these tests can point at one, and the reason is the feature's limit rather than a
+// shortcut: an imported page has no number on the screen for anyone to type.
+QVector<int> asNumbers(const QVector<Ref> &order)
+{
+    QVector<int> numbers;
+    numbers.reserve(order.size());
+    for (const Ref &ref : order)
+        numbers.append(ref.source == 0 ? ref.page : ref.source * 100 + ref.page);
+    return numbers;
+}
+
+// A file holding pages 5, 6 and 7 of the fixture and nothing else, written here with
+// the editor's own delete: the merge tests need a second document, and a fixture in
+// tests/fixtures would be picked up by every other test that globs that folder.
+QString writeDonor(const QString &source, const QString &destination, int pagesBefore,
+                   const QVector<int> &keep, QString *error)
+{
+    DocumentEditor prep;
+    if (!prep.open(source, QString(), error))
+        return {};
+    QVector<int> drop;
+    for (int page = 0; page < pagesBefore; ++page) {
+        if (!keep.contains(page))
+            drop.append(page);
+    }
+    if (!prep.deletePages(drop, error) || !prep.saveAs(destination, error))
+        return {};
+    return destination;
 }
 
 // What the file itself says each page's rotation is, in degrees.
@@ -309,23 +367,23 @@ int main(int argc, char **argv)
     // about which those are.
     using Plan = DocumentEditor::DeletePlan;
     {
-        const Plan simple = DocumentEditor::planDelete(everyPage(10), {2, 3, 4});
+        const Plan simple = DocumentEditor::planDelete(everyRef(10), {2, 3, 4});
         check(simple.pagesToRemove == 3 && simple.pagesRemaining == 7 && !simple.leavesNothing,
               "three pages out of ten leaves seven");
 
-        const Plan repeated = DocumentEditor::planDelete(everyPage(10), {2, 3, 2, 99, -1});
+        const Plan repeated = DocumentEditor::planDelete(everyRef(10), {2, 3, 2, 99, -1});
         check(repeated.pagesToRemove == 2 && repeated.pagesRemaining == 8,
               "a page named twice comes out once, and a number outside the document names nothing");
 
-        const Plan all = DocumentEditor::planDelete(everyPage(3), {0, 1, 2});
+        const Plan all = DocumentEditor::planDelete(everyRef(3), {0, 1, 2});
         check(all.pagesToRemove == 3 && all.pagesRemaining == 0 && all.leavesNothing,
               "naming every page is the request that cannot be granted");
 
-        const Plan none = DocumentEditor::planDelete(everyPage(3), {});
+        const Plan none = DocumentEditor::planDelete(everyRef(3), {});
         check(none.pagesToRemove == 0 && !none.leavesNothing,
               "naming no page is a different problem from naming every one");
 
-        const Plan oneLeft = DocumentEditor::planDelete(everyPage(3), {0, 2});
+        const Plan oneLeft = DocumentEditor::planDelete(everyRef(3), {0, 2});
         check(oneLeft.pagesToRemove == 2 && oneLeft.pagesRemaining == 1 && !oneLeft.leavesNothing,
               "leaving exactly one page is allowed -- it is the smallest document there is");
 
@@ -333,20 +391,37 @@ int main(int argc, char **argv)
         // pages 0 and 1 are not in the document any more, so a second request that
         // names them removes nothing -- but it is not the same nothing as naming no
         // page at all, which is why alreadyGone is its own number.
-        const Plan halfGone = DocumentEditor::planDelete({2, 3, 4}, {0, 1, 3});
+        const Plan halfGone = DocumentEditor::planDelete(onScreen({2, 3, 4}), {0, 1, 3});
         check(halfGone.pagesToRemove == 1 && halfGone.alreadyGone == 2
                 && halfGone.pagesRemaining == 2,
               "pages an earlier change took out are counted separately from pages never named");
 
-        const Plan allGone = DocumentEditor::planDelete({2, 3}, {0, 1});
+        const Plan allGone = DocumentEditor::planDelete(onScreen({2, 3}), {0, 1});
         check(allGone.pagesToRemove == 0 && allGone.alreadyGone == 2 && !allGone.leavesNothing,
               "naming only gone pages removes nothing, and says why rather than \"you named nothing\"");
 
         // Naming every page that is left is the ungrantable one, even when the
         // document has already shrunk: what matters is the count going out.
-        const Plan restOfThem = DocumentEditor::planDelete({2, 3}, {2, 3});
+        const Plan restOfThem = DocumentEditor::planDelete(onScreen({2, 3}), {2, 3});
         check(restOfThem.pagesToRemove == 2 && restOfThem.leavesNothing,
               "the second delete that empties the document is refused as surely as the first");
+
+        // A merge is what made these counts worth re-reading: the list on the left
+        // now holds pages the screen never showed, and they are counted in what is
+        // left but are unreachable from the numbers typed on the right. The dialog
+        // has to say so, because "剩下 40 页" beside a 40-page document that is
+        // losing three is otherwise a sentence a reader can check and find wrong.
+        const Plan pastTheEnd = DocumentEditor::planDelete(
+            everyRef(3) << Ref{1, 0} << Ref{1, 1}, {0, 1, 2});
+        check(pastTheEnd.pagesToRemove == 3 && pastTheEnd.pagesRemaining == 2
+                && !pastTheEnd.leavesNothing,
+              "deleting every page of the opened file is not deleting every page of the "
+              "document, once a merge has put two more into it");
+
+        const Plan imported = DocumentEditor::planDelete(everyRef(3) << Ref{1, 0}, {0});
+        check(imported.pagesToRemove == 1 && imported.pagesRemaining == 3,
+              "and the page that came in from another file is in that remaining count, but "
+              "is not reachable from the numbers a reader can type");
     }
 
     // ---- what a move request means, with no document anywhere near it ----
@@ -357,84 +432,179 @@ int main(int argc, char **argv)
     // page sits where.
     using Move = DocumentEditor::MoveTarget;
     {
-        const DocumentEditor::MovePlan toBack = DocumentEditor::planMove(everyPage(10), {2, 3, 4},
+        const DocumentEditor::MovePlan toBack = DocumentEditor::planMove(everyRef(10), {2, 3, 4},
                                                                         Move::Back);
-        check(toBack.pagesMoved == 3 && toBack.order.last() == 4 && toBack.landsAt == 7
+        check(toBack.pagesMoved == 3 && asNumbers(toBack.order).last() == 4 && toBack.landsAt == 7
                 && toBack.changesOrder && toBack.usable(),
               QStringLiteral("three pages moved to the back land at 8, 9, 10: %1")
-                  .arg(describeOrder(toBack.order)));
+                  .arg(describeOrder(asNumbers(toBack.order))));
 
-        const DocumentEditor::MovePlan toFront = DocumentEditor::planMove(everyPage(10), {7, 8},
+        const DocumentEditor::MovePlan toFront = DocumentEditor::planMove(everyRef(10), {7, 8},
                                                                          Move::Front);
-        check(toFront.order.front() == 7 && toFront.order.at(1) == 8
-                && toFront.order.at(2) == 0 && toFront.landsAt == 0,
+        check(asNumbers(toFront.order).front() == 7 && asNumbers(toFront.order).at(1) == 8
+                && asNumbers(toFront.order).at(2) == 0 && toFront.landsAt == 0,
               QStringLiteral("the block keeps its own internal order at the front: %1")
-                  .arg(describeOrder(toFront.order)));
+                  .arg(describeOrder(asNumbers(toFront.order))));
 
         // Typed the other way round, and it still comes out 2,3,4: the numbers name
         // which pages travel, not the order they arrive in.
         const DocumentEditor::MovePlan typedBackwards = DocumentEditor::planMove(
-            everyPage(10), {4, 2, 3}, Move::Back);
-        check(typedBackwards.order.mid(7) == QVector<int>({2, 3, 4}),
+            everyRef(10), {4, 2, 3}, Move::Back);
+        check(asNumbers(typedBackwards.order).mid(7) == QVector<int>({2, 3, 4}),
               QStringLiteral("naming them out of order does not shuffle them: %1")
-                  .arg(describeOrder(typedBackwards.order)));
+                  .arg(describeOrder(asNumbers(typedBackwards.order))));
 
-        const DocumentEditor::MovePlan behind = DocumentEditor::planMove(everyPage(10), {0, 1},
+        const DocumentEditor::MovePlan behind = DocumentEditor::planMove(everyRef(10), {0, 1},
                                                                         Move::AfterPage, 4);
-        check(behind.order == QVector<int>({2, 3, 4, 0, 1, 5, 6, 7, 8, 9}) && behind.landsAt == 3
-                && behind.anchorUsed == 4 && !behind.anchorWasGone,
+        check(asNumbers(behind.order) == QVector<int>({2, 3, 4, 0, 1, 5, 6, 7, 8, 9})
+                && behind.landsAt == 3 && behind.anchorUsed == 4 && !behind.anchorWasGone,
               QStringLiteral("the first two pages move behind the fifth, which is page 5 on the "
                              "screen and index 4 here: %1")
-                  .arg(describeOrder(behind.order)));
+                  .arg(describeOrder(asNumbers(behind.order))));
 
         // Three ways to ask for the order the document already has, and each one has
         // to come out false so that the button greys and nothing is recorded.
-        check(!DocumentEditor::planMove(everyPage(5), {3, 4}, Move::Back).changesOrder,
+        check(!DocumentEditor::planMove(everyRef(5), {3, 4}, Move::Back).changesOrder,
               "the last two pages are already at the back");
-        check(!DocumentEditor::planMove(everyPage(5), {0}, Move::Front).changesOrder,
+        check(!DocumentEditor::planMove(everyRef(5), {0}, Move::Front).changesOrder,
               "the first page is already at the front");
-        check(!DocumentEditor::planMove(everyPage(5), {2}, Move::AfterPage, 1).changesOrder,
+        check(!DocumentEditor::planMove(everyRef(5), {2}, Move::AfterPage, 1).changesOrder,
               "page 3 is already behind page 2");
 
-        const DocumentEditor::MovePlan ontoItself = DocumentEditor::planMove(everyPage(5), {1, 2},
+        const DocumentEditor::MovePlan ontoItself = DocumentEditor::planMove(everyRef(5), {1, 2},
                                                                             Move::AfterPage, 2);
         check(ontoItself.anchorIsMoved && !ontoItself.usable(),
               "moving a block behind a page inside itself is not a move, and says which page "
               "makes it that way");
 
-        const DocumentEditor::MovePlan namedNothing = DocumentEditor::planMove(everyPage(5), {},
+        const DocumentEditor::MovePlan namedNothing = DocumentEditor::planMove(everyRef(5), {},
                                                                               Move::Back);
         check(namedNothing.pagesMoved == 0 && !namedNothing.changesOrder && !namedNothing.usable()
-                && namedNothing.order == everyPage(5),
+                && asNumbers(namedNothing.order) == everyPage(5),
               "naming no page moves nothing, and the order it hands back is the one it was given");
 
-        const DocumentEditor::MovePlan repeats = DocumentEditor::planMove(everyPage(10), {2, 2, 3},
+        const DocumentEditor::MovePlan repeats = DocumentEditor::planMove(everyRef(10), {2, 2, 3},
                                                                          Move::Back);
-        check(repeats.pagesMoved == 2 && repeats.order.mid(8) == QVector<int>({2, 3}),
+        check(repeats.pagesMoved == 2 && asNumbers(repeats.order).mid(8) == QVector<int>({2, 3}),
               QStringLiteral("a page named twice travels once: %1")
-                  .arg(describeOrder(repeats.order)));
+                  .arg(describeOrder(asNumbers(repeats.order))));
 
         // The two questions a page number raises once unsaved changes exist are
         // separate: is it still there, and where does the anchor land if it is not.
-        const DocumentEditor::MovePlan gonePages = DocumentEditor::planMove({2, 3, 4}, {0, 1, 3},
-                                                                           Move::Back);
+        const DocumentEditor::MovePlan gonePages = DocumentEditor::planMove(onScreen({2, 3, 4}),
+                                                                           {0, 1, 3}, Move::Back);
         check(gonePages.pagesMoved == 1 && gonePages.alreadyGone == 2
-                && gonePages.order == QVector<int>({2, 4, 3}),
+                && asNumbers(gonePages.order) == QVector<int>({2, 4, 3}),
               "pages an earlier change deleted are counted apart from the one still there");
 
-        const DocumentEditor::MovePlan goneAnchor = DocumentEditor::planMove({0, 1, 2, 4, 5}, {5},
-                                                                            Move::AfterPage, 3);
+        const DocumentEditor::MovePlan goneAnchor = DocumentEditor::planMove(
+            onScreen({0, 1, 2, 4, 5}), {5}, Move::AfterPage, 3);
         check(goneAnchor.anchorWasGone && goneAnchor.anchorUsed == 4
-                && goneAnchor.order == QVector<int>({0, 1, 2, 5, 4}) && goneAnchor.usable(),
+                && asNumbers(goneAnchor.order) == QVector<int>({0, 1, 2, 5, 4})
+                && goneAnchor.usable(),
               QStringLiteral("an anchor a delete took out becomes the gap it left, in front of "
                              "the page that is now there: %1")
-                  .arg(describeOrder(goneAnchor.order)));
+                  .arg(describeOrder(asNumbers(goneAnchor.order))));
 
-        const DocumentEditor::MovePlan anchorAtEnd = DocumentEditor::planMove({0, 1, 2}, {0},
-                                                                             Move::AfterPage, 5);
+        const DocumentEditor::MovePlan anchorAtEnd = DocumentEditor::planMove(onScreen({0, 1, 2}),
+                                                                             {0}, Move::AfterPage, 5);
         check(anchorAtEnd.anchorWasGone && anchorAtEnd.anchorUsed == -1
-                && anchorAtEnd.order == QVector<int>({1, 2, 0}),
+                && asNumbers(anchorAtEnd.order) == QVector<int>({1, 2, 0}),
               "and an anchor past the last surviving page is the same answer as moving to the end");
+
+        // A block of imported pages: they travel as a block and keep their own order,
+        // but no number a reader types reaches them, so this is the undo-and-move case
+        // rather than a dialog. The anchor on the right is still a page of the opened
+        // document -- the imported pages in the list do not shift what 第 N 页 means.
+        const DocumentEditor::MovePlan importedBlock = DocumentEditor::planMove(
+            QVector<Ref>() << Ref{1, 0} << Ref{1, 1} << Ref{0, 0} << Ref{0, 1},
+            {}, Move::AfterPage, 0);
+        check(importedBlock.pagesMoved == 0 && !importedBlock.changesOrder,
+              "naming no page of the opened document moves nothing, even with imported pages "
+              "in front");
+        const DocumentEditor::MovePlan behindTheImported = DocumentEditor::planMove(
+            QVector<Ref>() << Ref{0, 0} << Ref{1, 0} << Ref{1, 1} << Ref{0, 1},
+            {0}, Move::AfterPage, 1);
+        check(behindTheImported.usable()
+                && asNumbers(behindTheImported.order) == QVector<int>({100, 101, 1, 0}),
+              QStringLiteral("page 1 moves behind page 2, which is sitting behind two imported "
+                             "ones, so it lands after them: %1")
+                  .arg(describeOrder(asNumbers(behindTheImported.order))));
+    }
+
+    // ---- what a merge request means, with no document anywhere near it ----
+    //
+    // The same shape as the two blocks above, and the same reason for existing: the
+    // dialog's summary and the save's replay both go through planMerge(), so the place
+    // a block of pages lands is worked out once. That is the whole point of the
+    // landing spot being shared with planMove() -- "第 12 页之后" is one place in this
+    // program, not one place per operation.
+    {
+        const DocumentEditor::MergePlan atBack = DocumentEditor::planMerge(
+            everyRef(5), {0, 1, 2}, 1, Move::Back);
+        check(atBack.pagesAdded == 3 && atBack.landsAt == 5 && atBack.usable()
+                && asNumbers(atBack.order) == QVector<int>({0, 1, 2, 3, 4, 100, 101, 102}),
+              QStringLiteral("three pages from the other file join the end, in the order that "
+                             "file has them: %1")
+                  .arg(describeOrder(asNumbers(atBack.order))));
+
+        const DocumentEditor::MergePlan atFront = DocumentEditor::planMerge(
+            everyRef(5), {1}, 2, Move::Front);
+        check(atFront.pagesAdded == 1 && atFront.landsAt == 0
+                && asNumbers(atFront.order) == QVector<int>({201, 0, 1, 2, 3, 4}),
+              QStringLiteral("one page from a second merged file goes to the very front: %1")
+                  .arg(describeOrder(asNumbers(atFront.order))));
+
+        // Typed the other way round in the range box, and it still arrives 1 then 3:
+        // the numbers say which pages come, not the order they come in.
+        check(asNumbers(DocumentEditor::planMerge(everyRef(2), {3, 1}, 1, Move::Back).order)
+                  == QVector<int>({0, 1, 101, 103}),
+              "naming them out of order does not shuffle the block, either here");
+
+        const DocumentEditor::MergePlan behind = DocumentEditor::planMerge(
+            everyRef(5), {0}, 1, Move::AfterPage, 2);
+        check(behind.landsAt == 3 && behind.anchorUsed == 2 && !behind.anchorWasGone
+                && asNumbers(behind.order) == QVector<int>({0, 1, 2, 100, 3, 4}),
+              QStringLiteral("the merge lands behind the third page, which is where a move "
+                             "behind it would have gone: %1")
+                  .arg(describeOrder(asNumbers(behind.order))));
+
+        // The anchor a delete left behind, asked of a merge rather than of a move. It
+        // has to come to the same place, or the two dialogs would be pointing at
+        // different gaps with the same sentence.
+        const DocumentEditor::MergePlan goneAnchor = DocumentEditor::planMerge(
+            onScreen({0, 1, 2, 4, 5}), {0}, 1, Move::AfterPage, 3);
+        check(goneAnchor.anchorWasGone && goneAnchor.anchorUsed == 4
+                && asNumbers(goneAnchor.order) == QVector<int>({0, 1, 2, 100, 4, 5}),
+              "a merged block goes into the gap a deleted anchor left, exactly where a move "
+              "would have put it");
+
+        // Repeats and out-of-range numbers cannot reach this function from a dialog --
+        // the range box is bounded by the other file's own page count -- but a merge of
+        // one page named twice is one page, and that is the only thing that varies.
+        check(DocumentEditor::planMerge(everyRef(3), {2, 2}, 1, Move::Back).pagesAdded == 1,
+              "a page named twice comes in once");
+
+        // The one case with no counterpart in a move: a merge never takes anything out,
+        // so the document cannot be emptied by one, and nothing here refuses a merge of
+        // zero pages except the dialog's greyed button. planMerge hands back the list it
+        // was given.
+        const DocumentEditor::MergePlan namedNothing = DocumentEditor::planMerge(
+            everyRef(3), {}, 1, Move::Back);
+        check(namedNothing.pagesAdded == 0 && !namedNothing.usable()
+                && asNumbers(namedNothing.order) == everyPage(3),
+              "naming no page adds nothing, and the order it hands back is the one it was given");
+
+        // Merging into a document that already holds imported pages: the anchor is a
+        // page of the opened file, so it resolves against that file's own order rather
+        // than against the position the imported pages happen to sit in.
+        const DocumentEditor::MergePlan secondMerge = DocumentEditor::planMerge(
+            QVector<Ref>() << Ref{0, 0} << Ref{1, 0} << Ref{0, 1}, {0}, 2, Move::AfterPage, 0);
+        check(secondMerge.landsAt == 1
+                && asNumbers(secondMerge.order) == QVector<int>({0, 200, 100, 1}),
+              QStringLiteral("behind page 1 means behind it, with the earlier merge's page "
+                             "pushed along: %1")
+                  .arg(describeOrder(asNumbers(secondMerge.order))));
     }
 
     // ---- whether two paths name one file ----
@@ -733,6 +903,346 @@ int main(int argc, char **argv)
         check(hashOfFile(source) == originalHash, "and none of this touched the document");
     }
 
+    // ---- a merge writes in the pages it promised, out of a file it never opened ----
+    //
+    // This is the operation whose failure cannot be caught by a page count, because a
+    // merge is the one thing here that changes the count: a wrongly copied page looks
+    // like a right one from across the room. So every case below reads the written file
+    // back through the reader and asks each page what its own label says -- which also
+    // proves the handoff between the library that copies a page out of one file and the
+    // one that displays it, since these fixtures print their number inside the page.
+    //
+    // The second document is written here by deleting pages out of the first, so the
+    // labels the two files share are known without adding a fixture to the folder every
+    // other test globs.
+    {
+        const QString donor = scratch.filePath(QStringLiteral("donor.pdf"));
+        QString error;
+        check(writeDonor(source, donor, pagesBefore, {4, 5, 6}, &error) == donor,
+              QStringLiteral("setup: a second document, holding pages 5, 6 and 7 of the "
+                             "first: %1").arg(error));
+        const QString donorHash = hashOfFile(donor);
+
+        int importPages = 0;
+        error.clear();
+        check(DocumentEditor::inspectImport(donor, &importPages, &error) && importPages == 3,
+              QStringLiteral("and looking one over says how many pages it has: %1").arg(error));
+
+        // Refused at the moment the file is chosen, which is the decision made in this
+        // slice: no password box here, and the sentence that says which file and why is
+        // the whole of what a reader gets to act on.
+        const QString locked = scratch.filePath(QStringLiteral("locked-donor.pdf"));
+        check(writeEncryptedCopy(source, locked, QStringLiteral("hunter2"), true).isEmpty(),
+              "setup: a donor that needs a password to open");
+        QString complaint;
+        int lockedPages = -1;
+        check(!DocumentEditor::inspectImport(locked, &lockedPages, &complaint)
+                && lockedPages == 0
+                && complaint.contains(QStringLiteral("口令"))
+                && complaint.contains(QStringLiteral("locked-donor.pdf")),
+              QStringLiteral("a document that needs a password is refused, by name, before "
+                             "anything is recorded: %1").arg(complaint));
+
+        // A file merely marked not-to-modify is a different thing: it opens for anyone,
+        // so it merges. The round trip below is what says whether the copy survives.
+        const QString restricted = scratch.filePath(QStringLiteral("restricted-donor.pdf"));
+        check(writeEncryptedCopy(source, restricted, QString(), false).isEmpty(),
+              "setup: a donor marked not to be modified");
+        complaint.clear();
+        int restrictedPages = 0;
+        check(DocumentEditor::inspectImport(restricted, &restrictedPages, &complaint)
+                && restrictedPages == pagesBefore,
+              QStringLiteral("and a file that only forbids editing is looked over fine: %1")
+                  .arg(complaint));
+
+        // ---- the whole donor at the back ----
+        DocumentEditor editor;
+        check(editor.open(source, QString(), &error),
+              QStringLiteral("setup: the edited document opens: %1").arg(error));
+        check(editor.importedPageCount() == 0, "and nothing has come in yet");
+        error.clear();
+        check(!editor.mergeFile(donor, {}, DocumentEditor::MoveTarget::Back, -1, &error)
+                && !error.isEmpty(),
+              "naming no page of the other file is refused, with a sentence");
+        check(!editor.isDirty(), "and the refusal recorded nothing");
+        error.clear();
+        check(!editor.mergeFile(donor, {0, 1, 9}, DocumentEditor::MoveTarget::Back, -1, &error)
+                && error.contains(QStringLiteral("donor.pdf")),
+              QStringLiteral("a page the other file does not have is refused by its own number, "
+                             "against that file's own length: %1").arg(error));
+        check(!editor.mergeFile(donor, {0}, DocumentEditor::MoveTarget::AfterPage,
+                                pagesBefore, &error),
+              "and so is an anchor past the last page of the document on the screen");
+        check(editor.pendingCount() == 0, "and none of the three refusals was recorded");
+
+        error.clear();
+        // Timed, because a merge is the first edit whose save opens a second file:
+        // the "重放 + 整份写 is milliseconds" claim in docs/PLAN.md was measured with
+        // deletions only, and this is the case that could have quietly doubled it.
+        QElapsedTimer mergeClock;
+        mergeClock.start();
+        check(editor.mergeFile(donor, {0, 1, 2}, DocumentEditor::MoveTarget::Back, -1, &error),
+              QStringLiteral("the three pages of the donor come in at the end: %1").arg(error));
+        check(editor.pageCount() == pagesBefore + 3,
+              "and the document a save would write is three pages longer");
+        check(editor.importedPageCount() == 3,
+              "and the editor can say how many of those the screen has never shown");
+        check(editor.undoDescription().contains(QStringLiteral("donor.pdf")),
+              QStringLiteral("the undo item names which file: %1").arg(editor.undoDescription()));
+
+        const QString merged = scratch.filePath(QStringLiteral("merged.pdf"));
+        error.clear();
+        check(editor.saveAs(merged, &error),
+              QStringLiteral("and the merge is written into a new file: %1").arg(error));
+        note(QStringLiteral("%1 pages plus %2 merged in, a %3 KB document: open + merge + write "
+                            "took %4 ms")
+                 .arg(pagesBefore)
+                 .arg(3)
+                 .arg(QFileInfo(source).size() / 1024)
+                 .arg(mergeClock.elapsed()));
+        QVector<int> wanted;
+        for (int label = 1; label <= pagesBefore; ++label)
+            wanted.append(label);
+        wanted << 5 << 6 << 7;
+        check(orderInFile(merged) == wanted,
+              QStringLiteral("the file reads back as the forty pages then the donor's three, in "
+                             "that order: got %1")
+                  .arg(describeOrder(orderInFile(merged))));
+        check(pagesAsReadByTheReader(merged) == pagesBefore + 3,
+              "and the reader counts every one of them");
+
+        // The donor was read from, and nothing more: the same promise the source has had
+        // since the first test in this file, now extended to a second file on the same
+        // save -- and the destination is refused for exactly this reason.
+        check(hashOfFile(donor) == donorHash, "the file that was merged in is unchanged");
+        check(hashOfFile(source) == originalHash, "and so is the one that was opened");
+        error.clear();
+        check(!editor.saveAs(donor, &error) && error.contains(QStringLiteral("donor.pdf")),
+              QStringLiteral("saving over the file that was merged in is refused: %1").arg(error));
+        check(hashOfFile(donor) == donorHash, "and the refusal left it alone");
+
+        // Undo is the only way an imported page can be taken away, so it is checked the
+        // same way the merge was: by what the file comes back holding.
+        check(editor.undo(), "the merge is taken back");
+        check(editor.pageCount() == pagesBefore && editor.importedPageCount() == 0,
+              "and the document is the opened file again, page for page");
+        const QString undoneFile = scratch.filePath(QStringLiteral("merged-undone.pdf"));
+        check(editor.saveAs(undoneFile, &error), "and the shorter list writes");
+        QVector<int> wantedUndone;
+        for (int label = 1; label <= pagesBefore; ++label)
+            wantedUndone.append(label);
+        check(orderInFile(undoneFile) == wantedUndone,
+              QStringLiteral("nothing is left of the merge in the file: got %1")
+                  .arg(describeOrder(orderInFile(undoneFile))));
+
+        check(editor.redo(), "redo puts the merge back on the list");
+        check(editor.importedPageCount() == 3, "and the three pages with it");
+        const QString redoneFile = scratch.filePath(QStringLiteral("merged-redone.pdf"));
+        check(editor.saveAs(redoneFile, &error), "and it writes");
+        check(orderInFile(redoneFile) == wanted,
+              "the redone document is the one the merge wrote the first time");
+
+        // ---- a merged page in front, and a number that cannot reach it ----
+        //
+        // The consequence of numbering by the screen, checked where it would do the most
+        // damage: a reader who deletes "page 1" after a merge means the first page they
+        // can see, which is the first page of the file they opened -- not the imported
+        // page that a save now happens to write in front of it. Had the number been taken
+        // as a position in the saved document, the page that went out here would be one
+        // nobody named, and the file would still have the right count.
+        DocumentEditor front;
+        check(front.open(source, QString(), &error), "setup: the copy opens again");
+        check(front.mergeFile(donor, {0, 1, 2}, DocumentEditor::MoveTarget::Front, -1, &error),
+              "the donor's three pages land at the very front");
+        check(front.deletePages({0}, &error),
+              "then page 1 is deleted -- which is the opened file's first page, not the "
+              "imported one now sitting in front of it");
+        check(front.pageCount() == pagesBefore + 2, "and the count says which of the two went");
+        const QString frontOut = scratch.filePath(QStringLiteral("merged-front.pdf"));
+        check(front.saveAs(frontOut, &error),
+            QStringLiteral("and it is written: %1").arg(error));
+        QVector<int> wantedFront;
+        wantedFront << 5 << 6 << 7;
+        for (int label = 2; label <= pagesBefore; ++label)
+            wantedFront.append(label);
+        check(orderInFile(frontOut) == wantedFront,
+              QStringLiteral("the file holds the donor's three pages, then the opened document "
+                             "from its second page: got %1")
+                  .arg(describeOrder(orderInFile(frontOut))));
+        check(front.deletePages({0}, &error) == false,
+              "and asking again for the page that has gone says so rather than taking the "
+              "imported one out instead");
+
+        // ---- one page, twice ----
+        //
+        // The case a merge is free to make and no other operation is: the same page of
+        // the same file twice in one document. It is not a bug to allow -- "把第 3 页再来
+        // 一遍" is a thing a reader can mean -- so what is pinned is that the two copies
+        // are two pages, and that undoing one leaves the other.
+        DocumentEditor twice;
+        check(twice.open(source, QString(), &error), "setup: the copy opens again");
+        check(twice.mergeFile(donor, {1}, DocumentEditor::MoveTarget::Back, -1, &error),
+              "one page of the donor goes in");
+        check(twice.mergeFile(donor, {1}, DocumentEditor::MoveTarget::AfterPage, 0, &error),
+              "and the same page again, behind the first page of the opened document");
+        check(twice.pendingCount() == 2, "two operations, one per merge");
+        check(twice.importedPageCount() == 2, "two pages, the same page twice");
+        const QString twiceOut = scratch.filePath(QStringLiteral("merged-twice.pdf"));
+        check(twice.saveAs(twiceOut, &error),
+            QStringLiteral("and the two are written together: %1").arg(error));
+        QVector<int> wantedTwice;
+        wantedTwice << 1 << 6;
+        for (int label = 2; label <= pagesBefore; ++label)
+            wantedTwice.append(label);
+        wantedTwice << 6;
+        check(orderInFile(twiceOut) == wantedTwice,
+              QStringLiteral("page 6 of the donor appears twice, once behind page 1 and once at "
+                             "the end, and they are separate pages: got %1")
+                  .arg(describeOrder(orderInFile(twiceOut))));
+        check(twice.undo(), "taking back the second merge");
+        check(twice.importedPageCount() == 1, "leaves the first one where it was");
+        const QString oneOut = scratch.filePath(QStringLiteral("merged-twice-one.pdf"));
+        check(twice.saveAs(oneOut, &error), "and the file says so too");
+        QVector<int> wantedOne;
+        for (int label = 1; label <= pagesBefore; ++label)
+            wantedOne.append(label);
+        wantedOne << 6;
+        check(orderInFile(oneOut) == wantedOne,
+              QStringLiteral("the surviving copy is the one at the end: got %1")
+                  .arg(describeOrder(orderInFile(oneOut))));
+
+        // ---- and a move that leans against one of the two copies ----
+        //
+        // Where an identity that only named the file would go wrong. Two pages from one
+        // file with one number are the same reference, so looking one of them up answers
+        // for whichever comes first -- and a move that inserts behind the second copy
+        // lands it behind the first. Nothing downstream notices: the document has every
+        // page in it and the right count, which is the failure class this file keeps
+        // reading labels for.
+        DocumentEditor lean;
+        check(lean.open(source, QString(), &error), "setup: the copy opens again");
+        check(lean.mergeFile(donor, {1}, DocumentEditor::MoveTarget::Back, -1, &error),
+              "the donor's second page goes in at the end");
+        check(lean.mergeFile(donor, {1}, DocumentEditor::MoveTarget::AfterPage, 0, &error),
+              "and that same page again, behind page 1");
+        check(lean.movePages({1}, DocumentEditor::MoveTarget::Back, -1, &error),
+              "then page 2 of the opened document moves to the very end, behind both copies");
+        const QString leanOut = scratch.filePath(QStringLiteral("merged-lean.pdf"));
+        error.clear();
+        check(lean.saveAs(leanOut, &error),
+            QStringLiteral("and the three operations are written together: %1").arg(error));
+        QVector<int> wantedLean;
+        wantedLean << 1 << 6;
+        for (int label = 3; label <= pagesBefore; ++label)
+            wantedLean.append(label);
+        wantedLean << 6 << 2;
+        const QVector<int> leanWritten = orderInFile(leanOut);
+        check(leanWritten == wantedLean,
+              QStringLiteral("page 2 came to the end, behind the second copy of page 6 rather "
+                             "than the first: got %1, wanted %2")
+                  .arg(describeOrder(leanWritten), describeOrder(wantedLean)));
+
+        // ---- the opened document merged into itself ----
+        //
+        // Nothing special about it to the copy path -- the pages are foreign objects in a
+        // second handle on the same file -- and it is the merge a reader can most plausibly
+        // ask for ("把这份的前两页也放到末尾"), so it is checked end to end, including the
+        // refusal that has to come with it: the destination cannot be that same file.
+        DocumentEditor itself;
+        check(itself.open(source, QString(), &error), "setup: the copy opens again");
+        check(itself.mergeFile(source, {0, 1}, DocumentEditor::MoveTarget::Back, -1, &error),
+              "the document can be merged into itself");
+        error.clear();
+        check(!itself.saveAs(source, &error),
+              "and saving it back over the file it opened is still refused");
+        const QString itselfOut = scratch.filePath(QStringLiteral("merged-itself.pdf"));
+        error.clear();
+        check(itself.saveAs(itselfOut, &error),
+            QStringLiteral("the doubled document writes elsewhere: %1").arg(error));
+        QVector<int> wantedItself;
+        for (int label = 1; label <= pagesBefore; ++label)
+            wantedItself.append(label);
+        wantedItself << 1 << 2;
+        check(orderInFile(itselfOut) == wantedItself,
+              QStringLiteral("with the two pages at the end as well as where they were: got %1")
+                  .arg(describeOrder(orderInFile(itselfOut))));
+        check(hashOfFile(source) == originalHash, "and the file it read twice is unchanged");
+
+        // ---- a file that changed after the merge was recorded ----
+        //
+        // The merge was promised against a document the reader could look at, and the save
+        // reads it again. If it is no longer the file that was promised -- trimmed,
+        // replaced, saved over by another program -- then the summary the reader acted on
+        // names pages that may not exist, and the only honest answers are to refuse or to
+        // say nothing at all. This is the case the up-front re-check exists for: the same
+        // arithmetic planMerge() ran is run again over the real page tree at the end, and
+        // the two have to agree before any bytes are written.
+        DocumentEditor stale;
+        check(stale.open(source, QString(), &error), "setup: the copy opens again");
+        check(stale.mergeFile(donor, {0, 1, 2}, DocumentEditor::MoveTarget::Back, -1, &error),
+              "setup: three pages of the donor are recorded");
+        check(writeDonor(source, donor, pagesBefore, {4}, &error) == donor,
+              "setup: and then the donor is replaced with a one-page version of itself");
+        const QString staleOut = scratch.filePath(QStringLiteral("merged-stale.pdf"));
+        error.clear();
+        check(!stale.saveAs(staleOut, &error) && !error.isEmpty(),
+              QStringLiteral("the save notices, and refuses rather than writing what it can: %1")
+                  .arg(error));
+        check(error.contains(QStringLiteral("donor.pdf")),
+              QStringLiteral("and the refusal names which file stopped matching: %1").arg(error));
+        check(!QFile::exists(staleOut), "and no file was written on the way to refusing");
+        check(hashOfFile(source) == originalHash, "and the opened document is untouched");
+
+        // Restoring the donor is enough: the list is replayed from the file every save,
+        // so what a save writes is what the files hold now, not what they held when the
+        // dialog closed.
+        check(writeDonor(source, donor, pagesBefore, {4, 5, 6}, &error) == donor,
+              "setup: the donor is put back the way it was");
+        error.clear();
+        check(stale.saveAs(staleOut, &error),
+            QStringLiteral("and the merge that was refused now writes: %1").arg(error));
+        QVector<int> wantedStale;
+        for (int label = 1; label <= pagesBefore; ++label)
+            wantedStale.append(label);
+        wantedStale << 5 << 6 << 7;
+        const QVector<int> staleWritten = orderInFile(staleOut);
+        check(staleWritten == wantedStale,
+              QStringLiteral("with the three pages it was promised holding: got %1")
+                  .arg(describeOrder(staleWritten)));
+        check(pagesAsReadByTheReader(donor) == 3,
+              "and the donor is the three-page file it was again");
+
+        // ---- merging out of a file that forbids being modified ----
+        {
+            DocumentEditor fromRestricted;
+            check(fromRestricted.open(source, QString(), &error), "setup: the copy opens again");
+            const bool recorded = fromRestricted.mergeFile(
+                restricted, {0, 1}, DocumentEditor::MoveTarget::Back, -1, &error);
+            note(QStringLiteral("merging two pages out of a document marked not-to-modify: %1")
+                     .arg(recorded ? QStringLiteral("recorded") : error));
+            if (recorded) {
+                const QString out = scratch.filePath(QStringLiteral("merged-restricted.pdf"));
+                error.clear();
+                const bool wrote = fromRestricted.saveAs(out, &error);
+                note(QStringLiteral("writing it: %1")
+                         .arg(wrote ? QStringLiteral("succeeded") : error));
+                if (wrote) {
+                    QVector<int> labels = orderInFile(out);
+                    check(labels.size() == pagesBefore + 2,
+                          "and the copy the reader gets is the two documents' pages");
+                    if (labels.size() == pagesBefore + 2) {
+                        check(labels.at(pagesBefore) == 1 && labels.at(pagesBefore + 1) == 2,
+                              "and the pages that came from the protected file are the pages "
+                              "that were named, not a blank stand-in for them");
+                    }
+                }
+            }
+        }
+
+        check(hashOfFile(source) == originalHash, "and none of the merge cases touched the "
+                                                 "document that was opened");
+    }
+
     // ---- a refused write leaves nothing behind ----
     {
         DocumentEditor editor;
@@ -965,6 +1475,35 @@ int main(int argc, char **argv)
                      .arg(bigPagesBefore)
                      .arg(QFileInfo(bigSource).size() / 1024)
                      .arg(taken));
+
+            // The same at scale with a merge in it. This is the one worth the second
+            // number: a deletion's save holds one document open, a merge's holds two,
+            // and every page copied over brings its objects into the first one's tree.
+            const QString bigDonor = scratch.filePath(QStringLiteral("big-donor.pdf"));
+            check(writeDonor(bigSource, bigDonor, bigPagesBefore, {4, 5, 6}, &error) == bigDonor,
+                  QStringLiteral("setup: a three-page donor cut out of the large fixture: %1")
+                      .arg(error));
+
+            const QString bigMerged = scratch.filePath(QStringLiteral("big-merged.pdf"));
+            DocumentEditor merging;
+            QElapsedTimer bigMergeClock;
+            bigMergeClock.start();
+            const bool mergedIn = merging.open(bigSource, QString(), &error)
+                && merging.mergeFile(bigDonor, {0, 1, 2}, DocumentEditor::MoveTarget::Back, -1,
+                                     &error)
+                && merging.saveAs(bigMerged, &error);
+            check(mergedIn,
+                  QStringLiteral("opening, merging three pages into the big one and writing it: %1")
+                      .arg(error));
+            check(pagesAsReadByTheReader(bigMerged) == bigPagesBefore + 3,
+                  "and the file it wrote is three pages longer, which is the merged three");
+            note(QStringLiteral("%1 pages plus 3 merged in, %2 KB and a %3 KB donor: "
+                                "open + merge + write took %4 ms")
+                     .arg(bigPagesBefore)
+                     .arg(QFileInfo(bigSource).size() / 1024)
+                     .arg(QFileInfo(bigDonor).size() / 1024)
+                     .arg(bigMergeClock.elapsed()));
+
             check(hashOfFile(big) == bigFixtureHash, "and the large fixture is byte for byte what it was");
         }
     }

@@ -827,11 +827,11 @@ void MainWindow::buildMenus()
     // putting document commands in it would mean the one menu whose items all grey
     // out without a drag also holds the one item that needs nothing but an open
     // file. Acrobat's 文档 menu sits in this same place, and the rest of M5
-    // (重排、拆分、加密) is coming to fill this one out.
+    // (加密) is coming to fill this one out -- 重排、合并 and 拆分 have landed.
     //
-    // The last three items are the other half of the first four. 删除页面、旋转页面、
-    // 移动页面 and 合并文件进来 record an edit, 撤销 and 重做 move along the list
-    // those four recorded into, and 保存修改为… is the only one of the seven that
+    // The last three items are the other half of the first five. 删除页面、旋转页面、
+    // 移动页面、合并文件进来 and 拆分文件 record an edit, 撤销 and 重做 move along the
+    // list those five recorded into, and 保存修改为… is the only one of the eight that
     // writes a file. They sit in this menu rather than spread across 文件 and 编辑
     // because they are one list seen from four ends, and a reader looking for any of
     // them is looking for this menu.
@@ -887,6 +887,24 @@ void MainWindow::buildMenus()
             tab->mergeFiles();
     });
     documentMenu->addAction(mergeFileAction);
+
+    // (&C), for 拆分: the word has no Latin letter in it, so the letter goes on the
+    // pinyin the way 合并 put it on 文件 -- and C is the one of the menu's remaining
+    // letters that no other item has taken (E/R/M/F are on the four above, U/O/S on
+    // the three below).
+    splitFileAction = makeAction(tr("拆分文件(&C)…"), QKeySequence());
+    splitFileAction->setObjectName(QStringLiteral("splitFileAction"));
+    // Says the two things this item is easy to get wrong about: it writes nothing on
+    // its own, and what comes out of the save is a set of files rather than one. A
+    // reader who expected one file from 保存修改为 would otherwise find the folder
+    // fuller than the sentence above the button promised.
+    splitFileAction->setToolTip(
+        tr("记下要拆成每几页一份，按保存修改为才一次写出那几个文件；正在读的这份不动"));
+    connect(splitFileAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->splitPages();
+    });
+    documentMenu->addAction(splitFileAction);
 
     documentMenu->addSeparator();
 
@@ -1344,15 +1362,23 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
     });
 
     connect(tab, &DocumentTab::documentSavedAs, this,
-            [this](const QString &path, const QString &changes, int pages) {
+            [this](const QString &path, const QString &changes, int pages, int fileCount) {
         // The copy that came out of the edit opens *beside* the document it was
         // made from, not in its place: the reader asked for a document with those
         // changes in it, and the quickest way to check that the pages which went
-        // are the pages they meant is to have both on screen, one tab each.
+        // are the pages they meant is to have both on screen, one tab each. Under a
+        // split this is the first piece -- the one tab that says whether the whole
+        // set is what was meant, without forty of them opening.
         openDocument(path);
         // Ours last, because openDocument puts its own "已打开" up there first and
-        // says less than this does.
-        statusBar()->showMessage(tr("已写成一个新文件（%1 页）：%2").arg(pages).arg(changes), 8000);
+        // says less than this does. The two wordings are apart because a split's
+        // page count is the whole document's, not the file that just opened: saying
+        // "40 页" beside one 5-page piece would be a number with no referent.
+        statusBar()->showMessage(
+            fileCount > 1
+                ? tr("已写成 %1 个新文件（整份 %2 页）：%3").arg(fileCount).arg(pages).arg(changes)
+                : tr("已写成一个新文件（%1 页）：%2").arg(pages).arg(changes),
+            8000);
     });
 
     connect(tab, &DocumentTab::searchChanged, this, [this, tab](int, int, bool) {
@@ -2063,7 +2089,7 @@ void MainWindow::updateForCurrentTab()
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
-                            mergeFileAction,
+                            mergeFileAction, splitFileAction,
                             viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)

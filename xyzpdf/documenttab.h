@@ -193,8 +193,8 @@ public:
     // opens in a tab of its own rather than replacing the one under the reader.
     //
     // What ties these together is that they share one list: 删除页面、旋转页面、
-    // 移动页面 and 合并文件进来 record an operation, 撤销 takes the last one back,
-    // and 保存修改为 writes whatever the list says. Each of the four can be run
+    // 移动页面、合并文件进来 and 拆分文件 record an operation, 撤销 takes the last one
+    // back, and 保存修改为 writes whatever the list says. Each of the five can be run
     // again before anything is saved.
     //
     // The merge is the one that reaches outside this document: the pages it adds
@@ -202,16 +202,24 @@ public:
     // Those files are read at save time and never written into either -- and the
     // saved result cannot be named after any of them, which is the editor's rule
     // rather than this one's.
+    //
+    // The split is the one that changes no page at all: the document stays one
+    // document on screen and in the list, and what a split changes is how many files a
+    // save writes and what they are called. It is therefore also the one whose effect
+    // is invisible until the save -- which is why its dialog says so in those words.
     void deletePages();
     void rotatePages();
     void movePages();
     void mergeFiles();
+    void splitPages();
     void undoEdit();
     void redoEdit();
     // Names the file to write into, replays the list onto the source and writes
-    // it. Returns false when there was nothing to save, the reader backed out of
-    // the save box, or the write failed -- in the last case the reason has
-    // already been said, since every caller of this is a menu item.
+    // it. Under a 拆分文件 the name that is typed is the one the pieces are cut from:
+    // the same dialog, and N files come out instead of one, all of them staged before
+    // any of them is moved into place. Returns false when there was nothing to save,
+    // the reader backed out of the save box, or the write failed -- in the last case
+    // the reason has already been said, since every caller of this is a menu item.
     bool saveEdits();
 
     bool canUndoEdits() const;
@@ -270,10 +278,13 @@ Q_SIGNALS:
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
     // An edit wrote a new document: where it is, what the list of operations was
-    // ("删除 3 页"), and how many pages came out. The window opens the result in a
-    // tab of its own -- the tab this came from is still showing the file the edits
-    // were made against, which is the whole design.
-    void documentSavedAs(const QString &path, const QString &changes, int pageCount);
+    // ("删除 3 页"), how many pages the whole document has, and how many files came
+    // out -- which is one unless a 拆分文件 was in that list, in which case `path` is
+    // the first piece. The window opens the result in a tab of its own -- the tab this
+    // came from is still showing the file the edits were made against, which is the
+    // whole design.
+    void documentSavedAs(const QString &path, const QString &changes, int pageCount,
+                         int fileCount);
     // The list of pending edits changed: something to undo, or nothing left to
     // undo. What the window redraws the 文档 menu and the tab's title from.
     void editStateChanged();

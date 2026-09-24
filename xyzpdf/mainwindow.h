@@ -250,6 +250,7 @@ private:
     QAction *rotatePagesAction = nullptr;
     QAction *movePagesAction = nullptr;
     QAction *mergeFileAction = nullptr;
+    QAction *splitFileAction = nullptr;
     QAction *undoEditAction = nullptr;
     QAction *redoEditAction = nullptr;
     QAction *saveEditsAction = nullptr;

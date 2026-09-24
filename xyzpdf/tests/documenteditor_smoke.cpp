@@ -1,5 +1,5 @@
 // Taking pages out of a PDF, moving the rest around, putting pages from another file
-// in, and what is promised around all three.
+// in, cutting what is left into several files, and what is promised around all four.
 //
 // The feature has one interesting failure mode, and it is not the page count: it
 // is writing over a file the reader owns. So most of what is pinned down here is
@@ -43,6 +43,7 @@
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
 
+#include <algorithm>
 #include <exception>
 #include <iostream>
 
@@ -1504,7 +1505,438 @@ int main(int argc, char **argv)
                      .arg(QFileInfo(bigDonor).size() / 1024)
                      .arg(bigMergeClock.elapsed()));
 
+            // And the same at scale for a split, which is the one save whose cost is a
+            // multiple of everything above: a split replays and writes once per piece, so
+            // this is the number that says whether "每 50 页一份" is a 12× save or a 3× one.
+            const QString bigCut = scratch.filePath(QStringLiteral("big-cut.pdf"));
+            DocumentEditor cutting;
+            QElapsedTimer bigSplitClock;
+            bigSplitClock.start();
+            const bool cutUp = cutting.open(bigSource, QString(), &error)
+                && cutting.splitInto(bigPagesBefore / 4, &error)
+                && cutting.saveAs(bigCut, &error);
+            check(cutUp,
+                  QStringLiteral("opening, splitting the big one into four and writing it: %1")
+                      .arg(error));
+            const QVector<DocumentEditor::PieceRange> bigPieces = cutting.pieces();
+            int acrossPieces = 0;
+            for (int index = 0; index < bigPieces.size(); ++index)
+                acrossPieces += pagesAsReadByTheReader(
+                    DocumentEditor::piecePath(bigCut, index, bigPieces.size(), bigPieces.at(index)));
+            check(acrossPieces == bigPagesBefore,
+                  "and the four pieces together hold every page the document had, with none doubled");
+            note(QStringLiteral("%1 pages, %2 KB: split four ways, four replays and four writes took "
+                                "%3 ms")
+                     .arg(bigPagesBefore)
+                     .arg(QFileInfo(bigSource).size() / 1024)
+                     .arg(bigSplitClock.elapsed()));
+
             check(hashOfFile(big) == bigFixtureHash, "and the large fixture is byte for byte what it was");
+        }
+    }
+
+    // ---- 拆分: which pages go together, and what each file is called ----
+    //
+    // A split is the one operation in this class that changes no page, so none of the
+    // checks above say anything about it. What is pinned down here is the set of files:
+    // which pages land in one piece, what each piece is named, that the naming the dialog
+    // showed is the naming the folder ends up with, and that a name already taken stops the
+    // whole save rather than writing the pieces that happened to be free.
+    {
+        using Piece = DocumentEditor::PieceRange;
+        const auto piece = [](int first, int last) {
+            Piece range;
+            range.first = first;
+            range.last = last;
+            return range;
+        };
+        const auto widths = [](const QVector<Piece> &pieces) {
+            QStringList out;
+            for (const Piece &one : pieces)
+                out << QString::number(one.count());
+            return out.join(QLatin1Char(','));
+        };
+        const auto bounds = [](const QVector<Piece> &pieces) {
+            QStringList out;
+            for (const Piece &one : pieces)
+                out << QStringLiteral("%1-%2").arg(one.first).arg(one.last);
+            return out.join(QLatin1Char(','));
+        };
+        const auto namesOf = [](const QString &base, const QVector<Piece> &pieces) {
+            QStringList out;
+            for (int index = 0; index < pieces.size(); ++index)
+                out << QFileInfo(DocumentEditor::piecePath(base, index, pieces.size(),
+                                                           pieces.at(index)))
+                           .fileName();
+            return out;
+        };
+
+        check(DocumentEditor::pieceRanges(10, 0).size() == 1,
+              "no split pending still names one piece: the whole document");
+        check(bounds(DocumentEditor::pieceRanges(10, 3)) == QStringLiteral("0-2,3-5,6-8,9-9"),
+              "every third page: the last piece is what is left over, not another full one");
+        check(widths(DocumentEditor::pieceRanges(10, 5)) == QStringLiteral("5,5"),
+              "an exact multiple does not add an empty piece at the end");
+        check(DocumentEditor::pieceRanges(10, 1).size() == 10,
+              "one page per piece is ten pieces, the smallest split there is");
+        check(DocumentEditor::pieceRanges(10, 10).size() == 1
+                  && DocumentEditor::pieceRanges(10, 11).size() == 1,
+              "a piece as big as the document, or bigger, comes out as one piece");
+        check(DocumentEditor::pieceRanges(0, 3).isEmpty(),
+              "and a document with no pages has no pieces either");
+
+        // Contiguity over the shapes a remainder can take. Nothing here may drop a page or
+        // put one page in two files, and "every piece starts where the last one ended, and
+        // the two ends are the first and last page" is the whole claim.
+        for (const int size : {3, 7, 39, 40}) {
+            const QVector<Piece> pieces = DocumentEditor::pieceRanges(40, size);
+            bool inOneRun = !pieces.isEmpty() && pieces.first().first == 0
+                            && pieces.last().last == 39;
+            int covered = 0;
+            for (int index = 0; index < pieces.size(); ++index) {
+                covered += pieces.at(index).count();
+                if (index > 0 && pieces.at(index).first != pieces.at(index - 1).last + 1)
+                    inOneRun = false;
+            }
+            check(inOneRun && covered == 40,
+                  QStringLiteral("每 %1 页一份 covers pages 1 to 40 once each").arg(size));
+        }
+
+        // ---- the names ----
+        check(DocumentEditor::piecePath(QStringLiteral("C:/docs/report.pdf"), 0, 3, piece(0, 14))
+                  == QStringLiteral("C:/docs/report 01 (1-15).pdf"),
+              "the first piece of three is 01 and says which pages it holds");
+        check(DocumentEditor::piecePath(QStringLiteral("C:/docs/report.pdf"), 10, 12,
+                                        piece(20, 20))
+                  == QStringLiteral("C:/docs/report 11 (21).pdf"),
+              "a one-page piece says 21, not 21-21");
+        check(DocumentEditor::piecePath(QStringLiteral("D:/a/my.report.v2.pdf"), 2, 3,
+                                        piece(54, 71))
+                  == QStringLiteral("D:/a/my.report.v2 03 (55-72).pdf"),
+              "dots inside a name are not the extension -- only the last one is");
+        check(DocumentEditor::piecePath(QStringLiteral("D:/a/no-extension"), 0, 2, piece(0, 3))
+                  == QStringLiteral("D:/a/no-extension 01 (1-4)"),
+              "a destination typed with no extension gives pieces with no extension: the reader "
+              "chose that for the name they typed, and this is not the place to second-guess it");
+
+        // The padding is not decoration: a folder sorts by name, and pieces that read 1,
+        // 10, 11, 2 are a page order nobody can check by eye.
+        {
+            const QVector<Piece> pieces = DocumentEditor::pieceRanges(60, 5);
+            const QStringList ordered = namesOf(QStringLiteral("book.pdf"), pieces);
+            QStringList sorted = ordered;
+            std::sort(sorted.begin(), sorted.end());
+            check(ordered == sorted,
+                  QStringLiteral("twelve pieces of a 60-page book sort by name into page order: %1")
+                      .arg(ordered.join(QLatin1Char(' '))));
+            check(ordered.first() == QStringLiteral("book 01 (1-5).pdf")
+                      && ordered.last() == QStringLiteral("book 12 (56-60).pdf"),
+              QStringLiteral("wide enough for the last piece, not just the first: %1 ... %2")
+                  .arg(ordered.first(), ordered.last()));
+        }
+
+        // ---- recording it, and taking it back ----
+        {
+            DocumentEditor editor;
+            QString error;
+            check(editor.open(source, QString(), &error), "setup: the document to split opens");
+            const int total = editor.pageCount();
+            check(total == 40, QStringLiteral("setup: %1 pages").arg(total));
+
+            check(editor.splitPieceSize() == 0 && editor.pieceCount() == 1,
+                  "nothing is split yet, so a save would write one file");
+            error.clear();
+            check(!editor.splitInto(0, &error) && !error.isEmpty(),
+                  "a piece of no pages is refused, and says so");
+            check(!editor.splitInto(total, &error) && !error.isEmpty(),
+                  "a piece as big as the document is refused too -- it writes one file, which "
+                  "is what the reader already has");
+            check(!editor.isDirty() && editor.pieceCount() == 1,
+                  "and a refused split leaves nothing pending: no dirty tab, no undo row");
+
+            check(editor.splitInto(15, &error), QStringLiteral("每 15 页一份 is recorded: %1").arg(error));
+            check(editor.isDirty(), "a split on its own dirties the tab");
+            check(editor.pageCount() == total, "and no page moved, turned or went away");
+            check(editor.splitPieceSize() == 15 && editor.pieceCount() == 3,
+                  "three pieces, counted by the same function the save loops over");
+            check(editor.undoDescription().contains(QStringLiteral("15")),
+                  QStringLiteral("the undo row says the size: %1").arg(editor.undoDescription()));
+            check(editor.pendingSummary() == QStringLiteral("拆成每 15 页一份"),
+                  QStringLiteral("and so is the whole status line: %1")
+                      .arg(editor.pendingSummary()));
+
+            check(editor.splitInto(8, &error), "a second split is the reader changing their mind");
+            check(editor.splitPieceSize() == 8,
+                  "the last one is what counts, not the first still sitting in the list");
+            check(editor.undo() && editor.splitPieceSize() == 15,
+                  "undo lands back on the first, which was still there");
+            check(editor.undo() && editor.splitPieceSize() == 0 && !editor.isDirty(),
+                  "a split alone undoes to a clean document");
+            check(editor.redo() && editor.splitPieceSize() == 15,
+                  "and redo brings it back with the size it was given");
+
+            // The pieces a save lays down are cut from the document the *list* describes,
+            // which is the same page order every other dialog here promises.
+            check(editor.undo() && editor.deletePages({0, 1}, &error) && editor.splitInto(19, &error),
+                  "setup: two pages out, then nineteen to a piece");
+            check(editor.pageCount() == 38 && editor.pieceCount() == 2
+                      && editor.pieces().last().last == 37,
+                  "the split is numbered against the 38 pages a save writes, not the 40 on screen");
+        }
+
+        // ---- 拆分 and 合并 are the two that cannot share a document, either way round ----
+        //
+        // An imported page carries a number from a file the reader is no longer looking at
+        // (docs/store-submission.md §17), so "第 6-10 页" would name pages of two different
+        // documents and no piece boundary would mean anything. The rule has to be enforced
+        // from both ends because the dialogs open in no fixed order.
+        {
+            const QString donor = scratch.filePath(QStringLiteral("split-donor.pdf"));
+            QString error;
+            check(writeDonor(source, donor, pagesBefore, {4, 5, 6}, &error) == donor,
+                  QStringLiteral("setup: a three-page donor: %1").arg(error));
+
+            DocumentEditor mergedFirst;
+            check(mergedFirst.open(source, QString(), &error), "setup: the document opens");
+            check(mergedFirst.mergeFile(donor, {0, 1}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("setup: two pages in: %1").arg(error));
+            check(mergedFirst.importedPageCount() == 2, "setup: and they count as imported");
+            error.clear();
+            check(!mergedFirst.splitInto(10, &error),
+                  "a split is refused while pages came in from another file");
+            check(error.contains(QStringLiteral("2")),
+                  QStringLiteral("and the refusal says how many pages make it impossible: %1")
+                      .arg(error));
+            check(mergedFirst.undo(), "setup: the merge is undone");
+            check(mergedFirst.importedPageCount() == 0 && mergedFirst.splitInto(10, &error),
+                  "and the very same split is accepted once they are gone");
+
+            DocumentEditor splitFirst;
+            check(splitFirst.open(source, QString(), &error), "setup: the document opens again");
+            check(splitFirst.splitInto(10, &error), "setup: split first this time");
+            error.clear();
+            check(!splitFirst.mergeFile(donor, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  "and a merge is refused while a split is pending -- the same rule, other end");
+            check(splitFirst.undo()
+                      && splitFirst.mergeFile(donor, {0}, DocumentEditor::MoveTarget::Back, -1,
+                                              &error),
+                  QStringLiteral("undo the split and the merge goes through: %1").arg(error));
+        }
+
+        // ---- a save with a split pending writes a set, not a file ----
+        {
+            DocumentEditor editor;
+            QString error;
+            editor.open(source, QString(), &error);
+            check(editor.splitInto(15, &error), "setup: 15, 15 and the 10 left over");
+
+            const QString base = scratch.filePath(QStringLiteral("cut.pdf"));
+            const QVector<Piece> pieces = editor.pieces();
+            QElapsedTimer clock;
+            clock.start();
+            const bool wrote = editor.saveAs(base, &error);
+            const qint64 taken = clock.elapsed();
+            note(QStringLiteral("40 pages split 15/15/10: three replays and three writes took %1 ms "
+                                "for a %2 KB source")
+                     .arg(taken)
+                     .arg(QFileInfo(source).size() / 1024));
+            check(wrote, QStringLiteral("the split save goes through: %1").arg(error));
+            check(!QFile::exists(base),
+                  "and the name the reader typed is not itself written -- there is no document "
+                  "with all forty pages in it any more");
+
+            QStringList made;
+            for (int index = 0; index < pieces.size(); ++index)
+                made << DocumentEditor::piecePath(base, index, pieces.size(), pieces.at(index));
+            check(made.size() == 3, "three pieces were promised, and");
+            bool everyOne = true;
+            for (const QString &one : std::as_const(made))
+                everyOne = everyOne && QFile::exists(one);
+            check(everyOne,
+                  QStringLiteral("they are exactly the three files named: %1")
+                      .arg(namesOf(base, pieces).join(QStringLiteral(", "))));
+
+            // Contents page by page. A piece of the right length made of the wrong pages is
+            // the failure a page count cannot see, and it is the one a hand-cut page tree
+            // would make.
+            for (int index = 0; index < made.size(); ++index) {
+                const QVector<int> order = orderInFile(made.at(index));
+                const Piece &one = pieces.at(index);
+                bool rightRun = order.size() == one.count();
+                for (int at = 0; at < order.size(); ++at)
+                    rightRun = rightRun && order.at(at) == one.first + at + 1;
+                check(rightRun,
+                      QStringLiteral("piece %1 holds pages %2-%3, in that order: got %4")
+                          .arg(index + 1)
+                          .arg(one.first + 1)
+                          .arg(one.last + 1)
+                          .arg(describeOrder(order)));
+            }
+            check(hashOfFile(source) == originalHash,
+                  "and the document that was split is byte for byte what it was");
+
+            // The undo case, seen from the file side rather than the list side: taking the
+            // split back has to go back to writing the one name the reader chose.
+            check(editor.undo() && editor.splitPieceSize() == 0, "setup: the split is undone");
+            const QString plain = scratch.filePath(QStringLiteral("whole.pdf"));
+            check(editor.saveAs(plain, &error),
+                  QStringLiteral("and a plain save still works with a split in the undo list: %1")
+                      .arg(error));
+            check(QFile::exists(plain) && !QFile::exists(scratch.filePath(QStringLiteral("whole 01 (1-15).pdf"))),
+                  "one file, named exactly what was typed, with no piece names beside it");
+        }
+
+        // ---- a lot of pieces at once ----
+        //
+        // 每 1 页一份 of a forty-page document is forty finished files sitting in the
+        // scratch folder waiting to be renamed. That shape is the one worth testing even
+        // though nobody will thank us for it: it is where a staged name that two pieces
+        // could use turns a second writer into a truncation of the first one's file, and
+        // where "all of them are built before any is moved" stops being a figure of speech.
+        {
+            DocumentEditor editor;
+            QString error;
+            editor.open(source, QString(), &error);
+            check(editor.splitInto(1, &error), "setup: one page to a file");
+            check(editor.pieceCount() == 40, "and the document has forty pieces");
+            const QString base = scratch.filePath(QStringLiteral("single.pdf"));
+            const QVector<Piece> pieces = editor.pieces();
+            QElapsedTimer clock;
+            clock.start();
+            const bool forty = editor.saveAs(base, &error);
+            note(QStringLiteral("40 pages 每 1 页一份: forty replays and forty writes took %1 ms")
+                     .arg(clock.elapsed()));
+            check(forty, QStringLiteral("forty pieces are written: %1").arg(error));
+            bool everyOne = !QFile::exists(base);
+            for (int index = 0; index < pieces.size(); ++index) {
+                const QString one = DocumentEditor::piecePath(base, index, pieces.size(),
+                                                              pieces.at(index));
+                const QVector<int> order = QFile::exists(one) ? orderInFile(one) : QVector<int>();
+                everyOne = everyOne && order.size() == 1 && order.value(0) == index + 1;
+            }
+            check(everyOne,
+                  "and there are forty files, each holding one page, each holding the page its "
+                  "own name says it holds");
+            check(QDir(scratch.path())
+                      .entryList({QStringLiteral("xyzpdf-save-*.pdf")}, QDir::Files)
+                      .isEmpty(),
+                  "and nothing of ours is left in the folder under a temporary name");
+        }
+
+        // ---- a name already taken refuses the whole save ----
+        {
+            DocumentEditor editor;
+            QString error;
+            editor.open(source, QString(), &error);
+            editor.splitInto(15, &error);
+            const QString base = scratch.filePath(QStringLiteral("blocked.pdf"));
+            const QVector<Piece> pieces = editor.pieces();
+            const QString taken = DocumentEditor::piecePath(base, 1, pieces.size(), pieces.at(1));
+            const QString first = DocumentEditor::piecePath(base, 0, pieces.size(), pieces.at(0));
+            {
+                QFile squatter(taken);
+                check(squatter.open(QIODevice::WriteOnly),
+                      "setup: one of the piece names is already somebody's file");
+                squatter.write("not a pdf, and not ours");
+            }
+            error.clear();
+            check(!editor.saveAs(base, &error), "the save is refused");
+            check(error.contains(QFileInfo(taken).fileName()),
+                  QStringLiteral("and the sentence names which one: %1").arg(error));
+            check(!QFile::exists(first) && !QFile::exists(base),
+                  "nothing was written: a folder with two of three pieces in it looks like a "
+                  "split that worked");
+            check(QFile::remove(taken), "setup: the name is freed again");
+            error.clear();
+            check(editor.saveAs(base, &error),
+                  QStringLiteral("and the same save now goes through, so it was the name that "
+                                 "was refused and nothing else: %1").arg(error));
+            check(QFile::exists(first), "including the piece that had nowhere to go before");
+            check(QFileInfo(taken).size() > 200,
+                  "and the file that had been in the way is now a piece of the document rather "
+                  "than the twenty-odd bytes that were there");
+        }
+
+        // ---- a piece that would land on the document being read ----
+        //
+        // Reachable without anybody meaning to: split a document, keep one piece, open that
+        // piece later and split it again choosing the old base name. Same rule as 另存为不能
+        // 覆盖正在打开的文件, reached one piece at a time.
+        {
+            const QString awkward = scratch.filePath(QStringLiteral("again 02 (21-40).pdf"));
+            QString error;
+            check(QFile::copy(source, awkward),
+                  "setup: a forty-page copy named exactly the way a piece of 每 20 页一份 is named");
+            DocumentEditor editor;
+            check(editor.open(awkward, QString(), &error), "setup: it opens as a document");
+            check(editor.splitInto(20, &error), "setup: two pieces, 1-20 and 21-40");
+            check(!editor.saveAs(scratch.filePath(QStringLiteral("again.pdf")), &error),
+                  "refused: the second piece would overwrite the document being read");
+            check(error.contains(QFileInfo(awkward).fileName()),
+                  QStringLiteral("and the sentence names it: %1").arg(error));
+            check(!QFile::exists(scratch.filePath(QStringLiteral("again 01 (1-20).pdf"))),
+                  "the piece that did not collide was not written either");
+            check(hashOfFile(awkward) == originalHash, "and the source is untouched");
+        }
+
+        // ---- a split of a moved document follows the move, not the file ----
+        {
+            DocumentEditor editor;
+            QString error;
+            editor.open(source, QString(), &error);
+            check(editor.movePages({8}, DocumentEditor::MoveTarget::Front, -1, &error),
+                  "setup: page 9 goes to the very front");
+            check(editor.splitInto(20, &error), "setup: and the document is cut in half");
+            const QString base = scratch.filePath(QStringLiteral("moved-cut.pdf"));
+            check(editor.saveAs(base, &error),
+                  QStringLiteral("the split save of a moved document goes through: %1").arg(error));
+            const QVector<Piece> pieces = editor.pieces();
+            const QVector<int> head = orderInFile(
+                DocumentEditor::piecePath(base, 0, pieces.size(), pieces.at(0)));
+            check(head.size() == 20 && head.first() == 9 && head.at(1) == 1 && head.last() == 20,
+                  QStringLiteral("the first piece is 9 then 1-8 then 10-20, so the move reached "
+                                 "the file: %1").arg(describeOrder(head)));
+        }
+
+        // ---- every piece carries the protection the original said it had ----
+        //
+        // The single-save version of this is checked above; what a split adds is that the
+        // writer is pointed at N destinations, and one piece arriving unprotected is as
+        // much a lie as the whole copy arriving unprotected.
+        {
+            const QString locked = scratch.filePath(QStringLiteral("locked-for-split.pdf"));
+            QString error;
+            check(writeEncryptedCopy(source, locked, QString(), false).isEmpty(),
+                  "setup: a copy readable by anyone and marked not to be edited");
+            DocumentEditor editor;
+            if (!editor.open(locked, QString(), &error)) {
+                note(QStringLiteral("a file marked not-to-modify would not open for editing: %1")
+                         .arg(error));
+                check(false, "the encrypted split could not be set up -- see §11's measurement");
+            } else {
+                check(editor.splitInto(20, &error), "setup: two pieces");
+                const QString base = scratch.filePath(QStringLiteral("locked-cut.pdf"));
+                const QVector<Piece> pieces = editor.pieces();
+                if (editor.saveAs(base, &error)) {
+                    const Permissions before = readPermissions(locked, QString());
+                    bool everyPiece = pieces.size() == 2;
+                    for (int index = 0; index < pieces.size(); ++index) {
+                        const Permissions after = readPermissions(
+                            DocumentEditor::piecePath(base, index, pieces.size(),
+                                                      pieces.at(index)),
+                            QString());
+                        everyPiece = everyPiece && after.rawPFound && after.encrypted
+                                     && after.rawP == before.rawP && after.r == before.r;
+                    }
+                    check(everyPiece,
+                          QStringLiteral("both pieces carry the same /P as the original: %1")
+                              .arg(describe(before)));
+                } else {
+                    note(QStringLiteral("a split save of a file marked not-to-modify was "
+                                        "refused: %1").arg(error));
+                    check(false, "the pieces were written at all -- see §11's measurement");
+                }
+            }
         }
     }
 

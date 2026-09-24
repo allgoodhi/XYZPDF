@@ -230,6 +230,25 @@ int main(int argc, char **argv)
               "%1 个文件一共取 %2 页，合到%3，按列表的顺序连着排在第 %4-%5 页。" },
             { "DocumentEditor", "合入 %2 页（%1）" },
             { "DocumentEditor", "另存为不能覆盖合并进来的文件（%1）。请换一个文件名。" },
+            // The split after the merge, and the same four kinds of it: the menu row,
+            // the dialog's own words, the undo item's name, and the status line the
+            // save finishes with -- that last one is a second literal beside the first
+            // because a split's page count is the whole document's, and "一个文件"
+            // would be a lie about what came out.
+            { "MainWindow", "拆分文件(&C)…" },
+            { "MainWindow", "已写成 %1 个新文件（整份 %2 页）：%3" },
+            { "SplitPagesDialog", "拆成 %1 份" },
+            { "SplitPagesDialog", "会写成 %1 份，每份最多 %2 页：%3。" },
+            { "SplitPagesDialog", "这份文档没有可以拆的页面。" },
+            { "DocumentEditor", "拆成每 %1 页一份" },
+            { "DocumentEditor", "这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。" },
+            // The two separators the code joins reader-facing text with: the range list
+            // in the split dialog and the list of pending operations. They went into the
+            // English interface straight out of a QStringLiteral -- "1-21、22-42" on
+            // screen -- and none of the checks below can see that, because a CJK comma is
+            // neither an ideograph nor the source string of a sentence.
+            { "SplitPagesDialog", "、" },
+            { "DocumentEditor", "，" },
         };
 
         for (const Probe &probe : probes) {
@@ -258,6 +277,15 @@ int main(int argc, char **argv)
                           .arg(QString::fromLatin1(probe.context), source));
             }
         }
+
+        // The two separators, pinned to the exact bytes rather than to "not Chinese":
+        // the English one is a comma *and a space*, and a space at the end of a
+        // catalogue entry is the kind of thing a round trip through .ts and .qm can
+        // drop. "1-21,22-42" is what it would look like when it did.
+        check(QCoreApplication::translate("SplitPagesDialog", "、") == QStringLiteral(", "),
+              "the English range separator is a comma and a space");
+        check(QCoreApplication::translate("DocumentEditor", "，") == QStringLiteral(", "),
+              "and so is the English separator between pending operations");
 
         QCoreApplication::removeTranslator(&translator);
     }

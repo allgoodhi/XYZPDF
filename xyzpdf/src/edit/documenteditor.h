@@ -84,6 +84,23 @@
 // about to replace. So the new bytes are staged in the destination's own
 // directory and moved into place only once they are complete, which is the same
 // reason a text editor does it.
+// ---- why a split is in this list, and what it changes ----
+//
+// Every other operation here changes which pages exist or where they sit. 拆分文件
+// changes neither: the document stays one document on screen, with the same page count
+// and the same order, and `live` is not rearranged by it at all. What it changes is how
+// many files a save writes and what they are called.
+//
+// That is a different kind of thing to have in an undo stack, so it is worth saying why
+// it still belongs here rather than in a "split now" button: a split that wrote its
+// pieces straight to disk could not be undone, and `undo()` here is only ever a move
+// between two in-memory lists -- it has no power to take back a file that already
+// exists. Deferred to the save, the reader can change their mind about the piece size as
+// many times as they like, and each 撤销 genuinely undoes the whole of what it promised,
+// because nothing had been written yet.
+//
+// The consequence is that a split is *inert* until 保存修改为: the tab says 拆成每 5 页
+// 一份 and that is the whole of its visible effect.
 #pragma once
 
 #include <QString>
@@ -152,7 +169,10 @@ public:
             DeletePages,
             RotatePages,
             MovePages,
-            MergeFile
+            MergeFile,
+            // 拆分文件: how many pages go in each written file. It is the one kind that
+            // changes no page -- see the header note.
+            SplitBySize
         };
         Kind kind = Kind::DeletePages;
         // Delete/Rotate/Move: original page numbers -- positions in the document as
@@ -183,6 +203,10 @@ public:
         // anything that looks for one of them later. Assigned once, never reused, so
         // undo and redo move an operation around with its identity intact.
         int mergeId = -1;
+        // SplitBySize only: how many pages each output file gets. Nothing is pruned or
+        // reordered by it -- see the header note -- so this is the only thing a save has
+        // to know to turn one destination into several.
+        int pieceSize = 0;
     };
 
     // What a delete request means for the document as it stands, worked out
@@ -290,6 +314,30 @@ public:
     static MergePlan planMerge(const QVector<PageRef> &present, const QVector<int> &pages,
                                int mergeId, MoveTarget to, int anchor = -1);
 
+    // What a split would write: the pieces, in order, each one a run of pages of the
+    // document as a save would write it.
+    //
+    // This is the single answer to "which pages go in which file", and both ends call it
+    // -- the dialog's summary and the save that lays the files down -- for the same
+    // reason planMove() is one function: a reader told "8 份，最后一份 3 页" who gets
+    // seven files was lied to by a second implementation of the same arithmetic.
+    //
+    // Note what the numbers are numbering: positions in the document a *save writes*, not
+    // in the file on the screen. Those are the same thing until an edit is pending, and
+    // 删除页面 leaves the view alone (docs/store-submission.md §12), so a dialog that
+    // shows these ranges has to say which numbering it is using.
+    struct PieceRange
+    {
+        // 0-based, inclusive at both ends, like every page number inside this class.
+        int first = 0;
+        int last = -1;
+        int count() const { return last - first + 1; }
+    };
+    // `pieceSize` of 0 means no split is pending and comes back as one piece holding
+    // everything, which is what lets the save loop over pieces without a special case for
+    // "and also the case where nothing was split".
+    static QVector<PieceRange> pieceRanges(int total, int pieceSize);
+
     // Whether two paths name the same file, which is the question saveAs() has
     // to answer before it writes anything. Two paths can differ in every
     // character and name one file (a different case, a slash the other way, an
@@ -375,6 +423,36 @@ public:
     // wrong.
     bool mergeFile(const QString &path, const QVector<int> &pages, MoveTarget to, int anchor,
                    QString *error);
+    // Recording that a save should write this document in pieces of `pagesPerPiece`
+    // pages. Nothing is written and no page moves: see the header note on why a split is
+    // in this list at all.
+    //
+    // Refused while a merge is pending. A merged-in page carries a number from the file it
+    // came from, not one the reader can see on the screen (docs/store-submission.md §17),
+    // so "第 6-10 页" would name pages of one file and pages of another, and which piece
+    // such a page belongs to has no answer anybody could check. Refusing is the honest
+    // answer, and it is the same limit every other dialog here already has.
+    bool splitInto(int pagesPerPiece, QString *error);
+
+    // The piece size a save would honour: the last split in the pending list, since a
+    // second one is the reader changing their mind rather than a second split to carry
+    // out. 0 when no split is pending.
+    int splitPieceSize() const;
+    // The pieces a save would write, which is one piece over the whole document when
+    // nothing is split. `pieceCount()` is that list's length.
+    QVector<PieceRange> pieces() const;
+    int pieceCount() const { return int(pieces().size()); }
+
+    // The name one piece gets beside the destination a reader chose: `report.pdf` split
+    // into three comes out as `report 01 (1-5).pdf` and so on, in the same folder. Static
+    // and public for the reason pieceRanges() is -- a name worked out in two places is a
+    // file nobody was told about. The tests read the folder back through this too, so what
+    // is checked is the naming and not a copy of the pattern.
+    //
+    // The index is zero-padded because the folder gets sorted by name, and a piece list
+    // that reads 1, 10, 11, 2 in Explorer is a piece list whose pages arrive shuffled.
+    static QString piecePath(const QString &destination, int index, int total,
+                             const PieceRange &range);
 
     // ---- the list, and moving through it ----
     //
@@ -406,11 +484,24 @@ public:
     // documents somebody has open, and one of them is being read while this writes.
     // Returns false with a sentence when nothing was written.
     //
+    // When a split is pending, `path` is the name the pieces are cut from rather than the
+    // file that gets written, and this expands it into one name per piece (piecePath()).
+    // The pre-flight differs from the single-file case in one direction on purpose: the
+    // save dialog has asked the reader about overwriting the *one* name they typed, and
+    // about nothing else, so a piece whose name is already taken refuses the whole save.
+    // The files are also all staged before any of them is moved into place, so a piece
+    // that cannot be built leaves no half-set of outputs behind.
+    //
     // A successful save leaves the list alone. The file this editor is attached to
     // is still the untouched original, so the operations are still pending against
     // it, and the tab keeps saying so -- the honest alternative, marking them
     // saved, would claim that the document on screen had changed.
-    bool saveAs(const QString &path, QString *error);
+    // The files that came out, in the order they were written, which is the piece order.
+    // `written` is optional because it is only interesting for one thing: under a split the
+    // caller has to know that the name it handed over is not a file that now exists. On a
+    // success this holds one path when nothing was split, so there is no case where the
+    // answer is "several files, and here is a name that is none of them".
+    bool saveAs(const QString &path, QString *error, QStringList *written = nullptr);
 
 private:
     // Which pages the pending list says are still in the document. Recomputed from

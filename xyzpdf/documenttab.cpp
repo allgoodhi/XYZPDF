@@ -19,6 +19,7 @@
 #include "src/ui/outlinepanel.h"
 #include "src/ui/printdialog.h"
 #include "src/ui/rotatepagesdialog.h"
+#include "src/ui/splitpagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
 #include "src/ui/translatedialog.h"
 #include "src/view/pageview.h"
@@ -1248,6 +1249,35 @@ void DocumentTab::mergeFiles()
     }
 }
 
+void DocumentTab::splitPages()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    if (document->pageCount() < 2) {
+        // Said here rather than in the box: a dialog whose only control has one legal
+        // value is not a question, and 拆分 of a one-page document is the one case where
+        // the reader could not have meant it. The merge guard, by contrast, is the
+        // dialog's to say -- it has the page ranges on screen while it is open.
+        WindowDialogs::warning(window(), tr("拆分文件"),
+                               tr("这份要写出的文档只有 %1 页，拆不出第二个文件来。")
+                                   .arg(document->pageCount()));
+        return;
+    }
+
+    SplitPagesDialog dialog(window(), document);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QString error;
+    if (!document->splitInto(dialog.pieceSize(), &error)) {
+        WindowDialogs::warning(window(), tr("拆分文件"), error);
+        return;
+    }
+    Q_EMIT editStateChanged();
+}
+
 void DocumentTab::undoEdit()
 {
     if (editor && editor->undo())
@@ -1317,7 +1347,8 @@ bool DocumentTab::saveEdits()
     const QString changes = editor->pendingSummary();
     QString error;
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const bool done = editor->saveAs(destination, &error);
+    QStringList written;
+    const bool done = editor->saveAs(destination, &error, &written);
     QApplication::restoreOverrideCursor();
 
     if (!done) {
@@ -1329,7 +1360,13 @@ bool DocumentTab::saveEdits()
     // something to take back: what was written is a copy of the source with the
     // operations played onto it, not the document being read.
     Q_EMIT editStateChanged();
-    Q_EMIT documentSavedAs(destination, changes, editor->pageCount());
+    // The name to open comes from the save rather than from the box: under a split the
+    // typed name is not a file that exists, and the first piece is. One tab opens even
+    // when forty came out, because the check a reader makes on a split set is whether
+    // the first file is the one they meant -- and the status line names the count so
+    // they know how many are in the folder before going to look.
+    Q_EMIT documentSavedAs(written.isEmpty() ? destination : written.first(), changes,
+                           editor->pageCount(), int(written.size()));
     return true;
 }
 

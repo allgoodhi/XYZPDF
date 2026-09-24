@@ -270,6 +270,8 @@ set(XYZPDF_SOURCES
     src/ui/printdialog.cpp
     src/ui/rotatepagesdialog.h
     src/ui/rotatepagesdialog.cpp
+    src/ui/splitpagesdialog.h
+    src/ui/splitpagesdialog.cpp
     src/ui/thirdpartydialog.h
     src/ui/thirdpartydialog.cpp
     src/ui/thumbnailpanel.h
@@ -631,6 +633,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
                 src/ui/rotatepagesdialog.cpp
+                src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
                 src/render/pagerenderer.cpp
@@ -690,6 +693,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
                 src/ui/rotatepagesdialog.cpp
+                src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
                 src/ui/thirdpartydialog.cpp

@@ -89,6 +89,15 @@ QString DocumentEditor::describeOperation(const Operation &op)
             return tr("向右转 90°（%1 页）").arg(count);
         }
     }
+    if (op.kind == Operation::Kind::MovePages) {
+        // The anchor number in the middle of it is the page as it reads on the
+        // screen, which is the only numbering a reader has.
+        if (op.moveTo == MoveTarget::Front)
+            return tr("移到最前（%1 页）").arg(count);
+        if (op.moveTo == MoveTarget::AfterPage)
+            return tr("移到第 %2 页之后（%1 页）").arg(count).arg(op.anchor + 1);
+        return tr("移到最后（%1 页）").arg(count);
+    }
     return tr("删除 %1 页").arg(count);
 }
 
@@ -138,6 +147,91 @@ int DocumentEditor::pagesStillThere(const QVector<int> &pages) const
             named.insert(page);
     }
     return named.size();
+}
+
+DocumentEditor::MovePlan DocumentEditor::planMove(const QVector<int> &present,
+                                                 const QVector<int> &pages, MoveTarget to,
+                                                 int anchor)
+{
+    MovePlan plan;
+    plan.order = present;
+
+    QSet<int> named;
+    for (int page : pages) {
+        if (page >= 0)
+            named.insert(page);
+    }
+    // The block in the order it has where it stands, not the order the numbers were
+    // typed in: "第 2、4 页移到最后" moves those two pages as a pair keeping 2 before
+    // 4, and a reader who wrote "4,2" did not ask for them swapped.
+    QVector<int> moved;
+    for (int page : present) {
+        if (named.contains(page))
+            moved.append(page);
+    }
+    plan.pagesMoved = moved.size();
+    plan.alreadyGone = named.size() - moved.size();
+    if (moved.isEmpty())
+        return plan;
+
+    QVector<int> kept;
+    kept.reserve(present.size() - moved.size());
+    for (int page : present) {
+        if (!named.contains(page))
+            kept.append(page);
+    }
+
+    int at = kept.size();
+    if (to == MoveTarget::Front) {
+        at = 0;
+    } else if (to == MoveTarget::AfterPage) {
+        const int behind = kept.indexOf(anchor);
+        if (behind >= 0) {
+            at = behind + 1;
+            plan.anchorUsed = anchor;
+        } else if (moved.contains(anchor)) {
+            // The anchor is inside the block, so "behind it" is where the block
+            // already is. Nothing here can be said about where it should go instead
+            // -- a reader who means that types a different page.
+            plan.anchorIsMoved = true;
+            return plan;
+        } else {
+            // The page named is gone. Where it was is still a place, and the pages
+            // that were behind it stayed behind it, so the gap is in front of the
+            // first page whose number is larger -- which is what the reader is
+            // standing behind now that the one they named is not there.
+            int next = kept.size();
+            for (int index = 0; index < kept.size(); ++index) {
+                if (kept.at(index) > anchor) {
+                    next = index;
+                    break;
+                }
+            }
+            at = next;
+            plan.anchorWasGone = true;
+            plan.anchorUsed = next < kept.size() ? kept.at(next) : -1;
+        }
+    }
+
+    QVector<int> order;
+    order.reserve(kept.size() + moved.size());
+    for (int index = 0; index < at; ++index)
+        order.append(kept.at(index));
+    for (int page : moved)
+        order.append(page);
+    for (int index = at; index < kept.size(); ++index)
+        order.append(kept.at(index));
+
+    plan.order = order;
+    plan.landsAt = at;
+    plan.changesOrder = order != present;
+    return plan;
+}
+
+DocumentEditor::MovePlan DocumentEditor::planMove(const QVector<int> &pages, MoveTarget to,
+                                                 int anchor) const
+{
+    return planMove(live, pages, to, anchor);
 }
 
 bool DocumentEditor::sameFile(const QString &path, const QString &other)
@@ -267,6 +361,56 @@ bool DocumentEditor::rotatePages(const QVector<int> &pagesToRotate, int quarterT
     return true;
 }
 
+bool DocumentEditor::movePages(const QVector<int> &pagesToMove, MoveTarget to, int anchor,
+                               QString *error)
+{
+    if (live.isEmpty()) {
+        *error = tr("还没有打开任何文档。");
+        return false;
+    }
+    if (to == MoveTarget::AfterPage && (anchor < 0 || anchor >= originalPages)) {
+        // Checked against the file rather than against `live`: a page an earlier
+        // unsaved change deleted is a page the reader can point at, and planMove()
+        // knows what to do with it. A number that was never a page is not a
+        // position to move behind.
+        *error = tr("要说移到第几页之后，而那个页码不在这份文档里。");
+        return false;
+    }
+    const MovePlan plan = planMove(pagesToMove, to, anchor);
+    if (plan.pagesMoved == 0) {
+        *error = plan.alreadyGone > 0
+            ? tr("那些页在还没保存的修改里已经删掉了。")
+            : tr("页码范围里没有可移动的页面。");
+        return false;
+    }
+    if (plan.anchorIsMoved) {
+        *error = tr("第 %1 页就在要移动的页里，这样移等于没移。").arg(anchor + 1);
+        return false;
+    }
+    if (!plan.changesOrder) {
+        // Three ways to end up where you already are, and the one that fits says
+        // what the other two would have left the reader to work out.
+        *error = to == MoveTarget::Front
+            ? tr("那些页已经在最前头了。")
+            : (to == MoveTarget::Back ? tr("那些页已经在最后了。")
+                                      : tr("那些页已经在第 %1 页后面了。").arg(anchor + 1));
+        return false;
+    }
+
+    QSet<int> named;
+    for (int page : pagesToMove) {
+        if (page >= 0 && live.contains(page))
+            named.insert(page);
+    }
+    Operation op;
+    op.kind = Operation::Kind::MovePages;
+    op.pages = sortedFrom(named);
+    op.moveTo = to;
+    op.anchor = anchor;
+    record(op);
+    return true;
+}
+
 void DocumentEditor::record(const Operation &op)
 {
     pending.append(op);
@@ -305,6 +449,13 @@ void DocumentEditor::rebuildLive()
         if (op.kind == Operation::Kind::DeletePages) {
             for (int page : op.pages)
                 live.removeOne(page);
+        } else if (op.kind == Operation::Kind::MovePages) {
+            // The same function the dialog called and the replay below uses, so
+            // that the page list in memory and the page tree that gets written can
+            // not drift apart by one position -- which, for a reorder, is the
+            // difference between the document somebody asked for and one they did
+            // not, with the same number of pages in both.
+            live = planMove(live, op.pages, op.moveTo, op.anchor).order;
         }
     }
 }
@@ -356,6 +507,48 @@ void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<int> &pr
             if (at >= 0 && at < int(pages.size()))
                 pages.at(size_t(at)).rotatePage(op.quarterTurns * 90, /* relative = */ true);
         }
+        return;
+    }
+
+    if (op.kind == Operation::Kind::MovePages) {
+        const MovePlan plan = planMove(present, op.pages, op.moveTo, op.anchor);
+        // `present` and the snapshot above are index-aligned -- both run through
+        // the pages in the order the tree holds them -- so a page can be found by
+        // the number the reader used.
+        auto handleOf = [&](int original) {
+            return pages.at(size_t(present.indexOf(original)));
+        };
+        QSet<int> moving;
+        for (int page : op.pages) {
+            if (present.contains(page))
+                moving.insert(page);
+        }
+
+        // Out of the tree first, with the handles held on to. This matters more for
+        // a move than for anything else here: addPage() shallow-copies a page it
+        // finds already in the tree so that it does not add it twice, so inserting
+        // before removing would duplicate the page rather than move it -- a document
+        // with the block in it twice and nothing to say so.
+        for (int original : op.pages) {
+            if (moving.contains(original))
+                helper.removePage(handleOf(original));
+        }
+        // Then walk the order that was asked for and put each moved page behind
+        // whatever precedes it. The pages that were not named are still in their
+        // relative order, and the moved ones are inserted left to right, so the page
+        // before each insertion is already in the tree -- which makes the result
+        // exactly `plan.order`, not merely a document with the same pages in it.
+        for (int index = 0; index < plan.order.size(); ++index) {
+            const int original = plan.order.at(index);
+            if (!moving.contains(original))
+                continue;
+            if (index == 0)
+                helper.addPage(handleOf(original), /*first=*/true);
+            else
+                helper.addPageAt(handleOf(original), /*before=*/false,
+                                 handleOf(plan.order.at(index - 1)));
+        }
+        present = plan.order;
         return;
     }
 

@@ -200,6 +200,23 @@ int main(int argc, char **argv)
             { "DocumentEditor", "向右转 90°（%1 页）" },
             { "DocumentEditor", "另存为不能覆盖正在打开的文件。请换一个文件名。" },
             { "DocumentEditor", "还没有打开任何文档。" },
+            // The reorder that came after those two, and the undo/redo item names --
+            // those four are here because the sweep found its first real defect
+            // through them: the 文档 menu had been hand-written into the catalogue
+            // with its mnemonic escaped twice, so the English UI read
+            // "Rotate Pages(&amp;R)" on screen. Six entries were like that: rotate,
+            // save-as, and these four. Nothing above catches it -- it is neither
+            // Chinese nor the source string -- which is why the check beside it
+            // exists and why these are probed by name.
+            { "MainWindow", "移动页面(&M)…" },
+            { "MainWindow", "撤销(&U)" },           { "MainWindow", "重做(&O)" },
+            { "MainWindow", "撤销 %1(&U)" },        { "MainWindow", "重做 %1(&O)" },
+            { "MovePagesDialog", "指定页之后" },
+            { "MovePagesDialog", "还没有说出要移动哪几页。" },
+            { "MovePagesDialog", "把 %1 页移到%2：移完它们连着排在第 %3-%4 页。" },
+            { "DocumentEditor", "移到最前（%1 页）" },
+            { "DocumentEditor", "移到最后（%1 页）" },
+            { "DocumentEditor", "那些页已经在第 %1 页后面了。" },
         };
 
         for (const Probe &probe : probes) {
@@ -209,6 +226,16 @@ int main(int argc, char **argv)
             check(english != source
                       && !hasChinese(english),
                   QStringLiteral("%1: \"%2\" is translated (got \"%3\")")
+                      .arg(QString::fromLatin1(probe.context), source, english));
+            // A translation that still holds a raw XML entity is a hand-edited .ts
+            // whose ampersand got escaped twice: the catalogue then carries the
+            // file format's own markup into the menu, and the reader sees
+            // "Rotate Pages(&amp;R)". Neither of the two checks above can catch
+            // that -- it is not Chinese, and it is not the source string -- so it
+            // needs its own, and this is where the six escaped-mnemonic entries
+            // were found.
+            check(!english.contains(QStringLiteral("&amp;")),
+                  QStringLiteral("%1: \"%2\" leaks a markup entity (got \"%3\")")
                       .arg(QString::fromLatin1(probe.context), source, english));
             // A translation that dropped a placeholder would be worse than no
             // translation: the arg list would not match the string any more.

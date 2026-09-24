@@ -248,6 +248,7 @@ private:
     // command that writes a file.
     QAction *deletePagesAction = nullptr;
     QAction *rotatePagesAction = nullptr;
+    QAction *movePagesAction = nullptr;
     QAction *undoEditAction = nullptr;
     QAction *redoEditAction = nullptr;
     QAction *saveEditsAction = nullptr;

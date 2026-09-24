@@ -13,6 +13,7 @@
 #include "src/ui/deletepagesdialog.h"
 #include "src/ui/findbar.h"
 #include "src/ui/imageexportdialog.h"
+#include "src/ui/movepagesdialog.h"
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
 #include "src/ui/printdialog.h"
@@ -1184,6 +1185,25 @@ void DocumentTab::rotatePages()
     QString error;
     if (!document->rotatePages(dialog.pagesToRotate(), dialog.quarterTurns(), &error)) {
         WindowDialogs::warning(window(), tr("旋转页面"), error);
+        return;
+    }
+    Q_EMIT editStateChanged();
+}
+
+void DocumentTab::movePages()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    MovePagesDialog dialog(window(), pageView->currentPage(), document);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QString error;
+    if (!document->movePages(dialog.pagesToMove(), dialog.target(), dialog.anchorPage(),
+                             &error)) {
+        WindowDialogs::warning(window(), tr("移动页面"), error);
         return;
     }
     Q_EMIT editStateChanged();

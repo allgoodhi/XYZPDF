@@ -1,4 +1,4 @@
-// Taking pages out of a PDF, and what is promised around it.
+// Taking pages out of a PDF, moving the rest around, and what is promised around it.
 //
 // The feature has one interesting failure mode, and it is not the page count: it
 // is writing over a file the reader owns. So most of what is pinned down here is
@@ -135,6 +135,40 @@ QVector<int> rotationsInFile(const QString &path)
         ++failures;
     }
     return angles;
+}
+
+// What order the file says its pages are in, by reading the number each fixture
+// page prints on itself.
+//
+// The only way the reorder can be checked at all: a page count cannot tell a moved
+// document from an untouched one, and the whole failure mode of a move is "every
+// page is there, in the wrong place". Read through Qt PDF rather than QPDF because
+// the claim is about the file a reader would open, not about what the writer thinks
+// it wrote. -1 for a page whose number could not be read, so a silent mismatch
+// cannot come from the parsing.
+QVector<int> orderInFile(const QString &path)
+{
+    QVector<int> numbers;
+    QtPdfBackend document;
+    if (document.load(path, QString()) != Document::Status::Ready) {
+        std::cerr << "FAIL: the reader would not open " << path.toStdString() << '\n';
+        ++failures;
+        return numbers;
+    }
+    static const QRegularExpression printed(QStringLiteral("page (\\d+)"));
+    for (int page = 0; page < document.pageCount(); ++page) {
+        const QRegularExpressionMatch hit = printed.match(document.text(page).simplified());
+        numbers.append(hit.hasMatch() ? hit.captured(1).toInt() : -1);
+    }
+    return numbers;
+}
+
+QString describeOrder(const QVector<int> &numbers)
+{
+    QStringList parts;
+    for (int number : numbers)
+        parts.append(QString::number(number));
+    return parts.join(QLatin1Char(','));
 }
 
 // A document that needs a password to open, written here rather than committed as a
@@ -313,6 +347,94 @@ int main(int argc, char **argv)
         const Plan restOfThem = DocumentEditor::planDelete({2, 3}, {2, 3});
         check(restOfThem.pagesToRemove == 2 && restOfThem.leavesNothing,
               "the second delete that empties the document is refused as surely as the first");
+    }
+
+    // ---- what a move request means, with no document anywhere near it ----
+    //
+    // The same arithmetic the dialog shows and the save replays, run against a
+    // `present` list written out by hand. Every one of these orders is the whole
+    // answer rather than a count, because the thing a move can get wrong is which
+    // page sits where.
+    using Move = DocumentEditor::MoveTarget;
+    {
+        const DocumentEditor::MovePlan toBack = DocumentEditor::planMove(everyPage(10), {2, 3, 4},
+                                                                        Move::Back);
+        check(toBack.pagesMoved == 3 && toBack.order.last() == 4 && toBack.landsAt == 7
+                && toBack.changesOrder && toBack.usable(),
+              QStringLiteral("three pages moved to the back land at 8, 9, 10: %1")
+                  .arg(describeOrder(toBack.order)));
+
+        const DocumentEditor::MovePlan toFront = DocumentEditor::planMove(everyPage(10), {7, 8},
+                                                                         Move::Front);
+        check(toFront.order.front() == 7 && toFront.order.at(1) == 8
+                && toFront.order.at(2) == 0 && toFront.landsAt == 0,
+              QStringLiteral("the block keeps its own internal order at the front: %1")
+                  .arg(describeOrder(toFront.order)));
+
+        // Typed the other way round, and it still comes out 2,3,4: the numbers name
+        // which pages travel, not the order they arrive in.
+        const DocumentEditor::MovePlan typedBackwards = DocumentEditor::planMove(
+            everyPage(10), {4, 2, 3}, Move::Back);
+        check(typedBackwards.order.mid(7) == QVector<int>({2, 3, 4}),
+              QStringLiteral("naming them out of order does not shuffle them: %1")
+                  .arg(describeOrder(typedBackwards.order)));
+
+        const DocumentEditor::MovePlan behind = DocumentEditor::planMove(everyPage(10), {0, 1},
+                                                                        Move::AfterPage, 4);
+        check(behind.order == QVector<int>({2, 3, 4, 0, 1, 5, 6, 7, 8, 9}) && behind.landsAt == 3
+                && behind.anchorUsed == 4 && !behind.anchorWasGone,
+              QStringLiteral("the first two pages move behind the fifth, which is page 5 on the "
+                             "screen and index 4 here: %1")
+                  .arg(describeOrder(behind.order)));
+
+        // Three ways to ask for the order the document already has, and each one has
+        // to come out false so that the button greys and nothing is recorded.
+        check(!DocumentEditor::planMove(everyPage(5), {3, 4}, Move::Back).changesOrder,
+              "the last two pages are already at the back");
+        check(!DocumentEditor::planMove(everyPage(5), {0}, Move::Front).changesOrder,
+              "the first page is already at the front");
+        check(!DocumentEditor::planMove(everyPage(5), {2}, Move::AfterPage, 1).changesOrder,
+              "page 3 is already behind page 2");
+
+        const DocumentEditor::MovePlan ontoItself = DocumentEditor::planMove(everyPage(5), {1, 2},
+                                                                            Move::AfterPage, 2);
+        check(ontoItself.anchorIsMoved && !ontoItself.usable(),
+              "moving a block behind a page inside itself is not a move, and says which page "
+              "makes it that way");
+
+        const DocumentEditor::MovePlan namedNothing = DocumentEditor::planMove(everyPage(5), {},
+                                                                              Move::Back);
+        check(namedNothing.pagesMoved == 0 && !namedNothing.changesOrder && !namedNothing.usable()
+                && namedNothing.order == everyPage(5),
+              "naming no page moves nothing, and the order it hands back is the one it was given");
+
+        const DocumentEditor::MovePlan repeats = DocumentEditor::planMove(everyPage(10), {2, 2, 3},
+                                                                         Move::Back);
+        check(repeats.pagesMoved == 2 && repeats.order.mid(8) == QVector<int>({2, 3}),
+              QStringLiteral("a page named twice travels once: %1")
+                  .arg(describeOrder(repeats.order)));
+
+        // The two questions a page number raises once unsaved changes exist are
+        // separate: is it still there, and where does the anchor land if it is not.
+        const DocumentEditor::MovePlan gonePages = DocumentEditor::planMove({2, 3, 4}, {0, 1, 3},
+                                                                           Move::Back);
+        check(gonePages.pagesMoved == 1 && gonePages.alreadyGone == 2
+                && gonePages.order == QVector<int>({2, 4, 3}),
+              "pages an earlier change deleted are counted apart from the one still there");
+
+        const DocumentEditor::MovePlan goneAnchor = DocumentEditor::planMove({0, 1, 2, 4, 5}, {5},
+                                                                            Move::AfterPage, 3);
+        check(goneAnchor.anchorWasGone && goneAnchor.anchorUsed == 4
+                && goneAnchor.order == QVector<int>({0, 1, 2, 5, 4}) && goneAnchor.usable(),
+              QStringLiteral("an anchor a delete took out becomes the gap it left, in front of "
+                             "the page that is now there: %1")
+                  .arg(describeOrder(goneAnchor.order)));
+
+        const DocumentEditor::MovePlan anchorAtEnd = DocumentEditor::planMove({0, 1, 2}, {0},
+                                                                             Move::AfterPage, 5);
+        check(anchorAtEnd.anchorWasGone && anchorAtEnd.anchorUsed == -1
+                && anchorAtEnd.order == QVector<int>({1, 2, 0}),
+              "and an anchor past the last surviving page is the same answer as moving to the end");
     }
 
     // ---- whether two paths name one file ----
@@ -504,6 +626,111 @@ int main(int argc, char **argv)
         }
         check(pagesAsReadByTheReader(source) == pagesBefore,
               "and reading the result never changed the document it was made from");
+    }
+
+    // ---- a move writes the order it promised ----
+    //
+    // The one operation in this program whose failure is silent in every other
+    // measurement: a wrongly reordered document has the right number of pages in
+    // it and opens fine. So the order is read back off the page labels the fixture
+    // prints, and it is read back after each of undo and redo as well -- an undo
+    // that moved the wrong block, or a redo that did not move it back, would
+    // otherwise leave this file looking exactly like the one before it.
+    {
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(source, QString(), &error), "setup: the copy opens again");
+        check(editor.deletePages({9}, &error),
+              "page 10 goes out first, so the numbering the moves use has a hole in it");
+        check(editor.pageCount() == pagesBefore - 1, "setup: and the document is one page short");
+
+        error.clear();
+        check(!editor.movePages({0}, DocumentEditor::MoveTarget::Front, -1, &error)
+                && !error.isEmpty(),
+              "moving the first page to the front is refused, with a sentence");
+        check(!editor.movePages({2, 3}, DocumentEditor::MoveTarget::AfterPage, 2, &error),
+              "moving a block behind a page that is inside the block is refused too");
+        error.clear();
+        check(!editor.movePages({5}, DocumentEditor::MoveTarget::AfterPage, pagesBefore, &error)
+                && !error.isEmpty(),
+              "and so is an anchor past the last page of the file -- there is no such page to "
+              "move behind, which is a different thing from the page 10 this list has deleted");
+        check(!editor.movePages({}, DocumentEditor::MoveTarget::Back, -1, &error),
+              "naming no page is refused as surely as naming an impossible one");
+        check(editor.pendingCount() == 1, "and not one of the four refusals was recorded");
+
+        error.clear();
+        check(editor.movePages({2, 3}, DocumentEditor::MoveTarget::AfterPage, 0, &error),
+            QStringLiteral("pages 3 and 4 move behind page 1: %1").arg(error));
+        check(editor.pageCount() == pagesBefore - 1, "a move changes no page count at all");
+        check(editor.pendingCount() == 2 && editor.isDirty(), "and it is the second thing on the list");
+        check(editor.undoDescription().contains(QStringLiteral("第 1 页")),
+              QStringLiteral("the undo item names the anchor the reader used: %1")
+                  .arg(editor.undoDescription()));
+        check(editor.movePages({8}, DocumentEditor::MoveTarget::Front, -1, &error),
+              "then page 9 goes to the very front");
+
+        const QString out = scratch.filePath(QStringLiteral("moved.pdf"));
+        error.clear();
+        check(editor.saveAs(out, &error),
+            QStringLiteral("the whole list is written in one go: %1").arg(error));
+        QVector<int> wanted;
+        wanted << 9 << 1 << 3 << 4 << 2 << 5 << 6 << 7 << 8;
+        for (int label = 11; label <= pagesBefore; ++label)
+            wanted.append(label);
+        const QVector<int> written = orderInFile(out);
+        check(written == wanted,
+              QStringLiteral("the file reads back as the two moves and one delete asked for: got "
+                             "%1, wanted %2")
+                  .arg(describeOrder(wanted), describeOrder(written)));
+
+        // Undo is not "the count goes back" here; it is the block going home.
+        check(editor.undo(), "the move to the front is taken back");
+        const QString undoneFile = scratch.filePath(QStringLiteral("moved-one-back.pdf"));
+        check(editor.saveAs(undoneFile, &error), "and the shorter list writes again");
+        QVector<int> wantedUndone;
+        wantedUndone << 1 << 3 << 4 << 2 << 5 << 6 << 7 << 8 << 9;
+        for (int label = 11; label <= pagesBefore; ++label)
+            wantedUndone.append(label);
+        const QVector<int> undone = orderInFile(undoneFile);
+        check(undone == wantedUndone,
+              QStringLiteral("with only the second move gone, page 9 is back in the middle and "
+                             "nothing else shifted: got %1, wanted %2")
+                  .arg(describeOrder(wantedUndone), describeOrder(undone)));
+
+        check(editor.redo(), "redo puts the move back on the list");
+        const QString redoneFile = scratch.filePath(QStringLiteral("moved-redone.pdf"));
+        check(editor.saveAs(redoneFile, &error), "and it writes");
+        check(orderInFile(redoneFile) == written,
+              "the redone document is the same order as the one before the undo");
+
+        // Two moves whose blocks overlap, which is the case a position-based design
+        // gets wrong: the second one names a page the first one relocated, and the
+        // number the reader typed is still the number on the screen.
+        DocumentEditor twice;
+        check(twice.open(source, QString(), &error), "setup: a fresh editor, nothing deleted");
+        check(twice.movePages({0, 1}, DocumentEditor::MoveTarget::Back, -1, &error),
+              "the first two pages go to the end");
+        check(twice.movePages({0}, DocumentEditor::MoveTarget::AfterPage, 3, &error),
+              "then page 1, which is now near the end, is asked for again -- behind page 4");
+        const QString twiceOut = scratch.filePath(QStringLiteral("moved-twice.pdf"));
+        check(twice.saveAs(twiceOut, &error), "and the two are written together");
+        // Page 1 came back from the end to sit behind page 4, page 2 -- which was
+        // moved to the end by the first request and never named by the second --
+        // stays there, and everything between them is what it always was.
+        QVector<int> wantedTwice;
+        wantedTwice << 3 << 4 << 1;
+        for (int label = 5; label <= pagesBefore; ++label)
+            wantedTwice.append(label);
+        wantedTwice << 2;
+        const QVector<int> twiceWritten = orderInFile(twiceOut);
+        check(twiceWritten == wantedTwice,
+              QStringLiteral("the second move found page 1 where the first one left it, and the "
+                             "two pages that went to the end stay in their own order: got %1, "
+                             "wanted %2")
+                  .arg(describeOrder(wantedTwice), describeOrder(twiceWritten)));
+
+        check(hashOfFile(source) == originalHash, "and none of this touched the document");
     }
 
     // ---- a refused write leaves nothing behind ----

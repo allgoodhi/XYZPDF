@@ -76,13 +76,25 @@ class QPDF;
 class DocumentEditor
 {
 public:
+    // Where a block of pages lands. Said as a target rather than as an index
+    // because an index is a position in a document the reader cannot see: after a
+    // delete, "position 7" is not the page they are pointing at, while "after page
+    // 7" is exactly what is on the screen in front of them.
+    enum class MoveTarget
+    {
+        Front,
+        Back,
+        AfterPage
+    };
+
     // One structural change, as it waits in the pending list.
     struct Operation
     {
         enum class Kind
         {
             DeletePages,
-            RotatePages
+            RotatePages,
+            MovePages
         };
         Kind kind = Kind::DeletePages;
         // Original page numbers -- positions in the document as it was opened,
@@ -93,6 +105,13 @@ public:
         // clockwise, so the direction the reader chose has to be said this way
         // once, here, rather than in two places.
         int quarterTurns = 1;
+        // MovePages only: where the block goes.
+        MoveTarget moveTo = MoveTarget::Back;
+        // MovePages with MoveTarget::AfterPage only: the original number of the
+        // page the block lands behind. Kept as a number rather than resolved to a
+        // position at the time it was asked for, because the page it names may be
+        // one a later undo brings back -- see planMove().
+        int anchor = -1;
     };
 
     // What a delete request means for the document as it stands, worked out
@@ -127,6 +146,49 @@ public:
     // needs planDelete() for: the count it shows has to be the count the editor
     // will act on.
     int pagesStillThere(const QVector<int> &pages) const;
+
+    // What a move request means for the document as it stands: the order a save
+    // would write, and the three ways the request can be one that moves nothing.
+    //
+    // This is also the only place the reordering is worked out, which is why
+    // rebuildLive() and the replay in saveAs() both go through it: the sequence a
+    // reader was promised in the dialog and the sequence that reaches the file
+    // cannot then be two different answers, and a reorder is exactly the operation
+    // where being off by one is silent -- it writes a document with every page in
+    // it, just not the one anybody asked for.
+    struct MovePlan
+    {
+        // Which original pages are present, in the order they would be written.
+        QVector<int> order;
+        // Pages named and still there, and pages named that an earlier unsaved
+        // change already took out. Same split planDelete() makes, for the same
+        // reason: "you named nothing" is the wrong sentence for "you named pages
+        // this list has already moved out of the way".
+        int pagesMoved = 0;
+        int alreadyGone = 0;
+        // Where the block starts in `order`, 0-based. Its own number because the
+        // dialog's whole point is to say where the pages end up, and the block is
+        // always contiguous -- a move takes the named pages along in the order
+        // they are in now, so "第 38-40 页" is a true statement about the result.
+        int landsAt = 0;
+        // The anchor the request resolves to: -1 for 最前/最后 and for "the named
+        // page is gone and nothing follows it", which is a move to the end.
+        int anchorUsed = -1;
+        // The page named as the anchor is one of the pages being moved, so the
+        // request is "put this block behind itself".
+        bool anchorIsMoved = false;
+        // The page named as the anchor is one an earlier unsaved change deleted.
+        // The move still goes ahead -- into the gap that page left -- but the
+        // reader has to be told which page it actually lined up against.
+        bool anchorWasGone = false;
+        // Whether the order below differs from the order the document has now.
+        bool changesOrder = false;
+        // Whether OK is pressable and the request is worth recording.
+        bool usable() const { return pagesMoved > 0 && !anchorIsMoved && changesOrder; }
+    };
+    static MovePlan planMove(const QVector<int> &present, const QVector<int> &pages,
+                             MoveTarget to, int anchor = -1);
+    MovePlan planMove(const QVector<int> &pages, MoveTarget to, int anchor = -1) const;
 
     // Whether two paths name the same file, which is the question saveAs() has
     // to answer before it writes anything. Two paths can differ in every
@@ -172,6 +234,11 @@ public:
     // rotation of 90° is the only kind PDF can record and a dialog that sent 45
     // would otherwise silently become something else.
     bool rotatePages(const QVector<int> &pagesToRotate, int quarterTurns, QString *error);
+    // Moving a block of pages to the front, to the back, or behind `anchor` (an
+    // original page number, used only with MoveTarget::AfterPage). The named pages
+    // travel together and keep the order they have among themselves, which is what
+    // makes "第 2-4 页移到最后" one action rather than three.
+    bool movePages(const QVector<int> &pagesToMove, MoveTarget to, int anchor, QString *error);
 
     // ---- the list, and moving through it ----
     //
@@ -232,8 +299,9 @@ private:
     QString sourcePassword;
     int originalPages = 0;
     // Which original pages are still present, in the order they would be written.
-    // An identity list after open(); deletions take entries out of it, and the
-    // reorder operation that M5 still owes will move them around inside it.
+    // An identity list after open(); deletions take entries out of it and moves
+    // rearrange entries inside it, both of them by replaying the whole list rather
+    // than patching this one.
     QVector<int> live;
     QVector<Operation> pending;
     QVector<Operation> undone;

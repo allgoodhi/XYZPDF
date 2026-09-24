@@ -829,11 +829,11 @@ void MainWindow::buildMenus()
     // file. Acrobat's 文档 menu sits in this same place, and the rest of M5
     // (重排、拆分、加密) is coming to fill this one out.
     //
-    // The last three items are the other half of the first two. 删除页面 and
-    // 旋转页面 record an edit, 撤销 and 重做 move along the list those two
-    // recorded into, and 保存修改为… is the only one of the five that writes a
+    // The last three items are the other half of the first three. 删除页面、旋转页面
+    // and 移动页面 record an edit, 撤销 and 重做 move along the list those three
+    // recorded into, and 保存修改为… is the only one of the six that writes a
     // file. They sit in this menu rather than spread across 文件 and 编辑 because
-    // they are one list seen from three ends, and a reader looking for any of them
+    // they are one list seen from four ends, and a reader looking for any of them
     // is looking for this menu.
     QMenu *documentMenu = menuBar()->addMenu(tr("文档(&D)"));
 
@@ -858,6 +858,18 @@ void MainWindow::buildMenus()
             tab->rotatePages();
     });
     documentMenu->addAction(rotatePagesAction);
+
+    // (&M), the letter for 移动: unique inside this menu, which is the only place a
+    // mnemonic has to be unique -- the menu bar already reuses letters that other
+    // menus put on their own items (文件's 打开(&O) and 文档's 重做(&O)).
+    movePagesAction = makeAction(tr("移动页面(&M)…"), QKeySequence());
+    movePagesAction->setObjectName(QStringLiteral("movePagesAction"));
+    movePagesAction->setToolTip(tr("记下要把哪几页挪到哪儿，按保存修改为才写成一个新文件；正在读的这份不动"));
+    connect(movePagesAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->movePages();
+    });
+    documentMenu->addAction(movePagesAction);
 
     documentMenu->addSeparator();
 
@@ -2033,7 +2045,7 @@ void MainWindow::updateForCurrentTab()
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
-                            deletePagesAction, rotatePagesAction,
+                            deletePagesAction, rotatePagesAction, movePagesAction,
                             viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)

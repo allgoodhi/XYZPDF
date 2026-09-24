@@ -123,12 +123,27 @@ The original file is not touched. This step only records the change; a save is s
         <translation>Turn right 90° (%1 pages)</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="92"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="96"/>
+        <source>移到最前（%1 页）</source>
+        <translation>Move to the front (%1 pages)</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="98"/>
+        <source>移到第 %2 页之后（%1 页）</source>
+        <translation>Move after page %2 (%1 pages)</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="99"/>
+        <source>移到最后（%1 页）</source>
+        <translation>Move to the end (%1 pages)</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="101"/>
         <source>删除 %1 页</source>
         <translation>Delete %1 pages</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="187"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="281"/>
         <source>这份文档正在阅读中，但结构编辑用的解析器打不开它。
 
 解析器说：%1</source>
@@ -137,59 +152,91 @@ The original file is not touched. This step only records the change; a save is s
 The parser says: %1</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="194"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="288"/>
         <source>这份 PDF 一页也没有，没法在上面做任何页面修改。</source>
         <translation>This PDF has no pages at all, so no page change can be made to it.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="207"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="242"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="378"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="301"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="336"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="368"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="571"/>
         <source>还没有打开任何文档。</source>
         <translation>No document has been opened yet.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="216"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="310"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="382"/>
         <source>那些页在还没保存的修改里已经删掉了。</source>
         <translation>Those pages are already gone in the changes that have not been saved.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="217"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="311"/>
         <source>页码范围里没有可删除的页面。</source>
         <translation>The page range names no pages that can be deleted.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="221"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="315"/>
         <source>不能把每一页都删掉：一个不剩的 PDF 不是 PDF，任何阅读器都打不开它。想丢掉整份文档，就把文件本身删掉。</source>
         <translation>Every page cannot be deleted: a PDF with no pages is not a PDF, and no reader can open it. To get rid of the whole document, delete the file itself.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="249"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="343"/>
         <source>旋转只能是 90° 的整倍数。</source>
         <translation>A rotation can only be a whole multiple of 90°.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="258"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="352"/>
         <source>页码范围里没有可旋转的页面。</source>
         <translation>The page range names no pages that can be rotated.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="386"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="376"/>
+        <source>要说移到第几页之后，而那个页码不在这份文档里。</source>
+        <translation>It has to say which page to move behind, and that number is not a page in this document.</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="383"/>
+        <source>页码范围里没有可移动的页面。</source>
+        <translation>The page range names no pages that can be moved.</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="387"/>
+        <source>第 %1 页就在要移动的页里，这样移等于没移。</source>
+        <translation>Page %1 is one of the pages being moved, so moving it behind itself changes nothing.</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="394"/>
+        <source>那些页已经在最前头了。</source>
+        <translation>Those pages are already at the front.</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="395"/>
+        <source>那些页已经在最后了。</source>
+        <translation>Those pages are already at the end.</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="396"/>
+        <source>那些页已经在第 %1 页后面了。</source>
+        <translation>Those pages are already after page %1.</translation>
+    </message>
+    <message>
+        <location filename="../../src/edit/documenteditor.cpp" line="579"/>
         <source>另存为不能覆盖正在打开的文件。请换一个文件名。</source>
         <translation>Save As cannot overwrite the file that is open. Please choose another name.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="394"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="587"/>
         <source>这些修改会把每一页都删掉，而一个不剩的 PDF 任何阅读器都打不开。</source>
         <translation>These changes would delete every page, and no reader can open a PDF with none left.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="402"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="595"/>
         <source>文件夹不存在：%1</source>
         <translation>The folder does not exist: %1</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="450"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="643"/>
         <source>写出文件时出错，原来的文件没有改动。
 
 解析器说：%1</source>
@@ -198,7 +245,7 @@ The parser says: %1</translation>
 The parser says: %1</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="469"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="662"/>
         <source>新文件已经写好，但没法放到 %1 那里去——它可能被别的程序占着，或者这个名字不允许覆盖（Windows 错误 %2）。写好的文件留在 %3。</source>
         <translation>The new file was written, but it could not be put in place at %1 — another program may be holding it, or this name may not be replaced (Windows error %2). The finished file has been left at %3.</translation>
     </message>
@@ -206,27 +253,27 @@ The parser says: %1</translation>
 <context>
     <name>DocumentTab</name>
     <message>
-        <location filename="../../documenttab.cpp" line="106"/>
+        <location filename="../../documenttab.cpp" line="107"/>
         <source>大纲</source>
         <translation>Outline</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="107"/>
+        <location filename="../../documenttab.cpp" line="108"/>
         <source>缩略图</source>
         <translation>Thumbnails</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="670"/>
+        <location filename="../../documenttab.cpp" line="671"/>
         <source>（空标签）</source>
         <translation>(no document)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1035"/>
+        <location filename="../../documenttab.cpp" line="1036"/>
         <source>打开链接</source>
         <translation>Open Link</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1036"/>
+        <location filename="../../documenttab.cpp" line="1037"/>
         <source>要在浏览器中打开这个地址：
 %1
 
@@ -237,75 +284,80 @@ The parser says: %1</translation>
 Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1061"/>
+        <location filename="../../documenttab.cpp" line="1062"/>
         <source>正在打印…</source>
         <translation>Printing…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1061"/>
-        <location filename="../../documenttab.cpp" line="1107"/>
+        <location filename="../../documenttab.cpp" line="1062"/>
+        <location filename="../../documenttab.cpp" line="1108"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1079"/>
+        <location filename="../../documenttab.cpp" line="1080"/>
         <source>打印</source>
         <translation>Print</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1093"/>
-        <location filename="../../documenttab.cpp" line="1098"/>
-        <location filename="../../documenttab.cpp" line="1127"/>
+        <location filename="../../documenttab.cpp" line="1094"/>
+        <location filename="../../documenttab.cpp" line="1099"/>
+        <location filename="../../documenttab.cpp" line="1128"/>
         <source>导出为图片</source>
         <translation>Export as Images</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1093"/>
+        <location filename="../../documenttab.cpp" line="1094"/>
         <source>请先选择保存文件夹。</source>
         <translation>Choose a folder to save into first.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1098"/>
+        <location filename="../../documenttab.cpp" line="1099"/>
         <source>页码范围里没有可导出的页面。</source>
         <translation>The page range has no pages to export.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1107"/>
+        <location filename="../../documenttab.cpp" line="1108"/>
         <source>正在导出为图片…</source>
         <translation>Exporting images…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1145"/>
+        <location filename="../../documenttab.cpp" line="1146"/>
         <source>修改这份文档</source>
         <translation>Editing this document</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1186"/>
+        <location filename="../../documenttab.cpp" line="1187"/>
         <source>旋转页面</source>
         <translation>Rotate Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1244"/>
+        <location filename="../../documenttab.cpp" line="1206"/>
+        <source>移动页面</source>
+        <translation>Move Pages</translation>
+    </message>
+    <message>
+        <location filename="../../documenttab.cpp" line="1264"/>
         <source>%1 已修改.pdf</source>
         <translation>%1 modified.pdf</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1249"/>
+        <location filename="../../documenttab.cpp" line="1269"/>
         <source>把这些修改存成一个新文件</source>
         <translation>Save these changes into a new file</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1265"/>
+        <location filename="../../documenttab.cpp" line="1285"/>
         <source>保存修改</source>
         <translation>Save Changes</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1249"/>
+        <location filename="../../documenttab.cpp" line="1269"/>
         <source>PDF 文档 (*.pdf)</source>
         <translation>PDF documents (*.pdf)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1168"/>
+        <location filename="../../documenttab.cpp" line="1169"/>
         <source>删除页面</source>
         <translation>Delete Pages</translation>
     </message>
@@ -648,7 +700,7 @@ Continue?</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="720"/>
-        <location filename="../../mainwindow.cpp" line="1064"/>
+        <location filename="../../mainwindow.cpp" line="1076"/>
         <location filename="../../tests/i18n_smoke.cpp" line="133"/>
         <location filename="../../tests/i18n_smoke.cpp" line="144"/>
         <source>适应宽度</source>
@@ -656,7 +708,7 @@ Continue?</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="724"/>
-        <location filename="../../mainwindow.cpp" line="1065"/>
+        <location filename="../../mainwindow.cpp" line="1077"/>
         <source>适应整页</source>
         <translation>Fit Page</translation>
     </message>
@@ -736,109 +788,109 @@ Continue?</translation>
         <translation>Delete Pages(&amp;E)…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1326"/>
+        <location filename="../../mainwindow.cpp" line="1338"/>
         <source>已写成一个新文件（%1 页）：%2</source>
         <translation>Wrote a new file (%1 pages): %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="900"/>
+        <location filename="../../mainwindow.cpp" line="912"/>
         <source>转到(&amp;G)</source>
         <translation>&amp;Go</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="902"/>
+        <location filename="../../mainwindow.cpp" line="914"/>
         <source>第一页</source>
         <translation>First Page</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="906"/>
+        <location filename="../../mainwindow.cpp" line="918"/>
         <source>上一页</source>
         <translation>Previous Page</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="910"/>
+        <location filename="../../mainwindow.cpp" line="922"/>
         <source>下一页</source>
         <translation>Next Page</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="914"/>
+        <location filename="../../mainwindow.cpp" line="926"/>
         <source>最后一页</source>
         <translation>Last Page</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="922"/>
+        <location filename="../../mainwindow.cpp" line="934"/>
         <source>跳转到页码…</source>
         <translation>Go to Page…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="932"/>
+        <location filename="../../mainwindow.cpp" line="944"/>
         <source>窗口(&amp;N)</source>
         <translation>Window(&amp;N)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="934"/>
+        <location filename="../../mainwindow.cpp" line="946"/>
         <source>合并所有窗口(&amp;G)</source>
         <translation>Merge All Windows(&amp;G)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="936"/>
+        <location filename="../../mainwindow.cpp" line="948"/>
         <source>把其它窗口里打开的文档全部并进这个窗口</source>
         <translation>Bring every document open in the other windows into this one</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="952"/>
+        <location filename="../../mainwindow.cpp" line="964"/>
         <source>跟随系统</source>
         <translation>Follow the system</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="971"/>
+        <location filename="../../mainwindow.cpp" line="983"/>
         <source>帮助(&amp;H)</source>
         <translation>&amp;Help</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="973"/>
+        <location filename="../../mainwindow.cpp" line="985"/>
         <source>设置(&amp;P)…</source>
         <translation>&amp;Settings…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="978"/>
+        <location filename="../../mainwindow.cpp" line="990"/>
         <source>第三方开源许可</source>
         <translation>Third-party licences</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="982"/>
+        <location filename="../../mainwindow.cpp" line="994"/>
         <source>关于 %1</source>
         <translation>About %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1013"/>
+        <location filename="../../mainwindow.cpp" line="1025"/>
         <source>主工具栏</source>
         <translation>Main toolbar</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1021"/>
+        <location filename="../../mainwindow.cpp" line="1033"/>
         <source>翻页</source>
         <translation>Pages</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1030"/>
+        <location filename="../../mainwindow.cpp" line="1042"/>
         <source>页码</source>
         <translation>Page number</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1050"/>
+        <location filename="../../mainwindow.cpp" line="1062"/>
         <source>缩放与旋转</source>
         <translation>Zoom and Rotate</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1058"/>
+        <location filename="../../mainwindow.cpp" line="1070"/>
         <source>缩放</source>
         <translation>Zoom</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1060"/>
-        <location filename="../../mainwindow.cpp" line="2115"/>
-        <location filename="../../mainwindow.cpp" line="2142"/>
+        <location filename="../../mainwindow.cpp" line="1072"/>
+        <location filename="../../mainwindow.cpp" line="2131"/>
+        <location filename="../../mainwindow.cpp" line="2158"/>
         <source>%1%</source>
         <translation>%1%</translation>
     </message>
@@ -847,7 +899,7 @@ Continue?</translation>
         <location filename="../../mainwindow.cpp" line="278"/>
         <location filename="../../mainwindow.cpp" line="298"/>
         <location filename="../../mainwindow.cpp" line="313"/>
-        <location filename="../../mainwindow.cpp" line="1208"/>
+        <location filename="../../mainwindow.cpp" line="1220"/>
         <source>就绪</source>
         <translation>Ready</translation>
     </message>
@@ -879,7 +931,7 @@ Continue?</translation>
     <message>
         <location filename="../../mainwindow.cpp" line="849"/>
         <source>旋转页面(&amp;R)…</source>
-        <translation>Rotate Pages(&amp;amp;R)…</translation>
+        <translation>Rotate Pages(&amp;R)…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="855"/>
@@ -887,88 +939,98 @@ Continue?</translation>
         <translation>Notes down which way to turn the pages. Save Changes As is what writes them into a new file; the document you are reading stays as it is.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="869"/>
+        <location filename="../../mainwindow.cpp" line="865"/>
+        <source>移动页面(&amp;M)…</source>
+        <translation>Move Pages(&amp;M)…</translation>
+    </message>
+    <message>
+        <location filename="../../mainwindow.cpp" line="867"/>
+        <source>记下要把哪几页挪到哪儿，按保存修改为才写成一个新文件；正在读的这份不动</source>
+        <translation>Notes down which pages to move and where they go. Save Changes As is what writes them into a new file; the document you are reading stays as it is.</translation>
+    </message>
+    <message>
+        <location filename="../../mainwindow.cpp" line="881"/>
         <source>撤销</source>
         <translation>Undo</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="877"/>
+        <location filename="../../mainwindow.cpp" line="889"/>
         <source>重做</source>
         <translation>Redo</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="887"/>
+        <location filename="../../mainwindow.cpp" line="899"/>
         <source>保存修改为(&amp;S)…</source>
-        <translation>Save Changes As(&amp;amp;S)…</translation>
+        <translation>Save Changes As(&amp;S)…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="892"/>
+        <location filename="../../mainwindow.cpp" line="904"/>
         <source>把这些修改写成一个新文件；正在读的这份不动</source>
         <translation>Writes these changes into a new file. The document you are reading stays as it is.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1110"/>
+        <location filename="../../mainwindow.cpp" line="1122"/>
         <source>查找</source>
         <translation>Find</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1114"/>
+        <location filename="../../mainwindow.cpp" line="1126"/>
         <source>在文档中查找</source>
         <translation>Find in the document</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1116"/>
+        <location filename="../../mainwindow.cpp" line="1128"/>
         <source>输入即搜索；Enter 到下一个，Shift+Enter 到上一个，Esc 清除</source>
         <translation>Typing searches; Enter goes to the next, Shift+Enter to the previous, Esc clears</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1144"/>
+        <location filename="../../mainwindow.cpp" line="1156"/>
         <source>当前是第几个匹配，一共几个</source>
         <translation>Which match is in front, and how many there are</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1155"/>
+        <location filename="../../mainwindow.cpp" line="1167"/>
         <source>第 1234 / 1234 个</source>
         <translation>1234 of 1234</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1181"/>
+        <location filename="../../mainwindow.cpp" line="1193"/>
         <source>搜索中…</source>
         <translation>Searching…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1186"/>
+        <location filename="../../mainwindow.cpp" line="1198"/>
         <source>没有找到</source>
         <translation>No matches</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1191"/>
+        <location filename="../../mainwindow.cpp" line="1203"/>
         <source>第 %1 / %2 个</source>
         <translation>%1 of %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1225"/>
+        <location filename="../../mainwindow.cpp" line="1237"/>
         <source>找不到文件：%1</source>
         <translation>File not found: %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1304"/>
-        <location filename="../../mainwindow.cpp" line="1570"/>
+        <location filename="../../mainwindow.cpp" line="1316"/>
+        <location filename="../../mainwindow.cpp" line="1582"/>
         <source>正在导出为 Word…（%1 / %2 页）</source>
         <translation>Exporting to Word… (page %1 of %2)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1314"/>
+        <location filename="../../mainwindow.cpp" line="1326"/>
         <source>已导出 %1 张图片到 %2</source>
         <translation>Exported %1 images to %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1402"/>
+        <location filename="../../mainwindow.cpp" line="1414"/>
         <source>已打开 %1</source>
         <translation>Opened %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1416"/>
+        <location filename="../../mainwindow.cpp" line="1428"/>
         <source>无法打开 %1。
 
 %2</source>
@@ -977,126 +1039,126 @@ Continue?</translation>
 %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1437"/>
+        <location filename="../../mainwindow.cpp" line="1449"/>
         <source>需要密码</source>
         <translation>Password required</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1438"/>
+        <location filename="../../mainwindow.cpp" line="1450"/>
         <source>%1 已加密，请输入打开密码：</source>
         <translation>%1 is encrypted. Enter the password it opens with:</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1449"/>
+        <location filename="../../mainwindow.cpp" line="1461"/>
         <source>密码不正确，已放弃打开。</source>
         <translation>The password was not correct, so the document was left closed.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1459"/>
+        <location filename="../../mainwindow.cpp" line="1471"/>
         <source>打开 PDF</source>
         <translation>Open PDF</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1459"/>
+        <location filename="../../mainwindow.cpp" line="1471"/>
         <source>PDF 文档 (*.pdf);;所有文件 (*)</source>
         <translation>PDF documents (*.pdf);;All files (*)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1478"/>
-        <location filename="../../mainwindow.cpp" line="1603"/>
-        <location filename="../../mainwindow.cpp" line="1648"/>
+        <location filename="../../mainwindow.cpp" line="1490"/>
+        <location filename="../../mainwindow.cpp" line="1615"/>
+        <location filename="../../mainwindow.cpp" line="1660"/>
         <source>导出为 Word</source>
         <translation>Export to Word</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1479"/>
+        <location filename="../../mainwindow.cpp" line="1491"/>
         <source>Word 文档 (*.docx)</source>
         <translation>Word document (*.docx)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1485"/>
+        <location filename="../../mainwindow.cpp" line="1497"/>
         <source>正在导出为 Word…</source>
         <translation>Exporting to Word…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1501"/>
+        <location filename="../../mainwindow.cpp" line="1513"/>
         <source>导出为 Word — %1</source>
         <translation>Export to Word — %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1502"/>
+        <location filename="../../mainwindow.cpp" line="1514"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1537"/>
+        <location filename="../../mainwindow.cpp" line="1549"/>
         <source>正在停止…</source>
         <translation>Stopping…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1571"/>
+        <location filename="../../mainwindow.cpp" line="1583"/>
         <source>正在导出为 Word…（共 %1 页）</source>
         <translation>Exporting to Word… (%1 pages)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1597"/>
+        <location filename="../../mainwindow.cpp" line="1609"/>
         <source>导出已取消</source>
         <translation>Export cancelled</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1602"/>
+        <location filename="../../mainwindow.cpp" line="1614"/>
         <source>导出失败</source>
         <translation>Export failed</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1607"/>
+        <location filename="../../mainwindow.cpp" line="1619"/>
         <source>已导出 %1 页、%2 个段落到：
 %3</source>
         <translation>Exported %1 pages and %2 paragraphs to:
 %3</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1614"/>
+        <location filename="../../mainwindow.cpp" line="1626"/>
         <source>其中 %1 个带网格的表格已转换为可编辑 Word 表格。</source>
         <translation>Of these, %1 ruled tables were converted into editable Word tables.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1622"/>
+        <location filename="../../mainwindow.cpp" line="1634"/>
         <source>其中 %1 处图形（图表、框图、照片等）已按图片插入，其所在页面的文字仍是可以编辑的。</source>
         <translation>%1 figures (charts, diagrams, photographs) were inserted as images; the text on their pages stays editable.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1633"/>
+        <location filename="../../mainwindow.cpp" line="1645"/>
         <source>其中 %1 页没有文字层或包含复杂图表/表格，已按整页图片还原以保持原貌，但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。</source>
         <translation>%1 pages had no text layer, or held charts and tables too involved to rebuild; they were reproduced as full-page images to keep their appearance, so the text in them cannot be edited directly. To get editable text out of one, run the Recognize tool first.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1643"/>
+        <location filename="../../mainwindow.cpp" line="1655"/>
         <source>另有 %1 页既没有文字，也没有渲染出内容，已跳过。</source>
         <translation>Another %1 pages had neither text nor any rendered content, and were skipped.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1647"/>
+        <location filename="../../mainwindow.cpp" line="1659"/>
         <source>已导出为 Word</source>
         <translation>Exported to Word</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1661"/>
-        <location filename="../../mainwindow.cpp" line="1683"/>
+        <location filename="../../mainwindow.cpp" line="1677"/>
+        <location filename="../../mainwindow.cpp" line="1699"/>
         <source>还有没保存的修改</source>
         <translation>Changes have not been written</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1662"/>
+        <location filename="../../mainwindow.cpp" line="1678"/>
         <source>「%1」还带着没有写进任何文件的修改：%2。
 
 关掉这个标签就会把这些修改丢掉。要关掉吗？</source>
-        <translation>"%1" still carries changes that are written in no file: %2.
+        <translation>&quot;%1&quot; still carries changes that are written in no file: %2.
 
 Closing this tab throws those changes away. Close it anyway?</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1684"/>
+        <location filename="../../mainwindow.cpp" line="1700"/>
         <source>这个窗口里有 %1 个标签带着没有写进任何文件的修改。
 
 关掉窗口就会把这些修改丢掉。要关掉吗？</source>
@@ -1105,81 +1167,213 @@ Closing this tab throws those changes away. Close it anyway?</translation>
 Closing the window throws those changes away. Close it anyway?</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1872"/>
+        <location filename="../../mainwindow.cpp" line="1888"/>
         <source>没有其他窗口可以合并</source>
         <translation>There are no other windows to merge</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1888"/>
+        <location filename="../../mainwindow.cpp" line="1904"/>
         <source>已把 %1 个窗口的 %2 个标签并入当前窗口</source>
         <translation>Merged %2 tabs from %1 windows into this window</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2048"/>
+        <location filename="../../mainwindow.cpp" line="2064"/>
         <source>撤销(&amp;U)</source>
-        <translation>Undo(&amp;amp;U)</translation>
+        <translation>Undo(&amp;U)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2048"/>
+        <location filename="../../mainwindow.cpp" line="2064"/>
         <source>撤销 %1(&amp;U)</source>
-        <translation>Undo %1(&amp;amp;U)</translation>
+        <translation>Undo %1(&amp;U)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2054"/>
+        <location filename="../../mainwindow.cpp" line="2070"/>
         <source>重做(&amp;O)</source>
-        <translation>Redo(&amp;amp;O)</translation>
+        <translation>Redo(&amp;O)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2054"/>
+        <location filename="../../mainwindow.cpp" line="2070"/>
         <source>重做 %1(&amp;O)</source>
-        <translation>Redo %1(&amp;amp;O)</translation>
+        <translation>Redo %1(&amp;O)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2141"/>
+        <location filename="../../mainwindow.cpp" line="2157"/>
         <location filename="../../tests/i18n_smoke.cpp" line="138"/>
         <source>%1 / %2</source>
         <translation>%1 / %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2160"/>
+        <location filename="../../mainwindow.cpp" line="2176"/>
         <source>%1 — %2</source>
         <translation>%1 — %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2179"/>
+        <location filename="../../mainwindow.cpp" line="2195"/>
         <source>（没有）</source>
         <translation>(none)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2185"/>
+        <location filename="../../mainwindow.cpp" line="2201"/>
         <source>清除列表</source>
         <translation>Clear the list</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2201"/>
+        <location filename="../../mainwindow.cpp" line="2217"/>
         <source>语言更改将在下次启动时生效。</source>
         <translation>The language change takes effect the next time the program starts.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2301"/>
-        <location filename="../../mainwindow.cpp" line="2309"/>
+        <location filename="../../mainwindow.cpp" line="2317"/>
+        <location filename="../../mainwindow.cpp" line="2325"/>
         <source>跳转到页码</source>
         <translation>Go to Page</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2302"/>
+        <location filename="../../mainwindow.cpp" line="2318"/>
         <source>页码（1 - %1）：</source>
         <translation>Page number (1 - %1):</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2310"/>
+        <location filename="../../mainwindow.cpp" line="2326"/>
         <source>页码要在 1 到 %1 之间。</source>
         <translation>The page number has to be between 1 and %1.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2340"/>
+        <location filename="../../mainwindow.cpp" line="2356"/>
         <source>打印将在后续版本中提供。</source>
         <translation>Printing arrives in a later version.</translation>
+    </message>
+</context>
+<context>
+    <name>MovePagesDialog</name>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="24"/>
+        <source>移动页面</source>
+        <translation>Move Pages</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="30"/>
+        <source>要移动的页面</source>
+        <translation>Pages to move</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="33"/>
+        <source>当前页（第 %1 页）</source>
+        <translation>Current page (page %1)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="43"/>
+        <source>指定页码</source>
+        <translation>These page numbers</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="45"/>
+        <source>例如 1-3,5,8-10</source>
+        <translation>For example 1-3,5,8-10</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="62"/>
+        <source>移到</source>
+        <translation>Move them</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="64"/>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="180"/>
+        <source>最前面</source>
+        <translation>to the front</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="65"/>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="186"/>
+        <source>最后面</source>
+        <translation>to the end</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="76"/>
+        <source>指定页之后</source>
+        <translation>behind page</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="83"/>
+        <source>页码</source>
+        <translation>Page number</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="108"/>
+        <source>移动这些页</source>
+        <translation>Move these pages</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="109"/>
+        <source>取消</source>
+        <translation>Cancel</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="138"/>
+        <source>还没有说出要移动哪几页。</source>
+        <translation>Nothing has said which pages to move yet.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="140"/>
+        <source>要说移到第几页之后。</source>
+        <translation>It has to say which page to move behind.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="142"/>
+        <source>这份文档一共 %2 页，没有第 %1 页。</source>
+        <translation>This document has %2 pages in all; there is no page %1.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="144"/>
+        <source>这些页在前面的修改里已经删掉了，这里没有可以移动的。</source>
+        <translation>These pages are already gone in the changes that have not been saved, so there is nothing here to move.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="146"/>
+        <source>第 %1 页就在要移动的页里，这样移等于没移。</source>
+        <translation>Page %1 is one of the pages being moved, so moving it behind itself changes nothing.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="148"/>
+        <source>这些页已经在那个位置上了，这样移不会把它们挪动。</source>
+        <translation>Those pages are already in that place, so this move would not shift them.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="153"/>
+        <source>把 %1 页移到%2：移完它们连着排在第 %3-%4 页。</source>
+        <translation>Moves %1 pages %2: they end up together at pages %3-%4.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="160"/>
+        <source>
+
+第 %1 页在还没保存的修改里已经删掉了，所以是排在第 %2 页前面。</source>
+        <translation>
+
+Page %1 is already gone in the changes that have not been saved, so they land before page %2.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="163"/>
+        <source>
+
+第 %1 页在还没保存的修改里已经删掉了，而它后面没有页了，所以放到最后。</source>
+        <translation>
+
+Page %1 is already gone in the changes that have not been saved, and no page is behind it, so they go to the end.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="168"/>
+        <source>%1
+
+原来那份文件不会改动。这一步只是记下修改，要它成为一个文件，还得走保存。</source>
+        <translation>%1
+
+The original file is not touched. This step only records the change; a save is still what turns it into a file.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/movepagesdialog.cpp" line="182"/>
+        <source>第 %1 页之后</source>
+        <translation>behind page %1</translation>
     </message>
 </context>
 <context>

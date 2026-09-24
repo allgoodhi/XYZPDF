@@ -258,6 +258,8 @@ set(XYZPDF_SOURCES
     src/ui/imageexportdialog.cpp
     src/ui/languagedialog.h
     src/ui/languagedialog.cpp
+    src/ui/movepagesdialog.h
+    src/ui/movepagesdialog.cpp
     src/ui/ocrdialog.h
     src/ui/ocrdialog.cpp
     src/ui/outlinepanel.h
@@ -621,6 +623,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/deletepagesdialog.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
+                src/ui/movepagesdialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
@@ -678,6 +681,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
                 src/ui/languagedialog.cpp
+                src/ui/movepagesdialog.cpp
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp

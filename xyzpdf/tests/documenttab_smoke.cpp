@@ -24,14 +24,17 @@
 #include "../src/ui/findbar.h"
 #include "../src/ui/mergepagesdialog.h"
 #include "../src/ui/ocrdialog.h"
+#include "../src/ui/protectpagesdialog.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
@@ -1269,6 +1272,220 @@ int main(int argc, char **argv)
               QStringLiteral("the summary counts what the screen never showed: %1").arg(summary()));
         check(summary().contains(QStringLiteral("只能撤销那次合并")),
               QStringLiteral("and says the only way back out: %1").arg(summary()));
+    }
+
+    // ---- the merge box refuses a pending split before the click ----
+    //
+    // §20 caught this dialog lighting 合并这些文件 and printing an arithmetic line while
+    // DocumentEditor::mergeFile() was quietly going to refuse whatever it promised, with
+    // 拆分文件 having done it the other way round (greyed button, reason in the summary)
+    // since §16. So both ends of that mutual exclusion now answer the same two questions
+    // of the box itself: does the button stay off, and is the reason said in the model's
+    // own words rather than a paraphrase that can drift. A fresh box per click, the way
+    // the menu builds one, so what it says is read off the list as it stands now -- which
+    // is also what makes the request pass again once the split has been undone.
+    {
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(book, QString(), &error),
+              QStringLiteral("setup: a 40-page document opens: %1").arg(error));
+
+        const auto saidByMergeBox = [](MergePagesDialog &box, const QString &donor) {
+            check(box.addPaths({donor}).isEmpty(), "setup: the donor file is taken");
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        const auto okayOfMergeBox = [](MergePagesDialog &box) {
+            auto *buttons = box.findChild<QDialogButtonBox *>();
+            return buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+        };
+        const QString donor = directory + QStringLiteral("/dense.pdf");
+
+        {
+            MergePagesDialog box(&tab, &editor);
+            const QString said = saidByMergeBox(box, donor);
+            QPushButton *okay = okayOfMergeBox(box);
+            check(okay && okay->isEnabled(),
+                  QStringLiteral("setup: with no split pending, this same request is one the "
+                                 "button lights for: %1")
+                      .arg(said));
+        }
+
+        check(editor.splitInto(15, &error),
+              QStringLiteral("setup: a split of every 15 pages is pending: %1").arg(error));
+        {
+            MergePagesDialog box(&tab, &editor);
+            const QString said = saidByMergeBox(box, donor);
+            QPushButton *okay = okayOfMergeBox(box);
+            check(okay && !okay->isEnabled(),
+                  "with a split pending the merge box's own button is off before the click");
+            check(said.contains(QStringLiteral("已经说了要拆成每 15 页一份")),
+                  QStringLiteral("and the summary names the pending split, in the model's "
+                                 "sentence: %1")
+                      .arg(said));
+            // The number the refusal replaces: where a batch would land is an answer
+            // about a file that will not be written, which is the same kind of blank as
+            // §20's "一个没有指称的数".
+            check(!said.contains(QStringLiteral("连着排在第")),
+                  QStringLiteral("and no page numbers are promised for a merge that cannot "
+                                 "be recorded: %1")
+                      .arg(said));
+            // The box and the editor refuse the same request -- the rule §21 states,
+            // asked from this end.
+            check(!editor.mergeFile(donor, {0}, DocumentEditor::MoveTarget::Back, -1, &error)
+                      && error.contains(QStringLiteral("先撤销那一步")),
+                  QStringLiteral("and the editor refuses it too: %1").arg(error));
+        }
+
+        check(editor.undo(), "setup: the split is taken back out of the list");
+        {
+            MergePagesDialog box(&tab, &editor);
+            const QString said = saidByMergeBox(box, donor);
+            QPushButton *okay = okayOfMergeBox(box);
+            check(okay && okay->isEnabled(),
+                  QStringLiteral("undo that split and the very same request is lit again: %1")
+                      .arg(said));
+            check(!said.contains(QStringLiteral("已经说了要拆成")),
+                  QStringLiteral("and the refusal is gone with it: %1").arg(said));
+        }
+    }
+
+    // ---- 加密 / 去掉口令: the box and the editor refuse the same requests ----
+    //
+    // The dialog greys 确定 for exactly the requests DocumentEditor::protectWith() and
+    // ::removeProtection() turn down, and it does that by reading the same two answers the
+    // save reads. That sharing is the arrangement, and it is the kind that rots quietly: let
+    // one of the refusals through and the reader meets a warning box after pressing 确定;
+    // grey one the editor would have taken and the feature is unreachable. So both sides of
+    // each refusal are asked here. The box is also rebuilt between them the way the menu
+    // rebuilds it on every click -- which is why a dialog can never be seen agreeing with an
+    // older version of the list.
+    {
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(path, QString(), &error),
+              QStringLiteral("setup: an unprotected document opens: %1").arg(error));
+
+        const auto okayOf = [](ProtectPagesDialog &box) {
+            auto *buttons = box.findChild<QDialogButtonBox *>();
+            return buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+        };
+        const auto saidBy = [](ProtectPagesDialog &box) {
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        const auto choose = [](ProtectPagesDialog &box, const QString &words) {
+            const auto radios = box.findChildren<QRadioButton *>();
+            for (QRadioButton *radio : radios) {
+                if (radio->text() == words) {
+                    radio->click();
+                    return true;
+                }
+            }
+            return false;
+        };
+        const auto groupStartingWith = [](ProtectPagesDialog &box, const QString &words) {
+            const auto groups = box.findChildren<QGroupBox *>();
+            for (QGroupBox *group : groups) {
+                if (group->title().startsWith(words))
+                    return group;
+            }
+            return static_cast<QGroupBox *>(nullptr);
+        };
+
+        {
+            ProtectPagesDialog box(&tab, &editor);
+            QPushButton *okay = okayOf(box);
+            QGroupBox *keys = groupStartingWith(box, QStringLiteral("打开口令"));
+            QGroupBox *limits = groupStartingWith(box, QStringLiteral("允许的用途"));
+            check(keys && limits, "the box asks for a口令 and offers the six permissions");
+            check(okay && okay->isEnabled() && keys->isEnabled() && limits->isEnabled(),
+                  "nothing is pending and a file that has never been locked can still be locked, "
+                  "so it opens on 加密 with every question live");
+
+            check(choose(box, QStringLiteral("去掉口令和权限")), "the other direction is on the box");
+            check(okay && !okay->isEnabled(),
+                  "over a file that was never locked, 去掉口令 greys the button");
+            check(saidBy(box).contains(QStringLiteral("没有东西可去掉")),
+                  QStringLiteral("and says that rather than only greying: %1").arg(saidBy(box)));
+            check(!editor.removeProtection(&error),
+                  "the editor refuses the same request the box greyed");
+            check(!keys->isEnabled() && !limits->isEnabled(),
+                  "a口令 and six permissions that no answer will read are put away, not left on show");
+
+            check(choose(box, QStringLiteral("加上口令和权限")), "back to 加密");
+            check(keys->isEnabled() && limits->isEnabled(), "and the two questions are back");
+        }
+
+        {
+            ProtectPagesDialog box(&tab, &editor);
+            QPushButton *okay = okayOf(box);
+            const auto edits = box.findChildren<QLineEdit *>();
+            check(edits.size() == 2,
+                  "the口令 is asked twice, because nothing here can report it back later");
+            edits.at(0)->setText(QStringLiteral("hunter2"));
+            check(okay && !okay->isEnabled(), "one box filled and the other empty is two different口令");
+            check(saidBy(box).contains(QStringLiteral("两次输入的口令不一样")),
+                  QStringLiteral("and it names that as the reason: %1").arg(saidBy(box)));
+            edits.at(1)->setText(QStringLiteral("hunter2"));
+            check(okay && okay->isEnabled(), "agreeing lets it through");
+            const DocumentEditor::Protection asked = box.request();
+            check(asked.what == DocumentEditor::Protection::What::Encrypt
+                      && asked.password == QStringLiteral("hunter2"),
+                  "and what the box hands over is the direction plus the key as typed");
+            check(editor.protectWith(asked, &error),
+                  QStringLiteral("the editor takes it: %1").arg(error));
+        }
+
+        {
+            // A reader who opens the box a second time finds the six boxes as they were
+            // recorded and the口令 fields empty -- showing the key back is the thing the key
+            // is for. So typing it again is asking for the request that is already in the
+            // list, which is the second refusal, and changing one box is not.
+            ProtectPagesDialog box(&tab, &editor);
+            QPushButton *okay = okayOf(box);
+            const auto edits = box.findChildren<QLineEdit *>();
+            edits.at(0)->setText(QStringLiteral("hunter2"));
+            edits.at(1)->setText(QStringLiteral("hunter2"));
+            check(okay && !okay->isEnabled(), "the same request asked again is greyed");
+            check(saidBy(box).contains(QStringLiteral("不会多改什么")),
+                  QStringLiteral("with the reason: %1").arg(saidBy(box)));
+            check(!editor.protectWith(box.request(), &error),
+                  "and the editor turns the same request down");
+
+            const auto permissionBoxes = box.findChildren<QCheckBox *>();
+            check(permissionBoxes.size() == 6,
+                  "six permissions, one per thing PDF keeps a bit for");
+            permissionBoxes.first()->click();
+            check(okay && okay->isEnabled(), "clearing one of them is a change, so the button goes back");
+            check(editor.protectWith(box.request(), &error),
+                  QStringLiteral("and the editor records it: %1").arg(error));
+        }
+
+        {
+            ProtectPagesDialog box(&tab, &editor);
+            QPushButton *okay = okayOf(box);
+            check(choose(box, QStringLiteral("去掉口令和权限")),
+                  "the way back out of a 加密 that was just recorded is this same box");
+            check(okay && okay->isEnabled(), "with a 加密 pending there is something to take off");
+            check(saidBy(box).contains(QStringLiteral("会被这一步顶掉")),
+                  QStringLiteral("and it says so: %1").arg(saidBy(box)));
+            check(box.request().what == DocumentEditor::Protection::What::Decrypt,
+                  "the box says which way it went");
+            check(editor.removeProtection(&error),
+                  QStringLiteral("the editor records that too: %1").arg(error));
+            check(editor.passwordOfWrittenFile().isEmpty(),
+                  "and the copy a save would write from here asks for no key at all");
+        }
     }
 
     if (failures == 0) {

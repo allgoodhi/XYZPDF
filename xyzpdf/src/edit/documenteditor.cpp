@@ -134,6 +134,21 @@ QString DocumentEditor::describeOperation(const Operation &op) const
         // stops being true the moment a page is taken out, while 每 5 页一份 does not.
         return tr("拆成每 %1 页一份").arg(op.pieceSize);
     }
+    if (op.kind == Operation::Kind::Protect) {
+        // Not a word of the password, not even masked. This row is drawn in a menu that can
+        // be open with other people standing behind the reader, and the same string is
+        // joined into the discard prompt and put on the status bar -- so anything here is
+        // text that leaves the dialog that asked for it. What the row has to carry is which
+        // way round the request was, because that is the thing being taken back.
+        if (op.protection.what == Protection::What::Decrypt)
+            return tr("去掉口令");
+        if (op.protection.what == Protection::What::Encrypt) {
+            return op.protection.password.isEmpty()
+                       ? tr("只改权限（不设打开口令）")
+                       : tr("加上打开口令（AES-256）");
+        }
+        return tr("按原来的口令写出去");
+    }
     return tr("删除 %1 页").arg(count);
 }
 
@@ -391,6 +406,37 @@ QVector<DocumentEditor::PieceRange> DocumentEditor::pieces() const
     return pieceRanges(pageCount(), splitPieceSize());
 }
 
+DocumentEditor::Protection DocumentEditor::protectionToWrite() const
+{
+    // The last one asked for, which is the same rule splitPieceSize() follows: a second
+    // 加密 is the reader changing their mind about the first, not a second thing for the
+    // save to carry out. Whatever is in between them -- a delete, a merge -- stays put,
+    // because a Protect operation changes no page.
+    for (auto it = pending.crbegin(); it != pending.crend(); ++it) {
+        if (it->kind == Operation::Kind::Protect)
+            return it->protection;
+    }
+    // Nothing pending, and the default-constructed answer is the one every save has done
+    // since §11: hand the source's own /Encrypt to the writer.
+    return Protection();
+}
+
+QString DocumentEditor::passwordOfWrittenFile() const
+{
+    // Not simply protectionToWrite().password: a Carry save hands the source's own
+    // /Encrypt to the writer, so the copy that comes out is locked with the key this
+    // session used to open the original. Whoever opens the copy has to be given that key,
+    // which is why the tab that opens a saved result asks the editor rather than guessing
+    // -- a wrong guess is a password prompt for a file that needs none, or a "cannot open"
+    // for one that does.
+    const Protection protection = protectionToWrite();
+    if (protection.what == Protection::What::Encrypt)
+        return protection.password;
+    if (protection.what == Protection::What::Decrypt)
+        return QString();
+    return sourcePassword;
+}
+
 bool DocumentEditor::sameFile(const QString &path, const QString &other)
 {
     if (path.isEmpty() || other.isEmpty())
@@ -426,6 +472,8 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     originalPages = 0;
     sourcePath.clear();
     sourcePassword.clear();
+    sourceEncrypted = false;
+    sourceProtect = Protection();
 
     // Parsed, counted, and let go. Holding on to the QPDF is what the alternative
     // design needed and what this class decided not to do; see the header.
@@ -455,6 +503,27 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     live = openedDocumentInOrder(originalPages);
     sourcePath = path;
     sourcePassword = password;
+
+    // What the file itself says about protection, read beside the page count while the
+    // parser still holds the document. Nothing re-derives it later: by the time a dialog
+    // opens, the reader may already have asked for a change, and "what it was" has to stay
+    // answerable for the sentence that says what 去掉口令 is taking off.
+    //
+    // The bits only, never a password -- this class does not know the source's user
+    // password (the string it was opened with is kept for one job: opening the file again at
+    // the save), and QPDF answers "allowed" to every flag of an unencrypted document, so an
+    // unencrypted source leaves these at their defaults rather than carrying a set of bits
+    // the file does not actually write. `what` stays Carry because that field means what a
+    // *save* should do; here it describes a file that is already on disk.
+    sourceEncrypted = document->isEncrypted();
+    if (sourceEncrypted) {
+        sourceProtect.allowPrint = document->allowPrintHighRes();
+        sourceProtect.allowExtract = document->allowExtractAll();
+        sourceProtect.allowAssembly = document->allowModifyAssembly();
+        sourceProtect.allowAnnotate = document->allowModifyAnnotation();
+        sourceProtect.allowFormFilling = document->allowModifyForm();
+        sourceProtect.allowModifyOther = document->allowModifyOther();
+    }
     return true;
 }
 
@@ -745,6 +814,64 @@ bool DocumentEditor::splitInto(int pagesPerPiece, QString *error)
     return true;
 }
 
+bool DocumentEditor::protectWith(const Protection &protection, QString *error)
+{
+    if (live.isEmpty()) {
+        *error = tr("还没有打开任何文档。");
+        return false;
+    }
+
+    Operation op;
+    op.kind = Operation::Kind::Protect;
+    op.protection = protection;
+    op.protection.what = Protection::What::Encrypt;
+
+    if (op.protection == protectionToWrite()) {
+        // Refused for the reason splitInto() refuses a one-piece split: this is not a
+        // change. It would dirty the tab and earn an undo row that, when taken back,
+        // leaves the file exactly as it would have been -- and a menu that offers "撤销
+        // 加上打开口令" over a document that already had that口令 written into it is a
+        // menu describing a thing that did not happen.
+        *error = tr("这份要写出的文件已经是这个口令和这些权限了，再要一次不会多改什么。");
+        return false;
+    }
+    record(op);
+    return true;
+}
+
+bool DocumentEditor::removeProtection(QString *error)
+{
+    if (live.isEmpty()) {
+        *error = tr("还没有打开任何文档。");
+        return false;
+    }
+    if (protectionToWrite().what == Protection::What::Decrypt) {
+        // The same refusal as above, in the other direction: the request is what a save
+        // would already write.
+        *error = tr("这份要写出的文件已经说过要去掉口令了，再要一次不会多去掉什么。");
+        return false;
+    }
+    if (!sourceEncrypted && protectionToWrite().what == Protection::What::Carry) {
+        // Nothing on disk to take off and nothing in the list putting any on. Two answers
+        // are needed for this refusal because the request can be about either: the file the
+        // reader is looking at, or the file a save would write. A pending 加密 is undone by
+        // 去掉口令 -- that symmetry is why the two directions share a dialog -- and on an
+        // unopened-by-password document that is the only thing this method has to act on.
+        *error = tr("正在打开的这份文件本身没有口令，也没有权限限制，所以没有东西可去掉。");
+        return false;
+    }
+
+    Operation op;
+    op.kind = Operation::Kind::Protect;
+    op.protection.what = Protection::What::Decrypt;
+    // The six flags are left at their defaults on purpose: they say nothing once the
+    // dictionary is gone, and filling them in from the source's bits would put numbers in
+    // a pending operation that no code reads -- which is worse than leaving them alone,
+    // because it looks like it means something.
+    record(op);
+    return true;
+}
+
 void DocumentEditor::record(const Operation &op)
 {
     pending.append(op);
@@ -798,10 +925,11 @@ void DocumentEditor::rebuildLive()
             live = planMerge(live, op.pages, op.mergeId, op.moveTo, op.anchor).order;
         }
         // RotatePages needs no branch -- a turned page is still the same page in the same
-        // place -- and neither does SplitBySize, which changes how many files a save
-        // writes rather than which pages exist. A new kind that does change the list has to
-        // appear here, and rebuild-rather-than-patch is what makes forgetting it show up as
-        // a count that contradicts the operations instead of a list that quietly drifts.
+        // place -- and neither do the two inert kinds: SplitBySize changes how many files a
+        // save writes and Protect changes what each of them needs to open, and neither
+        // touches which pages exist. A new kind that does change the list has to appear
+        // here, and rebuild-rather-than-patch is what makes forgetting it show up as a count
+        // that contradicts the operations instead of a list that quietly drifts.
     }
 }
 
@@ -842,11 +970,17 @@ QVector<int> DocumentEditor::positionsOf(const QVector<PageRef> &present,
 void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<PageRef> &present,
                            QPDF *mergeSource)
 {
-    if (op.kind == Operation::Kind::SplitBySize) {
+    if (op.kind == Operation::Kind::SplitBySize || op.kind == Operation::Kind::Protect) {
         // A split says how many files the save writes; it takes nothing out of the page
         // tree, moves nothing in it and turns nothing. The pruning into pieces happens in
         // saveAs(), after this walk has agreed with `live` -- so that the page order every
         // piece is cut from is the one the dialogs described.
+        //
+        // A Protect op is inert the same way, and lands in the same place: it says what the
+        // writer at the end of saveAs() is handed, and nothing about the page tree. Being
+        // here rather than in a branch of its own is what lets a 删页 and a 加密 ride one
+        // save -- the replay reaches the writer with the pages already rearranged, and the
+        // protection is then a property of the bytes going out, not of the tree.
         return;
     }
 
@@ -1009,6 +1143,13 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
                                    .absoluteFilePath()
                              : wanted.absoluteFilePath());
     }
+
+    // What the writer is handed, worked out once for the whole save rather than once per
+    // piece: a split that put a password on the first file and not the rest would be eight
+    // answers to the one question the dialog asked. This is the same protectionToWrite()
+    // the dialog's summary reads, so the sentence about what the file will need and the file
+    // that needs it cannot come apart.
+    const Protection protection = protectionToWrite();
 
     for (const QString &one : std::as_const(destinations)) {
         if (sameFile(sourcePath, one)) {
@@ -1184,16 +1325,55 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
                 }
             }
 
-            // Nothing here sets encryption parameters, so the writer's default
-            // (preserveEncryption = true) carries the original's /Encrypt dictionary --
-            // including its /P permission bits -- into the copy. That default is off
-            // whenever prefiltering, content normalization or QDF mode is selected, and
-            // off the moment setR6EncryptionParameters is called, so a future line that
-            // adds one of those quietly turns 删页 into a tool that hands out unprotected
-            // copies of protected documents. tests/documenteditor_smoke.cpp compares the
-            // bits on both files for exactly that reason -- and under a split it compares
-            // every piece, since "the copy" is now N of them.
+            // The one place this program talks to a writer about protection, which is why
+            // the whole switch sits here rather than being split between "the bits" and "the
+            // password": the /P integer PDF stores is a combination of these arguments, and
+            // a mapping that lived in two places is how a file ends up saying something the
+            // six boxes never said.
             QPDFWriter writer(*document, stagedPath.toUtf8().constData());
+            switch (protection.what) {
+            case Protection::What::Carry:
+                // Nothing was asked for, so nothing is set and the writer's default
+                // (preserveEncryption = true) carries the original's /Encrypt dictionary --
+                // including its /P permission bits -- into the copy. That default is off
+                // whenever prefiltering, content normalization or QDF mode is selected, and
+                // off the moment setR6EncryptionParameters is called, so a future line that
+                // adds one of those quietly turns 删页 into a tool that hands out
+                // unprotected copies of protected documents.
+                // tests/documenteditor_smoke.cpp compares the bits on both files for exactly
+                // that reason -- and under a split it compares every piece, since "the copy"
+                // is now N of them.
+                break;
+            case Protection::What::Decrypt:
+                // Write no /Encrypt at all. This needs the password that opened the source
+                // only in the sense that the source had to be opened to be read again --
+                // measurement says nothing more is asked for: an encrypted document opened
+                // by its *user* password still writes out stripped, with different bits, and
+                // without a further key (tests/encryptprobe.cpp). That is why the permission
+                // bits this program puts on a file are described to the reader as advisory.
+                writer.setPreserveEncryption(false);
+                break;
+            case Protection::What::Encrypt: {
+                // R6 / AES-256 and nothing else offered, so there is no compatibility
+                // dropdown here to map: this writes the newest revision the standard has,
+                // which a reader of a PDF from before Acrobat X cannot open. The dialog says
+                // so out loud; this line is where it becomes true.
+                //
+                // The same string for the user and the owner password, and that is not a
+                // shortcut -- see Protection::password. Asking for a second one would promise
+                // a distinction QPDF does not keep on the way in.
+                const QByteArray password = protection.password.toUtf8();
+                writer.setR6EncryptionParameters(
+                    password.constData(), password.constData(),
+                    /* allow_accessibility = */ true, // not a box: always allowed
+                    protection.allowExtract, protection.allowAssembly,
+                    protection.allowAnnotate, protection.allowFormFilling,
+                    protection.allowModifyOther,
+                    protection.allowPrint ? qpdf_r3p_full : qpdf_r3p_none,
+                    /* encrypt_metadata_aes = */ true);
+                break;
+            }
+            }
             writer.write();
         } catch (const std::exception &e) {
             // Nothing usable came of the attempt, so nothing of ours is left behind.

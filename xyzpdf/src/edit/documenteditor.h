@@ -101,6 +101,33 @@
 //
 // The consequence is that a split is *inert* until 保存修改为: the tab says 拆成每 5 页
 // 一份 and that is the whole of its visible effect.
+//
+// ---- the second inert operation, and the one thing measurement took off the table ----
+//
+// 加密 / 去掉口令 is inert the same way, for the same reward: it changes no page, so
+// `live` is not rearranged by it, `rebuildLive()` has no branch for it, and undoing it is
+// taking one entry out of a list -- no file is rewritten backwards, because no file was
+// written at all. What it changes is the set of parameters the one writer at the end of a
+// save is handed.
+//
+// Measurement is what shapes this one, and one number in particular took a feature off
+// the table (tests/encryptprobe.cpp, run three times): QPDF does not know which password
+// unlocked a file. Open the same document by its user password and by its owner password
+// and `isEncrypted(R, P)` plus all six permission flags read back identically, so nothing
+// downstream can ask "did this session come from the owner?". The consequence for the
+// interface is that it must not promise what only an author could do -- there is no
+// "enter the owner password to lift these restrictions", because there is no such
+// question. Anything that can open the file can also have the restrictions taken off on
+// the way out, and can have different ones put on. That is why the dialog says the
+// permission bits are advisory, and why a sentence in the docs has to carry it too.
+//
+// What is *not* a measurement artefact: the writes themselves. Stripping the protection,
+// putting a new password on, and putting new bits on all succeed through the same writer
+// call a 删页 already uses, they work while a page edit is in the same save (so 解密 and
+// 编辑 share one file), and a file written with R6/AES-256 opens in this program's own
+// reader with the password and not without it. Stripping is also *cheaper* than what a
+// save does today, which carries the source's encryption through and re-encrypts every
+// stream on the way out: 600 pages measured 72-80 ms carried, 45-50 ms stripped.
 #pragma once
 
 #include <QString>
@@ -161,6 +188,64 @@ public:
         int pageCount = 0;
     };
 
+    // What a save should do about protection. Plain data on purpose: the dialog fills one
+    // of these from its boxes, the pending list holds it, and the save is the only place a
+    // number in it reaches a QPDFWriter. The six flags are the ones PDF writes into /P --
+    // the mapping to qpdf's seven arguments (its `accessibility` is always allowed and is
+    // not offered here, and printing is a level rather than a box) lives in saveAs(), once.
+    //
+    // The password is kept exactly as it was typed, and it is never put into a summary, a
+    // menu row or a status line -- see describeOperation().
+    struct Protection
+    {
+        enum class What
+        {
+            // Nothing was asked for: write the source's own /Encrypt through, which is
+            // what every save has done since §11 and what the tests pin the bits of.
+            Carry,
+            // Write the file with no protection at all, whatever the source said.
+            Decrypt,
+            // Write it with this password and these bits.
+            Encrypt
+        };
+        What what = What::Carry;
+
+        // One password, not the PDF's pair. PDF keeps a user password (needed to open) and
+        // an owner password (nominally needed to lift the restrictions), and the interface
+        // could ask for both -- but measurement says the distinction is not one this program
+        // can offer: QPDF never records which of the two unlocked a file, so a session that
+        // opened a document by its user password can write it out unrestricted, and can write
+        // out *different* restrictions, with no further key (tests/encryptprobe.cpp). Asking
+        // the reader for a second password would sell a door that does not exist, and the
+        // file this writes uses the same string for both, which is what most tools that ask
+        // for "a password" do.
+        //
+        // Empty means "no password to open" -- a file anybody can read and which writes down
+        // that editing is not allowed. That is a real request, and it is the shape most
+        // restricted PDFs in the wild have.
+        QString password;
+
+        bool allowPrint = true;
+        bool allowExtract = true;
+        bool allowAssembly = false;
+        bool allowAnnotate = true;
+        bool allowFormFilling = true;
+        bool allowModifyOther = false;
+
+        // Asked for the same thing again? It is how a second 加密 becomes "change the
+        // number" rather than a second operation to undo, the same way a second split is.
+        bool operator==(const Protection &other) const
+        {
+            return what == other.what && password == other.password
+                && allowPrint == other.allowPrint && allowExtract == other.allowExtract
+                && allowAssembly == other.allowAssembly
+                && allowAnnotate == other.allowAnnotate
+                && allowFormFilling == other.allowFormFilling
+                && allowModifyOther == other.allowModifyOther;
+        }
+        bool operator!=(const Protection &other) const { return !(*this == other); }
+    };
+
     // One structural change, as it waits in the pending list.
     struct Operation
     {
@@ -172,7 +257,11 @@ public:
             MergeFile,
             // 拆分文件: how many pages go in each written file. It is the one kind that
             // changes no page -- see the header note.
-            SplitBySize
+            SplitBySize,
+            // 加密 / 去掉口令: the second kind that changes no page. Like a split it only
+            // reaches what a save writes -- a split changes how many files come out, this
+            // changes what each of them requires to open.
+            Protect
         };
         Kind kind = Kind::DeletePages;
         // Delete/Rotate/Move: original page numbers -- positions in the document as
@@ -207,6 +296,9 @@ public:
         // reordered by it -- see the header note -- so this is the only thing a save has
         // to know to turn one destination into several.
         int pieceSize = 0;
+        // Protect only: what a save should hand the writer about protection. Nothing
+        // changes about the pages themselves -- see the header note.
+        Protection protection;
     };
 
     // What a delete request means for the document as it stands, worked out
@@ -454,6 +546,44 @@ public:
     static QString piecePath(const QString &destination, int index, int total,
                              const PieceRange &range);
 
+    // Recording what a save should do about protection. Nothing is written, no page
+    // changes, and the source file keeps whatever it has: see the header note on why this
+    // kind belongs in a list that undo walks through.
+    //
+    // Refused when the request is the answer a save would already give -- that is not a
+    // change, and dirtying the tab for one would put an undo row on the menu for nothing.
+    bool protectWith(const Protection &protection, QString *error);
+    // Taking the protection off, which is the same operation with the other sign on it: it
+    // is refused when there is nothing to take off, and a pending 加密 can be cancelled
+    // this way too (that is what makes the pair symmetric enough to be one dialog).
+    bool removeProtection(QString *error);
+
+    // The protection a save would write: the last Protect in the pending list, since a
+    // second one is the reader changing their mind rather than a second thing to carry out
+    // -- the same rule splitPieceSize() follows. What::Carry when nothing is pending.
+    //
+    // One function for the same reason pieceRanges() is one: the dialog's summary and the
+    // writer's parameters must not be two answers to "what will this file require".
+    Protection protectionToWrite() const;
+
+    // The password the file a save just wrote will ask for, or empty when it will ask for
+    // none. Read by the tab that opens the result: a document written with a new key is not
+    // openable with the old one, and a Carry save re-encrypts with the key the source was
+    // opened by -- so this is not the same question as protectionToWrite().password, which
+    // is empty for a Carry that still needs a key.
+    //
+    // Nothing here stores a password anywhere it is not needed: it lives in this object for
+    // as long as the tab holds the document (a reload has to be able to open it again) and
+    // is written to no setting, no log and no summary.
+    QString passwordOfWrittenFile() const;
+
+    // Whether the file on disk has a /Encrypt dictionary of its own, and what its bits
+    // say. The dialog needs both: 去掉口令 has nothing to act on when the first is false,
+    // and the six boxes have to open on what the document actually says rather than on
+    // whatever this program defaults to. Computed once, in open().
+    bool sourceIsProtected() const { return sourceEncrypted; }
+    Protection sourceProtection() const { return sourceProtect; }
+
     // ---- the list, and moving through it ----
     //
     // Undo and redo are moves between `pending` and `undone`, nothing more. A
@@ -551,6 +681,11 @@ private:
 
     QString sourcePath;
     QString sourcePassword;
+    // What the file on disk says about protection, read once in open() beside the page
+    // count. Not re-derived at save time: by then the reader may have asked for a change,
+    // and "what it was" has to stay answerable to show them what they are about to undo.
+    bool sourceEncrypted = false;
+    Protection sourceProtect;
     int originalPages = 0;
     // Which pages are still present, in the order they would be written. An identity
     // list of the opened document's own pages after open(); deletions take entries

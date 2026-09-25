@@ -826,15 +826,15 @@ void MainWindow::buildMenus()
     // is what a reader does with a *selection* -- copy, translate, find -- and
     // putting document commands in it would mean the one menu whose items all grey
     // out without a drag also holds the one item that needs nothing but an open
-    // file. Acrobat's 文档 menu sits in this same place, and the rest of M5
-    // (加密) is coming to fill this one out -- 重排、合并 and 拆分 have landed.
+    // file. Acrobat's 文档 menu sits in this same place, and this one now holds what
+    // it does: 删页、旋转、重排、合并、拆分 and 加密.
     //
-    // The last three items are the other half of the first five. 删除页面、旋转页面、
-    // 移动页面、合并文件进来 and 拆分文件 record an edit, 撤销 and 重做 move along the
-    // list those five recorded into, and 保存修改为… is the only one of the eight that
-    // writes a file. They sit in this menu rather than spread across 文件 and 编辑
-    // because they are one list seen from four ends, and a reader looking for any of
-    // them is looking for this menu.
+    // The last three items are the other half of the first six. 删除页面、旋转页面、
+    // 移动页面、合并文件进来、拆分文件 and 加密 / 去掉口令 record an edit, 撤销 and 重做
+    // move along the list those six recorded into, and 保存修改为… is the only one of
+    // the nine that writes a file. They sit in this menu rather than spread across
+    // 文件 and 编辑 because they are one list seen from four ends, and a reader looking
+    // for any of them is looking for this menu.
     QMenu *documentMenu = menuBar()->addMenu(tr("文档(&D)"));
 
     deletePagesAction = makeAction(tr("删除页面(&E)…"), QKeySequence());
@@ -905,6 +905,25 @@ void MainWindow::buildMenus()
             tab->splitPages();
     });
     documentMenu->addAction(splitFileAction);
+
+    // (&J), on the pinyin of 加密 (jiā mì): the row's other words had their letters
+    // taken already -- E/R/M/F/C above it, U/O/S below -- and a mnemonic has to be unique
+    // only inside this menu.
+    protectFileAction = makeAction(tr("加密 / 去掉口令(&J)…"), QKeySequence());
+    protectFileAction->setObjectName(QStringLiteral("protectFileAction"));
+    // Says the two things this row is easy to get wrong about: it writes nothing on its
+    // own, and the six permissions are a request written into the file rather than a lock
+    // on it. The second one belongs on the menu and not only in the dialog, because a
+    // reader who believes a PDF they encrypted is private will otherwise choose the wrong
+    // tool for the job -- the password is the lock, the boxes are not.
+    protectFileAction->setToolTip(
+        tr("记下要写出的那一份需要什么口令、允许做什么，按保存修改为才写成一个新文件；"
+           "正在读的这份不动，那些权限限制也只是写给阅读器看的请求"));
+    connect(protectFileAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->protectPages();
+    });
+    documentMenu->addAction(protectFileAction);
 
     documentMenu->addSeparator();
 
@@ -1260,7 +1279,7 @@ DocumentTab *MainWindow::currentTab() const
     return qobject_cast<DocumentTab *>(tabs->currentWidget());
 }
 
-DocumentTab *MainWindow::openDocument(const QString &path, int page)
+DocumentTab *MainWindow::openDocument(const QString &path, int page, const QString &password)
 {
     const QFileInfo info(path);
     if (!info.isFile()) {
@@ -1362,14 +1381,20 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
     });
 
     connect(tab, &DocumentTab::documentSavedAs, this,
-            [this](const QString &path, const QString &changes, int pages, int fileCount) {
+            [this](const QString &path, const QString &changes, int pages, int fileCount,
+                   const QString &password) {
         // The copy that came out of the edit opens *beside* the document it was
         // made from, not in its place: the reader asked for a document with those
         // changes in it, and the quickest way to check that the pages which went
         // are the pages they meant is to have both on screen, one tab each. Under a
         // split this is the first piece -- the one tab that says whether the whole
         // set is what was meant, without forty of them opening.
-        openDocument(path);
+        //
+        // With the key the save used, so that a document written with a password
+        // opens instead of asking for one it was just given. Empty for everything
+        // this program did not lock, which is every save that was not a 加密 and did
+        // not carry an encrypted source through.
+        openDocument(path, -1, password);
         // Ours last, because openDocument puts its own "已打开" up there first and
         // says less than this does. The two wordings are apart because a split's
         // page count is the whole document's, not the file that just opened: saying
@@ -1430,7 +1455,7 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page)
             updateForCurrentTab();
     });
 
-    const Document::Status status = tab->open(path);
+    const Document::Status status = tab->open(path, password);
     if (status == Document::Status::Ready) {
         RecentDocuments::remember(path);
         AppSettings::setLastOpenDirectory(info.absolutePath());
@@ -2089,7 +2114,7 @@ void MainWindow::updateForCurrentTab()
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
-                            mergeFileAction, splitFileAction,
+                            mergeFileAction, splitFileAction, protectFileAction,
                             viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)

@@ -52,6 +52,14 @@ compile_commands.json
 *.smod
 *.dwo
 
+# Python bytecode from the helper scripts in tools/. The gate writes this next to
+# itself on every run (tools/build_all_tests.py imports make_fixtures), so a
+# committed copy is one machine's interpreter version dressed up as source -- and
+# it is the reason xyzpdf/tools/__pycache__/ sat in the repository unnoticed: this
+# file lists compiled output by extension, and ".pyc" was not one of them.
+__pycache__/
+*.pyc
+
 # vcpkg installs into the repository root, next to the sources it builds.
 vcpkg_installed/
 

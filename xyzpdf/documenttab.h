@@ -193,9 +193,9 @@ public:
     // opens in a tab of its own rather than replacing the one under the reader.
     //
     // What ties these together is that they share one list: 删除页面、旋转页面、
-    // 移动页面、合并文件进来 and 拆分文件 record an operation, 撤销 takes the last one
-    // back, and 保存修改为 writes whatever the list says. Each of the five can be run
-    // again before anything is saved.
+    // 移动页面、合并文件进来、拆分文件 and 加密 / 去掉口令 record an operation, 撤销 takes
+    // the last one back, and 保存修改为 writes whatever the list says. Each of the six can
+    // be run again before anything is saved.
     //
     // The merge is the one that reaches outside this document: the pages it adds
     // come from other files, which the reader picks and can give page ranges for.
@@ -203,15 +203,21 @@ public:
     // saved result cannot be named after any of them, which is the editor's rule
     // rather than this one's.
     //
-    // The split is the one that changes no page at all: the document stays one
-    // document on screen and in the list, and what a split changes is how many files a
-    // save writes and what they are called. It is therefore also the one whose effect
-    // is invisible until the save -- which is why its dialog says so in those words.
+    // The split and the 加密 are the two that change no page at all: the document stays one
+    // document on screen and in the list, and what those two change is what a save writes --
+    // how many files come out and what they are called, or what each of them requires to
+    // open. They are therefore the two whose effect is invisible until the save, which is
+    // why both dialogs say so in those words.
     void deletePages();
     void rotatePages();
     void movePages();
     void mergeFiles();
     void splitPages();
+    // 加密 / 去掉口令: the other entry in this menu that changes no page. One slot covers
+    // both directions because the dialog does, and because the way to take back a 加密 that
+    // was just recorded is 去掉口令 -- two slots would have to each know about the other.
+    // Like the split, what this decides only reaches a file at the save.
+    void protectPages();
     void undoEdit();
     void redoEdit();
     // Names the file to write into, replays the list onto the source and writes
@@ -278,13 +284,16 @@ Q_SIGNALS:
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
     // An edit wrote a new document: where it is, what the list of operations was
-    // ("删除 3 页"), how many pages the whole document has, and how many files came
+    // ("删除 3 页"), how many pages the whole document has, how many files came
     // out -- which is one unless a 拆分文件 was in that list, in which case `path` is
-    // the first piece. The window opens the result in a tab of its own -- the tab this
-    // came from is still showing the file the edits were made against, which is the
-    // whole design.
+    // the first piece -- and the password the copy asks for, empty when it asks for none.
+    // The last of those is not the typed one but the one that fits the file that came out
+    // (DocumentEditor::passwordOfWrittenFile()), because a save that carried the source's
+    // own encryption through wrote a copy locked with the key this tab already has. The
+    // window opens the result in a tab of its own -- the tab this came from is still
+    // showing the file the edits were made against, which is the whole design.
     void documentSavedAs(const QString &path, const QString &changes, int pageCount,
-                         int fileCount);
+                         int fileCount, const QString &password);
     // The list of pending edits changed: something to undo, or nothing left to
     // undo. What the window redraws the 文档 menu and the tab's title from.
     void editStateChanged();

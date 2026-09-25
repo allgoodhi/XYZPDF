@@ -9,6 +9,12 @@ QVector<Component> components()
     const auto tr = [](const char *text) {
         return QCoreApplication::translate("ThirdPartyNotices", text);
     };
+    // Every cell of this table is read by a person, so every prose cell goes through
+    // that lambda. A QStringLiteral here is invisible to lupdate rather than merely
+    // untranslated, which is how §20 found the English interface answering
+    // 「（编入 Qt6Pdf.dll）」and「各自的原许可证，见许可证全文」in Chinese: the notes
+    // below each row were translated all along, and the columns above them were not in
+    // the catalogue at all. Only the DLL names and the URLs stay as literals.
 
     return {
         {QStringLiteral("Qt"),
@@ -19,7 +25,7 @@ QVector<Component> components()
          QStringLiteral(":/licenses/LGPL-3.0.txt"),
          tr("界面框架与 PDF 渲染接口。以动态库形式随包分发，未做修改。")},
 
-        {QStringLiteral("PDFium"), QStringLiteral("（编入 Qt6Pdf.dll）"),
+        {QStringLiteral("PDFium"), tr("（编入 Qt6Pdf.dll）"),
          QStringLiteral("BSD-3-Clause"),
          QStringLiteral("https://pdfium.googlesource.com/pdfium/"),
          QStringLiteral(":/licenses/pdfium.txt"),
@@ -34,9 +40,9 @@ QVector<Component> components()
          tr("结构编辑器：删除页面后的文档由它写出。以动态库形式随包分发，未做修改。"
             "z.dll 与 jpeg62.dll 是它自带的依赖（zlib、libjpeg），一并动态链接。")},
 
-        {QStringLiteral("Qt 内置的第三方库"),
-         QStringLiteral("（编入 Qt6Gui.dll、Qt6Core.dll）"),
-         QStringLiteral("各自的原许可证，见许可证全文"),
+        {tr("Qt 内置的第三方库"),
+         tr("（编入 Qt6Gui.dll、Qt6Core.dll）"),
+         tr("各自的原许可证，见许可证全文"),
          QStringLiteral("https://download.qt.io/official_releases/qt/"),
          QStringLiteral(":/licenses/qt.txt"),
          tr("Qt 自身内含 zlib、libpng、freetype、harfbuzz、libjpeg-turbo 等库，"

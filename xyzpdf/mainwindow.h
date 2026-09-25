@@ -79,7 +79,13 @@ private:
 
     // Both return the tab, or nullptr when the document could not be opened --
     // the caller in that case has already been told why.
-    DocumentTab *openDocument(const QString &path, int page = -1);
+    //
+    // `password` is for the documents this program just wrote: an edit that ended with a
+    // 加密 produced a copy the reader holds the key to, and asking for it again in the next
+    // breath is not a prompt but a retry. Every other caller leaves it empty, and a file
+    // that turns out to need a key still gets the prompt (promptForPassword).
+    DocumentTab *openDocument(const QString &path, int page = -1,
+                              const QString &password = QString());
     DocumentTab *currentTab() const;
     void openFileDialog();
     // Asks where to put the Word file, and tells the tab in front to write it.
@@ -251,6 +257,7 @@ private:
     QAction *movePagesAction = nullptr;
     QAction *mergeFileAction = nullptr;
     QAction *splitFileAction = nullptr;
+    QAction *protectFileAction = nullptr;
     QAction *undoEditAction = nullptr;
     QAction *redoEditAction = nullptr;
     QAction *saveEditsAction = nullptr;

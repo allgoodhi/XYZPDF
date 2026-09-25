@@ -18,6 +18,7 @@
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
 #include "src/ui/printdialog.h"
+#include "src/ui/protectpagesdialog.h"
 #include "src/ui/rotatepagesdialog.h"
 #include "src/ui/splitpagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
@@ -1278,6 +1279,32 @@ void DocumentTab::splitPages()
     Q_EMIT editStateChanged();
 }
 
+void DocumentTab::protectPages()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    ProtectPagesDialog dialog(window(), document);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    // One dialog, two calls, because the two directions differ in only one thing: taking
+    // the protection off has no parameters to hand over. Everything else -- which boxes are
+    // showing, whether the request is the answer a save would already give -- is the
+    // editor's to decide, off the same struct the dialog filled in.
+    const DocumentEditor::Protection asked = dialog.request();
+    QString error;
+    const bool done = asked.what == DocumentEditor::Protection::What::Decrypt
+                          ? document->removeProtection(&error)
+                          : document->protectWith(asked, &error);
+    if (!done) {
+        WindowDialogs::warning(window(), tr("加密 / 去掉口令"), error);
+        return;
+    }
+    Q_EMIT editStateChanged();
+}
+
 void DocumentTab::undoEdit()
 {
     if (editor && editor->undo())
@@ -1365,8 +1392,14 @@ bool DocumentTab::saveEdits()
     // when forty came out, because the check a reader makes on a split set is whether
     // the first file is the one they meant -- and the status line names the count so
     // they know how many are in the folder before going to look.
+    //
+    // The password rides along because the copy may well be locked and the reader has just
+    // typed the key: making them type it again, in a different box, one line after pressing
+    // 确定, is a second chance to get it wrong rather than a feature. Empty here means the
+    // copy opens with no prompt at all.
     Q_EMIT documentSavedAs(written.isEmpty() ? destination : written.first(), changes,
-                           editor->pageCount(), int(written.size()));
+                           editor->pageCount(), int(written.size()),
+                           editor->passwordOfWrittenFile());
     return true;
 }
 

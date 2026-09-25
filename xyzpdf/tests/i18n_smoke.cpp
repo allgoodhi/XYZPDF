@@ -12,6 +12,7 @@
 // resources.qrc for the same reason.
 
 #include "../src/core/languages.h"
+#include "../src/core/thirdpartynotices.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -242,6 +243,11 @@ int main(int argc, char **argv)
             { "SplitPagesDialog", "这份文档没有可以拆的页面。" },
             { "DocumentEditor", "拆成每 %1 页一份" },
             { "DocumentEditor", "这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。" },
+            // The same sentence now also stands in the merge box itself, which since §20's
+            // note about it used to light 合并这些文件 and refuse only after the click.
+            // Probed in both contexts because it is in both contexts: one Chinese string,
+            // one English, and the check further down that the two agree.
+            { "MergePagesDialog", "这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。" },
             // The two separators the code joins reader-facing text with: the range list
             // in the split dialog and the list of pending operations. They went into the
             // English interface straight out of a QStringLiteral -- "1-21、22-42" on
@@ -249,6 +255,44 @@ int main(int argc, char **argv)
             // neither an ideograph nor the source string of a sentence.
             { "SplitPagesDialog", "、" },
             { "DocumentEditor", "，" },
+            // 加密 / 去掉口令, and the two refusals that come with it. The menu row is
+            // probed first because it is the one entry here with a mnemonic in it, which is
+            // how §15's six double-escaped entries reached the screen; the rest of the list
+            // is the dialog's own vocabulary, since a reader who cannot read "Allow
+            // inserting, deleting or rotating pages" has no way to know what the six boxes
+            // are worth.
+            { "MainWindow", "加密 / 去掉口令(&J)…" },
+            { "MainWindow",
+              "记下要写出的那一份需要什么口令、允许做什么，按保存修改为才写成一个新文件；"
+              "正在读的这份不动，那些权限限制也只是写给阅读器看的请求" },
+            { "DocumentTab", "加密 / 去掉口令" },
+            { "ProtectPagesDialog", "加密 / 去掉口令" },
+            { "ProtectPagesDialog", "加上口令和权限" },
+            { "ProtectPagesDialog", "去掉口令和权限" },
+            { "ProtectPagesDialog", "打开口令" },
+            { "ProtectPagesDialog", "再输一遍" },
+            { "ProtectPagesDialog", "允许的用途（这些限制写在文件里，不是强制的）" },
+            { "ProtectPagesDialog", "允许插入、删除或旋转页面" },
+            { "ProtectPagesDialog", "允许复制文字和图片" },
+            { "ProtectPagesDialog", "只改权限" },
+            { "ProtectPagesDialog",
+              "口令那一栏空着，所以写出的这一份不需要口令就能打开 —— 这里留下的只有"
+              "下面那六项限制。" },
+            { "ProtectPagesDialog", "写出的这一份要输入口令才能打开（AES-256，也就是 PDF 里的 R6）。" },
+            { "DocumentEditor", "去掉口令" },
+            { "DocumentEditor", "只改权限（不设打开口令）" },
+            { "DocumentEditor", "加上打开口令（AES-256）" },
+            { "DocumentEditor", "正在打开的这份文件本身没有口令，也没有权限限制，所以没有东西可去掉。" },
+            // The third-party table's own columns, which is a different kind of entry from
+            // everything above: this context had never been probed at all, and that is how
+            // four of its cells stayed QStringLiteral and reached an English interface in
+            // Chinese (the loop after the probes is the check that catches the class).
+            // Naming them anyway, because a row someone reworded into a different context
+            // is a row nothing else would notice.
+            { "ThirdPartyNotices", "Qt 内置的第三方库" },
+            { "ThirdPartyNotices", "（编入 Qt6Pdf.dll）" },
+            { "ThirdPartyNotices", "（编入 Qt6Gui.dll、Qt6Core.dll）" },
+            { "ThirdPartyNotices", "各自的原许可证，见许可证全文" },
         };
 
         for (const Probe &probe : probes) {
@@ -286,6 +330,50 @@ int main(int argc, char **argv)
               "the English range separator is a comma and a space");
         check(QCoreApplication::translate("DocumentEditor", "，") == QStringLiteral(", "),
               "and so is the English separator between pending operations");
+
+        // One Chinese string is one catalogue entry, wherever it is shown: 去掉口令 is both
+        // the button on the dialog and the name the undo row is built out of, so the two
+        // cannot be worded apart -- a short label for the button and a full clause for the
+        // menu is not on offer. Pinned because a reword of either is a reword of both, and
+        // because the same-text heuristic lupdate applies silently is exactly this rule.
+        check(QCoreApplication::translate("ProtectPagesDialog", "去掉口令")
+                  == QCoreApplication::translate("DocumentEditor", "去掉口令"),
+              "the button and the undo row share one English for one Chinese");
+        check(QCoreApplication::translate("ProtectPagesDialog", "加密 / 去掉口令")
+                  == QCoreApplication::translate("DocumentTab", "加密 / 去掉口令"),
+              "and so do a dialog's title and the box a refusal from it is named by");
+        // The same argument for the merge refusal, which §22 moved from the model into the
+        // dialog's summary as well: a reader who meets it twice -- once from a greyed
+        // button, once from the editor -- must meet it in one English.
+        check(QCoreApplication::translate("MergePagesDialog",
+                                          "这份文档已经说了要拆成每 %1 页一份。先撤销那一步，"
+                                          "再把文件合并进来。")
+                  == QCoreApplication::translate("DocumentEditor",
+                                                 "这份文档已经说了要拆成每 %1 页一份。"
+                                                 "先撤销那一步，再把文件合并进来。"),
+              "the merge box and the editor refuse a pending split in one English");
+
+        // ---- every cell of the third-party table, not a chosen few ----
+        //
+        // This is the check the hand-written probes above cannot be. lupdate only ever
+        // sees a string that is behind tr(), so a cell written as QStringLiteral never
+        // becomes an unfinished catalogue entry -- there is no entry, and no probe can be
+        // named after a string that is not in the catalogue. That is exactly how §20 found
+        // two columns of this table answering in Chinese under an English interface.
+        // Asking the table itself for what it holds covers a row nobody has added yet.
+        // The URL and the resource path are left alone: they are not prose.
+        for (const ThirdPartyNotices::Component &component : ThirdPartyNotices::components()) {
+            const QString cells[] = {component.name, component.libraryFile, component.licence,
+                                     component.note};
+            const char *roles[] = {"name", "library file", "licence", "note"};
+            for (int column = 0; column < 4; ++column) {
+                check(!hasChinese(cells[column]),
+                      QStringLiteral("the third-party row %1 has no Chinese in its %2 "
+                                     "(got \"%3\")")
+                          .arg(component.name, QString::fromLatin1(roles[column]),
+                               cells[column]));
+            }
+        }
 
         QCoreApplication::removeTranslator(&translator);
     }

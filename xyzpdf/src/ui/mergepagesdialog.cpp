@@ -345,6 +345,7 @@ void MergePagesDialog::updateSummary()
 
     const int listRows = rowCount();
     const int anchor = anchorPage();
+    const int splitting = editor ? editor->splitPieceSize() : 0;
     const bool behind = target() == Move::AfterPage;
     const bool anchorMissing = behind && anchor < 0;
     const bool anchorPastEnd = behind && anchor >= pageTotal;
@@ -393,6 +394,18 @@ void MergePagesDialog::updateSummary()
     }
     if (listRows == 0)
         line = tr("还没有加上要合并进来的文件。");
+    else if (splitting > 0)
+        // Said here rather than after the click, which is what 拆分文件 has done since
+        // §16 and what §20 caught this dialog not doing: the model already refuses a
+        // merge while a split is pending, so a lit button was a promise the box could not
+        // keep. The sentence is DocumentEditor::mergeFile()'s own, byte for byte -- one
+        // Chinese string is one English string, and a reader who met this refusal twice
+        // must not meet it in two wordings (i18n_smoke pins that). It replaces the
+        // arithmetic rather than sitting under it, because the page numbers the
+        // simulation prints are where a batch would land in a file that will not be
+        // written: a number with nothing to count.
+        line = tr("这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。")
+                   .arg(splitting);
     else if (!unheard.isEmpty())
         line = unheard;
     else if (anchorMissing)
@@ -446,8 +459,8 @@ void MergePagesDialog::updateSummary()
     if (height() < needed)
         resize(width(), needed);
 
-    okayButton->setEnabled(editor && listRows > 0 && unheard.isEmpty() && !anchorMissing
-                           && !anchorPastEnd && added > 0);
+    okayButton->setEnabled(editor && listRows > 0 && splitting == 0 && unheard.isEmpty()
+                           && !anchorMissing && !anchorPastEnd && added > 0);
 }
 
 QString MergePagesDialog::targetName() const

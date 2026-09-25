@@ -268,6 +268,8 @@ set(XYZPDF_SOURCES
     src/ui/outlinepanel.cpp
     src/ui/printdialog.h
     src/ui/printdialog.cpp
+    src/ui/protectpagesdialog.h
+    src/ui/protectpagesdialog.cpp
     src/ui/rotatepagesdialog.h
     src/ui/rotatepagesdialog.cpp
     src/ui/splitpagesdialog.h
@@ -473,7 +475,9 @@ endif()
 option(XYZPDF_BUILD_I18N_SMOKE "Build the interface language smoke test" OFF)
 if(XYZPDF_BUILD_I18N_SMOKE)
     xyzpdf_add_test(i18n_smoke
-        SOURCES src/core/languages.cpp resources.qrc)
+        SOURCES src/core/languages.cpp
+                src/core/thirdpartynotices.cpp
+                resources.qrc)
 endif()
 
 # Opening a document: pages, sizes, text, outline, and a file that is not a PDF.
@@ -508,6 +512,22 @@ if(XYZPDF_BUILD_DOCUMENTEDITOR_SMOKE)
     xyzpdf_add_test(documenteditor_smoke
         SOURCES src/edit/documenteditor.cpp
                 src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+endif()
+
+# What QPDF does with an encrypted file when only the user password is in hand. Built
+# with everything else and deliberately not run -- the name carries 'probe', which is
+# how tools/build_all_tests.py knows a target prints answers instead of passing or
+# failing. The questions are in the header comment of tests/encryptprobe.cpp; they are
+# what decides whether 解密 can be a feature, so the file stays after the answer is
+# written down, because the next person to doubt that answer should measure it again
+# rather than take a doc sentence on faith.
+option(XYZPDF_BUILD_ENCRYPTPROBE "Build the encrypted-document measurement" OFF)
+if(XYZPDF_BUILD_ENCRYPTPROBE)
+    xyzpdf_add_test(encryptprobe
+        SOURCES src/document/qtpdfbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES Qt6::Pdf qpdf::libqpdf)
@@ -632,6 +652,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
+                src/ui/protectpagesdialog.cpp
                 src/ui/rotatepagesdialog.cpp
                 src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
@@ -692,6 +713,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/ocrdialog.cpp
                 src/ui/outlinepanel.cpp
                 src/ui/printdialog.cpp
+                src/ui/protectpagesdialog.cpp
                 src/ui/rotatepagesdialog.cpp
                 src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp

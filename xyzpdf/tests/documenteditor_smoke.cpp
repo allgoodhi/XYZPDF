@@ -21,6 +21,17 @@
 // "opens, and with the password it still needs one"; it now covers the permission
 // bits too, because a copy that silently stops saying "not to be edited" is the one
 // way this feature could hand someone a document that lies about its protection.
+//
+// The 加密 cases at the very end are the same feature from the other side: the reader
+// asking for the protection rather than inheriting it. Two things keep those checks off
+// a guess about qpdf's numbers. Nothing here names a bit value out of the PDF spec -- what
+// is asserted is that the six boxes are six switches, each one changing the bytes, none
+// granting anything and none sharing a bit with another, which is the claim a dialog with
+// six labels makes. And the carry-through comparison from the paragraph above is kept as
+// the counterfactual for it: the same read that says "unchanged" when nothing was asked
+// has to say "changed" when something was, or one of the two is not looking at the file.
+// The one thing asserted about the words rather than the bytes: no password, ever, in a
+// menu row or a summary.
 
 #include "../src/document/qtpdfbackend.h"
 #include "../src/edit/documenteditor.h"
@@ -350,6 +361,49 @@ QString describe(const Permissions &p)
         .arg(p.modifyAssembly)
         .arg(p.modifyAnnotation)
         .arg(p.modifyOther);
+}
+
+// The six permission boxes as the file itself answers them.
+//
+// Read back with the same six accessors DocumentEditor::open() uses to fill
+// `sourceProtection()`, and that pairing is the point of the struct: the dialog opens on
+// what these read, and a save writes what the boxes say, so "the box that is ticked" and
+// "the box that reaches the file" are the same six words only if both ends look at the same
+// bit. The numbers in PDF's /P field belong to qpdf's writer, so they are not named here --
+// what is checked is that the six are six, which is what a dialog with six boxes claims.
+struct BoxFlags
+{
+    bool print = false;
+    bool extract = false;
+    bool assemble = false;
+    bool annotate = false;
+    bool form = false;
+    bool other = false;
+    // False when there was no /Encrypt to ask, or the file would not open with the
+    // password given. Without it a refused open and an unrestricted file look the same.
+    bool answered = false;
+};
+
+BoxFlags boxesAsWritten(const QString &path, const QString &password)
+{
+    BoxFlags out;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData(), password.toUtf8().constData());
+        if (!qpdf.isEncrypted())
+            return out;
+        out.print = qpdf.allowPrintHighRes();
+        out.extract = qpdf.allowExtractAll();
+        out.assemble = qpdf.allowModifyAssembly();
+        out.annotate = qpdf.allowModifyAnnotation();
+        out.form = qpdf.allowModifyForm();
+        out.other = qpdf.allowModifyOther();
+        out.answered = true;
+    } catch (const std::exception &) {
+        // The caller asks a different question -- "did it need this password" is checked by
+        // the reader above -- and this is the empty answer, with `answered` saying so.
+    }
+    return out;
 }
 
 } // namespace
@@ -1937,6 +1991,534 @@ int main(int argc, char **argv)
                     check(false, "the pieces were written at all -- see §11's measurement");
                 }
             }
+        }
+    }
+
+    // ---- 加密 / 去掉口令: what a save hands the writer ----
+    //
+    // The second inert operation, and the one whose failure is not a wrong page count but a
+    // wrong document. Two things can go wrong and both are checked here: the bytes (a copy
+    // that stops saying "not to be edited" is a file lying about its own protection, and a
+    // file that says it needs a password but opens without one is the same lie the other way
+    // round), and the words (a password that turns up in an undo row or a discard prompt is a
+    // password read over somebody's shoulder).
+    {
+        using Guard = DocumentEditor::Protection;
+        const QString key = QStringLiteral("sw0rdfish!");
+        QString error;
+
+        const auto guardOf = [](const QString &password, bool print, bool extract,
+                                bool assemble, bool annotate, bool form, bool other) {
+            Guard guard;
+            guard.what = Guard::What::Encrypt;
+            guard.password = password;
+            guard.allowPrint = print;
+            guard.allowExtract = extract;
+            guard.allowAssembly = assemble;
+            guard.allowAnnotate = annotate;
+            guard.allowFormFilling = form;
+            guard.allowModifyOther = other;
+            return guard;
+        };
+        const auto allOn = [&guardOf](const QString &password) {
+            return guardOf(password, true, true, true, true, true, true);
+        };
+        // One box cleared, the other five left alone.
+        const auto oneOff = [&guardOf](int which, const QString &password) {
+            bool box[6] = { true, true, true, true, true, true };
+            box[which] = false;
+            return guardOf(password, box[0], box[1], box[2], box[3], box[4], box[5]);
+        };
+        const auto asBoxes = [](const Guard &guard) {
+            BoxFlags flags;
+            flags.print = guard.allowPrint;
+            flags.extract = guard.allowExtract;
+            flags.assemble = guard.allowAssembly;
+            flags.annotate = guard.allowAnnotate;
+            flags.form = guard.allowFormFilling;
+            flags.other = guard.allowModifyOther;
+            flags.answered = true;
+            return flags;
+        };
+        // The six in the order `which` numbers them below, and in the order the dialog will
+        // show them: one list for both, so a box that moves in the dialog has to move here.
+        const char *boxNames[6] = { "print", "extract", "assemble", "annotate", "form", "other" };
+        const auto flagOf = [](const BoxFlags &flags, int which) {
+            switch (which) {
+            case 0:
+                return flags.print;
+            case 1:
+                return flags.extract;
+            case 2:
+                return flags.assemble;
+            case 3:
+                return flags.annotate;
+            case 4:
+                return flags.form;
+            default:
+                return flags.other;
+            }
+        };
+        const auto sameBoxes = [&flagOf](const BoxFlags &one, const BoxFlags &other) {
+            for (int which = 0; which < 6; ++which) {
+                if (flagOf(one, which) != flagOf(other, which))
+                    return false;
+            }
+            return true;
+        };
+        // The six as one string, because the notes below are the sentences §21 quotes.
+        const auto said = [](const BoxFlags &flags) {
+            return QStringLiteral("print=%1 extract=%2 assemble=%3 annotate=%4 form=%5 other=%6")
+                .arg(flags.print)
+                .arg(flags.extract)
+                .arg(flags.assemble)
+                .arg(flags.annotate)
+                .arg(flags.form)
+                .arg(flags.other);
+        };
+        // A file written from the plain source with one request hanging on it. An empty
+        // answer means the setup did not go through, and `error` says which step stopped.
+        const auto writeFromSource = [&](const QString &name, const Guard &guard) {
+            const QString path = scratch.filePath(name);
+            DocumentEditor editor;
+            if (!editor.open(source, QString(), &error) || !editor.protectWith(guard, &error)
+                || !editor.saveAs(path, &error))
+                return QString();
+            return path;
+        };
+
+        // ---- what the file on disk says, read once when it opens ----
+        {
+            DocumentEditor plain;
+            check(plain.open(source, QString(), &error), "setup: the plain copy opens");
+            check(!plain.sourceIsProtected(), "a document with no /Encrypt says it has none");
+            check(plain.protectionToWrite().what == Guard::What::Carry,
+                  "and with nothing pending a save would carry the source's own dictionary, "
+                  "which for this file means writing no encryption parameters at all");
+            check(plain.sourceProtection() == Guard(),
+                  "an unencrypted source's six boxes stay at the defaults a dialog would open "
+                  "on, rather than at answers QPDF gives a file that writes no bits");
+
+            const QString keyed = scratch.filePath(QStringLiteral("protect-keyed.pdf"));
+            check(writeEncryptedCopy(source, keyed, QStringLiteral("hunter2"), true).isEmpty(),
+                  "setup: a copy that needs a password and does allow modifying");
+            DocumentEditor kept;
+            error.clear();
+            check(kept.open(keyed, QStringLiteral("hunter2"), &error),
+                  QStringLiteral("the editor opens it with the key: %1").arg(error));
+            check(kept.sourceIsProtected(), "and it says the file it came from is protected");
+            check(kept.protectionToWrite() == Guard(),
+                  "opening a protected file is not itself a change: what a save would write is "
+                  "still the carry-through default");
+            note(QStringLiteral("what the source's own /P says: %1")
+                     .arg(said(boxesAsWritten(keyed, QStringLiteral("hunter2")))));
+            // The dialog's opening state, checked against the file rather than against
+            // anything this program computed: these are the six answers a reader sees in six
+            // boxes the moment 加密 / 去掉口令 opens, and the reader's first act in that
+            // dialog is to notice which ones are already ticked.
+            const BoxFlags onDisk = boxesAsWritten(keyed, QStringLiteral("hunter2"));
+            const Guard read = kept.sourceProtection();
+            check(sameBoxes(asBoxes(read), onDisk),
+                  QStringLiteral("the six boxes open on what the file says, not on this "
+                                 "program's defaults: %1 against %2")
+                      .arg(said(asBoxes(read)), said(onDisk)));
+            check(onDisk.answered && read.allowPrint && read.allowExtract
+                      && !read.allowAssembly && read.allowAnnotate && read.allowFormFilling
+                      && read.allowModifyOther,
+                  QStringLiteral("and the fixture the check above compares against is the one "
+                                 "this test asked for: %1").arg(said(onDisk)));
+        }
+
+        // ---- a request that is not a change ----
+        {
+            DocumentEditor editor;
+            check(editor.open(source, QString(), &error), "setup: the plain copy opens again");
+            check(!editor.isDirty(), "and it starts out clean");
+            error.clear();
+            check(!editor.removeProtection(&error) && !error.isEmpty(),
+                  "去掉口令 on a document with no口令 is refused, and says why");
+            check(!editor.isDirty() && editor.pendingCount() == 0,
+                  "and a refused request records nothing: no dirty tab, no undo row");
+
+            check(editor.protectWith(allOn(key), &error),
+                  QStringLiteral("加上口令 is recorded: %1").arg(error));
+            check(editor.isDirty() && editor.pendingCount() == 1,
+                  "and it dirties the tab exactly the way a page edit does");
+            check(editor.protectionToWrite().what == Guard::What::Encrypt
+                      && editor.protectionToWrite().password == key,
+                  "the protection a save would write is the one that was asked for");
+
+            error.clear();
+            check(!editor.protectWith(allOn(key), &error) && !error.isEmpty(),
+                  "the same request a second time is refused -- it is not a change, and an undo "
+                  "row for it would promise to take back something that did not happen");
+            check(editor.pendingCount() == 1, "and the refused one left one operation, not two");
+
+            check(editor.removeProtection(&error),
+                  QStringLiteral("去掉口令 does cancel a 加密 that is only pending, even on a "
+                                 "file with no口令 of its own: %1").arg(error));
+            check(editor.pendingCount() == 2
+                      && editor.protectionToWrite().what == Guard::What::Decrypt,
+                  "as an operation of its own, so the first one is still there to undo back to");
+            check(editor.undo() && editor.undo() && !editor.isDirty(),
+                  "and both come off the list the way a delete does");
+            check(editor.protectionToWrite() == Guard(),
+                  "leaving nothing asked for, which is the state the document was opened in");
+        }
+
+        // ---- the last one asked for is the one a save writes ----
+        {
+            DocumentEditor editor;
+            check(editor.open(source, QString(), &error), "setup: the plain copy opens again");
+            const QString other = QStringLiteral("zwx9q!k");
+            check(editor.protectWith(allOn(key), &error), "setup: the first password");
+            check(editor.protectWith(guardOf(other, true, true, false, true, true, false), &error),
+                  "setup: a second, different request -- the reader changing their mind");
+            check(editor.pendingCount() == 2, "recorded as a second operation, not folded in");
+            check(editor.protectionToWrite().password == other
+                      && !editor.protectionToWrite().allowAssembly
+                      && editor.protectionToWrite().allowExtract,
+                  "and the save reads the last one: the second request's口令 and the second "
+                  "request's bits, not a mix of the two");
+            check(editor.undo() && editor.protectionToWrite().password == key
+                      && editor.protectionToWrite().allowAssembly,
+                  "one undo back is the earlier request standing again, whole");
+            check(editor.undo() && editor.protectionToWrite() == Guard(),
+                  "and undoing both asks for nothing at all");
+            check(editor.redo() && editor.redo()
+                      && editor.protectionToWrite().password == other,
+                  "redo walks forward through the same two again");
+        }
+
+        // ---- the words: no row, summary or prompt ever carries the password ----
+        {
+            DocumentEditor editor;
+            check(editor.open(source, QString(), &error), "setup: the plain copy opens again");
+            check(editor.protectWith(allOn(key), &error), "setup: a口令 with something in it");
+            const QString row = editor.undoDescription();
+            note(QStringLiteral("what the undo row says about a 加密: %1").arg(row));
+            check(!row.contains(key) && !row.contains(QStringLiteral("sw0rdfish")),
+                  "the row does not carry the password, not even part of it");
+            check(row.contains(QStringLiteral("口令")),
+                  QStringLiteral("and still says what is about to be taken back: %1").arg(row));
+
+            check(editor.deletePages({3}, &error), "setup: a page edit beside the口令");
+            const QString summary = editor.pendingSummary();
+            note(QStringLiteral("the summary beside a page edit: %1").arg(summary));
+            check(!summary.contains(key) && !summary.contains(QStringLiteral("sw0rdfish")),
+                  "the discard prompt is built out of this line, and it is the one text in this "
+                  "program that is shown while a dialog is closed");
+
+            check(editor.removeProtection(&error), "setup: take it off again");
+            note(QStringLiteral("what the undo row says about 去掉口令: %1")
+                     .arg(editor.undoDescription()));
+            check(editor.undoDescription().contains(QStringLiteral("口令")),
+                  "and the other direction is legible too");
+
+            check(editor.protectWith(guardOf(QString(), true, true, false, true, true, false),
+                                     &error),
+                  "setup: restrictions with no password to open is a request that means something");
+            const QString bitsOnly = editor.undoDescription();
+            note(QStringLiteral("what the undo row says about bits without a口令: %1").arg(bitsOnly));
+            check(bitsOnly.contains(QStringLiteral("只改权限"))
+                      && !bitsOnly.contains(QStringLiteral("加上打开口令")),
+                  QStringLiteral("and the row says which of the two it was, because a menu that "
+                                 "offers 加上打开口令 over a file anybody can open is describing "
+                                 "something that did not happen: %1").arg(bitsOnly));
+        }
+
+        // ---- the bytes: a file that says it needs a password, and needs it ----
+        {
+            error.clear();
+            const QString out = writeFromSource(QStringLiteral("encrypt-out.pdf"), allOn(key));
+            check(!out.isEmpty(),
+                  QStringLiteral("a save with 加密 on it writes: %1").arg(error));
+            if (!out.isEmpty()) {
+                check(pagesAsReadByTheReader(out) == -1,
+                      "this program's own reader will not open it without the口令");
+                check(pagesAsReadByTheReader(out, key) == pagesBefore,
+                      "and with it the document is whole, not shorter");
+                check(pagesAsReadByTheReader(out, QStringLiteral("not-the-password")) == -1,
+                      "and the口令 is what opens it, not any string at all");
+                const Permissions got = readPermissions(out, key);
+                note(QStringLiteral("what the written file says: %1 (%2)")
+                         .arg(describe(got), said(boxesAsWritten(out, key))));
+                check(got.encrypted && got.r == 6,
+                      "R6, which is the only thing this program offers, and the dialog has to "
+                      "say what that locks out");
+                check(got.rawPFound, "the /Encrypt dictionary is in the file's own bytes");
+                QtPdfBackend written;
+                if (written.load(out, key) == Document::Status::Ready) {
+                    const QImage image = written.render(0, QSize(300, 400), RenderOptions{});
+                    check(!image.isNull() && paintsAnything(image),
+                          "and the first page still has something on it -- an encrypted copy "
+                          "that reads as blank pages is a copy that was not really written");
+                } else {
+                    check(false, "the reader opens the encrypted copy with its口令");
+                }
+                check(hashOfFile(source) == originalHash,
+                      "and encrypting a copy left the source alone");
+            }
+        }
+
+        // ---- §11.2, forked: the carry-through still stands, and a request moves it ----
+        //
+        // The check above the two numbers were compared for one reason -- to catch a writer
+        // that dropped the dictionary and a reader that defaulted to a value. Now that a save
+        // can be told to change the protection, the same read has to answer two ways: the
+        // carry case must still come out identical (nothing was asked for), and the case with
+        // a request on it must come out different. If both agreed, the second check would be
+        // reading nothing.
+        {
+            const QString marked = scratch.filePath(QStringLiteral("protect-marked.pdf"));
+            check(writeEncryptedCopy(source, marked, QString(), false).isEmpty(),
+                  "setup: a copy readable by anyone and marked not to be edited");
+            const QString markedHash = hashOfFile(marked);
+            const Permissions was = readPermissions(marked, QString());
+            check(was.rawPFound && was.encrypted && !was.modifyOther,
+                  QStringLiteral("and it says what this test means by marked: %1").arg(describe(was)));
+
+            DocumentEditor carry;
+            check(carry.open(marked, QString(), &error), "setup: it opens for editing");
+            check(carry.sourceIsProtected() && !carry.sourceProtection().allowModifyOther,
+                  "and the editor read that from the file, not from a default");
+            check(carry.protectionToWrite() == Guard(), "setup: nothing asked for");
+            check(carry.deletePages({1}, &error), "a page out, and no protection request");
+            const QString carried = scratch.filePath(QStringLiteral("protect-carried.pdf"));
+            if (carry.saveAs(carried, &error)) {
+                const Permissions now = readPermissions(carried, QString());
+                check(now.rawPFound && now.encrypted && now.rawP == was.rawP,
+                      QStringLiteral("the carry-through promise still holds for a save with no "
+                                     "加密 on it: %1 -> %2").arg(describe(was), describe(now)));
+            } else {
+                note(QStringLiteral("a plain save of a marked file was refused: %1").arg(error));
+                check(false, "the carried save wrote at all");
+            }
+
+            DocumentEditor changed;
+            check(changed.open(marked, QString(), &error), "setup: the same file opens again");
+            check(changed.deletePages({1}, &error), "setup: the same page edit");
+            check(changed.protectWith(allOn(key), &error),
+                  "setup: and a 加密 in the same save as it");
+            const QString written = scratch.filePath(QStringLiteral("protect-changed.pdf"));
+            if (changed.saveAs(written, &error)) {
+                const Permissions now = readPermissions(written, key);
+                note(QStringLiteral("the same read, with a request on it: %1 -> %2")
+                         .arg(describe(was), describe(now)));
+                check(now.rawPFound && now.rawP != was.rawP,
+                      "the numbers moved, out of the bytes and not out of the same parser "
+                      "twice -- which is what makes the check above a statement about the file");
+                check(now.modifyOther && pagesAsReadByTheReader(written, key) == pagesBefore - 1,
+                      "one save wrote both halves of the request: the page is gone and the "
+                      "document carries the new口令 and the new bits");
+                check(pagesAsReadByTheReader(written) == -1,
+                      "and it does not open without one");
+            } else {
+                note(QStringLiteral("a save asked to re-protect was refused: %1").arg(error));
+                check(false, "the re-protected save wrote at all");
+            }
+
+            DocumentEditor off;
+            check(off.open(marked, QString(), &error), "setup: the marked file opens a third time");
+            check(off.removeProtection(&error), "setup: 去掉口令 on a file that is protected");
+            const QString freed = scratch.filePath(QStringLiteral("protect-off.pdf"));
+            if (off.saveAs(freed, &error)) {
+                const Permissions now = readPermissions(freed, QString());
+                note(QStringLiteral("after 去掉口令: %1").arg(describe(now)));
+                check(!now.encrypted && !now.rawPFound,
+                      "the dictionary is gone out of the bytes too, not just out of what QPDF "
+                      "answers when asked");
+                check(pagesAsReadByTheReader(freed) == pagesBefore,
+                      "and this program's reader opens it with no口令 at all, whole");
+            } else {
+                note(QStringLiteral("a save asked to strip the protection was refused: %1")
+                         .arg(error));
+                check(false, "the stripped save wrote at all");
+            }
+            check(hashOfFile(marked) == markedHash,
+                  "and none of the four saves above touched the protected file they read");
+        }
+
+        // ---- the six boxes are six switches, and each one reaches the file ----
+        //
+        // What is asserted is structure rather than a table of bit values: the numbers in
+        // PDF's /P belong to qpdf's writer, and hard-coding them here would have this test
+        // agree with a guess about them instead of with the file. Three things have to be
+        // true for a dialog with six boxes to be telling the truth:
+        //   * each box changes the bytes (a box that writes nothing is decoration),
+        //   * un-ticking one never grants anything (a box that added permission when cleared
+        //     is the opposite of the word "allow"),
+        //   * no two of them are the same switch (where two boxes share a bit, the second
+        //     silently overrules the first and the summary the reader acted on is wrong).
+        {
+            error.clear();
+            const QString every = writeFromSource(QStringLiteral("bits-all.pdf"), allOn(key));
+            check(!every.isEmpty(), QStringLiteral("setup: the all-on file: %1").arg(error));
+            const BoxFlags all = boxesAsWritten(every, key);
+            note(QStringLiteral("all six ticked reads back: %1").arg(said(all)));
+            check(all.answered && all.print && all.extract && all.assemble && all.annotate
+                      && all.form && all.other,
+                  "every box ticked is every flag set in the file, so the six have something to "
+                  "be different about");
+            bool foundOn = false;
+            const qint64 onP = rawPermissionBits(every, &foundOn);
+            check(foundOn, "and the all-on file has a /P of its own to compare against");
+            // Narrowed to the 32 bits the field is: /P is a signed integer in the file, and
+            // ~ on a 64-bit value would count 32 bits that are not there.
+            const quint32 on = quint32(qint32(onP));
+
+            bool eachOneDoesSomething = true;
+            bool neverGrants = true;
+            bool sixSeparateSwitches = true;
+            bool oneFlagEach = true;
+            QStringList owners;
+            quint32 claimed = 0;
+            for (int which = 0; which < 6; ++which) {
+                const QString path = writeFromSource(QStringLiteral("bits-%1.pdf").arg(which),
+                                                     oneOff(which, key));
+                if (path.isEmpty()) {
+                    check(false, QStringLiteral("setup: the file with %1 off: %2")
+                                     .arg(QLatin1String(boxNames[which]), error));
+                    eachOneDoesSomething = false;
+                    continue;
+                }
+                const BoxFlags off = boxesAsWritten(path, key);
+                bool foundOff = false;
+                const qint64 offP = rawPermissionBits(path, &foundOff);
+                // Printed whatever the checks decide, because this is where the mapping
+                // between six checkboxes and one integer gets written down.
+                note(QStringLiteral("%1 off: /P %2 -> %3, flags %4")
+                         .arg(QLatin1String(boxNames[which]))
+                         .arg(onP)
+                         .arg(offP)
+                         .arg(said(off)));
+                const quint32 offBits = quint32(qint32(offP));
+                const quint32 cleared = on & ~offBits;
+                const quint32 granted = ~on & offBits;
+                eachOneDoesSomething = eachOneDoesSomething && foundOff && off.answered
+                    && cleared != 0;
+                neverGrants = neverGrants && granted == 0;
+                sixSeparateSwitches = sixSeparateSwitches && (claimed & cleared) == 0;
+                claimed |= cleared;
+                // The flag this program reads has to be the one this box writes, and the
+                // other five have to be untouched by it -- which is the same claim the
+                // dialog makes when it puts six labels on six boxes.
+                for (int other = 0; other < 6; ++other) {
+                    if (other == which)
+                        oneFlagEach = oneFlagEach && !flagOf(off, other);
+                    else
+                        oneFlagEach = oneFlagEach && flagOf(off, other);
+                }
+                owners << QStringLiteral("%1=0x%2")
+                              .arg(QLatin1String(boxNames[which]), QString::number(cleared, 16));
+            }
+            check(eachOneDoesSomething,
+                  "clearing one box takes something away in the file's own bytes");
+            check(neverGrants,
+                  "and clearing a box never adds a permission back, whatever the mapping is");
+            check(sixSeparateSwitches,
+                  QStringLiteral("no two boxes own the same bits: %1")
+                      .arg(owners.join(QLatin1Char(' '))));
+            check(oneFlagEach,
+                  "and this program's reader answers exactly one of its six flags per box -- "
+                  "the round trip the dialog depends on, since the same six accessors are what "
+                  "open() fills the boxes from next time");
+            // Which integers those are belongs to qpdf's writer. Measured here, and the
+            // sentence worth having in §21 is not "box 3 is PDF bit 6" but "the six are
+            // independent and monotone, and this program's reader sees the same six" --
+            // whether another vendor's reader draws the same words around the same integers
+            // is not something this test can ask, and it is one more reason the dialog has
+            // to say the permission bits are advisory rather than enforced.
+            note(QStringLiteral("which bits each box owns: %1").arg(owners.join(QLatin1Char(' '))));
+        }
+
+        // ---- every piece of a split carries it ----
+        //
+        // The §20 check carried the source's own dictionary into N files; this one has N
+        // writers handed a protection the reader typed, which is N chances to get one piece
+        // wrong -- and a folder of four files where one opens for anybody is not four files.
+        {
+            DocumentEditor editor;
+            check(editor.open(source, QString(), &error), "setup: the plain copy opens again");
+            check(editor.protectWith(allOn(key), &error), "setup: 加密");
+            check(editor.splitInto(20, &error), QStringLiteral("setup: 每 20 页一份: %1").arg(error));
+            const QString base = scratch.filePath(QStringLiteral("encrypt-cut.pdf"));
+            if (editor.saveAs(base, &error)) {
+                const auto pieces = editor.pieces();
+                bool everyPiece = pieces.size() == 2;
+                for (int index = 0; index < pieces.size(); ++index) {
+                    const QString one = DocumentEditor::piecePath(base, index, pieces.size(),
+                                                                  pieces.at(index));
+                    everyPiece = everyPiece
+                        && pagesAsReadByTheReader(one) == -1
+                        && pagesAsReadByTheReader(one, key) == pieces.at(index).count()
+                        && readPermissions(one, key).r == 6;
+                }
+                check(everyPiece,
+                      QStringLiteral("both pieces ask for the口令 and each holds the pages it "
+                                     "was given: %1 pieces").arg(pieces.size()));
+            } else {
+                note(QStringLiteral("a split save with a口令 on it was refused: %1").arg(error));
+                check(false, "the encrypted pieces were written at all");
+            }
+        }
+
+        // ---- the key the copy asks for ----
+        //
+        // The tab that opens a saved result reads this rather than guessing, and both ways of
+        // getting it wrong are things a reader sees: a prompt for a file that needs no key, or
+        // a "cannot open" for one that does. The case worth pinning is the Carry over a
+        // protected source -- nothing at all was asked for about protection there, and the
+        // copy is still locked with the key the original was opened by.
+        {
+            DocumentEditor plain;
+            check(plain.open(source, QString(), &error), "setup: the plain copy opens once more");
+            check(plain.passwordOfWrittenFile().isEmpty(),
+                  "an unprotected source with nothing pending writes a copy that asks for nothing");
+
+            const QString keyed = scratch.filePath(QStringLiteral("keyed-for-prompt.pdf"));
+            check(writeEncryptedCopy(source, keyed, QStringLiteral("hunter2"), true).isEmpty(),
+                  "setup: a copy that needs a password");
+            DocumentEditor kept;
+            error.clear();
+            check(kept.open(keyed, QStringLiteral("hunter2"), &error),
+                  QStringLiteral("setup: it opens with the key: %1").arg(error));
+            check(kept.passwordOfWrittenFile() == QStringLiteral("hunter2"),
+                  "a save with nothing pending carries the source's own key into the copy, so "
+                  "the tab that opens that copy has no business asking for it again");
+
+            check(kept.protectWith(allOn(key), &error), "setup: 加密 over a protected source");
+            check(kept.passwordOfWrittenFile() == key,
+                  "with a new key on it the copy asks for the new one, not the source's");
+
+            check(kept.removeProtection(&error), "setup: and then 去掉口令");
+            check(kept.passwordOfWrittenFile().isEmpty(),
+                  "once the protection is being taken off, the copy asks for nothing at all");
+
+            check(kept.undo(), QStringLiteral("setup: 撤销 that: %1").arg(error));
+            check(kept.passwordOfWrittenFile() == key,
+                  "undoing it brings the new key back -- the answer follows the list, "
+                  "which is the same rule the writer's parameters follow");
+        }
+
+        // ---- what it costs ----
+        {
+            QElapsedTimer clock;
+            error.clear();
+            DocumentEditor editor;
+            clock.start();
+            const bool done = editor.open(source, QString(), &error)
+                && editor.protectWith(allOn(key), &error) && editor.isDirty()
+                && editor.saveAs(scratch.filePath(QStringLiteral("timed-encrypt.pdf")), &error);
+            const qint64 taken = clock.elapsed();
+            note(QStringLiteral("open + 加密 + write of %1 pages took %2 ms (%3 KB out)")
+                     .arg(pagesBefore)
+                     .arg(taken)
+                     .arg(done ? QFileInfo(scratch.filePath(QStringLiteral("timed-encrypt.pdf")))
+                                    .size()
+                                    / 1024
+                               : 0));
+            check(done, "and the timed save went through");
         }
     }
 

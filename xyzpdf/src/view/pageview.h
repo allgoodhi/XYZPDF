@@ -333,6 +333,25 @@ private:
 
     void updateScrollBars();
 
+    // Whichever page the middle of the window sits on becomes the current one, and the
+    // tab is told. The status bar's "N / M", the page box and the six 文档 dialogs'
+    // "当前页（第 %1 页）" all read this class's answer, and the answer is a fact about
+    // the geometry -- which rectangle the middle of the viewport falls in -- so it is
+    // taken from the geometry wherever the geometry changes.
+    //
+    // That plural is the fix. It used to happen in the scroll handler only, and the
+    // changes that re-lay the pages out do not scroll: 适应整页 makes every page a
+    // different height, which moves a page boundary across the middle of the window
+    // without moving the scrollbar a pixel. No scroll event, nothing re-derived, and the
+    // reader was shown a number for a page they could not see -- docs/store-submission.md
+    // §13 wrote that down from a real window.
+    //
+    // goToPage() deliberately does not call this. That path announces the page it is
+    // moving to, and for a page shorter than the window the middle of the viewport is
+    // inside the *next* one, so re-deriving here would take the announced page back
+    // again -- which is the flicker `adjustingScroll` exists to stop.
+    void updateCurrentPageFromViewport();
+
     // Works out what is worth having, lets go of everything else, and asks for
     // what is missing. Called from everywhere the answer can change.
     void requestVisiblePages();

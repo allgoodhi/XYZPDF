@@ -185,6 +185,18 @@ void PageView::setPageSizes(const QVector<QSizeF> &points)
 
     updateScrollBars();
     requestVisiblePages();
+    // The page number above is an intention ("a new document starts at its first
+    // page"), not an observation, and the scroll position is not reset for a new
+    // document -- so when the old position still falls inside the new document's
+    // range, the first page is not what is on screen and the intention is a lie.
+    // Measured: a 40-page document at page 2, then a two-page one whose scroll
+    // maximum is larger, leaves the reader looking at page 2 with the status bar
+    // reading "1 / 2".
+    //
+    // Asking the same question the other paths ask makes the number match the
+    // screen. Where a new document *should* start is a different question, and
+    // is not answered here -- see docs/store-submission.md §25.
+    updateCurrentPageFromViewport();
     viewport()->update();
 }
 
@@ -201,6 +213,10 @@ void PageView::setLayoutMode(PageLayout::Mode mode)
     // new layout and the pages now in view are asked for.
     updateScrollBars();
     requestVisiblePages();
+    // And one of those new rectangles is the one the middle of the window is in,
+    // which is a different page more often than not: two pages per row halves how
+    // deep into the document a given scroll position reaches.
+    updateCurrentPageFromViewport();
     viewport()->update();
 }
 
@@ -230,6 +246,9 @@ void PageView::setZoom(double zoom)
     dropAllImages();
     updateScrollBars();
     requestVisiblePages();
+    // Pages are taller or shorter now, so the one the middle of the window sits on
+    // changed without anything scrolling -- the case this used to miss.
+    updateCurrentPageFromViewport();
     Q_EMIT zoomChanged(clamped);
     if (before != after)
         Q_EMIT zoomModeChanged(after);
@@ -254,6 +273,12 @@ void PageView::setZoomMode(ZoomController::Mode mode)
     applyFitIfNeeded();
     updateScrollBars();
     requestVisiblePages();
+    // The change this is here for: a fit mode rescales every page, so a page boundary
+    // crosses the middle of the window and no scroll event happens to notice. A fit is
+    // also recomputed once more a moment later whenever the new page widths make a
+    // sideways scrollbar come or go -- that second pass arrives as a resize event, which
+    // asks the same question again for the same reason.
+    updateCurrentPageFromViewport();
     Q_EMIT zoomModeChanged(mode);
 }
 
@@ -312,6 +337,9 @@ void PageView::setRotation(int degrees)
     dropAllImages();
     updateScrollBars();
     requestVisiblePages();
+    // A quarter turn makes every page above this one shorter or taller, which moves the
+    // middle of the window to another page without moving the scrollbar.
+    updateCurrentPageFromViewport();
     Q_EMIT rotationChanged(rotationDegrees);
     viewport()->update();
 }
@@ -1126,6 +1154,19 @@ QRectF PageView::visibleContentRect() const
                   viewport()->width(), viewport()->height());
 }
 
+void PageView::updateCurrentPageFromViewport()
+{
+    // While a jump is moving the scrollbar to the page it has already announced, that
+    // jump owns the answer. See goToPage().
+    if (adjustingScroll)
+        return;
+    const int page = layout.pageAtViewportCenter(visibleContentRect());
+    if (page == layout.currentPage())
+        return;
+    layout.setCurrentPage(page);
+    Q_EMIT currentPageChanged(page);
+}
+
 void PageView::updateScrollBars()
 {
     const QSizeF content = layout.contentSize();
@@ -1440,6 +1481,11 @@ void PageView::resizeEvent(QResizeEvent *event)
     applyFitIfNeeded();
     updateScrollBars();
     requestVisiblePages();
+    // A taller window reaches further down the document from the same scroll position,
+    // and this event is also how the view hears that a scrollbar coming or going changed
+    // the viewport's height underneath it -- neither moves the scrollbar, so neither used
+    // to move the page number.
+    updateCurrentPageFromViewport();
 }
 
 void PageView::scrollContentsBy(int dx, int dy)
@@ -1448,15 +1494,10 @@ void PageView::scrollContentsBy(int dx, int dy)
     Q_UNUSED(dy);
     requestVisiblePages();
 
-    // Scrolling is what decides which page is current, except while a jump is
-    // moving the scrollbar to a page it has already announced. See goToPage().
-    if (!adjustingScroll) {
-        const int page = layout.pageAtViewportCenter(visibleContentRect());
-        if (page != layout.currentPage()) {
-            layout.setCurrentPage(page);
-            Q_EMIT currentPageChanged(page);
-        }
-    }
+    // Scrolling is one of the ways which page is current gets decided; the others are the
+    // changes that re-lay the pages out, and they are the ones that were missed. See
+    // updateCurrentPageFromViewport().
+    updateCurrentPageFromViewport();
     viewport()->update();
 }
 

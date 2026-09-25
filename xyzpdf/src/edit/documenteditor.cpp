@@ -392,6 +392,29 @@ QString DocumentEditor::piecePath(const QString &destination, int index, int tot
         .filePath(suffix.isEmpty() ? stem : stem + QLatin1Char('.') + suffix);
 }
 
+QString DocumentEditor::stagedPath(const QDir &directory, qint64 stamp, int piece)
+{
+    // The piece number is in the name, and that is not decoration: every piece is staged
+    // before any of them is renamed, so a name that two pieces could share would have the
+    // second writer truncate the first one's finished file.
+    //
+    // The counter has no ceiling, because the only way out of this loop is a name with no
+    // file behind it. Stopping at 99 exits by returning the last candidate *without having
+    // tested it*, which turns the promise above into "unless it took 98 steps" -- and the
+    // whole point of a staged name is that it never needs that caveat. Whether the cap was
+    // reachable through a real save is a separate question, and one this function cannot
+    // answer: it is handed a millisecond clock by its caller, and the same folder is where a
+    // refused save deliberately leaves its staged file for the message to name. Walking past
+    // 99 costs a filename nobody reads. Truncating the reader's document costs the document.
+    QString staged
+        = directory.filePath(QStringLiteral("xyzpdf-save-%1-%2.pdf").arg(stamp).arg(piece));
+    for (int attempt = 2; QFileInfo::exists(staged); ++attempt) {
+        staged = directory.filePath(
+            QStringLiteral("xyzpdf-save-%1-%2-%3.pdf").arg(stamp).arg(piece).arg(attempt));
+    }
+    return staged;
+}
+
 int DocumentEditor::splitPieceSize() const
 {
     for (auto it = pending.crbegin(); it != pending.crend(); ++it) {
@@ -1215,23 +1238,9 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
     // did). Nothing opens the path before the writer does, so nothing holds it. The
     // stamp and the counter keep two saves in the same folder apart, and an existing
     // file is stepped over rather than truncated -- one left behind by an earlier
-    // refused write stays readable.
+    // refused write stays readable. That name is stagedPath()'s to work out, so that the
+    // rule above has one place to be broken in.
     const qint64 stamp = QDateTime::currentMSecsSinceEpoch();
-    const auto stagePathFor = [&](int piece) {
-        // The piece number is in the name, and that is not decoration: every piece is
-        // staged before any of them is renamed, so a name that two pieces could share
-        // would have the second writer truncate the first one's finished file. The counter
-        // below steps over what is already on disk and stops at 99, which on its own is
-        // exactly the collision it describes -- it is a 每 1 页一份 of a 200-page book,
-        // which is a thing readers do ask for.
-        QString staged
-            = directory.filePath(QStringLiteral("xyzpdf-save-%1-%2.pdf").arg(stamp).arg(piece));
-        for (int attempt = 2; QFileInfo::exists(staged) && attempt < 100; ++attempt) {
-            staged = directory.filePath(
-                QStringLiteral("xyzpdf-save-%1-%2-%3.pdf").arg(stamp).arg(piece).arg(attempt));
-        }
-        return staged;
-    };
 
     // The files the merges draw from, opened here and held open until the last byte is
     // on disk. They have to outlive the replay: a page copied out of another document
@@ -1283,7 +1292,7 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
     // to push down the attributes that sit on the intermediate /Pages nodes -- /MediaBox
     // among them -- before any leaf can stand on its own. That is how a hand-cut split
     // opens on blank pages, and it is not a class of wrong this class writes on purpose.
-    const auto writeOne = [&](const PieceRange &keep, const QString &stagedPath) {
+    const auto writeOne = [&](const PieceRange &keep, const QString &staged) {
         try {
             // The replay: the source read again from disk, then every pending operation
             // in the order the reader asked for them. This is where an original page
@@ -1330,7 +1339,7 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
             // password": the /P integer PDF stores is a combination of these arguments, and
             // a mapping that lived in two places is how a file ends up saying something the
             // six boxes never said.
-            QPDFWriter writer(*document, stagedPath.toUtf8().constData());
+            QPDFWriter writer(*document, staged.toUtf8().constData());
             switch (protection.what) {
             case Protection::What::Carry:
                 // Nothing was asked for, so nothing is set and the writer's default
@@ -1377,7 +1386,7 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
             writer.write();
         } catch (const std::exception &e) {
             // Nothing usable came of the attempt, so nothing of ours is left behind.
-            QFile::remove(stagedPath);
+            QFile::remove(staged);
             *error = tr("写出文件时出错，原来的文件没有改动。\n\n解析器说：%1")
                          .arg(QString::fromUtf8(e.what()));
             return false;
@@ -1395,13 +1404,13 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
     };
     QVector<Staged> built;
     for (int index = 0; index < pieces.size(); ++index) {
-        const QString stagedPath = stagePathFor(index);
-        if (!writeOne(pieces.at(index), stagedPath)) {
+        const QString staged = stagedPath(directory, stamp, index);
+        if (!writeOne(pieces.at(index), staged)) {
             for (const Staged &one : std::as_const(built))
                 QFile::remove(one.from);
             return false;
         }
-        built.append({stagedPath, destinations.at(index)});
+        built.append({staged, destinations.at(index)});
     }
 
     // One call per file, not "remove then rename": removing first would leave a window in

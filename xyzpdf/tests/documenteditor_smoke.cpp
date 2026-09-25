@@ -1689,6 +1689,102 @@ int main(int argc, char **argv)
                   .arg(ordered.first(), ordered.last()));
         }
 
+        // The换档, pinned on both sides of it. Twelve pieces cannot tell a width that is
+        // worked out from the piece list apart from a constant 2, and a constant 2 is the
+        // bug: the folder a reader sees is sorted by name, so the first hundredth piece has
+        // to drag every other name wider with it or `book 100 (100).pdf` lands between
+        // `book 1 ...` and `book 2 ...`. 99 and 100 are the two names either side of the
+        // line, and 99 is on the wrong side of it -- two digits there is correct, and it is
+        // also what a fix that hard-wired the width would still do.
+        {
+            const QStringList ninetyNine = namesOf(QStringLiteral("book.pdf"),
+                                                   DocumentEditor::pieceRanges(99, 1));
+            check(ninetyNine.first() == QStringLiteral("book 01 (1).pdf")
+                      && ninetyNine.last() == QStringLiteral("book 99 (99).pdf"),
+                  QStringLiteral("99 pieces is still two digits wide, and the first name is "
+                                 "padded with them: %1 ... %2")
+                      .arg(ninetyNine.first(), ninetyNine.last()));
+
+            const QVector<Piece> pieces = DocumentEditor::pieceRanges(100, 1);
+            const QStringList hundred = namesOf(QStringLiteral("book.pdf"), pieces);
+            check(hundred.first() == QStringLiteral("book 001 (1).pdf")
+                      && hundred[98] == QStringLiteral("book 099 (99).pdf")
+                      && hundred.last() == QStringLiteral("book 100 (100).pdf"),
+                  QStringLiteral("the hundredth piece widens every name in the set, the first "
+                                 "one included: %1 / %2 / %3")
+                      .arg(hundred.first(), hundred[98], hundred.last()));
+            QStringList sorted = hundred;
+            std::sort(sorted.begin(), sorted.end());
+            check(hundred == sorted,
+                  "and a hundred one-page pieces still sort by name into page order");
+        }
+
+        // ---- the staged names, which nobody reads unless a write was refused ----
+        //
+        // Every piece is written under a name of this shape and only moved into place once
+        // the whole set is on disk, so one rule holds for all of them: the path that comes
+        // back must not already have a file behind it. Tested against a stamp fixed here,
+        // because the stamp is what the caller brings in and this is the only way to reach
+        // the counter's *ceiling* without a 200-page fixture and a hundred saves. In a
+        // subfolder, so that the scan above for leftover files in the scratch folder stays
+        // the check on that leftover file rather than a count of these seeds.
+        {
+            const QString folderName = QStringLiteral("staging");
+            check(QDir(scratch.path()).mkpath(folderName), "a folder to work out names in");
+            const QDir staging(scratch.filePath(folderName));
+            const qint64 stamp = 1758765432100LL;
+            const auto shape = [&](qint64 s, int piece, int attempt) {
+                const QString name = attempt == 0
+                    ? QStringLiteral("xyzpdf-save-%1-%2.pdf").arg(s).arg(piece)
+                    : QStringLiteral("xyzpdf-save-%1-%2-%3.pdf").arg(s).arg(piece).arg(attempt);
+                return staging.filePath(name);
+            };
+            const auto seed = [&](const QString &path) {
+                QFile file(path);
+                check(file.open(QIODevice::WriteOnly),
+                      QStringLiteral("setup: %1 is put on disk before anything asks for a name")
+                          .arg(QFileInfo(path).fileName()));
+                file.write("not a pdf, and meant to stay exactly this size");
+            };
+
+            check(DocumentEditor::stagedPath(staging, stamp, 0) == shape(stamp, 0, 0),
+                  "an empty folder gives the plain name -- pinned first, so a wrong answer "
+                  "below is about the counter and not about what the name is supposed to look "
+                  "like");
+
+            seed(shape(stamp, 3, 0));
+            seed(shape(stamp, 3, 2));
+            check(DocumentEditor::stagedPath(staging, stamp, 3) == shape(stamp, 3, 3),
+                  "a name that is taken gets stepped over, twice, until one is not");
+            check(DocumentEditor::stagedPath(staging, stamp, 4) == shape(stamp, 4, 0),
+                  "a neighbour piece's taken names do not move this piece's counter: the piece "
+                  "number is what keeps the two writers apart");
+            check(DocumentEditor::stagedPath(staging, stamp + 1, 3) == shape(stamp + 1, 3, 0),
+                  "and the next save, a millisecond later, is not the one inheriting the "
+                  "stepping");
+
+            const int crowded = 7;
+            seed(shape(stamp, crowded, 0));
+            for (int attempt = 2; attempt <= 99; ++attempt)
+                seed(shape(stamp, crowded, attempt));
+            const QString lastTaken = shape(stamp, crowded, 99);
+            const QString lastTakenHash = hashOfFile(lastTaken);
+            check(!lastTakenHash.isEmpty(),
+                  "setup: all 99 of that piece's names are on disk, including the 99th");
+
+            const QString answered = DocumentEditor::stagedPath(staging, stamp, crowded);
+            check(answered == shape(stamp, crowded, 100),
+                  QStringLiteral("99 taken names is not the end of the counter: it answers %1")
+                      .arg(QFileInfo(answered).fileName()));
+            check(!QFile::exists(answered),
+                  "and no file is behind the name it hands back -- the counter used to stop at "
+                  "99 and return the 99th candidate untested, which is a finished document a "
+                  "second writer would then truncate");
+            check(hashOfFile(lastTaken) == lastTakenHash,
+                  "and stepping past the 99th name leaves it alone, rather than opening it to "
+                  "look");
+        }
+
         // ---- recording it, and taking it back ----
         {
             DocumentEditor editor;

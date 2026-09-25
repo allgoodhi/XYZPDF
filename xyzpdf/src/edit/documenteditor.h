@@ -134,6 +134,7 @@
 #include <QVector>
 
 class QPDF;
+class QDir;
 
 // One document being modified. Owned by the tab whose reader is editing it, for
 // as long as that document is open, because the operations below pile up across
@@ -545,6 +546,17 @@ public:
     // that reads 1, 10, 11, 2 in Explorer is a piece list whose pages arrive shuffled.
     static QString piecePath(const QString &destination, int index, int total,
                              const PieceRange &range);
+
+    // A name a save stages one piece under, beside the destination and before any of the
+    // set is moved into place: `<directory>/xyzpdf-save-<stamp>-<piece>.pdf`, with a
+    // counter stepped past whatever is already on disk. Not a name the reader typed or ever
+    // sees, except in the sentence that names a file left behind after a refused write.
+    //
+    // Static and public for the reason pieceRanges() is: "the path this hands back never
+    // has a file behind it" is the one promise that keeps a second writer from truncating
+    // the first piece's finished document, and a test can only hold a function to it if the
+    // function is reachable.
+    static QString stagedPath(const QDir &directory, qint64 stamp, int piece);
 
     // Recording what a save should do about protection. Nothing is written, no page
     // changes, and the source file keeps whatever it has: see the header note on why this

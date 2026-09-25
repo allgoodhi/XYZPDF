@@ -1488,6 +1488,294 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- the page the status bar names is the page on the screen ----
+    //
+    // §13 wrote this down from a real window: after a zoom-mode change the pages in
+    // front were 5 and 6 while the bar still read "2 / 40", and pressing a paging key
+    // once made the two agree. The reason is that only scrolling ever works out which
+    // page is current -- see scrollContentsBy -- and the changes that re-lay the pages
+    // out can move a page boundary across the middle of the viewport without moving the
+    // scrollbar by a pixel. No scroll event, so nothing re-derived the number, and what
+    // the reader was told named a page that was not in front of them. The same number
+    // feeds the page box and the six 文档 dialogs' "当前页（第 %1 页）", so it is not
+    // only the corner of the window that was wrong.
+    //
+    // The arithmetic below is worked out by hand the way layout_smoke's is: the
+    // fixture's pages are 595x842 points and the gap is 12 pixels (kSpacing), so at 100%
+    // page k starts at 12 + k * 854 content pixels, and the middle of the window is the
+    // scroll position plus half a viewport.
+    {
+        check(tab.open(directory + QStringLiteral("/many-pages.pdf")) == Document::Status::Ready,
+              "the forty-page fixture opens");
+        check(tab.pageCount() == 40,
+              QStringLiteral("forty pages, the document the note was read on (got %1)")
+                  .arg(tab.pageCount()));
+
+        // Which page is in front, worked out from the rectangles the view hands out
+        // rather than from the answer it reports: a check that asked the view both
+        // questions could be answered by a view that was wrong about both. The rule is
+        // the one a reader uses without noticing -- the page the middle of the window is
+        // on -- and the hand-worked numbers below are what pin it, since this lambda and
+        // PageLayout::pageAtViewportCenter could both be quietly wrong.
+        const auto pageOnScreen = [view] {
+            const double middle = view->viewport()->height() / 2.0;
+            const int count = view->pageCount();
+            for (int page = 0; page < count; ++page) {
+                const QRectF rect = view->pageRectInViewport(page);
+                if (!rect.isNull() && middle < rect.bottom())
+                    return page;
+            }
+            return count - 1;
+        };
+
+        // The status bar is not polled; it moves when the view says so, through
+        // DocumentTab's pageChanged. A fix that settled the internal page and stayed
+        // quiet would leave the number where it was, so the announcement is what is
+        // checked, not just the field.
+        int announcements = 0;
+        int lastAnnounced = -1;
+        const QMetaObject::Connection listening =
+            QObject::connect(view, &PageView::currentPageChanged, view, [&](int page) {
+                ++announcements;
+                lastAnnounced = page;
+            });
+
+        // Back to one place every case starts from: 100%, one page per row, page 11's top
+        // edge at the top of the window. A case that began anywhere else would have to
+        // argue about where it began as well as about what changed.
+        const auto startAtPageEleven = [&](const QString &forCase) {
+            view->setRotation(0);
+            view->setLayoutMode(PageLayout::Mode::Continuous);
+            view->setZoomMode(ZoomController::Mode::Percent);
+            view->setZoom(1.0);
+            view->goToPage(10);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            check(view->verticalScrollBar()->value() == 8552,
+                  QStringLiteral("%1 starts with page 11's top at the top of the window "
+                                 "(scroll is %2)")
+                      .arg(forCase)
+                      .arg(view->verticalScrollBar()->value()));
+            check(view->currentPage() == 10 && pageOnScreen() == 10,
+                  QStringLiteral("%1 begins in agreement: bar %2, screen %3")
+                      .arg(forCase)
+                      .arg(view->currentPage() + 1)
+                      .arg(pageOnScreen() + 1));
+            announcements = 0;
+            lastAnnounced = -1;
+        };
+
+        // The promise, said once and then asked after every one of the changes that can
+        // break it.
+        const auto agreesWithTheScreen = [&](const QString &after) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            const int shown = pageOnScreen();
+            check(shown != 10,
+                  QStringLiteral("%1 moved a page boundary across the middle of the window, "
+                                 "so there was something to get wrong (still page %2)")
+                      .arg(after)
+                      .arg(shown + 1));
+            check(view->currentPage() == shown,
+                  QStringLiteral("%1 names the page that is in front (bar says page %2, the "
+                                 "screen shows page %3)")
+                      .arg(after)
+                      .arg(view->currentPage() + 1)
+                      .arg(shown + 1));
+            check(announcements > 0 && lastAnnounced == shown,
+                  QStringLiteral("%1 says it out loud, which is the only way the bar and the "
+                                 "page box can hear (announcements %2, last %3)")
+                      .arg(after)
+                      .arg(announcements)
+                      .arg(lastAnnounced + 1));
+        };
+
+        // ---- scrolling, which is the path that already worked ----
+        //
+        // Here so that the one place that decides the answer has a check over every way of
+        // getting there: the older test of this asks how many times the view said a page
+        // changed, which a view that said the wrong one would pass just as well.
+        {
+            startAtPageEleven(QStringLiteral("scrolling to page 2"));
+            const int middle = view->viewport()->height() / 2;
+            view->verticalScrollBar()->setValue(866 - middle + 10);
+            check(pageOnScreen() == 1,
+                  QStringLiteral("page 2 is what the middle of the window is on now (says page %1)")
+                      .arg(pageOnScreen() + 1));
+            agreesWithTheScreen(QStringLiteral("scrolling to page 2"));
+        }
+
+        // ---- a factor, chosen by hand or typed into the box ----
+        //
+        // At 400% a page occupies 3368 pixels and starts at 12 + k * 3380. The middle of
+        // the window is between 8552 and 9394 for any window under 1684 px tall, and that
+        // whole range is inside page 3 (6772 .. 10140).
+        {
+            startAtPageEleven(QStringLiteral("zooming to 400%"));
+            const int scrolledTo = view->verticalScrollBar()->value();
+            view->setZoom(4.0);
+            check(view->verticalScrollBar()->value() == scrolledTo,
+                  "and the zoom did not scroll anywhere -- which is the whole reason: there "
+                  "was no scroll event to re-derive the page from");
+            check(pageOnScreen() == 2,
+                  QStringLiteral("page 3 is what is in front at four times the size (says %1)")
+                      .arg(pageOnScreen() + 1));
+            agreesWithTheScreen(QStringLiteral("zooming to 400%"));
+        }
+
+        // ---- a fit mode, which is what the note was about ----
+        //
+        // 适应整页 shrinks the factor until a whole page fits the window's height, so the
+        // pages get shorter and one of them ends up higher than the middle of the window
+        // than it was. No hand number here: the factor depends on the window's height,
+        // which the test reads rather than assumes.
+        {
+            startAtPageEleven(QStringLiteral("适应整页"));
+            view->setZoomMode(ZoomController::Mode::FitPage);
+            agreesWithTheScreen(QStringLiteral("适应整页"));
+        }
+
+        // ---- the same fit mode in a window wide enough for a page ----
+        //
+        // This case exists because the one above does not, on its own, cover the mode
+        // change. Fitting a page makes the pages narrower as well as shorter, and in a
+        // window that was too narrow for a page that takes the sideways scrollbar away --
+        // which resizes the viewport a moment later, and that resize recomputes the fit and
+        // re-takes the number. Cut the call site in setZoomMode() and the case above stays
+        // green: the number is settled by the second pass, not the first.
+        //
+        // Wide enough for a page to hang nothing sideways, there is no second pass: the mode
+        // change is the only event, so this is the case that asks it.
+        {
+            const QSize sizeBefore = tab.size();
+            tab.resize(1400, 620);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            startAtPageEleven(QStringLiteral("适应整页 in a wide window"));
+            check(view->horizontalScrollBar()->maximum() == 0,
+                  QStringLiteral("the window is wide enough that nothing hangs sideways at "
+                                 "100% either (scrollbar maximum %1)")
+                      .arg(view->horizontalScrollBar()->maximum()));
+
+            const int heightBefore = view->viewport()->height();
+            view->setZoomMode(ZoomController::Mode::FitPage);
+            check(view->viewport()->height() == heightBefore,
+                  QStringLiteral("and the fitted pages are narrower still, so no scrollbar "
+                                 "came or went and no resize arrives afterwards to do it "
+                                 "instead (viewport height %1 -> %2)")
+                      .arg(heightBefore)
+                      .arg(view->viewport()->height()));
+            agreesWithTheScreen(QStringLiteral("适应整页 in a wide window"));
+            tab.resize(sizeBefore);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        }
+
+        // ---- two pages per row ----
+        //
+        // Twenty spreads of 854 pixels each, so the middle of the window (8552 .. 9394)
+        // lands in spread 11, which is pages 21 and 22 -- and the layout's rule names the
+        // left one of a spread first.
+        {
+            startAtPageEleven(QStringLiteral("turning on two-page mode"));
+            view->setLayoutMode(PageLayout::Mode::TwoPage);
+            check(pageOnScreen() == 20,
+                  QStringLiteral("the spread in front is pages 21 and 22 (says page %1)")
+                      .arg(pageOnScreen() + 1));
+            agreesWithTheScreen(QStringLiteral("turning on two-page mode"));
+        }
+
+        // ---- a quarter turn ----
+        //
+        // The pages become 842 wide by 595 tall, so every page above the middle of the
+        // window gets 247 pixels shorter and the middle reaches further into the
+        // document. Which page exactly depends on the window's height, so this one is the
+        // invariant alone -- with the check inside agreesWithTheScreen that a boundary
+        // really did cross, which is what keeps it from passing by standing still.
+        {
+            startAtPageEleven(QStringLiteral("rotating"));
+            view->setRotation(90);
+            agreesWithTheScreen(QStringLiteral("rotating"));
+        }
+
+        // ---- a shorter window ----
+        //
+        // The clearest case of all, because nothing about the document changed at all: the
+        // middle of the window moved up by half the difference in height. A taller window
+        // makes the same point, but this screen is only so tall -- growing the window by
+        // two page periods grew the viewport by one, which is why the measurement goes the
+        // other way -- and a shorter window starts by parking page 11's top edge a known
+        // ten pixels above the middle, so the distance to the boundary it has to cross is
+        // fixed rather than a function of how tall the window happens to be.
+        {
+            startAtPageEleven(QStringLiteral("making the window shorter"));
+            const int middle = view->viewport()->height() / 2;
+            view->verticalScrollBar()->setValue(8552 - middle + 10);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            check(pageOnScreen() == 10,
+                  QStringLiteral("the middle of the window is ten pixels inside page 11 "
+                                 "(says page %1)")
+                      .arg(pageOnScreen() + 1));
+
+            const int heightBefore = view->viewport()->height();
+            tab.resize(tab.width(), tab.height() - 200);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            const int lost = heightBefore - view->viewport()->height();
+            // The middle rose by half of that, so anything between 21 and 1752 pixels
+            // leaves it inside page 10 -- the ask is 200, and however much of it the
+            // window's own minimum size gave back, the answer is a page number rather
+            // than a measurement of the platform.
+            check(lost > 20 && lost < 1752,
+                  QStringLiteral("the window lost %1 pixels of page, which is more than twice "
+                                 "the ten pixels to spare and less than a whole page")
+                      .arg(lost));
+            check(pageOnScreen() == 9,
+                  QStringLiteral("a shorter window reaches back over the edge the middle was "
+                                 "inside (says page %1)")
+                      .arg(pageOnScreen() + 1));
+            agreesWithTheScreen(QStringLiteral("making the window shorter"));
+        }
+
+        // ---- opening a second document in the same tab ----
+        //
+        // The same fact, with the document changing instead of the window: which page the
+        // middle of the window sits on is a property of the geometry, and the geometry
+        // includes what is laid out. setPageSizes() answered it by writing page 1 down,
+        // which is where a reader expects to start rather than where they end up -- the
+        // scroll position is not reset for a new document, so a two-page file opened in a
+        // tab that was showing page 2 of a forty-page one is showing page 2, and the bar
+        // read "1 / 2" while it did.
+        //
+        // text.pdf's pages are the same 595x842 as the forty-page fixture's, which is what
+        // puts the position below inside the new document rather than past its end -- a
+        // position past the end would be clamped, the clamp would scroll, and the scrolling
+        // path would have quietly fixed it. That is why the number is asked for before and
+        // compared after: this case is the half of the situation that no scroll event ever
+        // covered. Where a new document *should* start is a different question, and is
+        // recorded as still open in docs/store-submission.md §25.
+        {
+            startAtPageEleven(QStringLiteral("opening a two-page document"));
+            const int middle = view->viewport()->height() / 2;
+            view->verticalScrollBar()->setValue(866 - middle + 10);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            check(pageOnScreen() == 1,
+                  QStringLiteral("the middle of the window is ten pixels inside page 2 of the "
+                                 "forty-page fixture (says page %1)")
+                      .arg(pageOnScreen() + 1));
+            const int kept = view->verticalScrollBar()->value();
+
+            check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
+                  "the two-page fixture opens in the same tab");
+            check(tab.pageCount() == 2,
+                  QStringLiteral("of two pages (got %1)").arg(tab.pageCount()));
+            check(view->verticalScrollBar()->value() == kept,
+                  QStringLiteral("and the new document is still showing the same content "
+                                 "pixels as the old one (scroll %1 -> %2), so no scroll event "
+                                 "happened -- which is the shape of this bug")
+                      .arg(kept)
+                      .arg(view->verticalScrollBar()->value()));
+            agreesWithTheScreen(QStringLiteral("opening a two-page document"));
+        }
+
+        QObject::disconnect(listening);
+    }
+
     if (failures == 0) {
         std::cout << "the view and the tab hold together\n";
         return 0;

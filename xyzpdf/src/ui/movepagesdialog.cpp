@@ -142,7 +142,7 @@ void MovePagesDialog::updateSummary()
     else if (anchorMissing)
         line = tr("要说移到第几页之后。");
     else if (anchorPastEnd)
-        line = tr("这份文档一共 %2 页，没有第 %1 页。").arg(anchor + 1).arg(pageTotal);
+        line = tr("这份文档一共 %n 页，没有第 %1 页。", nullptr, pageTotal).arg(anchor + 1);
     else if (plan.pagesMoved == 0)
         line = tr("这些页在前面的修改里已经删掉了，这里没有可以移动的。");
     else if (plan.anchorIsMoved)
@@ -150,14 +150,22 @@ void MovePagesDialog::updateSummary()
     else if (!plan.changesOrder)
         line = tr("这些页已经在那个位置上了，这样移不会把它们挪动。");
     else {
-        // Where they end up, said as a range: the block arrives in one piece and in
-        // the order it already had, so this is a promise the save can keep rather
-        // than a description of what the reader just typed.
-        line = tr("把 %1 页移到%2：移完它们连着排在第 %3-%4 页。")
-                   .arg(plan.pagesMoved)
-                   .arg(targetName())
-                   .arg(plan.landsAt + 1)
-                   .arg(plan.landsAt + plan.pagesMoved);
+        // Where they end up, said as a range -- and one page moved is not a range. The
+        // wording splits on the count for the same reason 拆分's status line splits on
+        // `fileCount`: a number that changes the words around it has to change them here,
+        // or this sentence says 它们连着 / "they end up together" and pages 5-5 about one
+        // page. The number itself comes from DocumentEditor::pageSpan(), which the split's
+        // file names and 拆分文件's list read from too.
+        const QString span
+            = DocumentEditor::pageSpan(plan.landsAt, plan.landsAt + plan.pagesMoved - 1);
+        line = plan.pagesMoved == 1
+                   ? tr("把 1 页移到%1：移完它就排在第 %2 页。")
+                         .arg(targetName())
+                         .arg(span)
+                   : tr("把 %1 页移到%2：移完它们连着排在第 %3 页。")
+                         .arg(plan.pagesMoved)
+                         .arg(targetName())
+                         .arg(span);
         if (plan.anchorWasGone) {
             line += plan.anchorUsed >= 0
                 ? tr("\n\n第 %1 页在还没保存的修改里已经删掉了，所以是排在第 %2 页前面。")

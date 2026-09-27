@@ -511,6 +511,17 @@ public:
     // "and also the case where nothing was split".
     static QVector<PieceRange> pieceRanges(int total, int pieceSize);
 
+    // A run of pages the way a reader writes it: "21" for one page, "21-41" for a run.
+    // 0-based and inclusive like every page number inside this class, 1-based on the way out.
+    //
+    // One function because this answer has four exits -- the name a split writes, the list in
+    // 拆分文件's summary, and the landing sentence of both 移动页面 and 合并文件进来 -- and two
+    // of them had written it themselves while the other two printed "40-40" for a single page.
+    // A range of one is not a range: it is one page, and 它们/`pages` next to it is wrong twice
+    // over. So the callers that need the *words* around it branch on the count as well, and
+    // this is what they all agree on for the number.
+    static QString pageSpan(int first, int last);
+
     // Whether two paths name the same file, which is the question saveAs() has
     // to answer before it writes anything. Two paths can differ in every
     // character and name one file (a different case, a slash the other way, an

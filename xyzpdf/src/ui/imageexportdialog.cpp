@@ -33,7 +33,7 @@ ImageExportDialog::ImageExportDialog(QWidget *parent, int currentPage, int pageC
         auto *group = new QGroupBox(tr("页面范围"), this);
         auto *box = new QVBoxLayout(group);
 
-        allRange = new QRadioButton(tr("全部（%1 页）").arg(pageCount), group);
+        allRange = new QRadioButton(tr("全部（%n 页）", nullptr, pageCount), group);
         allRange->setChecked(true);
         box->addWidget(allRange);
 

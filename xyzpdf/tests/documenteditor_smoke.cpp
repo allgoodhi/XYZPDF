@@ -980,6 +980,14 @@ int main(int argc, char **argv)
         check(editor.canUndo() && !editor.canRedo(), "there is something to undo and nothing to redo");
         check(!editor.undoDescription().isEmpty() && !editor.pendingSummary().isEmpty(),
               "and the list can name what it would take back");
+        // Spelled out in full rather than "non-empty", because this row is built by a
+        // plural-aware lookup and `%n` is filled in by translate() itself. If it were not
+        // filled -- which is what happens on the path with no catalogue installed, i.e. the
+        // Chinese UI -- the row would read 删除 %n 页 on screen, and every check above would
+        // still be green because they only ever asked whether a row exists.
+        check(editor.undoDescription() == QStringLiteral("删除 2 页"),
+              QStringLiteral("the Chinese row names its own count (got \"%1\")")
+                  .arg(editor.undoDescription()));
         check(editor.undo(), "undo gives back the last operation");
         check(editor.pageCount() == pagesBefore, "which puts both pages back where they were");
         check(!editor.isDirty() && !editor.canUndo() && editor.canRedo(),
@@ -1912,6 +1920,30 @@ int main(int argc, char **argv)
                   == QStringLiteral("D:/a/no-extension 01 (1-4)"),
               "a destination typed with no extension gives pieces with no extension: the reader "
               "chose that for the name they typed, and this is not the place to second-guess it");
+
+        // ---- the one rule those names and the two landing sentences share ----
+        //
+        // The check above is why this exists: §20 pinned "one page is a number, not 21-21" on
+        // the file name, and that was the only exit it was pinned on. 移动页面 and
+        // 合并文件进来 kept printing 5-5 / 40-40 for a single page, so the rule lives in
+        // pageSpan() now and every caller reads it from here. Asked directly, because a rule
+        // with four exits cannot be trusted from whichever one of them happens to have a test.
+        check(DocumentEditor::pageSpan(0, 0) == QStringLiteral("1"),
+              "the first page alone is 1");
+        check(DocumentEditor::pageSpan(20, 20) == QStringLiteral("21"),
+              "one page in the middle of a document is one number");
+        check(!DocumentEditor::pageSpan(39, 39).contains(QLatin1Char('-')),
+              "and there is no dash in it at all -- 40-40 was the shape that reached the screen");
+        check(DocumentEditor::pageSpan(0, 14) == QStringLiteral("1-15"),
+              "a run is its first and its last, 1-based like everything a reader counts");
+        check(DocumentEditor::pageSpan(38, 39) == QStringLiteral("39-40"),
+              "the last two pages of a 40-page document");
+        // The two halves have to agree on the same page: a name from piecePath() and a number
+        // from this function that drifted apart would put one range in a folder and another on
+        // the screen.
+        check(DocumentEditor::piecePath(QStringLiteral("C:/docs/r.pdf"), 0, 1, piece(39, 39))
+                      .contains(DocumentEditor::pageSpan(39, 39)),
+              "a one-page piece's name carries exactly this function's answer");
 
         // The padding is not decoration: a folder sorts by name, and pieces that read 1,
         // 10, 11, 2 are a page order nobody can check by eye.

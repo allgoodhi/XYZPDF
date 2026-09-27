@@ -28,5 +28,6 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
 - 所有用户可见字符串走 `tr()`
 - 所有对话框走 `WindowDialogs`（窗口级模态）
 - 临时文件走 `TempManager`；**永不写用户的 PDF 文件**（v1 只读）
-- 测试：`python tools/build_all_tests.py`（配置+构建+运行，缺一不可）
+- 测试：`python tools/build_all_tests.py`（配置+构建+运行，缺一不可；它还会跑 `tools/check_translations.py`
+  对一遍目录——代码里改了用户可见的话，就靠这一步发现目录没跟上）
 - 编不过就明说"未编译验证"，不要报告成完成

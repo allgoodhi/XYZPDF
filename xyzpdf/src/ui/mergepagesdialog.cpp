@@ -222,14 +222,18 @@ QStringList MergePagesDialog::addPaths(const QStringList &paths)
         file->setData(pageCountRole(), pageCount);
         file->setToolTip(path);
         table->setItem(row, FileColumn, file);
-        auto *count = new QTableWidgetItem(tr("%1 页").arg(pageCount));
+        auto *count = new QTableWidgetItem(tr("%n 页", nullptr, pageCount));
         count->setFlags(count->flags() & ~Qt::ItemIsEditable);
         table->setItem(row, CountColumn, count);
         // The whole file, written out rather than left blank: blank means "nothing said
         // yet" everywhere else in this program's edit dialogs, and a range the reader
         // can see is a range they can check.
+        //
+        // And it is pageSpan()'s answer, like the other four exits: a one-page donor used to
+        // seed "1-1" here, which parses the same but reads like a file that cannot count --
+        // found on the screen (docs/store-submission.md §31), not in the source survey.
         table->setItem(row, RangeColumn, new QTableWidgetItem(
-                                           QStringLiteral("1-%1").arg(pageCount)));
+                                           DocumentEditor::pageSpan(0, pageCount - 1)));
         fillingTable = false;
         selectRow(row);
         ++added;
@@ -404,23 +408,40 @@ void MergePagesDialog::updateSummary()
         // arithmetic rather than sitting under it, because the page numbers the
         // simulation prints are where a batch would land in a file that will not be
         // written: a number with nothing to count.
-        line = tr("这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。")
-                   .arg(splitting);
+        line = tr("这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。",
+                  nullptr, splitting);
     else if (!unheard.isEmpty())
         line = unheard;
     else if (anchorMissing)
         line = tr("要说合并到第几页之后。");
     else if (anchorPastEnd)
-        line = tr("这份文档一共 %2 页，没有第 %1 页。").arg(anchor + 1).arg(pageTotal);
+        line = tr("这份文档一共 %n 页，没有第 %1 页。", nullptr, pageTotal).arg(anchor + 1);
     else if (added == 0)
         line = tr("没有页可以合并进来。");
     else {
-        line = tr("%1 个文件一共取 %2 页，合到%3，按列表的顺序连着排在第 %4-%5 页。")
-                   .arg(recorded.size())
-                   .arg(added)
-                   .arg(targetName())
-                   .arg(landsAt + 1)
-                   .arg(landsAt + added);
+        // One page is not a range, and it is not "them" either. The wording splits on the
+        // count for the same reason 拆分's status line splits on `fileCount` (see
+        // mainwindow.cpp's two wordings): a number that changes the words around it has to
+        // change them here too, or the box says 连着 and pages 40-40 about a single page.
+        // The number itself is DocumentEditor::pageSpan()'s, which the split's file names
+        // and 拆分文件's own list already read from.
+        //
+        // "1 页" is written into the singular sentence rather than substituted, and the file
+        // count next to it stays a `%1`: every row of the list contributes at least one page
+        // (a row with nothing in its range is answered by 还没有说出哪几页 above), so one page
+        // in total means exactly one file -- which is what lets the English say "file" and
+        // "page" both in the singular without a second branch.
+        const QString span = DocumentEditor::pageSpan(landsAt, landsAt + added - 1);
+        line = added == 1
+                   ? tr("%1 个文件一共取 1 页，合到%2，按列表的顺序排在第 %3 页。")
+                         .arg(recorded.size())
+                         .arg(targetName())
+                         .arg(span)
+                   : tr("%n 个文件一共取 %1 页，合到%2，按列表的顺序连着排在第 %3 页。",
+                        nullptr, recorded.size())
+                         .arg(added)
+                         .arg(targetName())
+                         .arg(span);
         if (anchorWasGone) {
             // The same sentence 移动页面 has for the same case: the page named as the
             // anchor is one an unsaved change took out, and the block goes into the gap
@@ -429,7 +450,7 @@ void MergePagesDialog::updateSummary()
                         .arg(anchor + 1);
         }
         if (editor && editor->importedPageCount() > 0) {
-            line += tr("\n\n这份文档里已经有 %1 页是合并进来的了。").arg(editor->importedPageCount());
+            line += tr("\n\n这份文档里已经有 %n 页是合并进来的了。", nullptr, editor->importedPageCount());
         }
         // Said here rather than discovered in 删除页面: an imported page has no number
         // on the screen, so the only dialogs that can name one are this one and 移动

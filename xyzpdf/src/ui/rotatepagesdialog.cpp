@@ -101,12 +101,11 @@ void RotatePagesDialog::updateSummary()
         // Not "you asked for pages that don't exist": they do exist in the file,
         // it is the unsaved changes that took them, and the reader needs to know
         // which of the two they are looking at.
-        line = tr("%1。说好的 %2 页里有 %3 页还在，只转那 %3 页。")
+        line = tr("%1。说好的 %2 页里有 %n 页还在，只转那 %n 页。", nullptr, present)
                    .arg(directionName())
-                   .arg(pages.size())
-                   .arg(present);
+                   .arg(pages.size());
     else
-        line = tr("%1：%2 页。").arg(directionName()).arg(pages.size());
+        line = tr("%1：%n 页。", nullptr, pages.size()).arg(directionName());
     // Same sentence the delete dialog ends with, for the same reason: nothing
     // here has written a file yet.
     summaryLabel->setText(tr("%1\n\n原来那份文件不会改动。这一步只是记下修改，"

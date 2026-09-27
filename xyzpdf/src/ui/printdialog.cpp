@@ -32,7 +32,7 @@ PrintDialog::PrintDialog(QWidget *parent, QPrinter *printer, int currentPage, in
         auto *group = new QGroupBox(tr("页面范围"), this);
         auto *box = new QVBoxLayout(group);
 
-        allRange = new QRadioButton(tr("全部（%1 页）").arg(pageCount), group);
+        allRange = new QRadioButton(tr("全部（%n 页）", nullptr, pageCount), group);
         allRange->setChecked(true);
         box->addWidget(allRange);
 
@@ -73,7 +73,7 @@ PrintDialog::PrintDialog(QWidget *parent, QPrinter *printer, int currentPage, in
 
         nUpBox = new QComboBox(group);
         for (int n : {1, 2, 4, 6, 9, 16})
-            nUpBox->addItem(tr("%1 页/张").arg(n), n);
+            nUpBox->addItem(tr("%n 页/张", nullptr, n), n);
         form->addRow(tr("每页版数"), nUpBox);
 
         layout->addWidget(group);

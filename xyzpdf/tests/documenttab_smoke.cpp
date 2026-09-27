@@ -23,8 +23,10 @@
 #include "../src/theme/thememanager.h"
 #include "../src/ui/findbar.h"
 #include "../src/ui/mergepagesdialog.h"
+#include "../src/ui/movepagesdialog.h"
 #include "../src/ui/ocrdialog.h"
 #include "../src/ui/protectpagesdialog.h"
+#include "../src/ui/splitpagesdialog.h"
 #include "../src/ui/watermarkdialog.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
@@ -1355,6 +1357,147 @@ int main(int argc, char **argv)
                       .arg(said));
             check(!said.contains(QStringLiteral("已经说了要拆成")),
                   QStringLiteral("and the refusal is gone with it: %1").arg(said));
+        }
+    }
+
+    // ---- one page is not a range: the two landing sentences ----
+    //
+    // §20 fixed this for 拆分's file names and pinned it there ("a one-page piece says 21,
+    // not 21-21"), while 移动页面 and 合并文件进来 kept printing 5-5 and 40-40 -- and kept
+    // saying 它们连着 / "they end up together" about a single page, which is the same thing:
+    // a number deciding the words around it. Both dialogs now read the number from
+    // DocumentEditor::pageSpan() and pick the wording by the count, so this asks each box the
+    // one-page question and the several-page question, and looks for the dash on the right
+    // side of that line only.
+    {
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(book, QString(), &error),
+              QStringLiteral("setup: a 40-page document to move pages around in: %1").arg(error));
+        const int onScreen = editor.pageCount();
+
+        const auto saidBy = [](QDialog &box) {
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        const auto pickTarget = [](QDialog &box, const QString &words) {
+            const auto radios = box.findChildren<QRadioButton *>();
+            for (QRadioButton *radio : radios) {
+                if (radio->text() == words) {
+                    radio->click();
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // 合并文件进来 first: a one-page donor needs no range typed, because a fresh row takes
+        // the whole of its own file, and rotated.pdf is exactly one page.
+        const auto rangeCell = [](QDialog &box) {
+            auto *cells = box.findChild<QTableWidget *>();
+            return cells && cells->item(0, 2) ? cells->item(0, 2)->text() : QString();
+        };
+        {
+            MergePagesDialog box(&tab, &editor);
+            check(box.addPaths({directory + QStringLiteral("/rotated.pdf")}).isEmpty(),
+                  "setup: a one-page donor is taken");
+            check(pickTarget(box, QStringLiteral("最后面")), "setup: aimed at the end");
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("一共取 1 页")),
+                  QStringLiteral("the count says one page: %1").arg(said));
+            check(said.contains(QStringLiteral("排在第 %1 页").arg(onScreen + 1)),
+                  QStringLiteral("and it lands on one number, not a range: %1").arg(said));
+            check(!said.contains(QStringLiteral("连着")),
+                  QStringLiteral("one page is not 连着 either, which is the half the English "
+                                 "reader sees as \"they end up together\": %1").arg(said));
+            // The fifth exit, and the only one that was an *input*: the cell a fresh row seeds
+            // with its own file's range held "1-1" for a one-page file. It parses the same, so
+            // nothing downstream noticed -- it is only ever a reader reading the number back.
+            check(rangeCell(box) == QStringLiteral("1"),
+                  QStringLiteral("a one-page donor seeds the range cell with 1, not 1-1: [%1]")
+                      .arg(rangeCell(box)));
+        }
+        {
+            MergePagesDialog box(&tab, &editor);
+            check(box.addPaths({directory + QStringLiteral("/dense.pdf")}).isEmpty(),
+                  "setup: a two-page donor is taken");
+            check(pickTarget(box, QStringLiteral("最后面")), "setup: aimed at the end");
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("连着排在第 %1-%2 页")
+                                     .arg(onScreen + 1)
+                                     .arg(onScreen + 2)),
+                  QStringLiteral("two pages keep the run and the wording that goes with it: %1")
+                      .arg(said));
+            check(rangeCell(box) == QStringLiteral("1-2"),
+                  QStringLiteral("and a two-page donor does seed a run, so the cell is not just "
+                                 "always the first number: [%1]").arg(rangeCell(box)));
+        }
+
+        // 移动页面: the same two questions, typed into its own range box -- picked by the
+        // placeholder, because this dialog has a second line edit beside it.
+        {
+            MovePagesDialog box(&tab, 0, &editor);
+            QLineEdit *range = nullptr;
+            const auto edits = box.findChildren<QLineEdit *>();
+            for (QLineEdit *edit : edits) {
+                if (edit->placeholderText().contains(QStringLiteral("1-3")))
+                    range = edit;
+            }
+            check(range != nullptr, "setup: the box that names which pages move");
+            if (range) {
+                check(pickTarget(box, QStringLiteral("最后面")), "setup: aimed at the end");
+                range->setText(QStringLiteral("7"));
+                const QString one = saidBy(box);
+                check(one.contains(QStringLiteral("把 1 页移到")),
+                      QStringLiteral("one page moved is not a block of them: %1").arg(one));
+                check(one.contains(QStringLiteral("移完它就排在第 40 页")),
+                      QStringLiteral("page 7 alone takes the last place, which is 40: %1")
+                          .arg(one));
+                check(!one.contains(QStringLiteral("它们")),
+                      QStringLiteral("and the plural pronoun went with the dash: %1").arg(one));
+
+                range->setText(QStringLiteral("7,9"));
+                const QString two = saidBy(box);
+                check(two.contains(QStringLiteral("连着排在第 39-40 页")),
+                      QStringLiteral("two pages come over together, at 39 and 40: %1").arg(two));
+            }
+        }
+
+        // 拆分文件: the fourth exit, and the one whose rule had a private copy of its own
+        // until this slice. Its list is cut short after six pieces, so 每 1 页一份 of this
+        // 40-page document is the shape where every number in it stands alone -- a dash
+        // anywhere in that list would be the 40-40 bug wearing a different hat. Nothing in
+        // any test read this box's summary before now, which is how two correct private
+        // copies of one rule stayed unasked while two missing ones reached the screen.
+        {
+            SplitPagesDialog box(&tab, &editor);
+            auto *size = box.findChild<QSpinBox *>();
+            check(size != nullptr, "setup: the box that says how many pages go in a piece");
+            if (size) {
+                size->setValue(1);
+                const QString said = saidBy(box);
+                check(said.contains(QStringLiteral("会写成 40 份，每份最多 1 页")),
+                      QStringLiteral("forty pieces of one page: %1").arg(said));
+                const QString list
+                    = said.section(QStringLiteral("页："), 1).section(QStringLiteral("。"), 0, 0);
+                // Six pieces are listed, then the cut, then the last one -- and the cut is
+                // joined to the numbers with `、` too, so the list splits into nine.
+                // Split on U+3001 by its code point: QLatin1Char cannot hold it (the source
+                // is UTF-8, so it would silently take one byte of a three-byte character).
+                check(list.split(QChar(0x3001)).size() == 8,
+                      QStringLiteral("six of them listed, then the cut, then the last one: [%1]")
+                          .arg(list));
+                check(list.startsWith(QStringLiteral("1、2")) && list.endsWith(QStringLiteral("40")),
+                      QStringLiteral("bare numbers at both ends of the list: [%1]").arg(list));
+                check(!list.contains(QLatin1Char('-')),
+                      QStringLiteral("and no piece of it is a range, because none of them holds "
+                                     "more than one page: [%1]").arg(list));
+            }
         }
     }
 

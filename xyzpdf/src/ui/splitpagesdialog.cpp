@@ -85,8 +85,7 @@ void SplitPagesDialog::updateSummary()
     // piece a reader checks the arithmetic against, so it is the one worth keeping.
     QStringList listed;
     const auto rangeText = [](const DocumentEditor::PieceRange &piece) {
-        return piece.count() == 1 ? QString::number(piece.first + 1)
-                                  : QStringLiteral("%1-%2").arg(piece.first + 1).arg(piece.last + 1);
+        return DocumentEditor::pageSpan(piece.first, piece.last);
     };
     for (int index = 0; index < pieces.size() && index < 6; ++index)
         listed << rangeText(pieces.at(index));
@@ -96,9 +95,8 @@ void SplitPagesDialog::updateSummary()
     // The separator is behind tr() because it is text a reader sees: joining the ranges
     // with a literal 、 put CJK punctuation into the English interface, which read
     // "1-21、22-42" on screen.
-    QString line = tr("会写成 %1 份，每份最多 %2 页：%3。")
+    QString line = tr("会写成 %1 份，每份最多 %n 页：%2。", nullptr, size)
                        .arg(pieces.size())
-                       .arg(size)
                        .arg(listed.join(tr("、")));
 
     // The names come from the destination a reader types later, so this is the one part of
@@ -122,7 +120,7 @@ void SplitPagesDialog::updateSummary()
                     .arg(imported);
     }
     if (const int before = editor ? editor->splitPieceSize() : 0; before > 0 && before != size) {
-        line += tr("\n\n这会把前面记下的「每 %1 页一份」换掉；撤销一次回到那一个。").arg(before);
+        line += tr("\n\n这会把前面记下的「每 %n 页一份」换掉；撤销一次回到那一个。", nullptr, before);
     }
     // The wait is a product, not a count: a save replays the whole document once per piece,
     // which measured 129 ms for 40 pieces of a 40-page file and 183 ms for 4 pieces of a

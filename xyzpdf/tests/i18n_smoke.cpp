@@ -18,6 +18,7 @@
 #include <QFile>
 #include <QString>
 #include <QStringList>
+#include <QRegularExpression>
 #include <QTranslator>
 
 #include <iostream>
@@ -162,6 +163,11 @@ int main(int argc, char **argv)
         struct Probe {
             const char *context;
             const char *source;
+            // >= 0 asks the plural-aware form for that count. A numerus entry has no
+            // translation of its own to check -- what has to hold is that the two forms
+            // exist and differ, so `n` says which one to look at and the loop below asks
+            // for the other one too. -1 is the ordinary, non-plural lookup.
+            int n = -1;
         };
         const Probe probes[] = {
             { "MainWindow", "夜间阅读(&G)" },      { "MainWindow", "全屏(&L)" },
@@ -185,7 +191,9 @@ int main(int argc, char **argv)
             { "MainWindow", "文档(&D)" },          { "MainWindow", "删除页面(&E)…" },
             { "MainWindow", "旋转页面(&R)…" },     { "MainWindow", "保存修改为(&S)…" },
             { "MainWindow", "还有没保存的修改" },
-            { "MainWindow", "已写成一个新文件（%1 页）：%2" },
+            { "MainWindow", "已写成一个新文件（%n 页）：%1", 1 },
+            { "MainWindow", "正在导出为 Word…（共 %n 页）", 1 },
+            { "MainWindow", "另有 %n 页既没有文字，也没有渲染出内容，已跳过。", 1 },
             { "DocumentTab", "把这些修改存成一个新文件" },
             { "DocumentTab", "%1 已修改.pdf" },
             { "DeletePagesDialog", "当前页（第 %1 页）" },
@@ -196,9 +204,11 @@ int main(int argc, char **argv)
             // a free helper function can drop out of the catalogue without any
             // build step noticing.
             { "RotatePagesDialog", "旋转这些页" },
-            { "RotatePagesDialog", "%1。说好的 %2 页里有 %3 页还在，只转那 %3 页。" },
-            { "DocumentEditor", "删除 %1 页" },
-            { "DocumentEditor", "向右转 90°（%1 页）" },
+            { "RotatePagesDialog", "%1。说好的 %2 页里有 %n 页还在，只转那 %n 页。", 1 },
+            { "DocumentEditor", "删除 %n 页", 1 },
+            { "DocumentEditor", "向右转 90°（%n 页）", 1 },
+            { "DocumentEditor", "向左转 90°（%n 页）", 1 },
+            { "DocumentEditor", "旋转 180°（%n 页）", 1 },
             { "DocumentEditor", "另存为不能覆盖正在打开的文件。请换一个文件名。" },
             { "DocumentEditor", "还没有打开任何文档。" },
             // The reorder that came after those two, and the undo/redo item names --
@@ -214,9 +224,19 @@ int main(int argc, char **argv)
             { "MainWindow", "撤销 %1(&U)" },        { "MainWindow", "重做 %1(&O)" },
             { "MovePagesDialog", "指定页之后" },
             { "MovePagesDialog", "还没有说出要移动哪几页。" },
-            { "MovePagesDialog", "把 %1 页移到%2：移完它们连着排在第 %3-%4 页。" },
-            { "DocumentEditor", "移到最前（%1 页）" },
-            { "DocumentEditor", "移到最后（%1 页）" },
+            // The landing sentence is two, because one page moved is not a range: the box
+            // that says 它们连着 / "they end up together" over a single page is the same
+            // mistake as printing 5-5. Both halves are probed by name, since a wording that
+            // branches on a number has two strings to keep translated.
+            { "MovePagesDialog", "把 1 页移到%1：移完它就排在第 %2 页。" },
+            { "MovePagesDialog", "把 %1 页移到%2：移完它们连着排在第 %3 页。" },
+            { "DocumentEditor", "移到最前（%n 页）", 1 },
+            { "DocumentEditor", "移到最后（%n 页）", 1 },
+            // This one had no probe at all before §32 (the row is in the catalogue, and
+            // nothing had ever asked it): the anchor number in the middle makes it the
+            // longest of the move rows and the easiest one to word apart from its own
+            // dialog, which is exactly what a probe by name is for.
+            { "DocumentEditor", "移到第 %1 页之后（%n 页）", 1 },
             { "DocumentEditor", "那些页已经在第 %1 页后面了。" },
             // The merge that came after the reorder: the menu row, the two words a
             // row of the file list is made of, the sentence the summary ends with,
@@ -227,9 +247,11 @@ int main(int argc, char **argv)
             { "MainWindow", "合并文件进来(&F)…" },
             { "MergePagesDialog", "要合入的页码" },
             { "MergePagesDialog", "还没有加上要合并进来的文件。" },
-            { "MergePagesDialog",
-              "%1 个文件一共取 %2 页，合到%3，按列表的顺序连着排在第 %4-%5 页。" },
-            { "DocumentEditor", "合入 %2 页（%1）" },
+            { "MergePagesDialog", "%1 个文件一共取 1 页，合到%2，按列表的顺序排在第 %3 页。" },
+            // The plural half of that pair is probed below, with `%n` and a count of 2 -- the
+            // file count is what the English agrees with there, since a landing run of one
+            // page cannot reach this branch (sec.31).
+            { "DocumentEditor", "合入 %n 页（%1）", 1 },
             { "DocumentEditor", "另存为不能覆盖合并进来的文件（%1）。请换一个文件名。" },
             // The split after the merge, and the same four kinds of it: the menu row,
             // the dialog's own words, the undo item's name, and the status line the
@@ -239,15 +261,15 @@ int main(int argc, char **argv)
             { "MainWindow", "拆分文件(&C)…" },
             { "MainWindow", "已写成 %1 个新文件（整份 %2 页）：%3" },
             { "SplitPagesDialog", "拆成 %1 份" },
-            { "SplitPagesDialog", "会写成 %1 份，每份最多 %2 页：%3。" },
+            { "SplitPagesDialog", "会写成 %1 份，每份最多 %n 页：%2。", 1 },
             { "SplitPagesDialog", "这份文档没有可以拆的页面。" },
-            { "DocumentEditor", "拆成每 %1 页一份" },
-            { "DocumentEditor", "这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。" },
+            { "DocumentEditor", "拆成每 %n 页一份", 1 },
+            { "DocumentEditor", "这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。", 1 },
             // The same sentence now also stands in the merge box itself, which since §20's
             // note about it used to light 合并这些文件 and refuse only after the click.
             // Probed in both contexts because it is in both contexts: one Chinese string,
             // one English, and the check further down that the two agree.
-            { "MergePagesDialog", "这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。" },
+            { "MergePagesDialog", "这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。", 1 },
             // The two separators the code joins reader-facing text with: the range list
             // in the split dialog and the list of pending operations. They went into the
             // English interface straight out of a QStringLiteral -- "1-21、22-42" on
@@ -311,8 +333,8 @@ int main(int argc, char **argv)
             { "WatermarkDialog", "不透明度" },
             { "WatermarkDialog", "要盖水印的页面" },
             { "WatermarkDialog", "还没有说要盖什么字。" },
-            { "WatermarkDialog", "「%1」，%2% 不透明度，盖在 %3 页上。" },
-            { "WatermarkDialog", "盖这 %1 页" },
+            { "WatermarkDialog", "「%1」，%2% 不透明度，盖在 %n 页上。", 1 },
+            { "WatermarkDialog", "盖这 %n 页", 1 },
             // The two clauses the box adds once something is already on the list. They carry a
             // leading blank line in the source because they are appended to a summary, and the
             // key has to be that exact text -- which is also why they are written out here
@@ -321,19 +343,61 @@ int main(int argc, char **argv)
               "\n\n这跟前面已经记下的一条一模一样，按下不会多改什么 —— 要改就换一个词，"
               "或者动一下不透明度。" },
             { "WatermarkDialog", "\n\n这会把前面记下的「%1」换掉；撤销一次回到那一个。" },
-            { "DocumentEditor", "加水印「%2」（%1 页）" },
+            { "DocumentEditor", "加水印「%1」（%n 页）", 1 },
             { "DocumentEditor", "不透明度只能是 1% 到 100% 之间的整数。" },
             { "DocumentEditor", "这一页的内容流不是能往上加东西的样子，所以水印没有画上去。" },
+            // Every numerus message added by sec.32-33, listed by name. A row that only the
+            // catalogue knows about is a row no reader ever sees translated, and the plural
+            // forms are the part a single lookup cannot check -- so each of these is asked
+            // twice by the loop below (n=1 and n=40) and the two answers have to be
+            // different sentences, not one sentence with a different number in it.
+            { "MergePagesDialog", "%n 页", 1 },
+            { "MergePagesDialog", "这份文档一共 %n 页，没有第 %1 页。", 1 },
+            { "MovePagesDialog", "这份文档一共 %n 页，没有第 %1 页。", 1 },
+            { "DocumentEditor", "%1 一共 %n 页，没有第 %2 页。", 1 },
+            { "MergePagesDialog", "\n\n这份文档里已经有 %n 页是合并进来的了。", 1 },
+            { "MergePagesDialog", "%n 个文件一共取 %1 页，合到%2，按列表的顺序连着排在第 %3 页。", 2 },
+            { "DocumentEditor", "这份要写出的文档里有 %n 页是合并进来的，而那些页没有你在屏幕上能看到的页号，所以哪几页该进哪一份是说不出来的。先撤销那几次合并再拆。", 1 },
+            { "RotatePagesDialog", "%1：%n 页。", 1 },
+            { "SplitPagesDialog", "\n\n这会把前面记下的「每 %n 页一份」换掉；撤销一次回到那一个。", 1 },
+            { "WatermarkDialog", "「%1」，%2% 不透明度。说好的 %3 页里有 %n 页还在，只盖那 %n 页。", 1 },
+            { "WatermarkDialog", "全部（%n 页）", 1 },
+            { "PrintDialog", "全部（%n 页）", 1 },
+            { "PrintDialog", "%n 页/张", 1 },
+            { "ImageExportDialog", "全部（%n 页）", 1 },
+            { "DocumentTab", "这份要写出的文档只有 %n 页，拆不出第二个文件来。", 1 },
+            // sec.33's second half: the rows that sit outside the edit model -- what the
+            // export says when it finishes, what the close guard asks, what the dialogs add
+            // once a merge has run. Each of these can name exactly one page or one file or
+            // one tab, which is the case the English inflects for and the case a
+            // count-bearing sentence gets wrong by default.
+            { "MainWindow", "已导出 %n 张图片到 %1", 1 },
+            { "MainWindow", "其中 %n 个带网格的表格已转换为可编辑 Word 表格。", 1 },
+            { "MainWindow", "其中 %n 处图形（图表、框图、照片等）已按图片插入，"
+                            "其所在页面的文字仍是可以编辑的。", 1 },
+            { "MainWindow", "这个窗口里有 %n 个标签带着没有写进任何文件的修改。\n\n关掉窗口就会"
+                            "把这些修改丢掉。要关掉吗？", 1 },
+            { "DocumentTab", "\n\n列表里前面 %n 个文件已经记下了，要退回去用撤销。", 1 },
+            { "DeletePagesDialog", "\n\n这 %n 页里有 %1 页是合并进来的，屏幕上没有它们的页码，"
+                                   "这里删不到它们。", 1 },
+            { "WatermarkDialog", "\n\n前面合并进来的那 %n 页屏幕上没有页号，所以不在这 %1 页里，"
+                                 "也不会带上水印。", 1 },
         };
 
         for (const Probe &probe : probes) {
             const QString source = QString::fromUtf8(probe.source);
-            const QString english =
-                QCoreApplication::translate(probe.context, probe.source);
+            // Same call shape the program uses: a numerus message is ONE source string
+            // carrying `%n`, the middle slot is still the disambiguation (empty here), and
+            // the last argument is the count that picks the form. The first version of this
+            // passed the source text into that middle slot, so program and probe agreed with
+            // each other on a lookup the catalogue never had -- two wrongs, one green.
+            const QString english = QCoreApplication::translate(
+                probe.context, probe.source, nullptr, probe.n);
+            const QString where = QString::fromLatin1(probe.context) + QStringLiteral(": \"")
+                                  + source + QStringLiteral("\" ");
             check(english != source
                       && !hasChinese(english),
-                  QStringLiteral("%1: \"%2\" is translated (got \"%3\")")
-                      .arg(QString::fromLatin1(probe.context), source, english));
+                  where + QStringLiteral("is translated (got \"%1\")").arg(english));
             // A translation that still holds a raw XML entity is a hand-edited .ts
             // whose ampersand got escaped twice: the catalogue then carries the
             // file format's own markup into the menu, and the reader sees
@@ -345,11 +409,91 @@ int main(int argc, char **argv)
                   QStringLiteral("%1: \"%2\" leaks a markup entity (got \"%3\")")
                       .arg(QString::fromLatin1(probe.context), source, english));
             // A translation that dropped a placeholder would be worse than no
-            // translation: the arg list would not match the string any more.
-            if (source.contains(QStringLiteral("%1"))) {
+            // translation: the arg list would not match the string any more. Plural rows are
+            // checked per-slot below instead, because one form may leave out a number that
+            // the count it was picked for already implies: 删页's notice asked with n=1 is a
+            // document whose only page came in from somewhere else, and there is no second
+            // number left in that sentence to repeat.
+            if (probe.n < 0 && source.contains(QStringLiteral("%1"))) {
                 check(english.contains(QStringLiteral("%1")),
                       QStringLiteral("%1: \"%2\" keeps its first placeholder")
                           .arg(QString::fromLatin1(probe.context), source));
+            }
+            if (probe.n >= 0) {
+                // The point of a numerus entry is that one number is not said like several,
+                // so two things have to hold and neither is checkable from a single lookup:
+                // the count has to survive into the answer (Qt fills `%n` at translate()
+                // time, not by .arg()), and the *other* form has to be a different sentence.
+                // A hand-written entry with one `<numerusform>` copied twice passes every
+                // check above -- same wording for 1 and for 40, which is exactly the "Delete
+                // 1 pages" this conversion exists to end. And it passes the naive version of
+                // this check too: "Delete 1 pages" and "Delete 40 pages" differ, so the
+                // comparison has to mask the number out first. (Measured: the first version
+                // of this check stayed green with both forms written identical.)
+                // What has to hold is that Qt *substituted* the count, not that the wording
+                // spells the digit out: a singular like "盖这 %n 页" -> "Stamp this page"
+                // drops the number on purpose, and the plural keeps it.
+                check(!english.contains(QStringLiteral("%n")),
+                      where + QStringLiteral("left an unsubstituted %n for n=%1 (got \"%2\")")
+                                  .arg(probe.n)
+                                  .arg(english));
+                const int otherN = probe.n == 1 ? 40 : 1;
+                const QString other = QCoreApplication::translate(
+                    probe.context, probe.source, nullptr, otherN);
+                // A plural row keeps its placeholders between the two forms rather than in
+                // each of them: the form for one may say the count and nothing else, as the
+                // delete notice's does. What may not happen is a number the reader needs
+                // vanishing from the row altogether.
+                for (int slot = 1; slot <= 2; ++slot) {
+                    const QString marker = QLatin1String("%") + QString::number(slot);
+                    if (!source.contains(marker))
+                        continue;
+                    check(english.contains(marker) || other.contains(marker),
+                          where + QStringLiteral("loses %1 from both plural forms (got \"%2\" "
+                                                 "and \"%3\")")
+                                    .arg(marker, english, other));
+                }
+                const auto mask = [](QString text) {
+                    // Every run of digits that is not itself part of a `%1`-style placeholder.
+                    // Two failed attempts are why this is written the way it is: replacing
+                    // "1" everywhere also ate the "1" of `%1` (so the masked strings still
+                    // differed and the check passed with identical forms), and looking for
+                    // " 1 " missed every form that puts the count against punctuation, like
+                    // "Turn right 90° (1 page)".
+                    return text.replace(QRegularExpression(QStringLiteral("(?<![%\\d])\\d+")),
+                                        QStringLiteral("#"));
+                };
+                // If the mask found nothing to hide, the comparison below proves nothing, so
+                // say so instead of passing quietly.
+                check(mask(english) != english || mask(other) != other,
+                      where + QStringLiteral("hides no count in either form, so the two forms "
+                                             "cannot be compared (got \"%1\" and \"%2\")")
+                                  .arg(english, other));
+                check(other != english && other != source && !hasChinese(other)
+                          && mask(other) != mask(english),
+                      // Built by concatenation rather than a chain of .arg(): the inserted
+                      // text is itself full of `%1`, and a later arg() would fill that one
+                      // too -- which is how this message once reported the source as
+                      // "合入 %n 页（1）".
+                      where
+                          + QStringLiteral("needs a second plural form, not the same sentence "
+                                           "with another number in it (got \"%1\" and \"%2\")")
+                                .arg(english, other));
+                // And the form picked for 1 has to read as 1. This is the check that catches
+                // the row where both `<numerusform>`s were copied from the plural wording --
+                // a mistake the three checks above walk straight past, because two identical
+                // forms are the only shape they reject. It is also the shape the catalogue
+                // took on its own once: lupdate reads a tr() call by position, hands the count
+                // to the disambiguation slot, and rewrites the row to a single form
+                // (src/edit/documenteditor.cpp's helper carries the note). The window is
+                // deliberately one word wide: "1 of those files" is correct English, so a
+                // plural two words after the count is not evidence of anything.
+                const QString oneForm = probe.n == 1 ? english : other;
+                check(!oneForm.contains(
+                          QRegularExpression(QStringLiteral("(?<![%\\d])1\\s+[a-z]{2,}s\\b"))),
+                      where
+                          + QStringLiteral("agrees with 1 as if it were several (got \"%1\")")
+                                .arg(oneForm));
             }
         }
 
@@ -376,13 +520,23 @@ int main(int argc, char **argv)
         // The same argument for the merge refusal, which §22 moved from the model into the
         // dialog's summary as well: a reader who meets it twice -- once from a greyed
         // button, once from the editor -- must meet it in one English.
+        // Asked at both counts now, because the sentence is plural-aware: one Chinese string
+        // has to be one English *per form*, and a catalogue where only the plural half agrees
+        // would still pass the old single lookup.
         check(QCoreApplication::translate("MergePagesDialog",
-                                          "这份文档已经说了要拆成每 %1 页一份。先撤销那一步，"
-                                          "再把文件合并进来。")
+                                          "这份文档已经说了要拆成每 %n 页一份。先撤销那一步，"
+                                          "再把文件合并进来。", nullptr, 1)
                   == QCoreApplication::translate("DocumentEditor",
-                                                 "这份文档已经说了要拆成每 %1 页一份。"
-                                                 "先撤销那一步，再把文件合并进来。"),
-              "the merge box and the editor refuse a pending split in one English");
+                                                 "这份文档已经说了要拆成每 %n 页一份。"
+                                                 "先撤销那一步，再把文件合并进来。", nullptr, 1)
+                  && QCoreApplication::translate("MergePagesDialog",
+                                                 "这份文档已经说了要拆成每 %n 页一份。"
+                                                 "先撤销那一步，再把文件合并进来。", nullptr, 40)
+                         == QCoreApplication::translate(
+                                "DocumentEditor",
+                                "这份文档已经说了要拆成每 %n 页一份。先撤销那一步，"
+                                "再把文件合并进来。", nullptr, 40),
+              "the merge box and the editor refuse a pending split in one English, both forms");
         // The same argument one more time, for the word that names the seventh feature: 加水印
         // is both the dialog's own title and the box a refusal from the tab is titled by, and
         // those two live in different classes -- which is the place a context can be spelled

@@ -102,9 +102,12 @@ void DeletePagesDialog::updateSummary()
     // are looking at needs to be told where the other three came from -- and that
     // this dialog has no way to reach them.
     if (editor && editor->importedPageCount() > 0) {
-        line += tr("\n\n这 %1 页里有 %2 页是合并进来的，屏幕上没有它们的页码，"
-                   "这里删不到它们。")
-                    .arg(editor->pageCount())
+        // The total is what the English agrees with, and it can be one: 删除页面 has no
+        // floor at its door the way 拆分文件 does, so a document deleted down to a single
+        // imported page reaches here and says "1 of those 1 pages" without this branch.
+        line += tr("\n\n这 %n 页里有 %1 页是合并进来的，屏幕上没有它们的页码，"
+                   "这里删不到它们。",
+                   nullptr, editor->pageCount())
                     .arg(editor->importedPageCount());
     }
     // Said every time, because this is the first command in the program that can

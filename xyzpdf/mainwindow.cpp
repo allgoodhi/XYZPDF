@@ -1395,7 +1395,8 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
             });
     connect(tab, &DocumentTab::imageExportFinished, this, [this](const QString &directory,
                                                                  int pages) {
-        statusBar()->showMessage(tr("已导出 %1 张图片到 %2").arg(pages).arg(directory), 6000);
+        statusBar()->showMessage(tr("已导出 %n 张图片到 %1", nullptr, pages).arg(directory),
+                                 6000);
     });
 
     connect(tab, &DocumentTab::documentSavedAs, this,
@@ -1420,7 +1421,7 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         statusBar()->showMessage(
             fileCount > 1
                 ? tr("已写成 %1 个新文件（整份 %2 页）：%3").arg(fileCount).arg(pages).arg(changes)
-                : tr("已写成一个新文件（%1 页）：%2").arg(pages).arg(changes),
+                : tr("已写成一个新文件（%n 页）：%1", nullptr, pages).arg(changes),
             8000);
     });
 
@@ -1666,7 +1667,7 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
     // 页" is not a page, so it says the size of the job instead.
     exportProgress->setLabelText(done > 0
                                      ? tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total)
-                                     : tr("正在导出为 Word…（共 %1 页）").arg(total));
+                                     : tr("正在导出为 Word…（共 %n 页）", nullptr, total));
 }
 
 void MainWindow::closeExportProgress()
@@ -1709,17 +1710,16 @@ void MainWindow::reportWordExport(const WordExportReport &report)
 
     QString detail;
     if (report.tables > 0) {
-        detail = tr("其中 %1 个带网格的表格已转换为可编辑 Word 表格。")
-                     .arg(report.tables);
+        detail = tr("其中 %n 个带网格的表格已转换为可编辑 Word 表格。", nullptr, report.tables);
     }
     if (report.figures > 0) {
         // The figures of a page that also had words on it: cut out of the page and
         // put in where they sit, with the words beside them as words.
         if (!detail.isEmpty())
             detail += QLatin1Char('\n');
-        detail += tr("其中 %1 处图形（图表、框图、照片等）已按图片插入，"
-                     "其所在页面的文字仍是可以编辑的。")
-                      .arg(report.figures);
+        detail += tr("其中 %n 处图形（图表、框图、照片等）已按图片插入，"
+                     "其所在页面的文字仍是可以编辑的。",
+                     nullptr, report.figures);
     }
     if (report.imagePages > 0) {
         // Said out loud because it changes what the file is: those pages are
@@ -1728,9 +1728,9 @@ void MainWindow::reportWordExport(const WordExportReport &report)
         // will not go in.
         if (!detail.isEmpty())
             detail += QLatin1Char('\n');
-        detail += tr("其中 %1 页没有文字层或包含复杂图表/表格，已按整页图片还原以保持原貌，"
-                     "但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。")
-                      .arg(report.imagePages);
+        detail += tr("其中 %n 页没有文字层或包含复杂图表/表格，已按整页图片还原以保持原貌，"
+                     "但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。",
+                     nullptr, report.imagePages);
     }
     if (report.emptyPages > 0) {
         // Counted and named rather than left out: a reader who exported a
@@ -1738,7 +1738,7 @@ void MainWindow::reportWordExport(const WordExportReport &report)
         // and why.
         if (!detail.isEmpty())
             detail += QLatin1Char('\n');
-        detail += tr("另有 %1 页既没有文字，也没有渲染出内容，已跳过。").arg(report.emptyPages);
+        detail += tr("另有 %n 页既没有文字，也没有渲染出内容，已跳过。", nullptr, report.emptyPages);
     }
     if (!detail.isEmpty())
         message += QStringLiteral("\n\n") + detail;
@@ -1783,8 +1783,9 @@ bool MainWindow::confirmDiscardingEditsInAllTabs()
     // lists, and a dialog that pops three times says nothing about that.
     const auto answer = WindowDialogs::question(
         this, tr("还有没保存的修改"),
-        tr("这个窗口里有 %1 个标签带着没有写进任何文件的修改。\n\n关掉窗口就会把这些修改"
-           "丢掉。要关掉吗？").arg(holding),
+        tr("这个窗口里有 %n 个标签带着没有写进任何文件的修改。\n\n关掉窗口就会把这些修改"
+           "丢掉。要关掉吗？",
+           nullptr, holding),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     return answer == QMessageBox::Yes;
 }

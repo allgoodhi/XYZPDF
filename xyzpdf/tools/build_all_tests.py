@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Configures, builds and runs every test.
+"""Configures, builds and runs every test, and asks the catalogue first.
 
     python tools/build_all_tests.py
 
@@ -275,6 +275,30 @@ def runTests(directory, scratch, report):
     return passed, failed
 
 
+def checkCatalogue(report):
+    """Ask the catalogue whether it still matches what the code asks for.
+
+    The i18n test checks the rows somebody thought to name. This is the part a named
+    probe cannot cover: a string the code asks for that never reached the catalogue,
+    a row the code no longer asks for that `lupdate -no-obsolete` will delete, and a
+    plural row that lupdate flattened into one form (docs/store-submission.md
+    sec.22 and sec.33 -- the third one leaves every source string in place, so
+    nothing else in the build notices).
+
+    Run before the tests rather than after: when the catalogue is behind the code,
+    every one of those rows reads as Chinese inside i18n_smoke, which is a true
+    complaint said in the wrong words.
+    """
+    print('\n=== catalogue ===')
+    outcome = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'check_translations.py')],
+                             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for line in outcome.stdout.decode('utf-8', 'replace').splitlines():
+        if line.strip():
+            print('  ' + line.strip())
+    if outcome.returncode != 0:
+        report.append('the English catalogue and the code disagree (or lupdate was not found)')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -308,6 +332,7 @@ def main():
             if not build(cmake, arguments.build_dir, options, arguments.qt,
                          arguments.generator, report):
                 raise SystemExit(1)
+        checkCatalogue(report)
         if not arguments.build_only:
             runTests(arguments.build_dir, scratch, report)
     finally:

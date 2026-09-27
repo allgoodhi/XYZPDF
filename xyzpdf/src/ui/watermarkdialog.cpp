@@ -64,7 +64,7 @@ WatermarkDialog::WatermarkDialog(QWidget *parent, const DocumentEditor *document
         auto *group = new QGroupBox(tr("要盖水印的页面"), this);
         auto *choices = new QVBoxLayout(group);
 
-        allChoice = new QRadioButton(tr("全部（%1 页）").arg(pageTotal), group);
+        allChoice = new QRadioButton(tr("全部（%n 页）", nullptr, pageTotal), group);
         allChoice->setChecked(true);
         choices->addWidget(allChoice);
 
@@ -166,16 +166,15 @@ void WatermarkDialog::updateSummary()
     else if (!hasPages)
         line = tr("这些页在前面的修改里已经删掉了，没有可以盖的。");
     else if (present < asked.pages.size())
-        line = tr("「%1」，%2% 不透明度。说好的 %3 页里有 %4 页还在，只盖那 %4 页。")
+        line = tr("「%1」，%2% 不透明度。说好的 %3 页里有 %n 页还在，只盖那 %n 页。",
+                  nullptr, present)
                    .arg(asked.text)
                    .arg(asked.opacityPercent)
-                   .arg(asked.pages.size())
-                   .arg(present);
+                   .arg(asked.pages.size());
     else
-        line = tr("「%1」，%2% 不透明度，盖在 %3 页上。")
+        line = tr("「%1」，%2% 不透明度，盖在 %n 页上。", nullptr, present)
                    .arg(asked.text)
-                   .arg(asked.opacityPercent)
-                   .arg(present);
+                   .arg(asked.opacityPercent);
 
     if (hasWords && hasPages) {
         // Said because it is the one thing about a watermark a reader cannot see from the box:
@@ -187,8 +186,8 @@ void WatermarkDialog::updateSummary()
     }
 
     if (const int imported = editor ? editor->importedPageCount() : 0; imported > 0 && hasPages) {
-        line += tr("\n\n前面合并进来的那 %1 页屏幕上没有页号，所以不在这 %2 页里，也不会带上水印。")
-                    .arg(imported)
+        line += tr("\n\n前面合并进来的那 %n 页屏幕上没有页号，所以不在这 %1 页里，也不会带上水印。",
+                   nullptr, imported)
                     .arg(present);
     }
 
@@ -214,6 +213,6 @@ void WatermarkDialog::updateSummary()
     line += tr("\n\n原来那份文件不会改动。这一步只是记下修改，要它成为一个文件，还得走保存。");
 
     summaryLabel->setText(line);
-    okayButton->setText(hasPages && hasWords ? tr("盖这 %1 页").arg(present) : tr("确定"));
+    okayButton->setText(hasPages && hasWords ? tr("盖这 %n 页", nullptr, present) : tr("确定"));
     okayButton->setEnabled(hasWords && hasPages && !again);
 }

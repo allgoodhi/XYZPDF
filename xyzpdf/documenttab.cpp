@@ -1246,7 +1246,7 @@ void DocumentTab::mergeFiles()
         // taking rows back behind a reader's back would leave the list disagreeing
         // with the one sentence they just read, and 撤销 is the way to undo it.
         if (recorded > 0)
-            error += tr("\n\n列表里前面 %1 个文件已经记下了，要退回去用撤销。").arg(recorded);
+            error += tr("\n\n列表里前面 %n 个文件已经记下了，要退回去用撤销。", nullptr, recorded);
         WindowDialogs::warning(window(), tr("合并文件进来"), error);
     }
 }
@@ -1263,8 +1263,8 @@ void DocumentTab::splitPages()
         // the reader could not have meant it. The merge guard, by contrast, is the
         // dialog's to say -- it has the page ranges on screen while it is open.
         WindowDialogs::warning(window(), tr("拆分文件"),
-                               tr("这份要写出的文档只有 %1 页，拆不出第二个文件来。")
-                                   .arg(document->pageCount()));
+                               tr("这份要写出的文档只有 %n 页，拆不出第二个文件来。",
+                                  nullptr, document->pageCount()));
         return;
     }
 

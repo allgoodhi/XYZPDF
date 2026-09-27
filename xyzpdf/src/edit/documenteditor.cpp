@@ -50,6 +50,25 @@ QString tr(const char *text)
     return QCoreApplication::translate("DocumentEditor", text);
 }
 
+// The plural shape of the same arrangement, and it takes three arguments for a reason
+// that is not visible from Qt's own documentation: lupdate reads a `tr()` call by
+// position -- source, disambiguation, count -- so a helper written as tr(text, n) hands
+// the count to the disambiguation slot. The string still lands in the catalogue, but
+// flagged non-plural, and the next update run rewrites the row down to a single
+// <numerusform> ("Removed plural forms as the target language has less forms") and the
+// English starts saying "Delete 1 pages" again. Measured: 34 plural rows became 29, and
+// the five lost were exactly this context's, because every other file's tr() is
+// QObject's and its callers already pass the nullptr.
+//
+// The Chinese needs no second form -- it does not inflect -- so the two forms differ
+// only in the translation, which is the whole reason this is not an "s" bolted onto the
+// English: a screen reader says "Delete 1 pages" out loud, and that is the reader's
+// problem, not a typographical one.
+QString tr(const char *text, const char *disambiguation, int n)
+{
+    return QCoreApplication::translate("DocumentEditor", text, disambiguation, n);
+}
+
 // The comparison half of sameFile(): the same path written two ways is still one
 // file, and the two ways a save dialog produces are a different drive letter case
 // and a slash rather than a backslash.
@@ -353,41 +372,43 @@ void appendWatermarkContent(QPDF &qpdf, QPDFPageObjectHelper &page, const std::s
 QString DocumentEditor::describeOperation(const Operation &op) const
 {
     const int count = op.pages.size();
+    // Every row below that names a number of pages goes through tr(): the count is `%n` so
+    // the English can agree with it ("Delete 1 page" / "Delete 3 pages"), while the Chinese --
+    // the source language, and the same text in both forms -- renders exactly as it always did.
     if (op.kind == Operation::Kind::RotatePages) {
         switch (op.quarterTurns) {
         case 2:
-            return tr("旋转 180°（%1 页）").arg(count);
+            return tr("旋转 180°（%n 页）", nullptr, count);
         case 3:
-            return tr("向左转 90°（%1 页）").arg(count);
+            return tr("向左转 90°（%n 页）", nullptr, count);
         default:
-            return tr("向右转 90°（%1 页）").arg(count);
+            return tr("向右转 90°（%n 页）", nullptr, count);
         }
     }
     if (op.kind == Operation::Kind::MovePages) {
         // The anchor number in the middle of it is the page as it reads on the
         // screen, which is the only numbering a reader has.
         if (op.moveTo == MoveTarget::Front)
-            return tr("移到最前（%1 页）").arg(count);
+            return tr("移到最前（%n 页）", nullptr, count);
         if (op.moveTo == MoveTarget::AfterPage)
-            return tr("移到第 %2 页之后（%1 页）").arg(count).arg(op.anchor + 1);
-        return tr("移到最后（%1 页）").arg(count);
+            return tr("移到第 %1 页之后（%n 页）", nullptr, count).arg(op.anchor + 1);
+        return tr("移到最后（%n 页）", nullptr, count);
     }
     if (op.kind == Operation::Kind::MergeFile) {
         // Which file, not just how many: a reader who merged three documents and
         // sees "撤销 合入 5 页" has no way to know which 5 pages are about to come
         // back. The name rather than the path, because this is a menu row.
         const Import &import = imports.value(op.importIndex);
-        return tr("合入 %2 页（%1）")
+        return tr("合入 %n 页（%1）", nullptr, count)
             .arg(QFileInfo(import.path).fileName().isEmpty()
                      ? tr("另一份文件")
-                     : QFileInfo(import.path).fileName())
-            .arg(count);
+                     : QFileInfo(import.path).fileName());
     }
     if (op.kind == Operation::Kind::SplitBySize) {
         // The size the reader chose rather than the number of files it makes: the file
         // count is whatever is left after the deletes, and a menu row that says 拆成 8 份
         // stops being true the moment a page is taken out, while 每 5 页一份 does not.
-        return tr("拆成每 %1 页一份").arg(op.pieceSize);
+        return tr("拆成每 %n 页一份", nullptr, op.pieceSize);
     }
     if (op.kind == Operation::Kind::Protect) {
         // Not a word of the password, not even masked. This row is drawn in a menu that can
@@ -414,9 +435,11 @@ QString DocumentEditor::describeOperation(const Operation &op) const
         // read 加水印「DRAFT」（0 页） under a dialog that had just said 盖在 40 页上 -- measured in
         // the real window. `addWatermark()` has already dropped the pages an earlier unsaved
         // delete took out, so this size is the same number the summary showed at the press.
-        return tr("加水印「%2」（%1 页）").arg(op.watermark.pages.size()).arg(op.watermark.text);
+        return tr("加水印「%1」（%n 页）", nullptr, op.watermark.pages.size()).arg(op.watermark.text);
     }
-    return tr("删除 %1 页").arg(count);
+    // The row that first proved the mechanism (docs/store-submission.md sec.32), and still
+    // the simplest one: one number, one noun for the English to agree with it about.
+    return tr("删除 %n 页", nullptr, count);
 }
 
 DocumentEditor::DocumentEditor() = default;
@@ -638,6 +661,14 @@ QVector<DocumentEditor::PieceRange> DocumentEditor::pieceRanges(int total, int p
     return pieces;
 }
 
+QString DocumentEditor::pageSpan(int first, int last)
+{
+    // One page is a number, not a range. See the declaration for why this has one place to
+    // be said from; the dash below is the whole bug when a caller writes it unconditionally.
+    return first == last ? QString::number(first + 1)
+                         : QStringLiteral("%1-%2").arg(first + 1).arg(last + 1);
+}
+
 QString DocumentEditor::piecePath(const QString &destination, int index, int total,
                                   const PieceRange &range)
 {
@@ -649,9 +680,7 @@ QString DocumentEditor::piecePath(const QString &destination, int index, int tot
     // the 0-based numbers this class uses everywhere else.
     const int width = qMax(2, QString::number(total).size());
     const QString number = QStringLiteral("%1").arg(index + 1).rightJustified(width, QLatin1Char('0'));
-    const QString pages = range.count() == 1
-                              ? QString::number(range.first + 1)
-                              : QStringLiteral("%1-%2").arg(range.first + 1).arg(range.last + 1);
+    const QString pages = pageSpan(range.first, range.last);
     const QString stem = QStringLiteral("%1 %2 (%3)")
                              .arg(wanted.completeBaseName(), number, pages);
     const QString suffix = wanted.suffix();
@@ -1043,8 +1072,7 @@ bool DocumentEditor::mergeFile(const QString &path, const QVector<int> &pages, M
         // imported pages to place into pieces numbered against a document the reader
         // cannot see -- and with page handles that would have to stay open across every
         // piece's writer at once.
-        *error = tr("这份文档已经说了要拆成每 %1 页一份。先撤销那一步，再把文件合并进来。")
-                     .arg(splitting);
+        *error = tr("这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。", nullptr, splitting);
         return false;
     }
     if (to == MoveTarget::AfterPage && (anchor < 0 || anchor >= originalPages)) {
@@ -1067,9 +1095,8 @@ bool DocumentEditor::mergeFile(const QString &path, const QVector<int> &pages, M
     QSet<int> named;
     for (int page : pages) {
         if (page < 0 || page >= importPages) {
-            *error = tr("%1 一共 %2 页，没有第 %3 页。")
+            *error = tr("%1 一共 %n 页，没有第 %2 页。", nullptr, importPages)
                          .arg(QFileInfo(path).fileName())
-                         .arg(importPages)
                          .arg(page + 1);
             return false;
         }
@@ -1128,9 +1155,9 @@ bool DocumentEditor::splitInto(int pagesPerPiece, QString *error)
         // Not "拆分 is unavailable after a merge" but which pages make it unavailable:
         // the reader has to be able to find the merge and undo it, and after several of
         // them the count is the only thing this sentence can point at.
-        *error = tr("这份要写出的文档里有 %1 页是合并进来的，而那些页没有你在屏幕上能看到的"
-                    "页号，所以哪几页该进哪一份是说不出来的。先撤销那几次合并再拆。")
-                     .arg(imported);
+        *error = tr("这份要写出的文档里有 %n 页是合并进来的，而那些页没有你在屏幕上能看到的"
+                    "页号，所以哪几页该进哪一份是说不出来的。先撤销那几次合并再拆。",
+                    nullptr, imported);
         return false;
     }
     if (pagesPerPiece < 1) {

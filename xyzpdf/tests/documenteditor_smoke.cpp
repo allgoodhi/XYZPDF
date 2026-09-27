@@ -434,6 +434,42 @@ QString writeSharedPagesCopy(const QString &source, const QString &destination)
     return destination;
 }
 
+// One page's /Contents rewritten into a shape the save has an opinion about, with nothing
+// else in the document touched. Written here rather than committed as a fixture, for the
+// same two reasons the donor and the shared-page copy above give.
+//
+// The two shapes are the two ends of what a page's content can be in a file somebody else
+// produced. *Absent* is legal and common -- a blank page, or a page whose ink is all in its
+// annotations -- and the mark still has to land there rather than the named page being
+// quietly skipped. A *literal string* is not legal (the standard allows a stream, or an array
+// of streams) and still appears in the wild from producers that wrote their operators inline;
+// for that one the save refuses, because appending to content this program cannot parse is
+// how a watermark ends up declared on a page and never drawn on it.
+enum class ContentsShape { Absent, LiteralString };
+
+bool writeContentsShape(const QString &source, const QString &destination, int page,
+                        ContentsShape shape, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle target = pages.at(size_t(page)).getObjectHandle();
+        if (shape == ContentsShape::Absent)
+            target.removeKey("/Contents");
+        else
+            target.replaceKey("/Contents",
+                              QPDFObjectHandle::newString(
+                                  "BT /F1 24 Tf 100 700 Td (written inline) Tj ET"));
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return false;
+    }
+    return true;
+}
+
 // A document that needs a password to open, written here rather than committed as a
 // fixture: the test needs one, it needs to know the password, and a file in
 // tests/fixtures would be swept up by every other test that globs the folder.
@@ -3196,6 +3232,97 @@ int main(int argc, char **argv)
                   "either, in the dictionary or on the page");
             check(ink.maskedImages == 1, "and the two pages still share the one bitmap");
             check(ink.pageCount == pagesBefore, "no page was lost along the way");
+        }
+
+        // ---- a page whose content is neither a stream nor an array ----
+        //
+        // §26 recorded this branch as reachable in the source and never asked by a check: the
+        // only thing that had touched it was an i18n probe, which proves the sentence is in the
+        // catalogue and says nothing about whether the code ever gets there. Three promises are
+        // read below -- the save stops, it says which judgement stopped it, and the request is
+        // still on the list afterwards. That last one is the reason this refuses instead of
+        // writing the page without its marks: nothing reached disk, so 撤销 has to stay a real
+        // option rather than a menu row describing a file that already exists.
+        {
+            const QString literal
+                = scratch.filePath(QStringLiteral("contents-as-literal.pdf"));
+            QString built;
+            check(writeContentsShape(source, literal, 1, ContentsShape::LiteralString, &built),
+                  QStringLiteral("setup: a file whose second page carries its operators as a "
+                                 "string instead of a stream: %1").arg(built));
+            const QString literalHash = hashOfFile(literal);
+            DocumentEditor editor;
+            check(editor.open(literal, QString(), &error),
+                  QStringLiteral("and the document still opens -- reading a page like that is "
+                                 "Qt PDF's business, not this one: %1").arg(error));
+            check(editor.addWatermark(request("机密", 20, {1}), &error),
+                  QStringLiteral("setup: the damaged page is the one the reader named: %1")
+                      .arg(error));
+
+            const QString refused = scratch.filePath(QStringLiteral("contents-as-literal-out.pdf"));
+            error.clear();
+            check(!editor.saveAs(refused, &error),
+                  "the save refuses rather than appending to content it cannot parse");
+            check(error.contains(QStringLiteral("内容流")),
+                  QStringLiteral("and the sentence says which judgement it made: %1").arg(error));
+            check(!QFile::exists(refused), "and no file is at the destination it was asked for");
+            check(QDir(scratch.path())
+                      .entryList({QStringLiteral("xyzpdf-save-*.pdf")}, QDir::Files)
+                      .isEmpty(),
+                  "and nothing of ours is left in the folder under a temporary name");
+            check(editor.isDirty() && editor.undoDescription().contains(QStringLiteral("水印")),
+                  QStringLiteral("the request is still pending, so 撤销 still describes "
+                                 "something: %1").arg(editor.undoDescription()));
+            check(hashOfFile(literal) == literalHash,
+                  "and the document worked on is byte for byte what it was");
+
+            // The same file with the *healthy* page named. Without this control the chain above
+            // reads as "水印 on this scratch file fails", which a scratch file broken in some
+            // unrelated way also produces; this is what makes the refusal that one page's shape.
+            check(editor.undo(), "setup: the refused request taken back");
+            check(editor.addWatermark(request("机密", 20, {0}), &error),
+                  QStringLiteral("setup: page 1, whose content is an ordinary stream: %1")
+                      .arg(error));
+            const QString sibling = scratch.filePath(QStringLiteral("contents-sibling-ok.pdf"));
+            error.clear();
+            check(editor.saveAs(sibling, &error),
+                  QStringLiteral("and the same document does write: %1").arg(error));
+            const InkReport inked = readInk(sibling);
+            check(inked.drawn == QVector<int>({0}),
+                  QStringLiteral("on the page that was named: %1")
+                      .arg(describeOrder(inked.drawn)));
+            check(inked.pageCount == pagesBefore, "and nothing else about the file changed shape");
+        }
+
+        // ---- a page with no content stream at all ----
+        //
+        // The other end of the same function. Legal, and what a blank page looks like; the mark
+        // still has to land on it. Skipping it instead is exactly the failure §26's first probe
+        // measured from the other side -- a dialog that said 盖在 2 页上 over a file carrying one
+        // page of ink -- and a page with nothing on it is where a "just leave that one alone"
+        // shortcut would hide, because nothing visibly breaks.
+        {
+            const QString bare = scratch.filePath(QStringLiteral("contents-absent.pdf"));
+            QString built;
+            check(writeContentsShape(source, bare, 0, ContentsShape::Absent, &built),
+                  QStringLiteral("setup: a file whose first page has no /Contents: %1").arg(built));
+            DocumentEditor editor;
+            check(editor.open(bare, QString(), &error), "setup: it opens");
+            check(editor.addWatermark(request("机密", 20, {0, 1}), &error),
+                  QStringLiteral("setup: the bare page and a normal one, in one request: %1")
+                      .arg(error));
+            const QString out = scratch.filePath(QStringLiteral("contents-absent-out.pdf"));
+            error.clear();
+            check(editor.saveAs(out, &error),
+                  QStringLiteral("and both are inked, not one: %1").arg(error));
+            const InkReport ink = readInk(out);
+            check(ink.drawn == QVector<int>({0, 1}),
+                  QStringLiteral("the page with no content of its own is in the list of pages "
+                                 "that draw: %1").arg(describeOrder(ink.drawn)));
+            check(ink.namedButNotDrawn.isEmpty(),
+                  "and neither page merely names the bitmap without drawing it");
+            check(ink.maskedImages == 1, "for the one bitmap the two pages share");
+            check(ink.pageCount == pagesBefore, "and the page count is the one the dialog said");
         }
 
         // ---- 水印 beside the other six ----

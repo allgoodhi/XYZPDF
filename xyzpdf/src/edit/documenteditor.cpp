@@ -4,9 +4,15 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QFont>
+#include <QFontMetricsF>
+#include <QImage>
+#include <QPainter>
+#include <QPen>
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QTransform>
 #include <QVector>
 
 #ifndef NOMINMAX
@@ -25,7 +31,8 @@
 #include <qpdf/QPDFWriter.hh>
 
 #include <algorithm>
-#include <exception>
+#include <cmath>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -90,6 +97,254 @@ QVector<int> sortedFrom(const QSet<int> &pages)
     return out;
 }
 
+// ---------------------------------------------------------------- 水印, as pixels
+
+// The three numbers that decide how big the marks are, none of which is a question the reader
+// is asked. They are here rather than spread through the code because together they are the
+// answer to "what does a watermark of this program's look like", and the placement function
+// beside them has to be told the same fit the painting was cut to.
+//
+// 200 pixels for the em, and the canvas is only as big as the turned string needs: the two
+// planes cost 3 bytes and 1 byte per pixel of *every file this writes*, so slack in the canvas
+// is slack paid for once per save.
+constexpr int kWatermarkFontPixels = 200;
+// Counter-clockwise, so it reads the way a stamp does: up to the right.
+constexpr double kWatermarkAngle = 30.0;
+// The marks stop short of the page's edge. A watermark that touches the trim reads as a
+// printing fault rather than as a mark, and a scanned page's own edge is rarely the paper's.
+constexpr double kWatermarkFit = 0.9;
+// Room around the turned string's measuring box, in pixels of em. Glyphs overhang the box the
+// metrics report (an italic f, a comma's tail), and the box is of the *unrotated* string turned
+// -- which is larger than the turned string's own box, never smaller, so this is slack rather
+// than a clip allowance. It is still there because clipping a watermark cuts letters off.
+constexpr double kWatermarkPadding = 12.0;
+
+// Cosine and sine of each quarter turn, indexed by /Rotate/90. A table rather than std::cos
+// because the numbers go into a content stream: std::cos(M_PI / 2.0) is 6.12e-17, and a matrix
+// written with dust in it is a watermark a millimetre off its page for no reason anybody could
+// give the reader.
+struct QuarterTurn
+{
+    double cosine;
+    double sine;
+};
+const QuarterTurn kQuarterTurns[4] = { { 1.0, 0.0 }, { 0.0, 1.0 }, { -1.0, 0.0 }, { 0.0, -1.0 } };
+
+// The watermark as Qt paints it: any script the system has a font for, at any angle, for free.
+// That freedom is the whole reason this route exists -- the operator route needs a font per
+// script and puts its string into the page's extractable text (tests/watermarkprobe.cpp
+// measured both halves of that sentence).
+//
+// The result is transparent everywhere nothing was painted, which is what makes the route
+// affordable: the colour plane comes out flat and the mask plane is zero across most of the
+// canvas, and a flat plane of bytes compresses to almost nothing.
+QImage paintWatermark(const QString &text)
+{
+    QFont font;
+    font.setPixelSize(kWatermarkFontPixels);
+    font.setBold(true);
+
+    // The box the string needs before it turns, then that box turned. Measuring the box rather
+    // than the turned glyphs is deliberate: the rotated ink is always inside a rotated metric
+    // box, and the arithmetic is one line instead of a scan of every pixel for the first and
+    // last one that carries colour.
+    const QRectF laidOut = QFontMetricsF(font).boundingRect(text);
+    QTransform turned;
+    turned.rotate(-kWatermarkAngle);
+    const QRectF needed = turned.mapRect(QRectF(QPointF(0.0, 0.0), laidOut.size()));
+
+    const int canvasWidth = int(std::ceil(needed.width() + 2.0 * kWatermarkPadding));
+    const int canvasHeight = int(std::ceil(needed.height() + 2.0 * kWatermarkPadding));
+
+    QImage image(canvasWidth, canvasHeight, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setFont(font);
+    QPen pen(Qt::black);
+    painter.setPen(pen);
+    painter.translate(canvasWidth / 2.0, canvasHeight / 2.0);
+    painter.rotate(-kWatermarkAngle);
+    // centred in a rect the size of the canvas, so the canvas' centre is the marks' centre,
+    // which is the point watermarkPlacement() turns the page around.
+    painter.drawText(QRectF(-canvasWidth / 2.0, -canvasHeight / 2.0, double(canvasWidth),
+                            double(canvasHeight)),
+                     Qt::AlignCenter | Qt::TextDontClip,
+                     text);
+    painter.end();
+    return image;
+}
+
+// The two planes an image XObject wants: colour and, separately, coverage.
+struct Planes
+{
+    QByteArray rgb;
+    QByteArray alpha;
+};
+
+Planes splitPlanes(const QImage &argb)
+{
+    Planes planes;
+    const int width = argb.width();
+    const int height = argb.height();
+    planes.rgb.resize(width * height * 3);
+    planes.alpha.resize(width * height);
+    for (int y = 0; y < height; ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(argb.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const int offset = y * width + x;
+            planes.rgb[3 * offset] = char(qRed(line[x]));
+            planes.rgb[3 * offset + 1] = char(qGreen(line[x]));
+            planes.rgb[3 * offset + 2] = char(qBlue(line[x]));
+            // Where nothing was painted the colour is 0/0/0 and the alpha is 0, so both planes
+            // are flat over most of the page and compress to almost nothing. That is the only
+            // reason this route is affordable at all.
+            planes.alpha[offset] = char(qAlpha(line[x]));
+        }
+    }
+    return planes;
+}
+
+// One image, as a stream object ready to be referenced. Used for both planes, which differ only
+// in colour space and size.
+QPDFObjectHandle imageStream(QPDF &qpdf, const QByteArray &raw, int width, int height,
+                             const char *colorSpace)
+{
+    QPDFObjectHandle stream = qpdf.newStream();
+    // getDict(), not replaceKey on the stream itself: a stream object answers "operation for
+    // dictionary attempted on object of type stream" and *ignores* each request -- measured in
+    // tests/watermarkprobe.cpp, six warnings for the six keys below, and the image came out with
+    // no /Subtype at all.
+    QPDFObjectHandle dict = stream.getDict();
+    dict.replaceKey("/Type", QPDFObjectHandle::newName("/XObject"));
+    dict.replaceKey("/Subtype", QPDFObjectHandle::newName("/Image"));
+    dict.replaceKey("/Width", QPDFObjectHandle::newInteger(width));
+    dict.replaceKey("/Height", QPDFObjectHandle::newInteger(height));
+    dict.replaceKey("/ColorSpace", QPDFObjectHandle::newName(colorSpace));
+    dict.replaceKey("/BitsPerComponent", QPDFObjectHandle::newInteger(8));
+    // The pixels as they were painted, and *no* filter: every comment on `replaceStreamData` is
+    // that the buffer it is given is "the data read from the file, after any decryption filters
+    // have been applied", i.e. already encoded by whatever name is passed as /Filter. Handing over
+    // raw bytes and labelling them /FlateDecode produced exactly what that reads as on the way
+    // back in (also measured): "stream inflate: inflate: data: unknown compression method".
+    // Leaving the filter out instead makes the writer the one that decides, which is the same
+    // decision every other save this class makes already makes.
+    stream.replaceStreamData(std::string(raw.constData(), size_t(raw.size())),
+                             QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
+    return qpdf.makeIndirectObject(stream);
+}
+
+// How solid the marks are, as one ExtGState shared by the whole document.
+//
+// `/ca` rather than paler pixels: PDF multiplies it into the image's own soft mask, so the
+// number the dialog showed is the number that reaches the file, and moving the slider redraws
+// nothing. Only /ca and not also /CA -- /CA is the *stroking* alpha, and drawing an image is a
+// non-stroking operation.
+QPDFObjectHandle watermarkState(QPDF &qpdf, int opacityPercent)
+{
+    QPDFObjectHandle state = QPDFObjectHandle::newDictionary();
+    state.replaceKey("/Type", QPDFObjectHandle::newName("/ExtGState"));
+    state.replaceKey("/ca", QPDFObjectHandle::newReal(opacityPercent / 100.0));
+    return qpdf.makeIndirectObject(state);
+}
+
+// A page's /Resources, ready to write into.
+//
+// Inheritance-aware and shallow-copied when shared: /Resources may live on a parent node of the
+// page tree, and adding a key there would put this page's watermark resources on every page that
+// inherits it -- including the pages this request did not name.
+QPDFObjectHandle resourcesForWrite(QPDFPageObjectHelper &page)
+{
+    QPDFObjectHandle dict = page.getObjectHandle();
+    QPDFObjectHandle resources = page.getAttribute("/Resources", /* copy_if_shared = */ true);
+    if (!resources.isDictionary()) {
+        dict.replaceKey("/Resources", QPDFObjectHandle::newDictionary());
+        resources = dict.getKey("/Resources");
+    }
+    return resources;
+}
+
+// One sub-dictionary of a page's /Resources, ready to write into: /ExtGState, /XObject.
+//
+// Two reasons this is a function and not a replaceKey on /Resources:
+//
+//   * A resource name is looked up inside the *subtype* dictionary -- /Resources /XObject /Imwm1,
+//     not /Resources /Imwm1. Putting the entry at the top level is not where a reader looks, and a
+//     lenient reader that draws something anyway draws it with its own defaults: measured in
+//     tests/watermarkprobe.cpp, the first version of that probe drew its watermark completely
+//     black because the /ca state was never found, and the picture looked right while the claim
+//     about alpha had never been tested.
+//   * The sub-dictionary is usually an indirect object shared by every page that inherits the
+//     same resources, so writing into it writes into the other pages' too. Copied when indirect,
+//     which is the precondition for being shared; `unsafeShallowCopy` is the right one because
+//     only top-level keys get replaced, never anything below them.
+QPDFObjectHandle resourceDictForWrite(QPDF &qpdf, QPDFObjectHandle &resources, const char *key)
+{
+    QPDFObjectHandle sub = resources.getKey(key);
+    if (!sub.isDictionary()) {
+        resources.replaceKey(key, QPDFObjectHandle::newDictionary());
+        return resources.getKey(key);
+    }
+    if (sub.isIndirect()) {
+        sub = qpdf.makeIndirectObject(sub.unsafeShallowCopy());
+        resources.replaceKey(key, sub);
+    }
+    return sub;
+}
+
+// One page's content streams, with a new one added at the end -- which is where ink that should
+// cover the page's own text has to go.
+//
+// Not qpdf's addPageContents(): what its copy-if-shared covers is *inheritable* attributes, as
+// its own header says outright, and /Contents is not one of those. So on a page whose /Contents
+// is an indirect array that a second page also references, addPageContents() appends into the
+// array both pages read, and puts this watermark on a page nobody named. Hence the copy below,
+// by the same rule resourceDictForWrite() follows.
+//
+// The sentence it refuses with is handed in rather than said here, and the reason is the
+// catalogue: this is a free function, so a `tr()` call here has no class around it for lupdate
+// to read as a context, and the string is then not an unfinished entry but no entry at all --
+// it would reach an English interface straight out of the source. The caller is a member, so
+// the same call there does get a context. This is §22's hole about the third-party table's
+// four cells, in the other direction: not a missing translation but a missing question.
+void appendWatermarkContent(QPDF &qpdf, QPDFPageObjectHelper &page, const std::string &ops,
+                            const QString &refusal)
+{
+    QPDFObjectHandle pageDict = page.getObjectHandle();
+    const QPDFObjectHandle added = qpdf.newStream(ops);
+    QPDFObjectHandle contents = pageDict.getKey("/Contents");
+
+    if (contents.isNull()) {
+        pageDict.replaceKey("/Contents", added);
+        return;
+    }
+    if (contents.isStream()) {
+        // One stream of its own: this page's key is what is being replaced, and nothing below the
+        // stream is written to, so a second page that points at the same stream keeps drawing
+        // exactly what it drew before.
+        QPDFObjectHandle both = QPDFObjectHandle::newArray();
+        both.appendItem(contents);
+        both.appendItem(added);
+        pageDict.replaceKey("/Contents", both);
+        return;
+    }
+    if (contents.isArray()) {
+        // An array is written *into*, so a shared one has to be copied first: two pages whose
+        // /Contents is the same indirect array would otherwise both gain these marks, and only
+        // one of them was named. Copied when indirect, which is the precondition for being shared.
+        if (contents.isIndirect()) {
+            contents = qpdf.makeIndirectObject(contents.unsafeShallowCopy());
+            pageDict.replaceKey("/Contents", contents);
+        }
+        contents.appendItem(added);
+        return;
+    }
+    // /Contents is neither. Damaged, in other words, and this refuses rather than writing a page
+    // whose marks a reader was promised: see the two refusals in the merge replay below, which
+    // are the same judgement about the same kind of quiet.
+    throw std::runtime_error(refusal.toUtf8().constData());
+}
+
 } // namespace
 
 // The words a reader asked for, because these show up in a menu and a menu that
@@ -148,6 +403,13 @@ QString DocumentEditor::describeOperation(const Operation &op) const
                        : tr("加上打开口令（AES-256）");
         }
         return tr("按原来的口令写出去");
+    }
+    if (op.kind == Operation::Kind::Watermark) {
+        // What the marks say, in the row that names the thing being taken back. The text is put
+        // here because, unlike a password, it is something the reader typed *to be seen*: it goes
+        // across every named page of the file. A row that said only 加水印（12 页） would also be
+        // two rows apart in a list of three watermarks and indistinguishable.
+        return tr("加水印「%2」（%1 页）").arg(count).arg(op.watermark.text);
     }
     return tr("删除 %1 页").arg(count);
 }
@@ -458,6 +720,60 @@ QString DocumentEditor::passwordOfWrittenFile() const
     if (protection.what == Protection::What::Decrypt)
         return QString();
     return sourcePassword;
+}
+
+DocumentEditor::Placement DocumentEditor::watermarkPlacement(const QRectF &box,
+                                                             double canvasWidth,
+                                                             double canvasHeight,
+                                                             int rotateDegrees)
+{
+    // A page with no area, or a canvas with none, cannot be scaled to: the answer here is a
+    // matrix that draws nothing rather than a division that produces infinity and puts
+    // "1.#INF" into a content stream. Both are reachable from a damaged file, and a page that
+    // cannot be drawn on is not a reason to write a file that cannot be parsed.
+    if (box.width() <= 0.0 || box.height() <= 0.0 || canvasWidth <= 0.0 || canvasHeight <= 0.0)
+        return Placement();
+
+    // Which quarter turn, and turned the normal way round: /Rotate is in degrees clockwise and
+    // may be written as -90 or 270 or 450, so the only thing it means to this function is how
+    // many times the paper has been turned.
+    const int quarter = ((rotateDegrees / 90) % 4 + 4) % 4;
+    const QuarterTurn &turn = kQuarterTurns[quarter];
+
+    // The page as a reader sees it. /Rotate turns the paper, so a 90 or a 270 swaps which edge
+    // is the wide one, and fitting the marks to the unrotated box would put them across the page
+    // the wrong way up and too long for it.
+    const bool swapped = (quarter % 2) == 1;
+    const double displayWidth = swapped ? box.height() : box.width();
+    const double displayHeight = swapped ? box.width() : box.height();
+
+    // One scale for both axes, so the canvas keeps the shape it was painted with. Which of the
+    // two edges is the binding one depends on the string: a long one is width-bound and a
+    // two-word one may be height-bound, and neither can be assumed about a document.
+    const double scale
+        = qMin(kWatermarkFit * displayWidth / canvasWidth,
+               kWatermarkFit * displayHeight / canvasHeight);
+    const double along = scale * canvasWidth;   // the bitmap's own right edge, on the paper
+    const double across = scale * canvasHeight; // and its top edge
+
+    // Turning the marks counter-clockwise by the page's /Rotate is what makes them read upright
+    // once the viewer has turned the paper clockwise by the same amount: a vector drawn along
+    // (cos, sin) in the page's own space lands along the displayed horizontal. Which also means
+    // a pending 旋转页面 is folded in rather than fought -- see the declaration for why the ink
+    // follows the paper's text instead of the screen.
+    Placement m;
+    m.a = turn.cosine * along;
+    m.b = turn.sine * along;
+    m.c = -turn.sine * across;
+    m.d = turn.cosine * across;
+    // The four corners of the unit square land at (e,f), (a+e,b+f), (c+e,d+f) and
+    // (a+c+e, b+d+f); their mean is the centre of what gets drawn, so that is the one set to the
+    // centre of the page.
+    const double cx = box.x() + box.width() / 2.0;
+    const double cy = box.y() + box.height() / 2.0;
+    m.e = cx - (m.a + m.c) / 2.0;
+    m.f = cy - (m.b + m.d) / 2.0;
+    return m;
 }
 
 bool DocumentEditor::sameFile(const QString &path, const QString &other)
@@ -895,6 +1211,80 @@ bool DocumentEditor::removeProtection(QString *error)
     return true;
 }
 
+bool DocumentEditor::addWatermark(const Watermark &watermark, QString *error)
+{
+    if (live.isEmpty()) {
+        *error = tr("还没有打开任何文档。");
+        return false;
+    }
+    if (watermark.text.trimmed().isEmpty()) {
+        // Refused rather than defaulted, and rather than treated as "no watermark": an empty
+        // canvas is not an invisible one. Whatever the metrics report for a blank string is what
+        // would be painted and stretched across every named page, so a reader who pressed 确定
+        // with the box empty asked for a smudge, not for nothing.
+        *error = tr("还没有说水印要写什么字。");
+        return false;
+    }
+    if (watermark.opacityPercent < 1 || watermark.opacityPercent > 100) {
+        // The dialog's spin box cannot send this. Checked because the number reaches a file as
+        // PDF's `/ca`, and outside that range PDF says nothing anyone could rely on: 0.0 is
+        // invisible, and a value above 1.0 is clamped by some readers and not by others. A
+        // watermark whose strength depends on which reader the next person opens it with is
+        // worse than a refusal.
+        *error = tr("不透明度只能是 1% 到 100% 之间的整数。");
+        return false;
+    }
+
+    QSet<int> named;
+    for (int page : watermark.pages) {
+        if (page >= 0 && live.contains({0, page}))
+            named.insert(page);
+    }
+    if (named.isEmpty()) {
+        // The two zeroes are different sentences, and 删除页面 and 旋转页面 already say them
+        // apart: nothing was named, versus pages that an earlier unsaved change took out.
+        *error = watermark.pages.isEmpty()
+            ? tr("页码范围里没有可加水印的页面。")
+            : tr("那些页在还没保存的修改里已经删掉了，没有可以加水印的。");
+        return false;
+    }
+
+    Watermark asked = watermark;
+    asked.pages = sortedFrom(named);
+    if (asked == watermarkToWrite()) {
+        // The same refusal splitInto() and protectWith() make: this is not a change. It would
+        // dirty the tab and earn an undo row that, when taken back, leaves the file exactly as it
+        // would have been.
+        *error = tr("这份要写出的文件已经带着一模一样的水印了，再要一次不会多改什么。");
+        return false;
+    }
+
+    Operation op;
+    op.kind = Operation::Kind::Watermark;
+    op.watermark = asked;
+    // record() and nothing else: no page is taken out, moved or turned, so `live` comes back from
+    // rebuildLive() exactly as it went in. That is what makes 撤销 here one entry out of a list
+    // rather than a page to be un-drawn -- nothing had been written yet.
+    record(op);
+    return true;
+}
+
+DocumentEditor::Watermark DocumentEditor::watermarkToWrite() const
+{
+    // The last one asked for, which is the rule splitPieceSize() and protectionToWrite() follow:
+    // a second 水印 is the reader changing the wording, not a second layer for the save to draw.
+    // The alternative is that taking one back leaves the other behind, which is not something any
+    // summary in this program describes -- and it would make 撤销 twice the only way to take a
+    // watermark off a document.
+    for (auto it = pending.crbegin(); it != pending.crend(); ++it) {
+        if (it->kind == Operation::Kind::Watermark)
+            return it->watermark;
+    }
+    // Nothing pending. An empty text is what the dialog reads as "open on the defaults", and what
+    // the save reads as "draw nothing".
+    return Watermark();
+}
+
 void DocumentEditor::record(const Operation &op)
 {
     pending.append(op);
@@ -948,9 +1338,10 @@ void DocumentEditor::rebuildLive()
             live = planMerge(live, op.pages, op.mergeId, op.moveTo, op.anchor).order;
         }
         // RotatePages needs no branch -- a turned page is still the same page in the same
-        // place -- and neither do the two inert kinds: SplitBySize changes how many files a
-        // save writes and Protect changes what each of them needs to open, and neither
-        // touches which pages exist. A new kind that does change the list has to appear
+        // place -- and neither do the three kinds that leave the tree alone: SplitBySize changes
+        // how many files a save writes, Protect changes what each of them needs to open, and
+        // Watermark changes what is drawn inside a page. None of the three touches which pages
+        // exist. A new kind that does change the list has to appear
         // here, and rebuild-rather-than-patch is what makes forgetting it show up as a count
         // that contradicts the operations instead of a list that quietly drifts.
     }
@@ -1027,6 +1418,75 @@ void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<PageRef>
             const int at = present.indexOf({0, original});
             if (at >= 0 && at < int(pages.size()))
                 pages.at(size_t(at)).rotatePage(op.quarterTurns * 90, /* relative = */ true);
+        }
+        return;
+    }
+
+    if (op.kind == Operation::Kind::Watermark) {
+        // One canvas, painted once, for the whole file. Every named page references the same two
+        // image streams and the same graphics state, which is what makes the bitmap route the
+        // *cheaper* of the two (tests/watermarkprobe.cpp, question 6: 0.24 KB per page against
+        // the operator route's 0.42 over a 600-page file) -- a page gains a `cm` and a `Do`, and
+        // the pixels are paid for once no matter how many pages carry them.
+        const Watermark &mark = op.watermark;
+        const QImage art = paintWatermark(mark.text);
+        const Planes planes = splitPlanes(art);
+        const QPDFObjectHandle image
+            = imageStream(document, planes.rgb, art.width(), art.height(), "/DeviceRGB");
+        image.getDict().replaceKey("/SMask", imageStream(document, planes.alpha, art.width(),
+                                                        art.height(), "/DeviceGray"));
+        const QPDFObjectHandle state = watermarkState(document, mark.opacityPercent);
+
+        for (int original : mark.pages) {
+            const int at = present.indexOf({0, original});
+            if (at < 0)
+                continue; // an earlier 删页 took this one out; see pagesStillThere()
+            QPDFPageObjectHelper page = pages.at(size_t(at));
+
+            // What the reader sees of the page: the CropBox (which is what a viewer clips to, and
+            // falls back to the MediaBox without writing anything when the page has no /CropBox)
+            // and the /Rotate that watermarkPlacement() folds in. Both read through getAttribute's
+            // inheritance walk rather than getKey, since either may live on a parent node.
+            QPDFObjectHandle box = page.getCropBox(/* copy_if_shared = */ false,
+                                                   /* copy_if_fallback = */ false);
+            if (!box.isArray())
+                box = page.getMediaBox(/* copy_if_shared = */ false);
+            QRectF area;
+            if (box.isArray() && box.getArrayNItems() == 4) {
+                area = QRectF(box.getArrayItem(0).getNumericValue(),
+                              box.getArrayItem(1).getNumericValue(),
+                              box.getArrayItem(2).getNumericValue()
+                                  - box.getArrayItem(0).getNumericValue(),
+                              box.getArrayItem(3).getNumericValue()
+                                  - box.getArrayItem(1).getNumericValue());
+            }
+            const QPDFObjectHandle rotate = page.getAttribute("/Rotate", false);
+            const int degrees = rotate.isInteger() ? rotate.getIntValue() : 0;
+            const Placement m = watermarkPlacement(area, double(art.width()), double(art.height()),
+                                                   degrees);
+
+            // Names are made unique against the whole /Resources dictionary rather than against
+            // the subtype sub-dictionary: qpdf's own guidance for getUniqueResourceName says so,
+            // and answering from the sub-dictionary alone is what lets a page that already has an
+            // `Imwm1` of its own get it overwritten -- the page would then draw the watermark as
+            // its own form, and lose whatever it used to draw.
+            QPDFObjectHandle resources = resourcesForWrite(page);
+            int suffix = 1;
+            const std::string imageName
+                = resources.getUniqueResourceName("Imwm", suffix);
+            const std::string stateName
+                = resources.getUniqueResourceName("GSwm", suffix);
+            resourceDictForWrite(document, resources, "/XObject")
+                .replaceKey("/" + imageName, image);
+            resourceDictForWrite(document, resources, "/ExtGState")
+                .replaceKey("/" + stateName, state);
+
+            char ops[512];
+            std::snprintf(ops, sizeof(ops),
+                          "q /%s gs %.4f %.4f %.4f %.4f %.4f %.4f cm /%s Do Q\n", stateName.c_str(),
+                          m.a, m.b, m.c, m.d, m.e, m.f, imageName.c_str());
+            appendWatermarkContent(document, page, ops,
+                                   tr("这一页的内容流不是能往上加东西的样子，所以水印没有画上去。"));
         }
         return;
     }

@@ -25,6 +25,7 @@
 #include "../src/ui/mergepagesdialog.h"
 #include "../src/ui/ocrdialog.h"
 #include "../src/ui/protectpagesdialog.h"
+#include "../src/ui/watermarkdialog.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
 
@@ -44,6 +45,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollBar>
+#include <QSpinBox>
 #include <QString>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -1485,6 +1487,183 @@ int main(int argc, char **argv)
                   QStringLiteral("the editor records that too: %1").arg(error));
             check(editor.passwordOfWrittenFile().isEmpty(),
                   "and the copy a save would write from here asks for no key at all");
+        }
+    }
+
+    // ---- 加水印: the box offers what the model means, and greys what it refuses ----
+    //
+    // The third inert recorder. Two things a model test cannot see are checked here. One is what
+    // the box shows before anybody has touched it: the first version opened offering 1% 不透明度,
+    // because a QSpinBox whose range starts at 1 sits at 1 until someone asks for the default --
+    // found in a real window, and a watermark at 1% is a watermark nobody can see, so the number
+    // is now read from the same struct the writer reads. The other is §22's rule from the 加密
+    // box: the button is off for exactly the requests addWatermark() turns down, so the reader
+    // learns 再要一次不会多改什么 from a grey button and one sentence, not from a warning box
+    // after a press. A fresh box per click, the way the menu builds one.
+    {
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(book, QString(), &error),
+              QStringLiteral("setup: a 40-page document opens: %1").arg(error));
+
+        const auto okayOf = [](WatermarkDialog &box) {
+            auto *buttons = box.findChild<QDialogButtonBox *>();
+            return buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+        };
+        const auto saidBy = [](WatermarkDialog &box) {
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        // The two boxes are picked by the hint they carry, not by counting: a QSpinBox owns a
+        // QLineEdit of its own, so the second line edit in creation order is the opacity field
+        // and writing a page range into it changes nothing anyone can see.
+        const auto editHintedWith = [](WatermarkDialog &box, const QString &hint) {
+            const auto edits = box.findChildren<QLineEdit *>();
+            for (QLineEdit *edit : edits) {
+                if (edit->placeholderText() == hint)
+                    return edit;
+            }
+            return static_cast<QLineEdit *>(nullptr);
+        };
+        const auto wordEdit = [&editHintedWith](WatermarkDialog &box) {
+            return editHintedWith(box, QStringLiteral("例如 机密、作废、内部资料"));
+        };
+        const auto rangeEdit = [&editHintedWith](WatermarkDialog &box) {
+            return editHintedWith(box, QStringLiteral("例如 1-3,5,8-10"));
+        };
+        const auto radio = [](WatermarkDialog &box, const QString &starts) {
+            const auto radios = box.findChildren<QRadioButton *>();
+            for (QRadioButton *choice : radios) {
+                if (choice->text().startsWith(starts))
+                    return choice;
+            }
+            return static_cast<QRadioButton *>(nullptr);
+        };
+
+        {
+            WatermarkDialog box(&tab, &editor);
+            QPushButton *okay = okayOf(box);
+            auto *spin = box.findChild<QSpinBox *>();
+            check(spin != nullptr, "the box asks how solid the marks should be");
+            check(spin && spin->value() == DocumentEditor::Watermark {}.opacityPercent,
+                  QStringLiteral("and it opens on the model's own default, not on its minimum: %1%")
+                      .arg(spin ? spin->value() : -1));
+            check(okay && !okay->isEnabled(),
+                  "a box nobody has typed a word into is off, because an empty word is a smudge");
+            check(saidBy(box).contains(QStringLiteral("还没有说要盖什么字")),
+                  QStringLiteral("and says which half is missing: %1").arg(saidBy(box)));
+            QRadioButton *all = radio(box, QStringLiteral("全部"));
+            check(all && all->isChecked(),
+                  "it opens on 全部, because that is what a reader who came to stamp every page means");
+            const DocumentEditor::Watermark asked = box.request();
+            check(asked.text.isEmpty() && asked.pages.size() == 40,
+                  "and what it would hand over is every page and no word");
+        }
+
+        {
+            WatermarkDialog box(&tab, &editor);
+            wordEdit(box)->setText(QStringLiteral("机密"));
+            QPushButton *okay = okayOf(box);
+            check(okay && okay->isEnabled() && okay->text() == QStringLiteral("盖这 40 页"),
+                  QStringLiteral("one word and the button counts the pages it lands on: %1")
+                      .arg(okay ? okay->text() : QStringLiteral("(none)")));
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("「机密」")) && said.contains(QStringLiteral("20%"))
+                      && said.contains(QStringLiteral("盖在 40 页上")),
+                  QStringLiteral("the summary repeats all three answers back: %1").arg(said));
+            check(said.contains(QStringLiteral("画上去的一张图")),
+                  "and warns that the marks are a drawing, which is the one fact here a reader "
+                  "cannot discover by trying");
+        }
+
+        {
+            // 空 is not 全部. The print parser reads an empty range as the whole document, and
+            // this box has a radio for saying that on purpose -- a second way to say it would let
+            // Enter stamp four hundred pages because a box was left blank.
+            WatermarkDialog box(&tab, &editor);
+            wordEdit(box)->setText(QStringLiteral("机密"));
+            radio(box, QStringLiteral("指定"))->click();
+            QPushButton *okay = okayOf(box);
+            check(okay && !okay->isEnabled(), "choosing 指定页码 and naming nothing is off");
+            check(saidBy(box).contains(QStringLiteral("还没有说出要盖哪几页")),
+                  QStringLiteral("and is named as the missing half: %1").arg(saidBy(box)));
+            rangeEdit(box)->setText(QStringLiteral("2-3,7"));
+            check(okay->isEnabled() && okay->text() == QStringLiteral("盖这 3 页"),
+                  "three pages named, three pages counted");
+            const DocumentEditor::Watermark asked = box.request();
+            QStringList spelled;
+            for (int page : asked.pages)
+                spelled << QString::number(page + 1);
+            check(asked.pages == QVector<int>({1, 2, 6}),
+                  QStringLiteral("and the numbers handed over are the ones the save reads: %1")
+                      .arg(spelled.join(QLatin1Char(','))));
+        }
+
+        {
+            // A page an earlier 删页 took out is not inked, and the box says the number the save
+            // will draw rather than the number of boxes ticked -- pagesStillThere() is the one
+            // function both ends ask.
+            check(editor.deletePages({1}, &error),
+                  QStringLiteral("setup: the second page goes: %1").arg(error));
+            WatermarkDialog box(&tab, &editor);
+            wordEdit(box)->setText(QStringLiteral("机密"));
+            rangeEdit(box)->setText(QStringLiteral("2-3,7"));
+            check(radio(box, QStringLiteral("指定"))->isChecked(),
+                  "a range typed in moves the choice to it without being clicked");
+            check(saidBy(box).contains(QStringLiteral("说好的 3 页里有 2 页还在")),
+                  QStringLiteral("and the box says which two: %1").arg(saidBy(box)));
+            check(okayOf(box)->text() == QStringLiteral("盖这 2 页"),
+                  "the button counts what is still there");
+            check(editor.pagesStillThere(box.request().pages) == 2,
+                  "read off the same one function the save will read");
+            check(editor.addWatermark(box.request(), &error),
+                  QStringLiteral("setup: the word is recorded: %1").arg(error));
+        }
+
+        {
+            // Reopening is what the menu does on every click. The recorded answer is offered back
+            // rather than a blank box, and asking for exactly that again is the request the editor
+            // refuses -- so the button is off before the press, in the same words.
+            WatermarkDialog box(&tab, &editor);
+            check(wordEdit(box)->text() == QStringLiteral("机密"),
+                  "the box comes back saying what is already on the list");
+            check(rangeEdit(box)->text() == QStringLiteral("3,7"),
+                  QStringLiteral("with the pages a save would actually ink spelled back: %1")
+                      .arg(rangeEdit(box)->text()));
+            // 3,7 and not 2,3,7: addWatermark() dropped the page the earlier 删页 had taken out
+            // before it recorded anything, so the list holds only pages that exist to be drawn on
+            // and a box opened against it cannot offer a second way to ask for a ghost.
+            QPushButton *okay = okayOf(box);
+            check(okay && !okay->isEnabled(), "and the very same ask again is off");
+            check(saidBy(box).contains(QStringLiteral("一模一样")),
+                  QStringLiteral("said, not just greyed: %1").arg(saidBy(box)));
+            check(!editor.addWatermark(box.request(), &error)
+                      && error.contains(QStringLiteral("再要一次不会多改什么")),
+                  QStringLiteral("and the editor refuses the identical request: %1").arg(error));
+
+            wordEdit(box)->setText(QStringLiteral("作废"));
+            check(okay->isEnabled() && okay->text() == QStringLiteral("盖这 2 页"),
+                  "a different word is a change, so the button lights again");
+            check(saidBy(box).contains(QStringLiteral("会把前面记下的「机密」换掉")),
+                  QStringLiteral("and says it replaces rather than adds: %1").arg(saidBy(box)));
+            check(editor.addWatermark(box.request(), &error),
+                  QStringLiteral("the editor takes that one: %1").arg(error));
+            check(editor.watermarkToWrite().text == QStringLiteral("作废"),
+                  "one ask at a time: the list carries the newest word, not two layers");
+
+            check(editor.undo(), "setup: the replacement is taken back");
+            check(editor.watermarkToWrite().text == QStringLiteral("机密"),
+                  "and the earlier answer is what a save would write now");
+            WatermarkDialog again(&tab, &editor);
+            QPushButton *againOkay = okayOf(again);
+            check(againOkay && !againOkay->isEnabled(),
+                  "a box built after the undo offers the undone-away answer back and greys it too, "
+                  "because it reads the list as it stands now");
         }
     }
 

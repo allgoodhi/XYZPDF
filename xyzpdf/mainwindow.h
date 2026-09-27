@@ -258,6 +258,7 @@ private:
     QAction *mergeFileAction = nullptr;
     QAction *splitFileAction = nullptr;
     QAction *protectFileAction = nullptr;
+    QAction *watermarkAction = nullptr;
     QAction *undoEditAction = nullptr;
     QAction *redoEditAction = nullptr;
     QAction *saveEditsAction = nullptr;

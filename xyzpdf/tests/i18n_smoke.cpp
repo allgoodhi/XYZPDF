@@ -293,6 +293,37 @@ int main(int argc, char **argv)
             { "ThirdPartyNotices", "（编入 Qt6Pdf.dll）" },
             { "ThirdPartyNotices", "（编入 Qt6Gui.dll、Qt6Core.dll）" },
             { "ThirdPartyNotices", "各自的原许可证，见许可证全文" },
+            // 加水印: the seventh entry in 文档, and the only one of the seven whose effect is
+            // something a reader sees on the page rather than something the file says about
+            // itself. The last of these is probed for a reason of its own: that sentence was
+            // first thrown from a free function, where lupdate sees no class to read as a
+            // context, so the string did not come back unfinished -- it came back absent, with
+            // nothing in the build to say so. A probe that names it is what turns "no entry in
+            // the catalogue" into a red test, which is the §22 hole again in the other
+            // direction: not a missing translation but a missing question.
+            { "MainWindow", "加水印(&W)…" },
+            { "MainWindow",
+              "记下要在哪几页上盖什么字，按保存修改为才写成一个新文件；正在读的这份不动，"
+              "那些字是画在页面上的一张图，复制、翻译、导出都拿不到它们" },
+            { "DocumentTab", "加水印" },
+            { "WatermarkDialog", "加水印" },
+            { "WatermarkDialog", "水印文字" },
+            { "WatermarkDialog", "不透明度" },
+            { "WatermarkDialog", "要盖水印的页面" },
+            { "WatermarkDialog", "还没有说要盖什么字。" },
+            { "WatermarkDialog", "「%1」，%2% 不透明度，盖在 %3 页上。" },
+            { "WatermarkDialog", "盖这 %1 页" },
+            // The two clauses the box adds once something is already on the list. They carry a
+            // leading blank line in the source because they are appended to a summary, and the
+            // key has to be that exact text -- which is also why they are written out here
+            // rather than reached by a loop over labels nobody has to name.
+            { "WatermarkDialog",
+              "\n\n这跟前面已经记下的一条一模一样，按下不会多改什么 —— 要改就换一个词，"
+              "或者动一下不透明度。" },
+            { "WatermarkDialog", "\n\n这会把前面记下的「%1」换掉；撤销一次回到那一个。" },
+            { "DocumentEditor", "加水印「%2」（%1 页）" },
+            { "DocumentEditor", "不透明度只能是 1% 到 100% 之间的整数。" },
+            { "DocumentEditor", "这一页的内容流不是能往上加东西的样子，所以水印没有画上去。" },
         };
 
         for (const Probe &probe : probes) {
@@ -352,6 +383,13 @@ int main(int argc, char **argv)
                                                  "这份文档已经说了要拆成每 %1 页一份。"
                                                  "先撤销那一步，再把文件合并进来。"),
               "the merge box and the editor refuse a pending split in one English");
+        // The same argument one more time, for the word that names the seventh feature: 加水印
+        // is both the dialog's own title and the box a refusal from the tab is titled by, and
+        // those two live in different classes -- which is the place a context can be spelled
+        // wrong without anything but this check noticing.
+        check(QCoreApplication::translate("DocumentTab", "加水印")
+                  == QCoreApplication::translate("WatermarkDialog", "加水印"),
+              "the dialog and the box a refusal from it is named by say 加水印 in one English");
 
         // ---- every cell of the third-party table, not a chosen few ----
         //

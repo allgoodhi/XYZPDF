@@ -23,6 +23,7 @@
 #include "src/ui/splitpagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
 #include "src/ui/translatedialog.h"
+#include "src/ui/watermarkdialog.h"
 #include "src/view/pageview.h"
 
 #include <QApplication>
@@ -1300,6 +1301,27 @@ void DocumentTab::protectPages()
                           : document->protectWith(asked, &error);
     if (!done) {
         WindowDialogs::warning(window(), tr("加密 / 去掉口令"), error);
+        return;
+    }
+    Q_EMIT editStateChanged();
+}
+
+void DocumentTab::addWatermark()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    WatermarkDialog dialog(window(), document);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    // The dialog filled the struct it hands back, so the sentence the reader just read and
+    // the request the list holds cannot be two different answers -- and the same refusal this
+    // call makes behind the dialog's back is the one the smoke test checks.
+    QString error;
+    if (!document->addWatermark(dialog.request(), &error)) {
+        WindowDialogs::warning(window(), tr("加水印"), error);
         return;
     }
     Q_EMIT editStateChanged();

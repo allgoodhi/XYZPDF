@@ -193,9 +193,9 @@ public:
     // opens in a tab of its own rather than replacing the one under the reader.
     //
     // What ties these together is that they share one list: 删除页面、旋转页面、
-    // 移动页面、合并文件进来、拆分文件 and 加密 / 去掉口令 record an operation, 撤销 takes
-    // the last one back, and 保存修改为 writes whatever the list says. Each of the six can
-    // be run again before anything is saved.
+    // 移动页面、合并文件进来、拆分文件、加密 / 去掉口令 and 加水印 record an operation, 撤销
+    // takes the last one back, and 保存修改为 writes whatever the list says. Each of the seven
+    // can be run again before anything is saved.
     //
     // The merge is the one that reaches outside this document: the pages it adds
     // come from other files, which the reader picks and can give page ranges for.
@@ -218,6 +218,12 @@ public:
     // was just recorded is 去掉口令 -- two slots would have to each know about the other.
     // Like the split, what this decides only reaches a file at the save.
     void protectPages();
+    // 加水印: the seventh, and the one that does not belong to either of the groups above. It
+    // moves no page and changes no page's count, so 撤销 here is again just taking one entry
+    // out of the list -- but it is the only one of the seven that writes into a page's own
+    // content stream, which is why its dialog spends a line of the summary saying the marks
+    // are a picture rather than text. Like the two above, nothing reaches a file until 保存.
+    void addWatermark();
     void undoEdit();
     void redoEdit();
     // Names the file to write into, replays the list onto the source and writes

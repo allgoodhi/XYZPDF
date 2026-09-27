@@ -1,5 +1,6 @@
 // Taking pages out of a PDF, moving the rest around, putting pages from another file
-// in, cutting what is left into several files, and what is promised around all four.
+// in, cutting what is left into several files, drawing marks on the pages that remain,
+// and what is promised around all five.
 //
 // The feature has one interesting failure mode, and it is not the page count: it
 // is writing over a file the reader owns. So most of what is pinned down here is
@@ -32,6 +33,13 @@
 // has to say "changed" when something was, or one of the two is not looking at the file.
 // The one thing asserted about the words rather than the bytes: no password, ever, in a
 // menu row or a summary.
+//
+// The 水印 checks need a painted bitmap, so this file runs on a QGuiApplication with the
+// offscreen platform -- the only platform a gate may open. Offscreen resolves no font, so
+// those checks ask the file which pages draw a masked image, how many such images it holds
+// and what its /ca says; "do the marks read as the words" is a question about a renderer's
+// fonts and belongs to tests/watermarkprobe.cpp, which is run under the windows platform by
+// hand for exactly that reason.
 
 #include "../src/document/qtpdfbackend.h"
 #include "../src/edit/documenteditor.h"
@@ -42,21 +50,28 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QImage>
+#include <QPointF>
 #include <QRegularExpression>
+#include <QRectF>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVector>
 
+#include <qpdf/Buffer.hh>
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <iostream>
+#include <memory>
 
 namespace {
 
@@ -241,6 +256,184 @@ QString describeOrder(const QVector<int> &numbers)
     return parts.join(QLatin1Char(','));
 }
 
+// The same for the /ca values a file says, so a failure line names the numbers the way
+// they are written rather than as "3 of them".
+QString describeAlphas(const QVector<double> &alphas)
+{
+    QStringList parts;
+    for (double alpha : alphas)
+        parts.append(QString::number(alpha, 'f', 3));
+    return parts.join(QStringLiteral(", "));
+}
+
+// What the marks this program draws say about themselves once they are in a file.
+//
+// Read page by page and from the *content* side rather than by counting dictionaries,
+// because the two ways this can be wrong sit on opposite sides of one object: an entry
+// can sit in a page's /Resources and never get invoked, which draws nothing, and a
+// content stream can invoke a name that is not in that page's resources, which draws
+// something with a reader's own defaults. tests/watermarkprobe.cpp measured the second
+// one happening and looking entirely right -- its first version drew a solid black
+// watermark because the /ca state was filed at the top of /Resources instead of in the
+// /ExtGState sub-dictionary a lookup goes through.
+//
+// Which image is "ours" is keyed on /SMask: the fixture's pages carry no images at all
+// (tools/make_fixtures.py writes text), and the other image fixtures' images are
+// uncompressed or flate with no soft mask, so a masked image in a file this test wrote
+// is the watermark and nothing else.
+struct InkReport
+{
+    bool readable = false;
+    int pageCount = 0;
+    QVector<int> drawn;            // pages whose content invokes a masked image
+    QVector<double> alphas;        // /ca of the graphics states those pages invoke
+    QVector<int> namedButNotDrawn; // pages naming a masked image without drawing it
+    int maskedImages = 0;          // distinct masked image XObjects anywhere in the file
+    QVector<QVector<double>> matrices; // the six numbers each masked draw is placed with
+};
+
+InkReport readInk(const QString &path, const QString &password = QString())
+{
+    InkReport report;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData(), password.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        report.readable = true;
+        report.pageCount = int(pages.size());
+
+        // A `cm` and the image it places, read together: the six numbers are only
+        // meaningful as the placement of the draw that follows them, and the placement is
+        // the half of the promise a rotated page can break. The operator name is required
+        // rather than skipped over because the six numbers *are* this program's own spelling
+        // of a matrix -- checking the file against a looser pattern would let a broken one
+        // of our own making read back as fine.
+        static const QRegularExpression draw(
+            QStringLiteral("([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s+"
+                           "([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s+cm\\s+"
+                           "/([A-Za-z0-9._]+)\\s+Do"),
+            QRegularExpression::UseUnicodePropertiesOption);
+        static const QRegularExpression state(
+            QStringLiteral("/([A-Za-z0-9._]+)\\s+gs"),
+            QRegularExpression::UseUnicodePropertiesOption);
+
+        QSet<int> masked;
+        for (size_t index = 0; index < pages.size(); ++index) {
+            QPDFPageObjectHelper page = pages.at(index);
+            const QPDFObjectHandle resources = page.getAttribute("/Resources", false);
+            const QPDFObjectHandle xobjects = resources.getKey("/XObject");
+            const QPDFObjectHandle states = resources.getKey("/ExtGState");
+
+            bool namesOne = false;
+            if (xobjects.isDictionary()) {
+                for (const std::string &name : xobjects.getKeys()) {
+                    const QPDFObjectHandle image = xobjects.getKey(name);
+                    if (!image.isStream())
+                        continue;
+                    masked.insert(image.getObjectID());
+                    if (image.getDict().getKey("/SMask").isStream())
+                        namesOne = true;
+                }
+            }
+
+            // Every piece of a page's content, decoded. A page this class has watermarked
+            // has at least two: the fixture's own flate-compressed stream and the one added
+            // on the end.
+            QByteArray content;
+            const QPDFObjectHandle contents = page.getObjectHandle().getKey("/Contents");
+            // A viewer sees a page's content as one stream with a line feed between the pieces
+            // (32000-1 §7.7.3.3), so the reading here puts one back. Without it the fixture's
+            // `ET` and our `q` fuse into `ETq`, an operator no viewer ever has to resolve, and a
+            // match here would be proving the shape of this function's own concatenation.
+            const auto append = [&content](QPDFObjectHandle part) {
+                if (!part.isStream())
+                    return;
+                if (!content.isEmpty())
+                    content.append('\n');
+                const std::shared_ptr<Buffer> bytes = part.getStreamData(qpdf_dl_generalized);
+                content.append(reinterpret_cast<const char *>(bytes->getBuffer()),
+                               int(bytes->getSize()));
+            };
+            if (contents.isArray()) {
+                for (int part = 0; part < contents.getArrayNItems(); ++part)
+                    append(contents.getArrayItem(part));
+            } else {
+                append(contents);
+            }
+
+            const QString asText = QString::fromLatin1(content);
+            QVector<QVector<double>> marks;
+            for (QRegularExpressionMatchIterator it = draw.globalMatch(asText); it.hasNext();) {
+                const QRegularExpressionMatch hit = it.next();
+                const QString name = QLatin1Char('/') + hit.captured(7);
+                const QPDFObjectHandle image = xobjects.getKey(name.toStdString());
+                if (!image.isStream() || !image.getDict().getKey("/SMask").isStream())
+                    continue;
+                QVector<double> matrix;
+                for (int number = 1; number <= 6; ++number)
+                    matrix.append(hit.captured(number).toDouble());
+                marks.append(matrix);
+            }
+            if (!marks.isEmpty()) {
+                report.drawn.append(int(index));
+                report.matrices.append(marks.first());
+                for (QRegularExpressionMatchIterator it = state.globalMatch(asText); it.hasNext();) {
+                    const QString name = QLatin1Char('/') + it.next().captured(1);
+                    const QPDFObjectHandle alpha = states.getKey(name.toStdString()).getKey("/ca");
+                    if (alpha.isNumber())
+                        report.alphas.append(alpha.getNumericValue());
+                }
+            }
+            if (namesOne && marks.isEmpty())
+                report.namedButNotDrawn.append(int(index));
+        }
+        report.maskedImages = masked.size();
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the marks out of " << path.toStdString() << ": "
+                  << e.what() << '\n';
+        ++failures;
+    }
+    return report;
+}
+
+// A copy of the document in which two pages read the *same* /Contents array and the same
+// /Resources dictionary, which is what a producer that laid down five identical pages
+// does. Nothing else in this file can reach the two rules that exist for that shape:
+// a page's content array is copied before anything is appended to it, and a resource
+// sub-dictionary is copied before a key is added, because /Contents and /Resources are
+// both places a file is allowed to point two pages at one object. Written here rather
+// than committed as a fixture for the same reason as the donor above, and it is the
+// control for both halves of the watermark checks below: without the copies, page 1
+// gains marks that only page 2 was promised.
+QString writeSharedPagesCopy(const QString &source, const QString &destination)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle first = pages.at(0).getObjectHandle();
+        QPDFObjectHandle second = pages.at(1).getObjectHandle();
+
+        QPDFObjectHandle shared = QPDFObjectHandle::newArray();
+        shared.appendItem(first.getKey("/Contents"));
+        shared = qpdf.makeIndirectObject(shared);
+        first.replaceKey("/Contents", shared);
+        second.replaceKey("/Contents", shared);
+
+        QPDFObjectHandle resources = qpdf.makeIndirectObject(first.getKey("/Resources"));
+        first.replaceKey("/Resources", resources);
+        second.replaceKey("/Resources", resources);
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: the shared-page copy could not be written: " << e.what() << '\n';
+        ++failures;
+        return {};
+    }
+    return destination;
+}
+
 // A document that needs a password to open, written here rather than committed as a
 // fixture: the test needs one, it needs to know the password, and a file in
 // tests/fixtures would be swept up by every other test that globs the folder.
@@ -410,7 +603,18 @@ BoxFlags boxesAsWritten(const QString &path, const QString &password)
 
 int main(int argc, char **argv)
 {
-    QCoreApplication application(argc, argv);
+    // A QGuiApplication, not a core one, because 水印 paints: the watermark is drawn by Qt into
+    // a bitmap before QPDF carries the pixels anywhere, and QPainter refuses to work without a
+    // platform. Offscreen rather than the desktop window platform because this runs in a gate
+    // that must not open a window.
+    //
+    // That choice has one consequence worth naming where it is made: under offscreen Qt resolves
+    // no real font, so every glyph comes out as a box (tests/watermarkprobe.cpp control C6 is
+    // what measured that). The watermark checks below therefore assert *structure* -- which page
+    // draws a masked image, how many such images a file holds, what /ca says -- and leave "do
+    // the marks read as the words" to the probe, which is run under the windows platform by hand.
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QGuiApplication application(argc, argv);
 
     // ---- what a delete request means, with no document anywhere near it ----
     //
@@ -2614,6 +2818,460 @@ int main(int argc, char **argv)
                                     .size()
                                     / 1024
                                : 0));
+            check(done, "and the timed save went through");
+        }
+    }
+
+    // ---- 水印: where the ink goes, and which pages get it ----
+    //
+    // The third operation that changes no page's place, and the only one of the seven
+    // that changes what is *drawn* on one. So the checks below are of two kinds: the
+    // list-side ones that any of the inert operations already have (undo takes back one
+    // row, a repeat replaces rather than stacks, nothing is on disk before 保存修改为),
+    // and the pixels-side ones that only this one can need -- which pages end up drawing
+    // a masked image, how many such images the file holds, whether a page that shares its
+    // content array with an inked page stayed clean.
+    //
+    // What is deliberately *not* asserted here: that the marks read as the words that were
+    // typed. The gate runs offscreen, where Qt resolves no font at all, so a check on the
+    // rendered letters would be a check on the machine. tests/watermarkprobe.cpp is the one
+    // that measured the pixels, and it is run under the windows platform by hand.
+    {
+        using Placement = DocumentEditor::Placement;
+        using Mark = DocumentEditor::Watermark;
+
+        // The corners of what gets drawn, the way a renderer would work them out from the
+        // six numbers: the unit square's four corners through [a b c d e f].
+        const auto corners = [](const Placement &m) {
+            return QVector<QPointF>{ QPointF(m.e, m.f),
+                                     QPointF(m.e + m.a, m.f + m.b),
+                                     QPointF(m.e + m.c, m.f + m.d),
+                                     QPointF(m.e + m.a + m.c, m.f + m.b + m.d) };
+        };
+        const auto inside = [](const QRectF &box, const QPointF &point) {
+            return point.x() >= box.left() - 1e-6 && point.x() <= box.right() + 1e-6
+                   && point.y() >= box.top() - 1e-6 && point.y() <= box.bottom() + 1e-6;
+        };
+        const auto length = [](const QPointF &p) { return std::hypot(p.x(), p.y()); };
+        const auto same = [](const Placement &a, const Placement &b) {
+            return qAbs(a.a - b.a) < 1e-9 && qAbs(a.b - b.b) < 1e-9 && qAbs(a.c - b.c) < 1e-9
+                && qAbs(a.d - b.d) < 1e-9 && qAbs(a.e - b.e) < 1e-9 && qAbs(a.f - b.f) < 1e-9;
+        };
+        const auto finite = [](const Placement &m) {
+            return std::isfinite(m.a) && std::isfinite(m.b) && std::isfinite(m.c)
+                && std::isfinite(m.d) && std::isfinite(m.e) && std::isfinite(m.f);
+        };
+
+        // A wide canvas, because that is what a line of text is: fitting a square canvas
+        // would hide a non-uniform scale, which is the failure that turns letters into a
+        // stretched smear.
+        const double canvasW = 1200.0;
+        const double canvasH = 400.0;
+        const QRectF portrait(0.0, 0.0, 595.0, 842.0);
+        for (int degrees : {0, 90, 180, 270}) {
+            const Placement m = DocumentEditor::watermarkPlacement(portrait, canvasW, canvasH,
+                                                                   degrees);
+            check(finite(m), QStringLiteral("a %1° page gives six finite numbers").arg(degrees));
+            const QVector<QPointF> four = corners(m);
+            bool allInside = true;
+            QPointF centre(0.0, 0.0);
+            for (const QPointF &corner : four) {
+                allInside = allInside && inside(portrait, corner);
+                centre += corner;
+            }
+            // "Stays on the page" and "is in the middle of it" -- the two things a reader
+            // looks at first, and the two that a matrix computed from the wrong edge breaks.
+            check(allInside,
+                  QStringLiteral("the marks on a %1° page are inside the page: (%2,%3)…(%4,%5)")
+                      .arg(degrees)
+                      .arg(four.at(0).x())
+                      .arg(four.at(0).y())
+                      .arg(four.at(3).x())
+                      .arg(four.at(3).y()));
+            centre /= 4.0;
+            check(length(centre - portrait.center()) < 1e-6,
+                  QStringLiteral("and centred on a %1° page: the four corners average (%2,%3)")
+                      .arg(degrees)
+                      .arg(centre.x())
+                      .arg(centre.y()));
+            // One scale for both axes: the drawn canvas keeps the shape it was painted with.
+            const QPointF along(m.a, m.b);
+            const QPointF across(m.c, m.d);
+            check(qAbs(length(along) / length(across) - canvasW / canvasH) < 1e-9,
+                  QStringLiteral("a %1° page stretches the bitmap by the same factor both ways")
+                      .arg(degrees));
+            // Which way is up. /Rotate is clockwise, so the marks turn counter-clockwise by
+            // the same quarter turn to come out upright on the screen -- and a placement that
+            // ignored the rotation entirely would look exactly like the 0° row four times.
+            const int quarter = degrees / 90;
+            const bool upright = quarter == 0 ? (qAbs(m.a) > 1e-6 && qAbs(m.b) < 1e-6)
+                                 : quarter == 1 ? (qAbs(m.a) < 1e-6 && m.b > 1e-6)
+                                 : quarter == 2 ? (m.a < -1e-6 && qAbs(m.b) < 1e-6)
+                                                : (qAbs(m.a) < 1e-6 && m.b < -1e-6);
+            check(upright, QStringLiteral("a %1° page turns the marks a quarter turn per %1° "
+                                          "(a=%2 b=%3)")
+                              .arg(degrees)
+                              .arg(m.a)
+                              .arg(m.b));
+        }
+
+        // The same page stored sideways and marked 90 is what a rotated document actually is,
+        // and it is the case where using the unrotated edges shows: the long side of the box
+        // is the one the marks have to run along once the viewer has turned the paper.
+        {
+            const QRectF asStored(0.0, 0.0, 842.0, 595.0);
+            const Placement turned = DocumentEditor::watermarkPlacement(asStored, canvasW,
+                                                                       canvasH, 90);
+            const Placement standing = DocumentEditor::watermarkPlacement(portrait, canvasW,
+                                                                         canvasH, 0);
+            // hypot(a, b) is the image's own x axis in page space -- how long the marks are
+            // along the direction they read, whichever way the paper is turned.
+            check(qAbs(length(QPointF(turned.a, turned.b))
+                       - length(QPointF(standing.a, standing.b))) < 1e-6,
+                  "a page stored landscape and marked 90 gets the marks as long as the page's "
+                  "displayed width, not its stored one");
+            check(length(QPointF(turned.a, turned.b)) > 0.0,
+                  "setup: the landscape page's marks have a length to compare at all");
+        }
+
+        // A rotation that is not a quarter turn, and the same turn written two ways. Both are
+        // answers real files give -- /Rotate is a plain integer a producer can write as -90 or
+        // 450 -- and neither may reach a content stream as dust: std::cos(M_PI / 2.0) is
+        // 6.1e-17, which is a watermark a twentieth of a point off its centre for no reason.
+        check(same(DocumentEditor::watermarkPlacement(portrait, canvasW, canvasH, -90),
+                   DocumentEditor::watermarkPlacement(portrait, canvasW, canvasH, 270)),
+              "-90 and 270 are one turn");
+        check(same(DocumentEditor::watermarkPlacement(portrait, canvasW, canvasH, 450),
+                   DocumentEditor::watermarkPlacement(portrait, canvasW, canvasH, 90)),
+              "450 is 90, not a turn and a half of anything else");
+        check(same(DocumentEditor::watermarkPlacement(portrait, canvasW, canvasH, 45),
+                   DocumentEditor::watermarkPlacement(portrait, canvasW, canvasH, 0)),
+              "and a /Rotate that is not a multiple of 90 is read as the quarter turn it "
+              "contains rather than turned through an angle nobody can check");
+
+        // A box that does not start at the origin (a page whose /CropBox is a window onto a
+        // bigger /MediaBox) and the two degenerates a damaged file can hand back.
+        {
+            const QRectF offset(30.0, 40.0, 595.0, 842.0);
+            const Placement m = DocumentEditor::watermarkPlacement(offset, canvasW, canvasH, 0);
+            bool allInside = true;
+            for (const QPointF &corner : corners(m))
+                allInside = allInside && inside(offset, corner);
+            check(allInside, "the marks follow the box's own corner, not the page's origin");
+        }
+        check(same(DocumentEditor::watermarkPlacement(QRectF(0, 0, 0, 842), canvasW, canvasH, 0),
+                   Placement()),
+              "a page with no width is a matrix that draws nothing, not a division by zero");
+        check(same(DocumentEditor::watermarkPlacement(portrait, 0.0, canvasH, 0), Placement()),
+              "and so is a canvas with no width");
+        check(finite(DocumentEditor::watermarkPlacement(QRectF(0, 0, 14400, 14400), canvasW,
+                                                       canvasH, 90)),
+              "the largest page PDF allows still gives six numbers a parser accepts");
+
+        // ---- recording it ----
+        DocumentEditor mark;
+        QString error;
+        const auto request = [](const QString &text, int opacity, const QVector<int> &pages) {
+            DocumentEditor::Watermark watermark;
+            watermark.text = text;
+            watermark.opacityPercent = opacity;
+            watermark.pages = pages;
+            return watermark;
+        };
+
+        error.clear();
+        check(!mark.addWatermark(request("机密", 20, {0}), &error) && !error.isEmpty(),
+              "加水印 on a document that was never opened is refused with a sentence");
+
+        check(mark.open(source, QString(), &error), "setup: the document to ink opens");
+        check(mark.watermarkToWrite().text.isEmpty(),
+              "nothing pending is a watermark with no text, which is what the dialog opens on");
+
+        error.clear();
+        check(!mark.addWatermark(request("  ", 20, {0}), &error) && !error.isEmpty(),
+              "blank text is refused -- an empty canvas is still a rectangle over the page");
+        check(!mark.addWatermark(request("机密", 0, {0}), &error),
+              "0% is not a pale watermark, it is no watermark, and the reader should be told "
+              "rather than handed a save that writes nothing");
+        check(!mark.addWatermark(request("机密", 101, {0}), &error),
+              "and so is a number a writer cannot be handed");
+        check(!mark.addWatermark(request("机密", 20, {}), &error),
+              "naming no page names nothing to ink");
+        check(!mark.addWatermark(request("机密", 20, {pagesBefore + 5}), &error),
+              "and a page number past the end is the same nothing");
+        check(!mark.isDirty() && !mark.canUndo(),
+              "none of those refusals left a row in the list");
+
+        const Mark asked = request("机密", 20, {2, 0, 2, 1});
+        check(mark.addWatermark(asked, &error),
+              QStringLiteral("an odd order with a repeat is accepted: %1").arg(error));
+        check(mark.watermarkToWrite().pages == QVector<int>({0, 1, 2}),
+              QStringLiteral("and it is normalised into page order, once each: %1")
+                  .arg(describeOrder(mark.watermarkToWrite().pages)));
+        check(mark.isDirty() && mark.pageCount() == pagesBefore,
+              "the tab is dirty and no page moved, turned or went away");
+        const QString row = mark.undoDescription();
+        check(row.contains(QStringLiteral("水印")) && row.contains(QStringLiteral("机密")),
+              QStringLiteral("the undo row names the operation and the words: %1").arg(row));
+        check(!row.contains(QStringLiteral("%")),
+              QStringLiteral("and the row says nothing about the opacity beyond what it can "
+                             "say safely: %1").arg(row));
+
+        check(mark.addWatermark(request("草稿", 35, {3}), &error),
+              QStringLiteral("a second 水印 is the reader changing the wording: %1").arg(error));
+        check(mark.watermarkToWrite().text == QStringLiteral("草稿")
+                  && mark.pendingCount() == 2,
+              "the last one is what a save draws, and the first is still in the list behind it "
+              "-- the rule splitInto() and protectWith() follow, so one list answers both");
+        error.clear();
+        check(!mark.addWatermark(request("草稿", 35, {3, 3}), &error) && !error.isEmpty(),
+              "and asking for the very same thing again is refused, because it would change "
+              "nothing and dirty the tab for it");
+        check(mark.undo() && mark.watermarkToWrite().text == QStringLiteral("机密")
+                  && mark.watermarkToWrite().pages == QVector<int>({0, 1, 2}),
+              "one undo lands back on the first wording, not on nothing");
+        check(mark.undo() && mark.watermarkToWrite().text.isEmpty() && !mark.isDirty(),
+              "a 水印 alone undoes to a clean document, and the star goes with it");
+        check(mark.redo() && mark.watermarkToWrite().text == QStringLiteral("机密"),
+              "redo walks the branch forward again from the first of the two, which is the way "
+              "undo and redo work for every operation in this list");
+        check(mark.redo() && mark.watermarkToWrite().text == QStringLiteral("草稿"),
+              "and the second redo puts the replaced wording back");
+        check(mark.undo() && mark.undo() && !mark.isDirty(), "setup: back to nothing pending");
+
+        // Pages an earlier edit took out are not pages to ink, and the two ways that can fail
+        // are worth telling apart: naming a gone page is a mistake about the document, and a
+        // range that is *only* gone pages is the one that cannot be carried out at all.
+        check(mark.deletePages({4, 5}, &error), "setup: two pages out first");
+        error.clear();
+        check(!mark.addWatermark(request("机密", 20, {4}), &error) && !error.isEmpty(),
+              QStringLiteral("naming only deleted pages is refused, with a sentence: %1")
+                  .arg(error));
+        check(mark.addWatermark(request("机密", 20, {3, 4}), &error),
+              QStringLiteral("a range that straddles the deletion is not: %1").arg(error));
+        check(mark.watermarkToWrite().pages == QVector<int>({3}),
+              "the page that is already gone is dropped when the request is taken, which is the "
+              "filter rotatePages() applies too -- so the count the undo row names and the count "
+              "the save draws ink for are one number, not two");
+        check(mark.undo(), "setup: the 水印 is taken back");
+        check(mark.deletePages(everyPage(pagesBefore).mid(0, pagesBefore - 1), &error),
+              "setup: down to one page");
+        error.clear();
+        check(!mark.addWatermark(request("机密", 20, {0, 1, 2}), &error),
+              "after everything else has gone, a range naming only absent pages is refused");
+        check(mark.undo() && mark.undo(), "setup: back to the whole document");
+        check(mark.pageCount() == pagesBefore, QStringLiteral("setup: %1 pages").arg(pagesBefore));
+
+        // ---- a save, page by page ----
+        {
+            DocumentEditor editor;
+            check(editor.open(source, QString(), &error), "setup: the copy opens again");
+            check(editor.addWatermark(request("机密", 20, {0, 1, 2}), &error),
+                  QStringLiteral("setup: three pages inked: %1").arg(error));
+
+            const QString result = scratch.filePath(QStringLiteral("inked.pdf"));
+            QElapsedTimer clock;
+            clock.start();
+            const bool wrote = editor.saveAs(result, &error);
+            const qint64 taken = clock.elapsed();
+            check(wrote, QStringLiteral("a save with a 水印 on it writes: %1").arg(error));
+
+            const InkReport ink = readInk(result);
+            check(ink.readable && ink.pageCount == pagesBefore,
+                  "and the reader still counts the same number of pages in it");
+            check(ink.drawn == QVector<int>({0, 1, 2}),
+                  QStringLiteral("the three named pages draw the marks, and only they do: %1")
+                      .arg(describeOrder(ink.drawn)));
+            check(ink.namedButNotDrawn.isEmpty(),
+                  QStringLiteral("no page names the marks without drawing them: %1")
+                      .arg(describeOrder(ink.namedButNotDrawn)));
+            check(ink.maskedImages == 1,
+                  QStringLiteral("the whole file carries one bitmap, shared: %1")
+                      .arg(ink.maskedImages));
+            bool pale = !ink.alphas.isEmpty();
+            for (double alpha : std::as_const(ink.alphas))
+                pale = pale && qAbs(alpha - 0.2) < 1e-4;
+            check(pale, QStringLiteral("and every one of them is drawn at the /ca the dialog "
+                                       "showed: %1")
+                            .arg(describeAlphas(ink.alphas)));
+
+            check(orderInFile(result) == orderInFile(source),
+                  "the pages are still in the order they were, which is the promise a content "
+                  "stream write has no business breaking");
+            check(hashOfFile(source) == originalHash,
+                  "and the document that was inked is byte for byte what it was");
+
+            const qint64 inked = QFileInfo(result).size();
+            DocumentEditor plain;
+            QString plainError;
+            plain.open(source, QString(), &plainError);
+            const QString plainPath = scratch.filePath(QStringLiteral("uninked.pdf"));
+            const qint64 untouchedSize = plain.saveAs(plainPath, &plainError)
+                ? QFileInfo(plainPath).size()
+                : 0;
+            note(QStringLiteral("%1 pages, 3 of them watermarked: %2 KB out against %3 KB "
+                                "unwatermarked, i.e. %4 bytes per inked page; %5 ms")
+                     .arg(pagesBefore)
+                     .arg(inked / 1024)
+                     .arg(untouchedSize / 1024)
+                     .arg(untouchedSize > 0 ? (inked - untouchedSize) / 3 : 0)
+                     .arg(taken));
+            check(inked > untouchedSize && inked - untouchedSize < 200 * 1024,
+                  QStringLiteral("the marks are in the file and they are not a megabyte: %1 -> %2")
+                      .arg(untouchedSize)
+                      .arg(inked));
+
+            // The pages this request did not name must not have lost anything either: the
+            // same text, the same count, read through the renderer.
+            check(pagesAsReadByTheReader(result) == pagesBefore,
+                  "and Qt PDF opens the inked file");
+        }
+
+        // ---- a rotated page, in the file rather than in the arithmetic ----
+        {
+            const QString turnedSource = scratch.filePath(QStringLiteral("turned.pdf"));
+            check(QFile::copy(QStringLiteral("tests/fixtures/rotated.pdf"), turnedSource),
+                  "setup: the one-page fixture marked /Rotate 90 is copied");
+            DocumentEditor editor;
+            check(editor.open(turnedSource, QString(), &error), "setup: it opens");
+            check(editor.addWatermark(request("机密", 50, {0}), &error), "setup: inked");
+            const QString result = scratch.filePath(QStringLiteral("turned-inked.pdf"));
+            check(editor.saveAs(result, &error),
+                  QStringLiteral("setup: and saved: %1").arg(error));
+
+            const InkReport ink = readInk(result);
+            check(ink.drawn == QVector<int>({0}), "the rotated page is the inked one");
+            if (ink.matrices.size() == 1) {
+                // The page is stored 300x400 and displayed 400x300. A placement that ignored
+                // /Rotate -- which is what both routes the probe measured did, question 4 --
+                // puts the long run along the stored x axis and reads sideways on the screen.
+                const QVector<double> m = ink.matrices.at(0);
+                check(qAbs(m[0]) < 1e-4 && m[1] > 1.0,
+                      QStringLiteral("the marks run up the page, along y, because the paper is "
+                                     "turned: a=%1 b=%2 c=%3 d=%4")
+                          .arg(m[0])
+                          .arg(m[1])
+                          .arg(m[2])
+                          .arg(m[3]));
+            } else {
+                check(false, "the rotated page's placement could not be read back at all");
+            }
+            check(!ink.alphas.isEmpty() && qAbs(ink.alphas.first() - 0.5) < 1e-4,
+                  QStringLiteral("and 50% is the /ca that reached it: %1")
+                      .arg(describeAlphas(ink.alphas)));
+        }
+
+        // ---- two pages that share one content array and one resources dictionary ----
+        //
+        // The control for the two copy-before-write rules in the save. A real producer does
+        // this for every page of a form's letterhead, and qpdf's own addPageContents() does
+        // not guard it (its copy-if-shared covers inheritable attributes, and /Contents is not
+        // one), so the version that reaches for the library's helper puts a watermark on a
+        // page nobody named and passes every check above.
+        {
+            const QString shared = writeSharedPagesCopy(
+                source, scratch.filePath(QStringLiteral("shared-pages.pdf")));
+            check(!shared.isEmpty(), "setup: a file with two pages reading one content array");
+            DocumentEditor editor;
+            check(editor.open(shared, QString(), &error), "setup: it opens for editing");
+            check(editor.addWatermark(request("机密", 20, {1}), &error),
+                  QStringLiteral("setup: only the second page is named: %1").arg(error));
+            const QString result = scratch.filePath(QStringLiteral("shared-inked.pdf"));
+            check(editor.saveAs(result, &error), QStringLiteral("the save goes through: %1")
+                                                      .arg(error));
+
+            const InkReport ink = readInk(result);
+            check(ink.drawn == QVector<int>({1}),
+                  QStringLiteral("and the page that was named is the page that draws them: %1")
+                      .arg(describeOrder(ink.drawn)));
+            check(ink.namedButNotDrawn.isEmpty(),
+                  "the page that shared its resources with that one did not gain the marks "
+                  "either, in the dictionary or on the page");
+            check(ink.maskedImages == 1, "and the two pages still share the one bitmap");
+            check(ink.pageCount == pagesBefore, "no page was lost along the way");
+        }
+
+        // ---- 水印 beside the other six ----
+        {
+            const QString donor = scratch.filePath(QStringLiteral("ink-donor.pdf"));
+            check(writeDonor(source, donor, pagesBefore, {4, 5, 6}, &error) == donor,
+                  QStringLiteral("setup: a three-page donor: %1").arg(error));
+
+            // A merged page has no number on the screen, so it cannot be named -- and unlike
+            // 拆分, which has to refuse the whole document for that reason, 水印 can simply
+            // leave those pages alone and still say exactly which pages it inked.
+            DocumentEditor merged;
+            check(merged.open(source, QString(), &error), "setup: the document opens");
+            check(merged.mergeFile(donor, {0, 1}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("setup: two pages in: %1").arg(error));
+            check(merged.addWatermark(request("机密", 20, {0}), &error),
+                  QStringLiteral("and a 水印 on the opened document's own page is accepted "
+                                 "beside a merge: %1").arg(error));
+            const QString mergedPath = scratch.filePath(QStringLiteral("merged-inked.pdf"));
+            check(merged.saveAs(mergedPath, &error),
+                  QStringLiteral("the merge and the ink ride one save: %1").arg(error));
+            const InkReport ink = readInk(mergedPath);
+            check(ink.pageCount == pagesBefore + 2,
+                  QStringLiteral("setup: %1 pages out of the merge+水印").arg(ink.pageCount));
+            check(ink.drawn == QVector<int>({0}),
+                  "the pages that came in from the donor are not inked: they were never "
+                  "nameable, and drawing something on them would be a promise nobody made");
+            check(ink.maskedImages == 1, "one bitmap for the file, inked pages or none");
+
+            // 加密 and 拆分 are the other two that say something about the bytes rather than
+            // the tree, so the question is whether all four of these can be one save. The
+            // probe measured it for one pair (question 5); this is the same claim with the
+            // third one in, on the tool chain this program ships with.
+            DocumentEditor all;
+            check(all.open(source, QString(), &error), "setup: the document opens again");
+            check(all.splitInto(15, &error), "setup: three pieces");
+            check(all.addWatermark(request("机密", 20, {0, 16, 39}), &error), "setup: three 水印");
+            const QString key = QStringLiteral("ink-key");
+            DocumentEditor::Protection guard;
+            guard.what = DocumentEditor::Protection::What::Encrypt;
+            guard.password = key;
+            guard.allowPrint = guard.allowExtract = guard.allowAssembly = true;
+            guard.allowAnnotate = guard.allowFormFilling = guard.allowModifyOther = true;
+            check(all.protectWith(guard, &error), "setup: and a 加密");
+            const QString base = scratch.filePath(QStringLiteral("ink-cut.pdf"));
+            check(all.saveAs(base, &error),
+                  QStringLiteral("水印 + 拆分 + 加密 in one save writes: %1").arg(error));
+
+            int inkedPages = 0;
+            bool everyPieceLocked = true;
+            for (int index = 0; index < all.pieceCount(); ++index) {
+                const QString piecePath = DocumentEditor::piecePath(
+                    base, index, all.pieceCount(), all.pieces().at(index));
+                InkReport one;
+                try {
+                    QPDF open;
+                    open.processFile(piecePath.toUtf8().constData(), "");
+                    everyPieceLocked = false;
+                } catch (const std::exception &) {
+                    // refused without the口令, which is the claim
+                }
+                one = readInk(piecePath, key);
+                inkedPages += one.drawn.size();
+            }
+            check(everyPieceLocked, "every piece of the split is encrypted");
+            check(inkedPages == 3,
+                  QStringLiteral("and the three inked pages are spread over the three pieces, "
+                                 "once each: %1").arg(inkedPages));
+        }
+
+        // ---- what it costs ----
+        {
+            DocumentEditor editor;
+            QElapsedTimer clock;
+            clock.start();
+            const QString every = scratch.filePath(QStringLiteral("timed-ink.pdf"));
+            const bool done = editor.open(source, QString(), &error)
+                && editor.addWatermark(request("机密", 20, everyPage(pagesBefore)), &error)
+                && editor.saveAs(every, &error);
+            note(QStringLiteral("open + 水印 on all %1 pages + write took %2 ms (%3 KB out)")
+                     .arg(pagesBefore)
+                     .arg(clock.elapsed())
+                     .arg(done ? QFileInfo(every).size() / 1024 : 0));
             check(done, "and the timed save went through");
         }
     }

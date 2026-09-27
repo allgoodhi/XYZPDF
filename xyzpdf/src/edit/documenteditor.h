@@ -12,11 +12,34 @@
 //
 // ---- what an edit is, and where it reaches disk ----
 //
-// Nothing here touches a page's content stream: no drawing, no text changes.
-// Every operation is structural -- which pages exist, where they came from, in what
-// order, turned which way. That is the first wave of M5 (docs/PLAN.md §4: 结构编辑先上
-// QPDF，这些不碰页面内容流，风险最低), and it is why the implementation is QPDF rather
-// than something built on the renderer.
+// Six of the seven operations here are structural -- which pages exist, where they came
+// from, in what order, turned which way, how many files a save writes, and what each of
+// those needs to open. None of them touches what is drawn on a page. That is the first
+// wave of M5 (docs/PLAN.md §4: 结构编辑先上 QPDF，风险最低), and it is why the
+// implementation is QPDF rather than something built on the renderer.
+//
+// 水印 is the seventh, and it is not structural: a watermark is drawn marks, which means
+// writing operators into a page's content stream and placing something over it. docs/
+// PLAN.md used to file 水印 under the "这些不碰页面内容流" heading; that sentence was wrong,
+// and tests/watermarkprobe.cpp is what measured it wrong -- both candidate routes write
+// content streams, so the plan's grouping had to be corrected before any of this was written
+// (see its header comment for the six questions it measured, and docs/store-submission.md §26
+// for the record). What the probe decided is the route, not whether it was possible: both
+// routes draw, so the choice was made on script coverage and text pollution rather than on
+// feasibility. The bitmap route is the one here -- see the 水印 note below -- and everything
+// structural above is unchanged by it.
+//
+// ---- the third inert operation, and why 水印 is not a fourth ----
+//
+// A watermark shares the property that makes 拆分 and 加密 safe to keep in this list: it
+// changes no page's identity or position, so `live` is not rearranged by it, rebuildLive()
+// has no branch for it, and undoing it is taking one entry out of a list. What it changes is
+// what a save draws on the way out. The difference from those two is that its effect is
+// visible in the file's *pixels* rather than in its page count or its /Encrypt, which is why
+// it is checked structurally in the smoke test (the /SMask, the shared ExtGState, the
+// one-bitmap-per-file promise) and visually only by the probe -- under the offscreen
+// platform Qt resolves no font at all, so a test that asserted ink would be asserting a row
+// of empty boxes (tests/watermarkprobe.cpp measured exactly that).
 //
 // Changes are held as a list of operations and reach the disk only through
 // saveAs(), which is §7.3's 显式保存. There is no save() that writes back to the
@@ -130,6 +153,7 @@
 // stream on the way out: 600 pages measured 72-80 ms carried, 45-50 ms stripped.
 #pragma once
 
+#include <QRectF>
 #include <QString>
 #include <QVector>
 
@@ -247,6 +271,53 @@ public:
         bool operator!=(const Protection &other) const { return !(*this == other); }
     };
 
+    // What a 水印 asks for: the string, how solid it is, and which pages carry it. Plain data
+    // again, for the same reason Protection is -- the dialog fills one of these, the pending
+    // list holds it, and the save is the only place any of it reaches a page.
+    //
+    // The watermark is drawn as a bitmap that Qt paints, not as text operators. That is the
+    // route tests/watermarkprobe.cpp chose, and the reason is the page's *text*: a string
+    // drawn with BT/Tj joins everything that reads a page's text, so a watermark would be
+    // copied, 划线翻译'd and exported along with the document (measured there: 13 extractable
+    // characters became 30). A bitmap is ink to those readers. The same measurement says the
+    // cost is resolution -- the marks are as sharp as the one canvas they were painted at.
+    struct Watermark
+    {
+        // What gets painted, in whatever script the system has a font for. Never empty: a
+        // watermark of nothing is a save that draws an empty rectangle over every named page,
+        // and `addWatermark()` refuses one rather than writing it.
+        QString text;
+
+        // How solid the marks are, in whole percent: 100 is opaque ink, 20 is the pale grey a
+        // watermark is usually for. It reaches the file as one shared ExtGState's `/ca`, which
+        // PDF multiplies into the image's own soft mask -- so the number the dialog shows and
+        // the number the writer is handed are the same number, and changing it redraws no
+        // bitmap (the pixels are painted once per file whatever this says).
+        //
+        // Whole percent because a reader reads it off a summary: a float that a slider had
+        // stopped at 23.7 would be a number nobody could check against the sentence.
+        int opacityPercent = 20;
+
+        // Which pages carry it, as original page numbers -- the same numbering every other
+        // operation here uses, because it is the one on the screen. Never empty: a box left
+        // on 全部 is turned into those numbers by the dialog before this ever sees it, so the
+        // list an operation holds is always a list a reader could check. One consequence is
+        // worth saying out loud: a page merged in afterwards carries no ink, because it was
+        // not one of the numbers anybody named (an imported page has no number the reader can
+        // see on the screen at all -- see the header).
+        QVector<int> pages;
+
+        // Asked for the same thing again? Same rule as Protection: a second 水印 that says the
+        // same thing is not a change, and one that says something else replaces this rather
+        // than adding a second layer to undo twice to remove.
+        bool operator==(const Watermark &other) const
+        {
+            return text == other.text && opacityPercent == other.opacityPercent
+                && pages == other.pages;
+        }
+        bool operator!=(const Watermark &other) const { return !(*this == other); }
+    };
+
     // One structural change, as it waits in the pending list.
     struct Operation
     {
@@ -262,7 +333,12 @@ public:
             // 加密 / 去掉口令: the second kind that changes no page. Like a split it only
             // reaches what a save writes -- a split changes how many files come out, this
             // changes what each of them requires to open.
-            Protect
+            Protect,
+            // 水印: the third kind that changes no page's place, and the only one of the seven
+            // that changes what is drawn on one. Like the two above it reaches a save rather
+            // than the screen, and undoing it is taking one entry out of a list -- but it is
+            // not inert the same way, because what it changes is the page's own content stream.
+            Watermark
         };
         Kind kind = Kind::DeletePages;
         // Delete/Rotate/Move: original page numbers -- positions in the document as
@@ -300,6 +376,10 @@ public:
         // Protect only: what a save should hand the writer about protection. Nothing
         // changes about the pages themselves -- see the header note.
         Protection protection;
+        // Watermark only: what a save should draw, and on which of the pages it writes. The
+        // pages themselves keep their order and their count -- `pages` is a request about
+        // ink, not about the page tree -- so this is the only thing a replay has to know.
+        Watermark watermark;
     };
 
     // What a delete request means for the document as it stands, worked out
@@ -588,6 +668,61 @@ public:
     // as long as the tab holds the document (a reload has to be able to open it again) and
     // is written to no setting, no log and no summary.
     QString passwordOfWrittenFile() const;
+
+    // Recording that a save should draw `watermark` on the pages it names. Nothing is written
+    // and no page moves, which is why this is a list entry rather than a button that redraws
+    // the document: like 拆分 and 加密, it reaches the file at 保存修改为, and undoing it is
+    // taking one entry out of a list -- no page is un-drawn, because nothing was drawn yet.
+    // Unlike those two it changes what is *inside* a page; see the header note.
+    //
+    // Refused when the request could not be carried out as asked: no text (an empty canvas is
+    // still a rectangle laid over the page), an opacity outside the range a writer can be
+    // handed, a range that names no page still present, or the same thing again -- which is not
+    // a change, and dirtying the tab for one would put an undo row on the menu for nothing.
+    bool addWatermark(const Watermark &watermark, QString *error);
+
+    // The watermark a save would draw: the last one in the pending list, since a second 水印 is
+    // the reader changing the wording rather than a second layer to carry out and to undo twice
+    // -- the same rule splitPieceSize() and protectionToWrite() follow, and for the same reward:
+    // the dialog opens on it, so pressing 确定 again reads as changing the number.
+    //
+    // Empty `text` when nothing is pending. One function for the same reason pieceRanges() is
+    // one: the dialog's summary and the pixels a save draws must not be two answers to "which
+    // pages get what".
+    Watermark watermarkToWrite() const;
+
+    // Where one watermark's bitmap lands on one page, as the six numbers a PDF `cm` takes.
+    //
+    // Its own function and static because it is the whole answer to "where does the ink go",
+    // and the save and the test have to read it off one piece of arithmetic -- the reason
+    // pieceRanges() and planMove() are each one function. Three things it holds:
+    //
+    //   * `box` is the page's own crop box, origin included, so a page whose paper does not
+    //     start at 0 0 is watermarked on its paper rather than beside it.
+    //   * the scale is the same on both axes. A bitmap stretched to whatever shape a page
+    //     happens to be is a watermark whose glyphs are fatter one way than the other, and
+    //     there is no page size this program could promise instead: one canvas is shared by the
+    //     whole document, and a 600-page book has A4 and Letter and a scan in it.
+    //   * `rotateDegrees` is the page's /Rotate, and folding it in is why this returns a matrix
+    //     rather than a rectangle. Measured (tests/watermarkprobe.cpp, question 4), marks placed
+    //     without it sit in the page's own unrotated space and turn with the paper, so on a page
+    //     the reader sees sideways they read sideways. Note which way that makes a pending
+    //     旋转页面 come out: the ink follows the paper, because the paper's own text follows it
+    //     too -- a watermark that stayed upright against the screen instead would lie flat
+    //     across a paragraph that has since turned a quarter turn.
+    struct Placement
+    {
+        double a = 1.0;
+        double b = 0.0;
+        double c = 0.0;
+        double d = 1.0;
+        double e = 0.0;
+        double f = 0.0;
+    };
+    // `canvasWidth`/`canvasHeight` are the painted bitmap's pixels; the marks end up no wider
+    // and no taller than 90% of the page as it is displayed.
+    static Placement watermarkPlacement(const QRectF &box, double canvasWidth,
+                                        double canvasHeight, int rotateDegrees);
 
     // Whether the file on disk has a /Encrypt dictionary of its own, and what its bits
     // say. The dialog needs both: 去掉口令 has nothing to act on when the first is false,

@@ -280,6 +280,8 @@ set(XYZPDF_SOURCES
     src/ui/thumbnailpanel.cpp
     src/ui/translatedialog.h
     src/ui/translatedialog.cpp
+    src/ui/watermarkdialog.h
+    src/ui/watermarkdialog.cpp
     src/ui/wrappingtoolbararea.h
     src/ui/wrappingtoolbararea.cpp
 
@@ -533,6 +535,20 @@ if(XYZPDF_BUILD_ENCRYPTPROBE)
         LIBRARIES Qt6::Pdf qpdf::libqpdf)
 endif()
 
+# Whether a watermark can be a feature, and which of the two ways of drawing one the
+# renderer actually shows. Built with everything else and deliberately not run, for the
+# same reason as encryptprobe: every line is another library's answer. The questions are
+# in the header comment of tests/watermarkprobe.cpp, and the first of them is why docs
+# PLAN.md's "水印 ... 不碰页面内容流" needs correcting before any of this is written.
+option(XYZPDF_BUILD_WATERMARKPROBE "Build the watermark-route measurement" OFF)
+if(XYZPDF_BUILD_WATERMARKPROBE)
+    xyzpdf_add_test(watermarkprobe
+        SOURCES src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+endif()
+
 # The performance baseline. Built with everything else and deliberately not run:
 # tools/build_all_tests.py skips any target whose name contains 'bench', because
 # this prints numbers instead of passing or failing, and a threshold weak enough
@@ -657,6 +673,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
+                src/ui/watermarkdialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
                 src/theme/thememanager.cpp
@@ -719,6 +736,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
                 src/ui/thirdpartydialog.cpp
+                src/ui/watermarkdialog.cpp
                 src/ui/wrappingtoolbararea.cpp
                 src/view/pagelayout.cpp
                 src/view/pageview.cpp

@@ -827,12 +827,12 @@ void MainWindow::buildMenus()
     // putting document commands in it would mean the one menu whose items all grey
     // out without a drag also holds the one item that needs nothing but an open
     // file. Acrobat's 文档 menu sits in this same place, and this one now holds what
-    // it does: 删页、旋转、重排、合并、拆分 and 加密.
+    // it does: 删页、旋转、重排、合并、拆分、加密 and 水印.
     //
-    // The last three items are the other half of the first six. 删除页面、旋转页面、
-    // 移动页面、合并文件进来、拆分文件 and 加密 / 去掉口令 record an edit, 撤销 and 重做
-    // move along the list those six recorded into, and 保存修改为… is the only one of
-    // the nine that writes a file. They sit in this menu rather than spread across
+    // The last three items are the other half of the first seven. 删除页面、旋转页面、
+    // 移动页面、合并文件进来、拆分文件、加密 / 去掉口令 and 加水印 record an edit, 撤销
+    // and 重做 move along the list those seven recorded into, and 保存修改为… is the only
+    // one of the ten that writes a file. They sit in this menu rather than spread across
     // 文件 and 编辑 because they are one list seen from four ends, and a reader looking
     // for any of them is looking for this menu.
     QMenu *documentMenu = menuBar()->addMenu(tr("文档(&D)"));
@@ -924,6 +924,24 @@ void MainWindow::buildMenus()
             tab->protectPages();
     });
     documentMenu->addAction(protectFileAction);
+
+    // (&W): 水印 has no Latin letter in it and its pinyin's initials are both taken (S below
+    // on 保存修改为, J above on 加密), so the letter goes on the English name for the thing --
+    // which is also the letter a reader who has used another PDF editor has already memorised.
+    watermarkAction = makeAction(tr("加水印(&W)…"), QKeySequence());
+    watermarkAction->setObjectName(QStringLiteral("watermarkAction"));
+    // The second clause is the one this row is easy to get wrong about. A watermark that is a
+    // picture is invisible to 复制, 划线翻译 and 导出 Word, and a reader who stamped 机密 on 40
+    // pages and then found the words missing from the export needs to have been told that the
+    // marks were never words -- on the menu, not only in the box they cancelled.
+    watermarkAction->setToolTip(
+        tr("记下要在哪几页上盖什么字，按保存修改为才写成一个新文件；正在读的这份不动，"
+           "那些字是画在页面上的一张图，复制、翻译、导出都拿不到它们"));
+    connect(watermarkAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->addWatermark();
+    });
+    documentMenu->addAction(watermarkAction);
 
     documentMenu->addSeparator();
 
@@ -2115,6 +2133,7 @@ void MainWindow::updateForCurrentTab()
                             exportWordAction, printAction, exportImagesAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,
+                            watermarkAction,
                             viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)

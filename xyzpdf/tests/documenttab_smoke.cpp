@@ -29,6 +29,7 @@
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
 
+#include <QAccessible>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -1434,6 +1435,19 @@ int main(int argc, char **argv)
             const auto edits = box.findChildren<QLineEdit *>();
             check(edits.size() == 2,
                   "the口令 is asked twice, because nothing here can report it back later");
+            // The name a field answers to when nothing points at it is its group's title, so
+            // a reader that cannot see the screen asked both fields 打开口令 -- measured in a
+            // real window through UI Automation, which is also the only way anyone would ever
+            // notice. The labels are buddied to the fields so the two answer apart.
+            const auto nameOf = [](QLineEdit *edit) {
+                QAccessibleInterface *face = QAccessible::queryAccessibleInterface(edit);
+                return face ? face->text(QAccessible::Name) : QString();
+            };
+            check(nameOf(edits.at(0)) == QStringLiteral("口令") &&
+                      nameOf(edits.at(1)) == QStringLiteral("再输一遍"),
+                  QStringLiteral("the two fields are named apart by whatever only reads names: "
+                                 "[%1] [%2]")
+                      .arg(nameOf(edits.at(0)), nameOf(edits.at(1))));
             edits.at(0)->setText(QStringLiteral("hunter2"));
             check(okay && !okay->isEnabled(), "one box filled and the other empty is two different口令");
             check(saidBy(box).contains(QStringLiteral("两次输入的口令不一样")),

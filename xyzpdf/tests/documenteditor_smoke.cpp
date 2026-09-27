@@ -3016,6 +3016,13 @@ int main(int argc, char **argv)
         check(!row.contains(QStringLiteral("%")),
               QStringLiteral("and the row says nothing about the opacity beyond what it can "
                              "say safely: %1").arg(row));
+        // The number here is the number of pages the marks land on. Read off the generic page list
+        // it was 0 -- a 水印 records no structural pages -- so the row named a watermark over
+        // nothing while the dialog the reader had just closed promised three. That is the same
+        // "one promise, one function" rule the split and the protection rows follow, and this is
+        // the row that catches it being broken.
+        check(row.contains(QStringLiteral("3 页")) && !row.contains(QStringLiteral("0 页")),
+              QStringLiteral("and it counts the pages it actually names: %1").arg(row));
 
         check(mark.addWatermark(request("草稿", 35, {3}), &error),
               QStringLiteral("a second 水印 is the reader changing the wording: %1").arg(error));

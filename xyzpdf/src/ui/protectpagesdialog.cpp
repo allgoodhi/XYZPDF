@@ -45,18 +45,26 @@ ProtectPagesDialog::ProtectPagesDialog(QWidget *parent, const DocumentEditor *do
     passwordGroup = new QGroupBox(tr("打开口令"), this);
     auto *passwordRows = new QVBoxLayout(passwordGroup);
     auto *passwordRow = new QHBoxLayout;
-    passwordRow->addWidget(new QLabel(tr("口令"), passwordGroup));
+    auto *passwordLabel = new QLabel(tr("口令"), passwordGroup);
+    passwordRow->addWidget(passwordLabel);
     passwordEdit = new QLineEdit(passwordGroup);
     passwordEdit->setEchoMode(QLineEdit::Password);
+    // Buddied because without it the two fields answer to the *same* name: read through
+    // UI Automation both edits came back named 打开口令, which is the group's title, so the
+    // one thing a reader cannot tell from the screen reader alone is which of the two boxes
+    // it is typing into -- the one distinction these two fields have.
+    passwordLabel->setBuddy(passwordEdit);
     passwordRow->addWidget(passwordEdit, 1);
     passwordRows->addLayout(passwordRow);
     // Asked twice because the answer cannot be checked any other way: nothing here can
     // recover or even report a password once the file is written, so a single mistyped
     // character is only ever found out by being locked out.
     auto *confirmRow = new QHBoxLayout;
-    confirmRow->addWidget(new QLabel(tr("再输一遍"), passwordGroup));
+    auto *confirmLabel = new QLabel(tr("再输一遍"), passwordGroup);
+    confirmRow->addWidget(confirmLabel);
     confirmEdit = new QLineEdit(passwordGroup);
     confirmEdit->setEchoMode(QLineEdit::Password);
+    confirmLabel->setBuddy(confirmEdit);
     confirmRow->addWidget(confirmEdit, 1);
     passwordRows->addLayout(confirmRow);
     layout->addWidget(passwordGroup);

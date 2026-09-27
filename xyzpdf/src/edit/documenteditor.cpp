@@ -409,7 +409,12 @@ QString DocumentEditor::describeOperation(const Operation &op) const
         // here because, unlike a password, it is something the reader typed *to be seen*: it goes
         // across every named page of the file. A row that said only 加水印（12 页） would also be
         // two rows apart in a list of three watermarks and indistinguishable.
-        return tr("加水印「%2」（%1 页）").arg(count).arg(op.watermark.text);
+        // The count is the watermark's own page list rather than the shared `count` above: a
+        // Watermark operation records no structural pages, so `op.pages` is empty and this row
+        // read 加水印「DRAFT」（0 页） under a dialog that had just said 盖在 40 页上 -- measured in
+        // the real window. `addWatermark()` has already dropped the pages an earlier unsaved
+        // delete took out, so this size is the same number the summary showed at the press.
+        return tr("加水印「%2」（%1 页）").arg(op.watermark.pages.size()).arg(op.watermark.text);
     }
     return tr("删除 %1 页").arg(count);
 }

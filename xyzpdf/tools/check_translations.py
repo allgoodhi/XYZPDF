@@ -124,6 +124,45 @@ def plural_rules_of(text, language):
     return problems
 
 
+def paragraph_break_rules_of(text):
+    """Every row, checked that the translation keeps the whitespace the source opens with.
+
+    Several summaries in this program are built with +=, and the paragraph break that
+    separates an aside from the arithmetic lives *inside* the translatable literal:
+    `tr("\n\n这份文档里已经有 %n 页是合并进来的了。")`. An English form that drops those two
+    newlines still matches by (context, source), still carries %n, still has two distinct
+    forms -- and renders as two sentences welded together. That is how this rule was found:
+    reading the merge box on screen in English gave
+    `…they end up together at pages 42-43.This document already has 1 page merged in…`,
+    while the same dialog in Chinese broke the paragraph correctly. 4 of the 35 forms that
+    open with a break had lost it; the other 31 are why equality (not "at least one") is the
+    test that has no false positives here.
+    """
+    def leading_newlines(value):
+        return re.match(r'[ \t\r\n]*', value).group(0).count('\n')
+
+    problems = []
+    for context in re.finditer(r'<context>\s*<name>([^<]*)</name>(.*?)</context>', text, re.S):
+        name = context.group(1).strip()
+        for message in re.finditer(r'<message([^>]*)>(.*?)</message>', context.group(2), re.S):
+            attrs, body = message.group(1), message.group(2)
+            source = re.search(r'<source>(.*?)</source>', body, re.S)
+            if not source:
+                continue
+            want = leading_newlines(source.group(1))
+            if want == 0:
+                continue
+            where = '%s: %s' % (name, source.group(1).strip().replace('\n', '\\n'))
+            forms = (re.findall(r'<numerusform>(.*?)</numerusform>', body, re.S)
+                     if 'numerus' in attrs else
+                     [re.search(r'<translation[^>]*>(.*?)</translation>', body, re.S).group(1)])
+            for form in forms:
+                if leading_newlines(form) != want:
+                    problems.append('%s：源文开头有 %d 个换行，译文只有 %d 个，两句话会粘在一起：%s'
+                                    % (where, want, leading_newlines(form), form.strip()[:60]))
+    return problems
+
+
 def main():
     lupdate = find_lupdate()
     if not lupdate:
@@ -158,6 +197,7 @@ def main():
         for context, source in sorted(listed - asked):
             out.append('%s: 目录里有，代码已经不问了：%s' % (context, source.replace('\n', '\\n')))
         out += plural_rules_of(catalogue_text, lang)
+        out += paragraph_break_rules_of(catalogue_text)
         plural = len([1 for line in catalogue_text.splitlines() if '<message numerus' in line])
         print('%s.ts：代码 %d 条，目录 %d 条，其中 numerus %d 条' % (lang, len(asked), len(listed),
                                                             plural))

@@ -30,4 +30,16 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
 - 临时文件走 `TempManager`；**永不写用户的 PDF 文件**（v1 只读）
 - 测试：`python tools/build_all_tests.py`（配置+构建+运行，缺一不可；它还会跑 `tools/check_translations.py`
   对一遍目录——代码里改了用户可见的话，就靠这一步发现目录没跟上）
+- 目录也可以重新生成：`cmake --build build-local-release --target update_translations` 是安全的
+  （2026-09-27 实测：42 条 numerus / 84 个 `<numerusform>` 一字不动，唯一变了的那一行只是 `'` 被转义成
+  `&apos;`）。但要知道 **`i18n_smoke` 的探针在 lupdate 眼里就是调用点** —— 产品不再用的串只要还挂在探针表上
+  就不会被 `-no-obsolete` 删掉，删一行探针倒可能带走一条串（所以"目录 == 代码"里，探针也算代码）
+- 小结是 `line += tr("…")` 一句一句加出来的，**段落换行写在可翻译字面量里面**（`tr("\n\n…")`）；英文形
+  少了那两个换行，屏幕上就是两句话焊在一起。目录里这类形状由 `check_translations.py` 的形状规则管着
+  （集合对不上、numerus 掉形、两形相同、单数写成多数、段落换行丢）—— 这些都看不出在 (context, source) 上
+  是"完全匹配"的
+- 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
+  -Mode inventory|menudump|exportstatus|mergedonor`（四种模式都当场跑通过；脚本注释里就是踩过的坑）。
+  `build-local-release/gui-verify/` 下那些是历次草稿，在 gitignore 的构建树里、丢了找不回来 ——
+  量出可用的新路由就收进 `tools/gui-probe.ps1`
 - 编不过就明说"未编译验证"，不要报告成完成

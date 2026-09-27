@@ -499,7 +499,132 @@ QString writeEncryptedCopy(const QString &source, const QString &destination,
     return {};
 }
 
-// The `/P` integer lifted out of the file's own encryption dictionary.
+// A page that carries annotations, written here for the same reason the donor and the
+// shared-page copy are: nothing under tests/fixtures has a /Annot at all -- counted, not
+// assumed, eleven fixtures and zero occurrences -- so the repair DocumentEditor calls while
+// replaying a merge has never run in this suite, and adding a fixture would put an annotated
+// page in front of every other test that globs that folder.
+//
+// Two kinds of annotation, because a merge has two different jobs. A /Text note only has to
+// end up belonging to the page that got copied. A /Widget that is also a text field
+// additionally has to be reachable through the written document's own /AcroForm, or the
+// answer in it disappears from every reader that shows forms -- which is the half of
+// fixCopiedAnnotations() that nothing outside this file can see.
+QString writeAnnotatedPageCopy(const QString &source, const QString &destination,
+                               QString *error)
+{
+    auto rect = [](double left, double top, double right, double bottom) {
+        QPDFObjectHandle value = QPDFObjectHandle::newArray();
+        value.appendItem(QPDFObjectHandle::newReal(left));
+        value.appendItem(QPDFObjectHandle::newReal(top));
+        value.appendItem(QPDFObjectHandle::newReal(right));
+        value.appendItem(QPDFObjectHandle::newReal(bottom));
+        return value;
+    };
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle note = QPDFObjectHandle::newDictionary();
+        note.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        note.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+        note.replaceKey("/Rect", rect(60, 700, 90, 730));
+        note.replaceKey("/Contents",
+                        QPDFObjectHandle::newString("a note that came in with the page"));
+        note = qpdf.makeIndirectObject(note);
+        note.replaceKey("/P", page);
+
+        QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+        field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        field.replaceKey("/T", QPDFObjectHandle::newString("donorAnswer"));
+        field.replaceKey("/V", QPDFObjectHandle::newString("filled in the donor"));
+        field.replaceKey("/Rect", rect(60, 640, 260, 670));
+        field = qpdf.makeIndirectObject(field);
+        field.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(note);
+        annots.appendItem(field);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(field);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// How a file stands with respect to annotations: what each page carries, whether the page
+// that carries an annotation is the one its own `/P` names, whether any annotation object is
+// shared between two pages, and how many fields the document's /AcroForm points at.
+//
+// The three counts are the three ways a shallow page copy can go wrong, and they are asked
+// of the file rather than of the library call: qpdf documents fixCopiedAnnotations() as
+// "ensures that each separate copy of a page has private annotations", and that sentence is
+// only checkable from the outside.
+struct AnnotationReport
+{
+    QVector<int> countPerPage;
+    int notesNamingAnotherPage = 0;
+    int objectsSharedByTwoPages = 0;
+    int fields = 0;
+    int fieldsNamingNoPage = 0;
+};
+
+AnnotationReport readAnnotations(const QString &path)
+{
+    AnnotationReport report;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QSet<int> pageIds;
+        QSet<int> seenAnnotations;
+        for (const QPDFPageObjectHelper &page : pages) {
+            const QPDFObjectHandle handle = page.getObjectHandle();
+            pageIds.insert(handle.getObjGen().getObj());
+            const QPDFObjectHandle annots = handle.getKey("/Annots");
+            int counted = 0;
+            for (int index = 0; annots.isArray() && index < annots.getArrayNItems(); ++index) {
+                const QPDFObjectHandle item = annots.getArrayItem(index);
+                ++counted;
+                const QPDFObjectHandle owner = item.getKey("/P");
+                if (!owner.isDictionary()
+                    || owner.getObjGen().getObj() != handle.getObjGen().getObj())
+                    ++report.notesNamingAnotherPage;
+                if (seenAnnotations.contains(item.getObjGen().getObj()))
+                    ++report.objectsSharedByTwoPages;
+                seenAnnotations.insert(item.getObjGen().getObj());
+            }
+            report.countPerPage.append(counted);
+        }
+        const QPDFObjectHandle form = qpdf.getRoot().getKey("/AcroForm");
+        const QPDFObjectHandle fields = form.getKey("/Fields");
+        for (int index = 0; fields.isArray() && index < fields.getArrayNItems(); ++index) {
+            ++report.fields;
+            const QPDFObjectHandle owner = fields.getArrayItem(index).getKey("/P");
+            if (!owner.isDictionary() || !pageIds.contains(owner.getObjGen().getObj()))
+                ++report.fieldsNamingNoPage;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the annotations out of " << path.toStdString() << ": "
+                  << e.what() << '\n';
+        ++failures;
+    }
+    return report;
+}
 //
 // This is the same number QPDF reports through isEncrypted(R, P), read a second way,
 // and the reason for the second way is that the claim under test spans two files that
@@ -1413,6 +1538,67 @@ int main(int argc, char **argv)
         check(orderInFile(oneOut) == wantedOne,
               QStringLiteral("the surviving copy is the one at the end: got %1")
                   .arg(describeOrder(orderInFile(oneOut))));
+
+        // ---- what the annotations of a merged page have to become ----
+        //
+        // The repair has been in the replay since the merge landed, and it had never run:
+        // there is no annotated page anywhere under tests/fixtures, and a second one would be
+        // globbed by every other test that walks that folder. Merging the same annotated page
+        // *twice* is the smallest case that can show the difference at all -- with one copy,
+        // "the copy shares the donor's annotations" and "the copy got its own" read the same
+        // from the outside. qpdf's own promise is the first of those two being impossible.
+        {
+            const QString marked = scratch.filePath(QStringLiteral("annotated-donor.pdf"));
+            error.clear();
+            check(!writeAnnotatedPageCopy(donor, marked, &error).isEmpty(),
+                  QStringLiteral("setup: one page of the donor gets a note and a text field: %1")
+                      .arg(error));
+            const AnnotationReport built = readAnnotations(marked);
+            check(built.countPerPage.value(0) == 2 && built.fields == 1
+                      && built.notesNamingAnotherPage == 0 && built.objectsSharedByTwoPages == 0
+                      && built.fieldsNamingNoPage == 0,
+                  QStringLiteral("setup: that page carries both, each naming itself, and the "
+                                 "field is in that file's own form list: %1 annotations, %2 "
+                                 "fields")
+                      .arg(built.countPerPage.value(0))
+                      .arg(built.fields));
+            const QString markedHash = hashOfFile(marked);
+
+            DocumentEditor inked;
+            check(inked.open(source, QString(), &error),
+                  QStringLiteral("setup: the document to merge into: %1").arg(error));
+            check(inked.mergeFile(marked, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("the annotated page comes in once: %1").arg(error));
+            check(inked.mergeFile(marked, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("and the same page again, as a second copy: %1").arg(error));
+            const QString inkedOut = scratch.filePath(QStringLiteral("merged-annotated.pdf"));
+            error.clear();
+            check(inked.saveAs(inkedOut, &error),
+                  QStringLiteral("and both copies are written: %1").arg(error));
+
+            const AnnotationReport written = readAnnotations(inkedOut);
+            check(written.countPerPage.value(pagesBefore) == 2
+                      && written.countPerPage.value(pagesBefore + 1) == 2,
+                  QStringLiteral("the two copies kept the annotations the page came with: %1 "
+                                 "and %2 at the end of the file")
+                      .arg(written.countPerPage.value(pagesBefore))
+                      .arg(written.countPerPage.value(pagesBefore + 1)));
+            check(written.notesNamingAnotherPage == 0,
+                  QStringLiteral("every annotation names the page that carries it, which after "
+                                 "two copies of one page cannot be true of a shared object: %1 "
+                                 "do not")
+                      .arg(written.notesNamingAnotherPage));
+            check(written.objectsSharedByTwoPages == 0,
+                  QStringLiteral("and no annotation object is pointed at by two pages: %1 are")
+                      .arg(written.objectsSharedByTwoPages));
+            check(written.fields == 2 && written.fieldsNamingNoPage == 0,
+                  QStringLiteral("the form answers survive as fields of *this* document: %1 "
+                                 "fields, %2 naming no page of it")
+                      .arg(written.fields)
+                      .arg(written.fieldsNamingNoPage));
+            check(hashOfFile(marked) == markedHash,
+                  "and the file the annotations came out of was only ever read");
+        }
 
         // ---- and a move that leans against one of the two copies ----
         //

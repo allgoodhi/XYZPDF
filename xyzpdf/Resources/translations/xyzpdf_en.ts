@@ -1794,8 +1794,12 @@ The original file is not touched. This step only records the change; a save is s
 
 这份文档里已经有 %n 页是合并进来的了。</source>
         <translation>
-            <numerusform>This document already has %n page merged in from another file.</numerusform>
-            <numerusform>This document already has %n pages merged in from another file.</numerusform>
+            <numerusform>
+
+This document already has %n page merged in from another file.</numerusform>
+            <numerusform>
+
+This document already has %n pages merged in from another file.</numerusform>
         </translation>
     </message>
     <message numerus="yes">
@@ -2833,8 +2837,12 @@ The original file is not touched, and this step writes nothing either: those %1 
 
 这会把前面记下的「每 %n 页一份」换掉；撤销一次回到那一个。</source>
         <translation>
-            <numerusform>This replaces the earlier &quot;one piece per %n page&quot;; undoing once goes back to that one.</numerusform>
-            <numerusform>This replaces the earlier &quot;one piece per %n pages&quot;; undoing once goes back to that one.</numerusform>
+            <numerusform>
+
+This replaces the earlier &quot;one piece per %n page&quot;; undoing once goes back to that one.</numerusform>
+            <numerusform>
+
+This replaces the earlier &quot;one piece per %n pages&quot;; undoing once goes back to that one.</numerusform>
         </translation>
     </message>
     <message numerus="yes">

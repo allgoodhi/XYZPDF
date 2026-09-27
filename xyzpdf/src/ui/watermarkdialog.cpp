@@ -185,7 +185,12 @@ void WatermarkDialog::updateSummary()
                    "原来的字，看不到这行水印。");
     }
 
-    if (const int imported = editor ? editor->importedPageCount() : 0; imported > 0 && hasPages) {
+    // Gated on the words as well as the pages: this aside explains where the marks will not
+    // go, so under a line that says nothing has been named yet it describes a request the
+    // reader has not made -- the same reasoning as the refusal above replacing the arithmetic
+    // rather than sitting under it. An aside is only true of an answer.
+    if (const int imported = editor ? editor->importedPageCount() : 0;
+        hasWords && imported > 0 && hasPages) {
         line += tr("\n\n前面合并进来的那 %n 页屏幕上没有页号，所以不在这 %1 页里，也不会带上水印。",
                    nullptr, imported)
                     .arg(present);

@@ -21,6 +21,7 @@
 #include "../documenttab.h"
 #include "../src/edit/documenteditor.h"
 #include "../src/theme/thememanager.h"
+#include "../src/ui/deletepagesdialog.h"
 #include "../src/ui/findbar.h"
 #include "../src/ui/mergepagesdialog.h"
 #include "../src/ui/movepagesdialog.h"
@@ -1821,6 +1822,238 @@ int main(int argc, char **argv)
             check(againOkay && !againOkay->isEnabled(),
                   "a box built after the undo offers the undone-away answer back and greys it too, "
                   "because it reads the list as it stands now");
+        }
+    }
+
+    // ---- who speaks first: the sentence a dialog picks when two of its guards hold ----
+    //
+    // Every edit dialog answers with ONE sentence out of a chain, and each link in that chain
+    // has a test somewhere -- but a chain is a sequence, and nothing asked what the reader
+    // gets when two guards are true at once. That is not a corner: 拆分挂着 and 列表是空的 are
+    // both facts about the same box, and reordering the two links changes what a person reads
+    // while every single-branch check stays green. §29 wrote this exact case down from a real
+    // window and left it unpinned, so each pin below is built by making both guards true.
+    {
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        const QString donor = directory + QStringLiteral("/dense.pdf");
+        auto baseName = [](const QString &file) { return QFileInfo(file).fileName(); };
+        QString error;
+        // DocumentEditor is not copyable (its QPdfDocument is), so each case opens its own:
+        // this fills one rather than returning one.
+        const auto openBook = [&book, &error](DocumentEditor &editor) {
+            check(editor.open(book, QString(), &error),
+                  QStringLiteral("setup: a 40-page document to refuse in: %1").arg(error));
+        };
+
+        const auto saidOf = [](QDialog &box) {
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        const auto okayOf = [](QDialog &box) {
+            auto *buttons = box.findChild<QDialogButtonBox *>();
+            return buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+        };
+        // The range box, picked by its placeholder: 移动页面 has a second line edit beside it
+        // (the anchor number), and taking the first child would read out the wrong one.
+        const auto rangeOf = [](QDialog &box) {
+            const auto edits = box.findChildren<QLineEdit *>();
+            for (QLineEdit *edit : edits) {
+                if (edit->placeholderText().contains(QStringLiteral("1-3")))
+                    return edit;
+            }
+            return static_cast<QLineEdit *>(nullptr);
+        };
+        const auto pick = [](QDialog &box, const QString &words) {
+            const auto radios = box.findChildren<QRadioButton *>();
+            for (QRadioButton *radio : radios) {
+                if (radio->text() == words) {
+                    radio->click();
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // 合并 with nothing in the list AND a split pending: the list is the more basic
+        // nothing-to-do, and §29 read exactly this pair on a real screen (with an empty list
+        // the pending split is never mentioned) without any test saying so.
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            check(editor.splitInto(15, &error),
+                  QStringLiteral("setup: a split of every 15 pages is pending: %1").arg(error));
+            MergePagesDialog box(&tab, &editor);
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("还没有加上要合并进来的文件")),
+                  QStringLiteral("an empty list answers first, even with a split pending: %1")
+                      .arg(said));
+            check(!said.contains(QStringLiteral("已经说了要拆成每")),
+                  QStringLiteral("and the pending split is not mentioned while there is nothing "
+                                 "to merge in: %1")
+                      .arg(said));
+        }
+
+        // 合并 with a row that has not said its pages AND a split pending: here the split wins,
+        // because it invalidates the whole request rather than one row of it. The order is the
+        // decision, so it needs both sentences in the same run to be worth anything.
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            check(editor.splitInto(15, &error), "setup: a split is pending");
+            MergePagesDialog box(&tab, &editor);
+            check(box.addPaths({donor}).isEmpty(), "setup: the donor row is taken");
+            auto *table = box.findChild<QTableWidget *>();
+            check(table != nullptr && table->item(0, 2) != nullptr, "setup: the range cell");
+            table->item(0, 2)->setText(QStringLiteral(" "));
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("已经说了要拆成每 15 页一份")),
+                  QStringLiteral("a silent row does not outrank a request the model will refuse: %1")
+                      .arg(said));
+            check(!said.contains(QStringLiteral("还没有说出要合入哪几页")),
+                  QStringLiteral("and the row is not named while the split is what stops it: %1")
+                      .arg(said));
+        }
+
+        // 合并 with a silent row and no split: now the row is the only thing wrong, and the
+        // sentence names which row-- so the same box moves from the split's answer to the
+        // row's answer by undoing one list entry.
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            MergePagesDialog box(&tab, &editor);
+            check(box.addPaths({donor}).isEmpty(), "setup: the donor row is taken");
+            auto *table = box.findChild<QTableWidget *>();
+            table->item(0, 2)->setText(QStringLiteral(" "));
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("还没有说出要合入哪几页"))
+                      && said.contains(baseName(donor)),
+                  QStringLiteral("without a pending split the silent row is what gets said, "
+                                 "with its file named: %1")
+                      .arg(said));
+            // and the anchor question is further down the chain than the row question
+            pick(box, QStringLiteral("指定页之后"));
+            check(saidOf(box).contains(baseName(donor))
+                      && !saidOf(box).contains(QStringLiteral("要说合并到第几页之后")),
+                  QStringLiteral("a blank anchor does not cut in front of a silent row: %1")
+                      .arg(saidOf(box)));
+        }
+
+        // 删除 with nothing typed: blank is nothing said, and the button waits (§13's finding,
+        // fixed by making a blank box mean nothing rather than everything).
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            DeletePagesDialog box(&tab, 0, &editor);
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("还没有说出要删哪几页")),
+                  QStringLiteral("a box nobody typed into says that and does not count: %1")
+                      .arg(said));
+            QPushButton *okay = okayOf(box);
+            check(okay && !okay->isEnabled(), "and the button is off, so nothing can be pressed");
+        }
+
+        // 删除 with pages typed that an earlier pending 删页 already took: those numbers are
+        // original page numbers (§15), so typing 3 after deleting original page 3 names a page
+        // that is not there to delete -- and the answer must not be "you said nothing".
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            check(editor.deletePages({2}, &error),
+                  QStringLiteral("setup: original page 3 is already taken out: %1").arg(error));
+            DeletePagesDialog box(&tab, 0, &editor);
+            QLineEdit *range = rangeOf(box);
+            check(range != nullptr, "setup: the box that takes the numbers");
+            range->setText(QStringLiteral("3"));
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("这些页在前面的修改里已经删掉了")),
+                  QStringLiteral("contradicting the reader is the thing to avoid, so this names "
+                                 "the earlier change: %1")
+                      .arg(said));
+            check(!said.contains(QStringLiteral("还没有说出要删哪几页")),
+                  QStringLiteral("and not the sentence for a blank box, which this is not: %1")
+                      .arg(said));
+            QPushButton *okay = okayOf(box);
+            check(okay && !okay->isEnabled(), "and nothing is left to press");
+        }
+
+        // 删除 naming everything that is left: the floor is its own answer, and it is said
+        // before the arithmetic that would otherwise report 剩下 0 页.
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            DeletePagesDialog box(&tab, 0, &editor);
+            QLineEdit *range = rangeOf(box);
+            range->setText(QStringLiteral("1-40"));
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("这样一页也不剩了")),
+                  QStringLiteral("the floor answers before the arithmetic does: %1").arg(said));
+            check(!said.contains(QStringLiteral("剩下 0 页")),
+                  QStringLiteral("and no line of numbers is offered for a document that cannot "
+                                 "exist: %1")
+                      .arg(said));
+        }
+
+        // 移动 with nothing named AND no anchor number: the pages are the more basic question.
+        // Getting there is itself a reading: the box opens on 当前页, which always names one
+        // page, so the "no pages named" branch only exists behind the 指定页码 choice -- a box
+        // left as it opened asks the anchor question first, and that is the right order.
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            MovePagesDialog box(&tab, 0, &editor);
+            pick(box, QStringLiteral("指定页码"));
+            pick(box, QStringLiteral("指定页之后"));
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("还没有说出要移动哪几页")),
+                  QStringLiteral("no pages named is said before no anchor: %1").arg(said));
+            check(!said.contains(QStringLiteral("要说移到第几页之后")),
+                  QStringLiteral("and the anchor question waits its turn: %1").arg(said));
+            pick(box, QStringLiteral("当前页（第 1 页）"));
+            check(saidOf(box).contains(QStringLiteral("要说移到第几页之后")),
+                  QStringLiteral("name the page another way and the anchor is the only thing "
+                                 "left missing: %1")
+                      .arg(saidOf(box)));
+        }
+
+        // 水印 with neither words nor pages: the text is the first question the box asks, and
+        // the page question is not raised while the marks themselves are still unsaid.
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            WatermarkDialog box(&tab, &editor);
+            pick(box, QStringLiteral("指定页码"));
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("还没有说要盖什么字")),
+                  QStringLiteral("words first: %1").arg(said));
+            check(!said.contains(QStringLiteral("还没有说出要盖哪几页")),
+                  QStringLiteral("and the page question is not asked yet: %1").arg(said));
+        }
+
+        // 水印 with no words but a page range typed, on a document that carries imported pages:
+        // the imported-pages aside is about pages that will not be inked, so it stays out of a
+        // refusal that already says nothing was named. (It used to be appended here, and the
+        // reason this is a pin rather than a comment is that the aside is gated on the pages,
+        // not on the answer the box just gave.)
+        {
+            DocumentEditor editor;
+            openBook(editor);
+            check(editor.mergeFile(donor, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("setup: one imported page: %1").arg(error));
+            WatermarkDialog box(&tab, &editor);
+            QLineEdit *range = rangeOf(box);
+            check(range != nullptr, "setup: the box that takes the numbers");
+            range->setText(QStringLiteral("3"));
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("还没有说要盖什么字")),
+                  QStringLiteral("a typed range with no words is still no words: %1").arg(said));
+            check(!said.contains(QStringLiteral("前面合并进来的那")),
+                  QStringLiteral("and nothing is explained about pages that were never asked to "
+                                 "be inked: %1")
+                      .arg(said));
         }
     }
 

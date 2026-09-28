@@ -566,6 +566,535 @@ QString writeAnnotatedPageCopy(const QString &source, const QString &destination
     return destination;
 }
 
+// A page whose note owns a popup and has a reply attached to it -- the shape qpdf's comment
+// about fixCopiedAnnotations says nothing about. A popup is an annotation that is NOT in the
+// page's /Annots array (only its owner's /Popup names it), and a reply's /IRT names another
+// annotation on the same page, so both are references that a shallow page copy can leave
+// pointing at the document the page came out of.
+QString writeLinkedAnnotationsCopy(const QString &source, const QString &destination,
+                                   QString *error)
+{
+    auto rect = [](double left, double top, double right, double bottom) {
+        QPDFObjectHandle value = QPDFObjectHandle::newArray();
+        value.appendItem(QPDFObjectHandle::newReal(left));
+        value.appendItem(QPDFObjectHandle::newReal(top));
+        value.appendItem(QPDFObjectHandle::newReal(right));
+        value.appendItem(QPDFObjectHandle::newReal(bottom));
+        return value;
+    };
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle note = QPDFObjectHandle::newDictionary();
+        note.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        note.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+        note.replaceKey("/Rect", rect(60, 700, 90, 730));
+        note.replaceKey("/Contents", QPDFObjectHandle::newString("the note a reply answers"));
+        note = qpdf.makeIndirectObject(note);
+        note.replaceKey("/P", page);
+
+        QPDFObjectHandle popup = QPDFObjectHandle::newDictionary();
+        popup.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        popup.replaceKey("/Subtype", QPDFObjectHandle::newName("/Popup"));
+        popup.replaceKey("/Rect", rect(95, 700, 240, 780));
+        popup = qpdf.makeIndirectObject(popup);
+        popup.replaceKey("/Parent", note);
+        note.replaceKey("/Popup", popup);
+
+        QPDFObjectHandle reply = QPDFObjectHandle::newDictionary();
+        reply.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        reply.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+        reply.replaceKey("/Rect", rect(60, 600, 90, 630));
+        reply.replaceKey("/Contents", QPDFObjectHandle::newString("a reply to the note"));
+        reply.replaceKey("/IRT", note);
+        reply.replaceKey("/RT", QPDFObjectHandle::newName("/R"));
+        reply = qpdf.makeIndirectObject(reply);
+        reply.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(note);
+        annots.appendItem(reply);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// What the references between annotations look like from the outside: whether a popup is
+// shared by two pages, whether a popup's /Parent names the annotation that points at it, and
+// whether a reply's /IRT names an annotation that is on the same page as the reply.
+struct LinkReport
+{
+    int notes = 0;
+    int popups = 0;
+    int popupsSharedByTwoPages = 0;
+    int popupsNamingWrongOwner = 0;
+    int replies = 0;
+    int repliesNamingForeignTarget = 0;
+};
+
+LinkReport readLinkedAnnotations(const QString &path)
+{
+    LinkReport report;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QSet<int> seenPopups;
+        for (const QPDFPageObjectHelper &page : pages) {
+            const QPDFObjectHandle annots = page.getObjectHandle().getKey("/Annots");
+            QSet<int> onThisPage;
+            for (int index = 0; annots.isArray() && index < annots.getArrayNItems(); ++index)
+                onThisPage.insert(annots.getArrayItem(index).getObjGen().getObj());
+            for (int index = 0; annots.isArray() && index < annots.getArrayNItems(); ++index) {
+                const QPDFObjectHandle item = annots.getArrayItem(index);
+                const QPDFObjectHandle popup = item.getKey("/Popup");
+                if (popup.isDictionary()) {
+                    ++report.popups;
+                    const int id = popup.getObjGen().getObj();
+                    if (seenPopups.contains(id))
+                        ++report.popupsSharedByTwoPages;
+                    seenPopups.insert(id);
+                    if (popup.getKey("/Parent").getObjGen().getObj() != item.getObjGen().getObj())
+                        ++report.popupsNamingWrongOwner;
+                }
+                if (item.getKey("/IRT").isDictionary()) {
+                    ++report.replies;
+                    if (!onThisPage.contains(item.getKey("/IRT").getObjGen().getObj()))
+                        ++report.repliesNamingForeignTarget;
+                }
+                if (item.getKey("/Subtype").getName() == "/Text" && !item.hasKey("/IRT"))
+                    ++report.notes;
+            }
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the annotation links out of " << path.toStdString()
+                  << ": " << e.what() << '\n';
+        ++failures;
+    }
+    return report;
+}
+
+// A document whose *own* first page carries one text field of a chosen name, registered in
+// its own /AcroForm. The point is the name: merged with a donor whose field uses the same
+// one, this is the case qpdf's note about fixCopiedAnnotations warns about ("resolve
+// conflicts from common resource and field names"), and it is not reachable with the
+// fixtures -- none of them has an /AcroForm at all.
+QString writeFieldCopy(const QString &source, const QString &destination,
+                       const QString &fieldName, const QString &fieldValue, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+        field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        field.replaceKey("/T", QPDFObjectHandle::newString(fieldName.toUtf8().constData()));
+        field.replaceKey("/V", QPDFObjectHandle::newString(fieldValue.toUtf8().constData()));
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        field.replaceKey("/Rect", rect);
+        field = qpdf.makeIndirectObject(field);
+        field.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(field);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(field);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// The layer above that one: the same field, but hanging off a **parent**, which is how a real form
+// spells its names. A field's address in a PDF is not its `/T` -- it is the chain of partial names
+// joined with a period (PDF 2.0 §12.7.5.2), and only the last one is an annotation on the page. So
+// two documents can each hold a field a reader would call `form.answer` while the string `answer`
+// appears once in each of them, and a merge then has two questions to answer rather than one: which
+// segment of the address gets renamed, and whether the parent comes along at all. A copied widget
+// whose `/Parent` points into the file it came out of is reachable from nothing in this one, which
+// is a box on the page that no program can ever get an answer out of.
+QString writeNestedFieldCopy(const QString &source, const QString &destination,
+                             const QString &parentName, const QString &childName,
+                             const QString &fieldValue, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle widget = QPDFObjectHandle::newDictionary();
+        widget.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        widget.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        widget.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        widget.replaceKey("/T", QPDFObjectHandle::newString(childName.toUtf8().constData()));
+        widget.replaceKey("/V", QPDFObjectHandle::newString(fieldValue.toUtf8().constData()));
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        widget.replaceKey("/Rect", rect);
+        widget = qpdf.makeIndirectObject(widget);
+        widget.replaceKey("/P", page);
+
+        // A parent field is a field and not an annotation: no /Rect, no /P, and nothing on the
+        // page names it. That is exactly why this case is not the flat one with a longer name.
+        QPDFObjectHandle parent = QPDFObjectHandle::newDictionary();
+        parent.replaceKey("/T", QPDFObjectHandle::newString(parentName.toUtf8().constData()));
+        QPDFObjectHandle kids = QPDFObjectHandle::newArray();
+        kids.appendItem(widget);
+        parent.replaceKey("/Kids", kids);
+        parent = qpdf.makeIndirectObject(parent);
+        widget.replaceKey("/Parent", parent);
+
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(parent);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        form.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(widget);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// The field tree the way a form-reading program walks it: addresses assembled from the chain, plus
+// the two shapes that are invisible to a reader of `/Fields` alone -- a widget on a page that no
+// entry in the form list reaches, and two terminals sharing one address.
+struct FieldTreeReport
+{
+    QStringList addresses;
+    QStringList values;
+    int terminals = 0;
+    int parents = 0;
+    int widgetsWithoutOwnName = 0;
+    int unregisteredWidgets = 0;
+    int duplicateAddresses = 0;
+    int brokenBackLinks = 0;
+    int parentChildMismatch = 0;
+    int terminalsNamingNoPage = 0;
+    // The object each terminal gets its name from: itself when it carries a /T, its parent when it
+    // is a pure widget. Two addresses are only a *collision* when they belong to two different
+    // fields -- one field drawn on two pages reuses one address, and that is legal.
+    QList<int> terminalOwners;
+    QStringList aliases;
+    int namelessTerminals = 0;
+};
+
+void walkFieldTree(const QPDFObjectHandle &field, const QString &prefix, const QString &inheritedValue,
+                   int depth, const QSet<int> &pageIds,
+                   QSet<int> &reachable, FieldTreeReport &report, int parentObj = -1)
+{
+    if (!field.isDictionary() || depth > 8)
+        return;
+    const QPDFObjectHandle part = field.getKey("/T");
+    const bool ownName = part.isString();
+    const QString name = ownName ? QString::fromUtf8(part.getStringValue().c_str()) : QString();
+    // A pure widget has no name of its own: it is drawn, and what it is drawn *as* comes from the
+    // field above it. So its address is the prefix, with no trailing period.
+    const QString address =
+        prefix.isEmpty() ? name : (name.isEmpty() ? prefix : prefix + QLatin1Char('.') + name);
+    reachable.insert(field.getObjGen().getObj());
+    // Asked in the other direction, because the two can disagree and only one of them is what a
+    // viewer uses: this file assembles the address by walking DOWN from /Fields, while a program
+    // that was handed a widget walks UP through /Parent. A copied field whose /Parent still names
+    // the parent it came in with would read as `form+1.answer` one way and `form.answer` the other
+    // -- the same address twice in one form, which is exactly what the rename exists to prevent.
+    const QPDFObjectHandle back = field.getKey("/Parent");
+    if (parentObj < 0) {
+        if (back.isDictionary())
+            ++report.parentChildMismatch;   // a top-level field that claims a parent
+    } else if (!back.isDictionary() || back.getObjGen().getObj() != parentObj) {
+        ++report.parentChildMismatch;
+    }
+    // A value lives on the field, not on its widgets, so it has to be carried down the chain:
+    // asking a widget for /V would report nothing at all for a field drawn on two pages, and the
+    // thing §51 is about is precisely whether that value ends up in a file that cannot show it.
+    const QPDFObjectHandle value = field.getKey("/V");
+    const QString effective =
+        value.isString() ? QString::fromUtf8(value.getStringValue().c_str()) : inheritedValue;
+    const QPDFObjectHandle kids = field.getKey("/Kids");
+    if (kids.isArray() && kids.getArrayNItems() > 0) {
+        ++report.parents;
+        for (int index = 0; index < kids.getArrayNItems(); ++index)
+            walkFieldTree(kids.getArrayItem(index), address, effective, depth + 1, pageIds,
+                          reachable, report, field.getObjGen().getObj());
+        return;
+    }
+    ++report.terminals;
+    if (!ownName)
+        ++report.widgetsWithoutOwnName;
+    if (address.isEmpty())
+        ++report.namelessTerminals;
+    // The owner of an address is the field that says it: the object itself when it carries a /T,
+    // its parent when it is a pure widget. A nameless top-level field has no parent to fall back
+    // on, so its own id is used -- the sentinel would make two such fields look like ONE owner and
+    // hide a real pair behind an accident.
+    const int addressOwner = ownName
+                          ? field.getObjGen().getObj()
+                          : (parentObj >= 0 ? parentObj : field.getObjGen().getObj());
+    report.terminalOwners << addressOwner;
+    report.addresses << address;
+    report.values << effective;
+    // Read from the object itself, not inherited: what is asked below is whether an alias survives
+    // a merge, not how a viewer would spell a widget's name.
+    const QPDFObjectHandle alias = field.getKey("/TM");
+    report.aliases << (alias.isString()
+                           ? QString::fromUtf8(alias.getStringValue().c_str())
+                           : QString());
+    const QPDFObjectHandle owner = field.getKey("/P");
+    if (owner.isDictionary() && !pageIds.contains(owner.getObjGen().getObj()))
+        ++report.terminalsNamingNoPage;
+    if (back.isDictionary() && !reachable.contains(back.getObjGen().getObj()))
+        ++report.brokenBackLinks;
+}
+
+FieldTreeReport readFieldTree(const QString &path)
+{
+    FieldTreeReport report;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QSet<int> pageIds;
+        for (const QPDFPageObjectHelper &page : pages)
+            pageIds.insert(page.getObjectHandle().getObjGen().getObj());
+        QSet<int> reachable;
+        const QPDFObjectHandle form = qpdf.getRoot().getKey("/AcroForm");
+        const QPDFObjectHandle fields = form.getKey("/Fields");
+        for (int index = 0; fields.isArray() && index < fields.getArrayNItems(); ++index)
+            walkFieldTree(fields.getArrayItem(index), QString(), QString(), 0, pageIds, reachable,
+                          report);
+        // Same address from two different fields is the collision §46/§50 are about; the same
+        // address from two widgets of one field is what a spread field *is*, so the owners have to
+        // be compared as well as the names -- counting repeated names alone would call the shape
+        // below a collision and be wrong about it.
+        for (int a = 0; a < report.addresses.size(); ++a) {
+            if (report.addresses.at(a).isEmpty())
+                continue;   // a field with no name has no address, so it cannot collide with one
+            for (int b = a + 1; b < report.addresses.size(); ++b) {
+                if (report.addresses.at(a) == report.addresses.at(b)
+                    && report.terminalOwners.value(a) != report.terminalOwners.value(b)) {
+                    ++report.duplicateAddresses;
+                    break;
+                }
+            }
+        }
+        QSet<QString> seen;
+        for (const QString &address : report.addresses)
+            seen.insert(address);
+        for (const QPDFPageObjectHelper &page : pages) {
+            const QPDFObjectHandle annots = page.getObjectHandle().getKey("/Annots");
+            for (int index = 0; annots.isArray() && index < annots.getArrayNItems(); ++index) {
+                const QPDFObjectHandle item = annots.getArrayItem(index);
+                const QPDFObjectHandle subtype = item.getKey("/Subtype");
+                if (!subtype.isName() || subtype.getName() != "/Widget")
+                    continue;
+                if (!reachable.contains(item.getObjGen().getObj()))
+                    ++report.unregisteredWidgets;
+            }
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the field tree out of " << path.toStdString() << ": "
+                  << e.what() << '\n';
+        ++failures;
+    }
+    return report;
+}
+
+// The shape §51 names as its next rung: **one** field whose widgets sit on two different pages.
+// Adobe's own way of doing it is the reverse of writeNestedFieldCopy -- the registered field carries
+// no /Rect and belongs to no page, and its /Kids are two pure widget annotations (each with /P and
+// /Parent, neither with a /T of its own), because a name is said once and drawn twice. It matters
+// for the repair: a field like this is *needed by both halves of a split*, so "drop the field whose
+// page went out" would delete a box the reader can still see.
+QString writeSpreadFieldCopy(const QString &source, const QString &destination,
+                             const QString &fieldName, const QString &fieldValue,
+                             int pageA, int pageB, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+
+        QPDFObjectHandle parent = QPDFObjectHandle::newDictionary();
+        parent.replaceKey("/T", QPDFObjectHandle::newString(fieldName.toUtf8().constData()));
+        parent.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        parent.replaceKey("/V", QPDFObjectHandle::newString(fieldValue.toUtf8().constData()));
+        parent = qpdf.makeIndirectObject(parent);
+
+        QPDFObjectHandle kids = QPDFObjectHandle::newArray();
+        for (const int which : {pageA, pageB}) {
+            QPDFObjectHandle page = pages.at(size_t(which)).getObjectHandle();
+            QPDFObjectHandle widget = QPDFObjectHandle::newDictionary();
+            widget.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+            widget.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+            QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+            rect.appendItem(QPDFObjectHandle::newReal(60));
+            rect.appendItem(QPDFObjectHandle::newReal(600));
+            rect.appendItem(QPDFObjectHandle::newReal(260));
+            rect.appendItem(QPDFObjectHandle::newReal(630));
+            widget.replaceKey("/Rect", rect);
+            widget = qpdf.makeIndirectObject(widget);
+            widget.replaceKey("/P", page);
+            widget.replaceKey("/Parent", parent);
+            QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+            annots.appendItem(widget);
+            page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+            kids.appendItem(widget);
+        }
+        parent.replaceKey("/Kids", kids);
+
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(parent);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// The last two shapes at the edge of the naming rule, both asked because §50 and §52 each found that
+// a counter built from the shapes I had thought of reports the un-thought-of ones as defects.
+//
+//  * a field with an **alias**: `/TM` is a second name, from the PDF 2.0 form specification, and the
+//    fully-qualified name is still assembled from `/T`. So "the same name twice" has two meanings,
+//    and what a merge has to decide is which one it keys on. Nothing in this product draws either
+//    name (v1 has no form UI), so the question is not what the reader sees but what the repair
+//    promises -- and whether a file can end up holding two fields an XFA-aware viewer would call
+//    the same thing.
+//  * a field with **no name at all**: legal (an empty partial name is what the spec allows once
+//    `/TM` exists), and an empty string is not an address, so it must not be counted as a
+//    collision with another one.
+QString writeAliasedFieldCopy(const QString &source, const QString &destination,
+                              const QString &fieldName, const QString &aliasName,
+                              const QString &fieldValue, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+        field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        if (!fieldName.isEmpty())
+            field.replaceKey("/T", QPDFObjectHandle::newString(fieldName.toUtf8().constData()));
+        if (!aliasName.isEmpty())
+            field.replaceKey("/TM", QPDFObjectHandle::newString(aliasName.toUtf8().constData()));
+        field.replaceKey("/V", QPDFObjectHandle::newString(fieldValue.toUtf8().constData()));
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        field.replaceKey("/Rect", rect);
+        QPDFObjectHandle widget = qpdf.makeIndirectObject(field);
+        widget.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(widget);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(widget);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// Two nameless fields in one document, which is the case the collision rule has to refuse to
+// report: neither has an address, so there is nothing to collide.
+QString writeTwoNamelessFields(const QString &source, const QString &destination, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        for (const int y : {600, 500}) {
+            QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+            field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+            field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+            field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+            field.replaceKey("/V", QPDFObjectHandle::newString("no name here"));
+            QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+            rect.appendItem(QPDFObjectHandle::newReal(60));
+            rect.appendItem(QPDFObjectHandle::newReal(y));
+            rect.appendItem(QPDFObjectHandle::newReal(260));
+            rect.appendItem(QPDFObjectHandle::newReal(y + 30));
+            field.replaceKey("/Rect", rect);
+            QPDFObjectHandle widget = qpdf.makeIndirectObject(field);
+            widget.replaceKey("/P", page);
+            annots.appendItem(widget);
+            fields.appendItem(widget);
+        }
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
 // How a file stands with respect to annotations: what each page carries, whether the page
 // that carries an annotation is the one its own `/P` names, whether any annotation object is
 // shared between two pages, and how many fields the document's /AcroForm points at.
@@ -581,6 +1110,8 @@ struct AnnotationReport
     int objectsSharedByTwoPages = 0;
     int fields = 0;
     int fieldsNamingNoPage = 0;
+    QStringList fieldNames;
+    QStringList fieldValues;
 };
 
 AnnotationReport readAnnotations(const QString &path)
@@ -614,7 +1145,21 @@ AnnotationReport readAnnotations(const QString &path)
         const QPDFObjectHandle fields = form.getKey("/Fields");
         for (int index = 0; fields.isArray() && index < fields.getArrayNItems(); ++index) {
             ++report.fields;
-            const QPDFObjectHandle owner = fields.getArrayItem(index).getKey("/P");
+            const QPDFObjectHandle item = fields.getArrayItem(index);
+            // Asked with a type check rather than directly, because once names are assembled a
+            // /Fields entry is usually a *parent*, which carries no value at all -- and qpdf
+            // answers a type mismatch with a WARNING line on stderr plus an empty string, so an
+            // unguarded read of a whole form list prints three complaints that look like the
+            // file being broken when it is the reader being rude.
+            const QPDFObjectHandle name = item.getKey("/T");
+            const QPDFObjectHandle value = item.getKey("/V");
+            report.fieldNames << (name.isString()
+                                      ? QString::fromUtf8(name.getStringValue().c_str())
+                                      : QString());
+            report.fieldValues << (value.isString()
+                                       ? QString::fromUtf8(value.getStringValue().c_str())
+                                       : QString());
+            const QPDFObjectHandle owner = item.getKey("/P");
             if (!owner.isDictionary() || !pageIds.contains(owner.getObjGen().getObj()))
                 ++report.fieldsNamingNoPage;
         }
@@ -1598,6 +2143,632 @@ int main(int argc, char **argv)
                       .arg(written.fieldsNamingNoPage));
             check(hashOfFile(marked) == markedHash,
                   "and the file the annotations came out of was only ever read");
+        }
+
+        // ---- when both documents already carry a field of the same name ----
+        //
+        // The layer above that one, and the half of qpdf's sentence its repair does not
+        // claim to cover: "resolve conflicts from common resource and field names". A
+        // field name is an address -- two fields called the same thing in one document is
+        // what a form-reading program cannot answer -- so the question here is not whether
+        // the merge throws but what the surviving form list says.
+        {
+            const QString marked = scratch.filePath(QStringLiteral("annotated-donor.pdf"));
+            const QString both = scratch.filePath(QStringLiteral("target-has-same-field.pdf"));
+            error.clear();
+            check(!writeAnnotatedPageCopy(donor, marked, &error).isEmpty(),
+                  QStringLiteral("setup: the donor's page carries a field: %1").arg(error));
+            check(!writeFieldCopy(source, both, QStringLiteral("donorAnswer"),
+                                  QStringLiteral("typed in the target"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: and so does the target's own first page, under the "
+                                 "same name: %1")
+                      .arg(error));
+            const AnnotationReport built = readAnnotations(both);
+            check(built.fields == 1 && built.fieldNames.value(0) == QStringLiteral("donorAnswer"),
+                  QStringLiteral("setup: the target has one field, named %1")
+                      .arg(built.fieldNames.value(0)));
+
+            DocumentEditor clash;
+            check(clash.open(both, QString(), &error),
+                  QStringLiteral("setup: the document with a field of its own opens: %1")
+                      .arg(error));
+            check(clash.mergeFile(marked, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("the donor's fielded page comes in beside it: %1").arg(error));
+            const QString clashOut = scratch.filePath(QStringLiteral("merged-same-field.pdf"));
+            error.clear();
+            check(clash.saveAs(clashOut, &error),
+                  QStringLiteral("the document with both fields is written: %1").arg(error));
+
+            const AnnotationReport merged = readAnnotations(clashOut);
+            // What qpdf's repair does with the name is its own business (this build renames the
+            // incoming field rather than the one already in the tree), so the assertions are
+            // about the two properties a reader can act on: the field that was already here is
+            // untouched, and the one that came in kept its answer rather than its label.
+            check(merged.fields == 2,
+                  QStringLiteral("both fields survive the merge: %1 in the form list")
+                      .arg(merged.fields));
+            check(merged.fieldNames.value(0) == QStringLiteral("donorAnswer")
+                      && merged.fieldValues.value(0) == QStringLiteral("typed in the target"),
+                  QStringLiteral("the document's own field is still named %1 and still says "
+                                 "\"%2\"")
+                      .arg(merged.fieldNames.value(0), merged.fieldValues.value(0)));
+            check(merged.fieldNames.size() == 2 && merged.fieldNames.value(0) != merged.fieldNames.value(1),
+                  QStringLiteral("and the two names are not the same, which is the collision "
+                                 "this case is about: [%1] vs [%2]")
+                      .arg(merged.fieldNames.value(0), merged.fieldNames.value(1)));
+            check(merged.fieldValues.value(1) == QStringLiteral("filled in the donor"),
+                  QStringLiteral("the answer that came in with the page is the one stored now "
+                                 "(\"%1\"), not the target's")
+                      .arg(merged.fieldValues.value(1)));
+            check(merged.fieldsNamingNoPage == 0 && merged.objectsSharedByTwoPages == 0
+                      && merged.notesNamingAnotherPage == 0,
+                  QStringLiteral("and the same three ownership facts hold as without the "
+                                 "collision: %1 fields name no page, %2 objects shared, %3 "
+                                 "notes naming another page")
+                      .arg(merged.fieldsNamingNoPage)
+                      .arg(merged.objectsSharedByTwoPages)
+                      .arg(merged.notesNamingAnotherPage));
+            check(merged.countPerPage.value(merged.countPerPage.size() - 1) == 2,
+                  QStringLiteral("the page that came in still carries its two annotations: %1")
+                      .arg(merged.countPerPage.value(merged.countPerPage.size() - 1)));
+        }
+
+        // ---- annotations that point at other annotations ----
+        //
+        // The last shape §36 left unasked, and the one qpdf's comment is silent about: a popup
+        // lives outside the page's /Annots array (only its owner's /Popup names it) and a reply
+        // names another annotation with /IRT. Both are references a page copy can leave pointing
+        // back at the document the page came from. Two copies again, because that is the only
+        // way "private" and "shared" read differently from the file.
+        {
+            const QString linked = scratch.filePath(QStringLiteral("linked-donor.pdf"));
+            error.clear();
+            check(!writeLinkedAnnotationsCopy(donor, linked, &error).isEmpty(),
+                  QStringLiteral("setup: a note with a popup and a reply: %1").arg(error));
+            const LinkReport built = readLinkedAnnotations(linked);
+            check(built.notes == 1 && built.popups == 1 && built.replies == 1
+                      && built.popupsSharedByTwoPages == 0 && built.popupsNamingWrongOwner == 0
+                      && built.repliesNamingForeignTarget == 0,
+                  QStringLiteral("setup: that page reads as one note, one popup naming it, one "
+                                 "reply naming it: %1 popups, %2 replies")
+                      .arg(built.popups)
+                      .arg(built.replies));
+
+            DocumentEditor chain;
+            check(chain.open(source, QString(), &error),
+                  QStringLiteral("setup: the document to merge into: %1").arg(error));
+            check(chain.mergeFile(linked, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("the linked page comes in once: %1").arg(error));
+            check(chain.mergeFile(linked, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("and again, as a second copy: %1").arg(error));
+            const QString chainOut = scratch.filePath(QStringLiteral("merged-linked.pdf"));
+            error.clear();
+            check(chain.saveAs(chainOut, &error),
+                  QStringLiteral("and both copies are written: %1").arg(error));
+
+            const LinkReport joined = readLinkedAnnotations(chainOut);
+            // What the repair does guarantee, measured: each copy got its own annotation
+            // objects, and each of those names the page that carries it.
+            check(joined.notes == 2 && joined.popups == 2 && joined.replies == 2,
+                  QStringLiteral("both copies came out with a note, a popup and a reply: %1 notes, "
+                                 "%2 popups, %3 replies")
+                      .arg(joined.notes)
+                      .arg(joined.popups)
+                      .arg(joined.replies));
+            check(joined.popupsSharedByTwoPages == 1 && joined.popupsNamingWrongOwner == 2
+                      && joined.repliesNamingForeignTarget == 2,
+                  QStringLiteral("KNOWN GAP, pinned so a fix reddens this on purpose (docs "
+                                 "§47): the copies' popups are still one shared object and "
+                                 "neither popup names the note that owns it, and both replies "
+                                 "thread to an annotation outside their page -- %1 shared, %2 "
+                                 "wrong owner, %3 foreign target")
+                      .arg(joined.popupsSharedByTwoPages)
+                      .arg(joined.popupsNamingWrongOwner)
+                      .arg(joined.repliesNamingForeignTarget));
+        }
+
+        // ---- the same collision, one level up: names inside a hierarchy ----
+        //
+        // §46's layer above it, and the reason "no genuine form PDF exists on this machine" was
+        // only half a blocker: what a real file adds is generators and XFA, but the *question* --
+        // what does a field's name mean when it is assembled out of several dictionaries -- can be
+        // asked of a tree built here. Both documents carry a field a reader would address as
+        // `form.answer`; only the leaf is on the page, and the parent is reachable from nothing but
+        // the form list.
+        {
+            const QString nestedDonor = scratch.filePath(QStringLiteral("nested-donor.pdf"));
+            const QString nestedTarget =
+                scratch.filePath(QStringLiteral("target-has-same-nested-field.pdf"));
+            error.clear();
+            check(!writeNestedFieldCopy(donor, nestedDonor, QStringLiteral("form"),
+                                        QStringLiteral("answer"),
+                                        QStringLiteral("filled in the donor"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: the donor's page carries a field at form.answer: %1")
+                      .arg(error));
+            check(!writeNestedFieldCopy(source, nestedTarget, QStringLiteral("form"),
+                                        QStringLiteral("answer"),
+                                        QStringLiteral("typed in the target"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: and so does the target's own first page: %1").arg(error));
+
+            const FieldTreeReport built = readFieldTree(nestedTarget);
+            check(built.terminals == 1 && built.addresses.value(0) == QStringLiteral("form.answer")
+                      && built.parents == 1 && built.unregisteredWidgets == 0
+                      && built.duplicateAddresses == 0 && built.brokenBackLinks == 0,
+                  QStringLiteral("setup: read as a tree that is one address under one parent, "
+                                 "with the page's widget reachable from it: %1 addresses, %2 "
+                                 "parents, %3 unregistered widgets, %4 broken back-links")
+                      .arg(built.addresses.size())
+                      .arg(built.parents)
+                      .arg(built.unregisteredWidgets)
+                      .arg(built.brokenBackLinks));
+            const AnnotationReport builtFlat = readAnnotations(nestedTarget);
+            check(builtFlat.fields == 1,
+                  QStringLiteral("setup: and the form list itself holds only the parent, which "
+                                 "is why reading /Fields is not reading the form: %1 entries")
+                      .arg(builtFlat.fields));
+
+            DocumentEditor joined;
+            check(joined.open(nestedTarget, QString(), &error),
+                  QStringLiteral("setup: the document with the nested field opens: %1")
+                      .arg(error));
+            check(joined.mergeFile(nestedDonor, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("the donor's page comes in beside it: %1").arg(error));
+            const QString joinedOut = scratch.filePath(QStringLiteral("merged-nested-field.pdf"));
+            error.clear();
+            const bool wrote = joined.saveAs(joinedOut, &error);
+            std::cout << "MEASURE nested save: " << (wrote ? "ok" : "refused") << " "
+                      << error.toStdString() << '\n';
+
+            const FieldTreeReport after = readFieldTree(joinedOut);
+            std::cout << "MEASURE nested: terminals=" << after.terminals << " parents="
+                      << after.parents << " addresses=["
+                      << after.addresses.join(QStringLiteral("|")).toStdString() << "] values=["
+                      << after.values.join(QStringLiteral("|")).toStdString()
+                      << "] unregisteredWidgets=" << after.unregisteredWidgets
+                      << " duplicateAddresses=" << after.duplicateAddresses
+                      << " brokenBackLinks=" << after.brokenBackLinks
+                      << " parentChildMismatch=" << after.parentChildMismatch << '\n';
+            const AnnotationReport afterFlat = readAnnotations(joinedOut);
+            std::cout << "MEASURE nested /Fields: entries=" << afterFlat.fields << " names=["
+                      << afterFlat.fieldNames.join(QStringLiteral("|")).toStdString() << "] values=["
+                      << afterFlat.fieldValues.join(QStringLiteral("|")).toStdString() << "]\n";
+            check(wrote, QStringLiteral("the merge of two hierarchical fields is written: %1")
+                             .arg(error));
+            // The same two properties §46 asked of the flat case -- the field that was already
+            // here is untouched, the answer that came in survived -- and two that only exist once
+            // names are assembled: the whole subtree came along rather than the leaf being hung
+            // off somebody else's parent, and the tree reads the same in both directions.
+            check(after.terminals == 2 && after.parents == 2,
+                  QStringLiteral("the form now has two answers under two parents, i.e. the "
+                                 "incoming subtree arrived whole rather than the leaf alone: %1 "
+                                 "terminals, %2 parents")
+                      .arg(after.terminals)
+                      .arg(after.parents));
+            check(after.addresses.value(0) == QStringLiteral("form.answer")
+                      && after.values.value(0) == QStringLiteral("typed in the target"),
+                  QStringLiteral("the document's own field is still at %1 and still says \"%2\"")
+                      .arg(after.addresses.value(0), after.values.value(0)));
+            check(after.addresses.size() == 2 && after.addresses.value(1) != after.addresses.value(0)
+                      && after.duplicateAddresses == 0,
+                  QStringLiteral("and the two addresses are not the same, which is what the "
+                                 "collision is about: [%1] vs [%2]")
+                      .arg(after.addresses.value(0), after.addresses.value(1)));
+            check(after.values.value(1) == QStringLiteral("filled in the donor"),
+                  QStringLiteral("the answer that came in with the page is stored under the new "
+                                 "address (\"%1\")").arg(after.values.value(1)));
+            check(after.unregisteredWidgets == 0,
+                  QStringLiteral("every widget on a page is reachable from this document's form "
+                                 "list, so none of them is a box nothing can read back: %1 are not")
+                      .arg(after.unregisteredWidgets));
+            check(after.parentChildMismatch == 0 && after.brokenBackLinks == 0,
+                  QStringLiteral("and walking down from /Fields agrees with walking up from each "
+                                 "widget's /Parent: %1 mismatched links, %2 naming an object this "
+                                 "document does not register")
+                      .arg(after.parentChildMismatch)
+                      .arg(after.brokenBackLinks));
+            // What qpdf's repair does with the *string* is its own business, exactly as in §46 (this
+            // build moves the parent segment, so the subtree keeps its internal names). Pinning the
+            // literal would write the dependency's version into the test; the sentence below is said
+            // out loud rather than asserted so that a change of strategy is visible in the MEASURE
+            // line instead of turning into a failure that has to be read back to a qpdf changelog.
+            std::cout << "MEASURE nested rename: the incoming address differs from the target's at "
+                         "segment " << (after.addresses.value(1).section(QLatin1Char('.'), 0, 0)
+                                        == QStringLiteral("form")
+                                            ? "after the first (the leaf moved)"
+                                            : "one (the parent moved)")
+                      << '\n';
+        }
+
+        // ---- and what a page going OUT leaves in the form list ----
+        //
+        // The mirror of the four slices above. §36/§46/§47/§50 all copy pages *in*; nothing in
+        // this file ever took a page out while the document carried an /AcroForm, because the
+        // fixtures have none. Two reader commands do exactly that: 删除页面 drops the page a field
+        // lived on, and 拆分 writes pieces of which only one holds it. A field is registered in the
+        // root's /AcroForm and only *points* at its page through /P, so a page leaving can leave an
+        // entry naming a page this file does not have -- the same reference-left-behind family §47
+        // found, reached by our own edit rather than by qpdf's copy.
+        {
+            const QString homeFile = scratch.filePath(QStringLiteral("field-on-page-one.pdf"));
+            error.clear();
+            check(!writeFieldCopy(source, homeFile, QStringLiteral("onOne"),
+                                  QStringLiteral("typed on page 1"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: a document whose only field lives on its first page: %1")
+                      .arg(error));
+            const FieldTreeReport home = readFieldTree(homeFile);
+            check(home.terminals == 1 && home.addresses.value(0) == QStringLiteral("onOne")
+                      && home.unregisteredWidgets == 0 && home.brokenBackLinks == 0,
+                  QStringLiteral("setup: one field, on the page, reachable from the form list: %1")
+                      .arg(home.terminals));
+
+            DocumentEditor out;
+            check(out.open(homeFile, QString(), &error),
+                  QStringLiteral("setup: it opens: %1").arg(error));
+            check(out.deletePages({0}, &error),
+                  QStringLiteral("the page the field lives on is deleted: %1").arg(error));
+            const QString outPath = scratch.filePath(QStringLiteral("field-page-deleted.pdf"));
+            error.clear();
+            check(out.saveAs(outPath, &error),
+                  QStringLiteral("and the deletion is written: %1").arg(error));
+            const FieldTreeReport orphan = readFieldTree(outPath);
+            const AnnotationReport orphanFlat = readAnnotations(outPath);
+            int onPages = 0;
+            for (int index = 0; index < orphanFlat.countPerPage.size(); ++index)
+                onPages += orphanFlat.countPerPage.at(index);
+            std::cout << "MEASURE out delete: pages=" << orphanFlat.countPerPage.size()
+                      << " annotationsOnPages=" << onPages << " terminals=" << orphan.terminals
+                      << " addresses=["
+                      << orphan.addresses.join(QStringLiteral("|")).toStdString() << "] values=["
+                      << orphan.values.join(QStringLiteral("|")).toStdString()
+                      << "] /P naming no page=" << orphanFlat.fieldsNamingNoPage
+                      << " unregisteredWidgets=" << orphan.unregisteredWidgets << '\n';
+
+            // The same field, this time reached through 拆分: only one of the pieces holds the
+            // page, and the question is what the other pieces' /AcroForm says.
+            DocumentEditor cut;
+            check(cut.open(homeFile, QString(), &error),
+                  QStringLiteral("setup: the same document opens again for a split: %1")
+                      .arg(error));
+            check(cut.splitInto(20, &error), QStringLiteral("a split into two pieces is recorded: %1").arg(error));
+            const QString cutPath = scratch.filePath(QStringLiteral("field-cut.pdf"));
+            QStringList written;
+            error.clear();
+            check(cut.saveAs(cutPath, &error, &written) && written.size() == 2,
+                  QStringLiteral("and the two pieces are written: %1").arg(error));
+            QList<FieldTreeReport> pieceTrees;
+            QVector<int> pieceAnnotations;
+            QVector<int> pieceDangling;
+            for (int index = 0; index < written.size(); ++index) {
+                const FieldTreeReport pieceTree = readFieldTree(written.at(index));
+                const AnnotationReport pieceFlat = readAnnotations(written.at(index));
+                int inked = 0;
+                for (int page = 0; page < pieceFlat.countPerPage.size(); ++page)
+                    inked += pieceFlat.countPerPage.at(page);
+                pieceTrees << pieceTree;
+                pieceAnnotations << inked;
+                pieceDangling << pieceFlat.fieldsNamingNoPage;
+                std::cout << "MEASURE out piece " << index + 1 << ": pages="
+                          << pieceFlat.countPerPage.size() << " annotationsOnPages=" << inked
+                          << " terminals=" << pieceTree.terminals << " addresses=["
+                          << pieceTree.addresses.join(QStringLiteral("|")).toStdString()
+                          << "] values=["
+                          << pieceTree.values.join(QStringLiteral("|")).toStdString()
+                          << "] /P naming no page=" << pieceFlat.fieldsNamingNoPage << '\n';
+            }
+
+            // A control on the same route: the page that stays must keep its field, or the rule
+            // "a page went out" would be indistinguishable from "the form list is always dropped".
+            DocumentEditor kept;
+            check(kept.open(homeFile, QString(), &error) && kept.deletePages({5}, &error),
+                  QStringLiteral("setup: the same document, this time losing a page it did not "
+                                 "need: %1")
+                      .arg(error));
+            const QString keptPath = scratch.filePath(QStringLiteral("field-page-kept.pdf"));
+            error.clear();
+            check(kept.saveAs(keptPath, &error),
+                  QStringLiteral("and that deletion is written: %1").arg(error));
+            const FieldTreeReport stillThere = readFieldTree(keptPath);
+            const AnnotationReport stillFlat = readAnnotations(keptPath);
+            std::cout << "MEASURE out control: pages=" << stillFlat.countPerPage.size()
+                      << " terminals=" << stillThere.terminals << " addresses=["
+                      << stillThere.addresses.join(QStringLiteral("|")).toStdString()
+                      << "] values=["
+                      << stillThere.values.join(QStringLiteral("|")).toStdString()
+                      << "] /P naming no page=" << stillFlat.fieldsNamingNoPage << '\n';
+
+            // And the same edit on a name that is assembled out of two dictionaries: does the
+            // parent stay registered over a child whose page is gone?
+            const QString nestedHome = scratch.filePath(QStringLiteral("nested-on-page-one.pdf"));
+            check(!writeNestedFieldCopy(source, nestedHome, QStringLiteral("form"),
+                                        QStringLiteral("answer"),
+                                        QStringLiteral("typed on page 1"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: a hierarchical field on the first page: %1").arg(error));
+            DocumentEditor lost;
+            check(lost.open(nestedHome, QString(), &error) && lost.deletePages({0}, &error),
+                  QStringLiteral("setup: its page is deleted: %1").arg(error));
+            const QString lostPath = scratch.filePath(QStringLiteral("nested-page-deleted.pdf"));
+            error.clear();
+            check(lost.saveAs(lostPath, &error),
+                  QStringLiteral("and it is written: %1").arg(error));
+            const FieldTreeReport lostTree = readFieldTree(lostPath);
+            const AnnotationReport lostFlat = readAnnotations(lostPath);
+            std::cout << "MEASURE out nested: pages=" << lostFlat.countPerPage.size()
+                      << " parents=" << lostTree.parents << " terminals=" << lostTree.terminals
+                      << " addresses=["
+                      << lostTree.addresses.join(QStringLiteral("|")).toStdString() << "] values=["
+                      << lostTree.values.join(QStringLiteral("|")).toStdString()
+                      << "] /P naming no page=" << lostFlat.fieldsNamingNoPage
+                      << " brokenBackLinks=" << lostTree.brokenBackLinks << '\n';
+
+            // What the pages say is not in question -- the deletion took the page, and a split
+            // gives each piece only its own. Pinned here is what the *form list* says about it,
+            // which no slice above ever asked, and which the control above rules out being an
+            // artefact of how this test reads the file.
+            check(orphanFlat.countPerPage.size() == pagesBefore - 1 && onPages == 0,
+                  QStringLiteral("the deleted document really has one page fewer and no widget on "
+                                 "any of them: %1 pages, %2 annotations left on them")
+                      .arg(orphanFlat.countPerPage.size())
+                      .arg(onPages));
+            check(stillThere.terminals == 1 && stillThere.values.value(0) == QStringLiteral("typed on page 1")
+                      && stillFlat.fieldsNamingNoPage == 0,
+                  QStringLiteral("control: deleting a different page leaves the field where it is, "
+                                 "so the reading below is about the page going out and not about "
+                                 "this reader: %1 fields name no page")
+                      .arg(stillFlat.fieldsNamingNoPage));
+            check(orphan.terminals == 1 && orphanFlat.fieldsNamingNoPage == 1,
+                  QStringLiteral("KNOWN GAP, pinned so a fix reddens this on purpose (docs §51): "
+                                 "after its page is deleted the file still registers %1 field "
+                                 "(%2), still holding the answer typed on the page that is gone "
+                                 "(\"%3\"), and its /P names a page this document does not have "
+                                 "(%4 of them)")
+                      .arg(orphan.terminals)
+                      .arg(orphan.addresses.value(0))
+                      .arg(orphan.values.value(0))
+                      .arg(orphanFlat.fieldsNamingNoPage));
+            check(pieceTrees.size() == written.size() && pieceTrees.at(0).terminals == 1
+                      && pieceTrees.at(1).terminals == 1 && pieceAnnotations.at(1) == 0
+                      && pieceDangling.at(1) == 1,
+                  QStringLiteral("KNOWN GAP, same one reached by 拆分 (docs §51): the piece that "
+                                 "did not get the page carries no widget at all (%1 on its pages) "
+                                 "and still registers the field with its answer -- a file that "
+                                 "does not contain the page carries what was typed on it")
+                      .arg(pieceAnnotations.at(1)));
+            check(lostTree.parents == 1 && lostTree.terminals == 1
+                      && lostTree.addresses.value(0) == QStringLiteral("form.answer")
+                      && lostFlat.fieldsNamingNoPage == 1,
+                  QStringLiteral("and a name assembled out of two dictionaries is no better off: "
+                                 "the parent stays registered over a child whose page is gone "
+                                 "(%1 parents, %2 terminals, %3 naming no page)")
+                      .arg(lostTree.parents)
+                      .arg(lostTree.terminals)
+                      .arg(lostFlat.fieldsNamingNoPage));
+        }
+
+        // ---- one field drawn on two pages, and a split that pulls them apart ----
+        //
+        // The shape §51 named as its next rung, and the reason it is worth building: it is the
+        // case where "drop the field whose page went out" would be *wrong*. A field with two
+        // widgets is needed by both halves of a split, so the repair §51 leaves open has to work
+        // on widgets, not on the registered name.
+        {
+            const QString spread = scratch.filePath(QStringLiteral("spread-field.pdf"));
+            error.clear();
+            check(!writeSpreadFieldCopy(source, spread, QStringLiteral("spread"),
+                                        QStringLiteral("typed across two pages"), 0, 20, &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: one field with a widget on page 1 and another on page 21: %1")
+                      .arg(error));
+            const FieldTreeReport built = readFieldTree(spread);
+            check(built.terminals == 2 && built.widgetsWithoutOwnName == 2 && built.parents == 1
+                      && built.addresses.size() == 2
+                      && built.addresses.value(0) == built.addresses.value(1)
+                      && built.duplicateAddresses == 0 && built.terminalsNamingNoPage == 0
+                      && built.unregisteredWidgets == 0 && built.parentChildMismatch == 0,
+                  QStringLiteral("setup: that reads as ONE field drawn twice -- two widgets, one "
+                                 "address %1, and two widgets of one field are not a collision: %2 "
+                                 "terminals, %3 collisions")
+                      .arg(built.addresses.value(0))
+                      .arg(built.terminals)
+                      .arg(built.duplicateAddresses));
+
+            DocumentEditor apart;
+            check(apart.open(spread, QString(), &error) && apart.splitInto(20, &error),
+                  QStringLiteral("setup: the spread document opens and is split in two: %1")
+                      .arg(error));
+            const QString apartPath = scratch.filePath(QStringLiteral("spread-cut.pdf"));
+            QStringList apartWritten;
+            error.clear();
+            check(apart.saveAs(apartPath, &error, &apartWritten) && apartWritten.size() == 2,
+                  QStringLiteral("and the two pieces are written: %1").arg(error));
+            QList<FieldTreeReport> spreadTrees;
+            QVector<int> spreadOnPages;
+            for (int index = 0; index < apartWritten.size(); ++index) {
+                const FieldTreeReport piece = readFieldTree(apartWritten.at(index));
+                const AnnotationReport pieceFlat = readAnnotations(apartWritten.at(index));
+                int onPages = 0;
+                for (int page = 0; page < pieceFlat.countPerPage.size(); ++page)
+                    onPages += pieceFlat.countPerPage.at(page);
+                spreadTrees << piece;
+                spreadOnPages << onPages;
+                std::cout << "MEASURE spread piece " << index + 1 << ": pages="
+                          << pieceFlat.countPerPage.size() << " widgetsOnPages=" << onPages
+                          << " parents=" << piece.parents << " terminals=" << piece.terminals
+                          << " values=["
+                          << piece.values.join(QStringLiteral("|")).toStdString()
+                          << "] widgets naming no page=" << piece.terminalsNamingNoPage
+                          << " unregisteredWidgets=" << piece.unregisteredWidgets << '\n';
+            }
+            // Both readings above say the same thing, which is the point: a split does not give one
+            // piece the field and leave the other with nothing, it gives **both** the whole field.
+            // Each half therefore carries the other half's box -- the widget object, its /Rect and
+            // its /P are written into a file that has no such page -- and the answer is carried
+            // twice over. And neither half can simply lose the field, because each does have a box
+            // on its own pages: this is the case that rules the per-field repair out.
+            check(spreadTrees.size() == 2 && spreadOnPages.at(0) == 1 && spreadOnPages.at(1) == 1
+                      && spreadTrees.at(0).terminals == 2 && spreadTrees.at(1).terminals == 2
+                      && spreadTrees.at(0).terminalsNamingNoPage == 1
+                      && spreadTrees.at(1).terminalsNamingNoPage == 1,
+                  QStringLiteral("KNOWN GAP, pinned with §51 (docs §52): each piece of the split "
+                                 "shows one box on its own pages and still lists %1 widgets, one of "
+                                 "which belongs to the other file -- so what dangles is a widget, "
+                                 "not the field, and the field must stay in both pieces")
+                      .arg(spreadTrees.at(0).terminals));
+            check(spreadTrees.at(0).values.value(0) == QStringLiteral("typed across two pages")
+                      && spreadTrees.at(1).values.value(0) == QStringLiteral("typed across two pages"),
+                  QStringLiteral("and the value the reader typed once is carried by both pieces "
+                                 "(\"%1\" in each): the field must stay in both, so what a repair "
+                                 "could prune is the widget belonging to the other file -- not the "
+                                 "name, and not the answer")
+                      .arg(spreadTrees.at(0).values.value(0)));
+
+            // And the same field with one of its two pages deleted: the name must stay, because a
+            // box the reader can still see belongs to it. What goes dangling is the *kid*, which is
+            // why a per-field repair would be the wrong shape here.
+            DocumentEditor halved;
+            check(halved.open(spread, QString(), &error) && halved.deletePages({0}, &error),
+                  QStringLiteral("setup: the first of the two widget pages is deleted: %1")
+                      .arg(error));
+            const QString halvedPath = scratch.filePath(QStringLiteral("spread-one-page-gone.pdf"));
+            error.clear();
+            check(halved.saveAs(halvedPath, &error),
+                  QStringLiteral("and that is written: %1").arg(error));
+            const FieldTreeReport half = readFieldTree(halvedPath);
+            const AnnotationReport halfFlat = readAnnotations(halvedPath);
+            int halfOnPages = 0;
+            for (int page = 0; page < halfFlat.countPerPage.size(); ++page)
+                halfOnPages += halfFlat.countPerPage.at(page);
+            std::cout << "MEASURE spread halved: pages=" << halfFlat.countPerPage.size()
+                      << " widgetsOnPages=" << halfOnPages << " parents=" << half.parents
+                      << " terminals=" << half.terminals
+                      << " values=[" << half.values.join(QStringLiteral("|")).toStdString()
+                      << "] widgets naming no page=" << half.terminalsNamingNoPage << '\n';
+
+            check(half.terminals == 2 && half.widgetsWithoutOwnName == 2 && half.parents == 1
+                      && halfOnPages == 1 && half.terminalsNamingNoPage == 1,
+                  QStringLiteral("KNOWN GAP, pinned with §51 (docs §52): with one of its two pages "
+                                 "deleted the field still lists both widgets -- one of them (%1) "
+                                 "names a page this file does not have -- while exactly one box is "
+                                 "left on screen; the name itself must stay, so a repair has to "
+                                 "prune widgets and not the field")
+                      .arg(half.terminalsNamingNoPage));
+        }
+
+        // ---- the last two shapes at the edge of the naming rule: an alias, and no name ----
+        //
+        // §50 asked what a merge renames when two *names* collide; §52 asked what an address is when
+        // one name is drawn twice. What is left is the two ways a field's "name" is not the string
+        // in /T: an alias (/TM, from the form specification) and no name at all. Both are asked here
+        // because each one is a case where my own collision counter could be wrong, and because
+        // "the same name twice" turns out to have a third meaning that nobody renames.
+        {
+            const QString aliasTarget = scratch.filePath(QStringLiteral("target-alias-beta.pdf"));
+            const QString aliasDonor = scratch.filePath(QStringLiteral("donor-named-beta.pdf"));
+            error.clear();
+            check(!writeAliasedFieldCopy(source, aliasTarget, QStringLiteral("alpha"),
+                                         QStringLiteral("beta"), QStringLiteral("typed as alpha"),
+                                         &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: the target's field is named alpha and aliased beta: %1")
+                      .arg(error));
+            check(!writeAliasedFieldCopy(donor, aliasDonor, QStringLiteral("beta"), QString(),
+                                         QStringLiteral("typed as beta"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: the donor's field is *named* what the target's is aliased: %1")
+                      .arg(error));
+
+            DocumentEditor mixed;
+            check(mixed.open(aliasTarget, QString(), &error)
+                      && mixed.mergeFile(aliasDonor, {0}, DocumentEditor::MoveTarget::Back, -1,
+                                         &error),
+                  QStringLiteral("setup: the two are opened and merged: %1").arg(error));
+            const QString mixedOut = scratch.filePath(QStringLiteral("merged-alias.pdf"));
+            error.clear();
+            check(mixed.saveAs(mixedOut, &error),
+                  QStringLiteral("and written: %1").arg(error));
+            const FieldTreeReport mixedTree = readFieldTree(mixedOut);
+            std::cout << "MEASURE alias: terminals=" << mixedTree.terminals << " addresses=["
+                      << mixedTree.addresses.join(QStringLiteral("|")).toStdString() << "] aliases=["
+                      << mixedTree.aliases.join(QStringLiteral("|")).toStdString()
+                      << "] collisions=" << mixedTree.duplicateAddresses
+                      << " values=[" << mixedTree.values.join(QStringLiteral("|")).toStdString()
+                      << "]\n";
+            check(mixedTree.terminals == 2 && mixedTree.addresses.value(0) == QStringLiteral("alpha")
+                      && mixedTree.addresses.value(1) == QStringLiteral("beta")
+                      && mixedTree.duplicateAddresses == 0,
+                  QStringLiteral("a name and an alias that are the same string are NOT a collision "
+                                 "-- nothing was renamed, the form still reads [%1] and [%2]: %3 "
+                                 "collisions")
+                      .arg(mixedTree.addresses.value(0), mixedTree.addresses.value(1))
+                      .arg(mixedTree.duplicateAddresses));
+            check(mixedTree.aliases.value(0) == QStringLiteral("beta")
+                      && mixedTree.values.value(0) == QStringLiteral("typed as alpha"),
+                  QStringLiteral("and the alias survives the round trip with its owner: %1 still "
+                                 "carries %2")
+                      .arg(mixedTree.addresses.value(0), mixedTree.aliases.value(0)));
+            check(pagesAsReadByTheReader(mixedOut) == pagesBefore + 1,
+                  QStringLiteral("and Qt PDF opens the file with the alias in it: %1 pages, "
+                                 "asked for %2")
+                      .arg(pagesAsReadByTheReader(mixedOut))
+                      .arg(pagesBefore + 1));
+
+            // The other direction: two fields whose *names* differ but whose aliases match.
+            const QString aliasDonor2 = scratch.filePath(QStringLiteral("donor-gamma-alias-beta.pdf"));
+            error.clear();
+            check(!writeAliasedFieldCopy(donor, aliasDonor2, QStringLiteral("gamma"),
+                                         QStringLiteral("beta"), QStringLiteral("typed as gamma"),
+                                         &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: a donor field named gamma that borrows the same alias: %1")
+                      .arg(error));
+            DocumentEditor twin;
+            check(twin.open(aliasTarget, QString(), &error)
+                      && twin.mergeFile(aliasDonor2, {0}, DocumentEditor::MoveTarget::Back, -1,
+                                         &error),
+                  QStringLiteral("setup: merged into the aliased target: %1").arg(error));
+            const QString twinOut = scratch.filePath(QStringLiteral("merged-same-alias.pdf"));
+            error.clear();
+            check(twin.saveAs(twinOut, &error), QStringLiteral("and written: %1").arg(error));
+            const FieldTreeReport twinTree = readFieldTree(twinOut);
+            std::cout << "MEASURE alias twin: addresses=["
+                      << twinTree.addresses.join(QStringLiteral("|")).toStdString() << "] aliases=["
+                      << twinTree.aliases.join(QStringLiteral("|")).toStdString()
+                      << "] collisions=" << twinTree.duplicateAddresses << '\n';
+            check(twinTree.terminals == 2 && twinTree.addresses.value(1) == QStringLiteral("gamma")
+                      && twinTree.aliases.value(0) == twinTree.aliases.value(1)
+                      && twinTree.duplicateAddresses == 0,
+                  QStringLiteral("KNOWN, measured rather than assumed (docs §53): two fields in one "
+                                 "document may carry the SAME alias (%1) and nothing renames them -- "
+                                 "the repair keys on /T alone, so a viewer that addresses fields by "
+                                 "/TM would see one name in two boxes; this product draws neither "
+                                 "name, which is why it is recorded and not fixed")
+                      .arg(twinTree.aliases.value(0)));
+
+            // And no name at all: two fields that cannot collide because neither has an address.
+            const QString nameless = scratch.filePath(QStringLiteral("two-nameless-fields.pdf"));
+            error.clear();
+            check(!writeTwoNamelessFields(source, nameless, &error).isEmpty(),
+                  QStringLiteral("setup: two fields with no /T on one page: %1").arg(error));
+            const FieldTreeReport namelessTree = readFieldTree(nameless);
+            std::cout << "MEASURE nameless: terminals=" << namelessTree.terminals
+                      << " nameless=" << namelessTree.namelessTerminals << " addresses=["
+                      << namelessTree.addresses.join(QStringLiteral("|")).toStdString()
+                      << "] collisions=" << namelessTree.duplicateAddresses
+                      << " unregisteredWidgets=" << namelessTree.unregisteredWidgets << '\n';
+            check(namelessTree.terminals == 2 && namelessTree.namelessTerminals == 2
+                      && namelessTree.duplicateAddresses == 0
+                      && namelessTree.unregisteredWidgets == 0,
+                  QStringLiteral("two nameless fields are not a collision, because an empty address "
+                                 "is not an address: %1 terminals, %2 nameless, %3 collisions -- and "
+                                 "both boxes are still reachable from the form list (%4 orphaned)")
+                      .arg(namelessTree.terminals)
+                      .arg(namelessTree.namelessTerminals)
+                      .arg(namelessTree.duplicateAddresses)
+                      .arg(namelessTree.unregisteredWidgets));
         }
 
         // ---- and a move that leans against one of the two copies ----
@@ -3669,6 +4840,84 @@ int main(int argc, char **argv)
                       "and the copy of the real document reads back three pages shorter");
             check(hashOfFile(real) == before,
                   "and the document on disk outside the repository is byte for byte what it was");
+        }
+    }
+
+    // A generator, not a test. Since §46 this suite has been saying "no document with a form field
+    // exists on this machine", which is true of the fixtures and false as a law: the shapes below
+    // can be built, and §54 needed one of them in front of a real window. Setting
+    // XYZPDF_FORM_SAMPLE_DIR=<folder> writes them there; the gate never sets it, so a normal run
+    // still writes nothing outside its own scratch directory -- and a folder naming `fixtures` is
+    // refused outright, because these files are meant to be opened by eye and would otherwise be
+    // globbed by whatever test walks that directory next.
+    {
+        const QByteArray where = qgetenv("XYZPDF_FORM_SAMPLE_DIR");
+        if (!where.isEmpty()) {
+            const QString dir = QString::fromLocal8Bit(where);
+            if (dir.contains(QStringLiteral("fixtures"), Qt::CaseInsensitive)) {
+                std::cerr << "FAIL: XYZPDF_FORM_SAMPLE_DIR names the fixture folder; the samples "
+                             "are for a window, not for the tests that glob that directory\n";
+                ++failures;
+            } else {
+                QDir().mkpath(dir);
+                QString e;
+                const QString plain = QDir(dir).filePath(QStringLiteral("plain.pdf"));
+                const QString flat = QDir(dir).filePath(QStringLiteral("field-flat.pdf"));
+                const QString spread = QDir(dir).filePath(QStringLiteral("field-spread.pdf"));
+                const QString dangling = QDir(dir).filePath(QStringLiteral("field-dangling.pdf"));
+                QFile::remove(plain);
+                QFile::remove(flat);
+                QFile::remove(spread);
+                QFile::remove(dangling);
+                if (QFile::copy(fixture, plain))
+                    std::cout << "SAMPLE plain: " << plain.toStdString() << '\n';
+                if (!writeFieldCopy(fixture, flat, QStringLiteral("sampleField"),
+                                    QStringLiteral("typed on page 1"), &e)
+                         .isEmpty()) {
+                    std::cout << "SAMPLE flat: " << flat.toStdString() << '\n';
+                    // Geometry for the screen pass (sec.54): the box is drawn at 60,600 to 260,630
+                    // in points, so without the page's own numbers "nothing was drawn" would be a
+                    // statement about a region that might have been below the fold.
+                    QPDF probe;
+                    probe.processFile(flat.toUtf8().constData());
+                    QPDFPageObjectHelper firstPage(
+                        QPDFPageDocumentHelper(probe).getAllPages().at(0));
+                    const QPDFObjectHandle box = firstPage.getMediaBox();
+                    if (box.isArray() && box.getArrayNItems() == 4) {
+                        std::cout << "SAMPLE page1 mediabox: "
+                                  << box.getArrayItem(0).getNumericValue() << ' '
+                                  << box.getArrayItem(1).getNumericValue() << ' '
+                                  << box.getArrayItem(2).getNumericValue() << ' '
+                                  << box.getArrayItem(3).getNumericValue()
+                                  << " ; the field box sits at 60,600 to 260,630 points\n";
+                    } else {
+                        std::cout << "SAMPLE page1 mediabox: (none readable)\n";
+                    }
+                } else {
+                    std::cerr << "FAIL: sample flat: " << e.toStdString() << '\n';
+                }
+                if (!writeSpreadFieldCopy(fixture, spread, QStringLiteral("sampleSpread"),
+                                          QStringLiteral("typed across two pages"), 0, 20, &e)
+                         .isEmpty())
+                    std::cout << "SAMPLE spread: " << spread.toStdString() << '\n';
+                else
+                    std::cerr << "FAIL: sample spread: " << e.toStdString() << '\n';
+                // The §51 shape as something a window can be pointed at: the page is gone, and
+                // this document still registers the field that lived on it.
+                DocumentEditor out;
+                if (!writeFieldCopy(fixture, dangling, QStringLiteral("sampleField"),
+                                    QStringLiteral("typed on page 1"), &e).isEmpty()
+                    && out.open(dangling, QString(), &e) && out.deletePages({0}, &e)
+                    && out.saveAs(dangling + QStringLiteral("-rewritten.pdf"), &e)) {
+                    QFile::remove(dangling);
+                    QFile::rename(dangling + QStringLiteral("-rewritten.pdf"), dangling);
+                    const FieldTreeReport still = readFieldTree(dangling);
+                    std::cout << "SAMPLE dangling: " << dangling.toStdString() << " terminals="
+                              << still.terminals << '\n';
+                } else {
+                    std::cerr << "FAIL: sample dangling: " << e.toStdString() << '\n';
+                }
+            }
         }
     }
 

@@ -18,12 +18,29 @@
       mergedonor     merge a one-page then a two-page donor through the native open dialog and
                      read the undo row after each, which is the only row whose text names a file
                      (-LastDir must hold -Donor; nothing is saved, the run ends by killing itself).
+      splitsagain    record a split, reopen the box and change the size, which is the only way the
+                     "this replaces the earlier one" aside exists at all -- twice, so both numerus
+                     branches of it come out (nothing is saved here either).
+      saverename     the save-changes-as row -> the native save box -> a name typed into its file
+                     field, then the receipts read back from the file, the tab, the status line and
+                     the source hash (sec.44; the route is in that mode's own comment, all of it
+                     measured).
+      langswitch     switch the interface language through the app's OWN Language menu and read the
+                     result after a restart, then put it back. This is the only route to an English
+                     installed copy: a packaged process never sees XYZPDF_SETTINGS_PATH (sec.48), and
+                     its stored preference has no outside read channel at all -- so every reading here
+                     comes back through the app's own settings dialog.
+      formpage       crop the page area and count ink per horizontal band, which is how "does this
+                     reader draw a form field" becomes a subtraction between two runs instead of a
+                     look (sec.54; run it once on the plain file and once on the same page with a
+                     field on it).
 
     Examples (from the repository root):
       powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1 -Mode inventory
       ... -Mode menudump -Menu Document
       ... -Mode exportstatus -OutDir H:/tmp/xyzpdf-probe
       ... -Mode mergedonor -LastDir H:/tmp/xyzpdf-probe -Donor donor1.pdf
+      ... -Mode langswitch -Installed -To English
 
     -Log takes a UTF-8 file, which is the only way to read a Chinese interface back from this
     console (it is GBK, so the window title alone arrives as mojibake). Write such a path with
@@ -31,7 +48,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -45,6 +62,20 @@ param(
   # and the row to click is not in view.
   [string]$LastDir = '',
   [string]$Donor = 'donor1.pdf',
+  # langswitch: the row to pick in the Language menu, matched by its exact name. The language rows
+  # are written in their own language -- "English" in either interface, and the Chinese one built
+  # from code points in Get-LanguageNames -- because a picker that says "Japanese" is no use to
+  # someone who cannot read Japanese. Only the first row, which names a behaviour rather than a
+  # language, is translated.
+  [string]$To = 'English',
+  # Leave the language switched instead of putting it back. Off by default: the installed copy is
+  # the reader's, and a probe that changes it has to change it back.
+  [switch]$Keep,
+  # Run against the installed package instead of the build tree. It cannot be started by exe
+  # path (WindowsApps blocks that) and takes no file argument (no AppExecutionAlias is declared),
+  # so an installed run has to open its own document through the native picker first.
+  [switch]$Installed,
+  [string]$AppId = 'allgoodhi.XYZPDF_edpkq8hzfe5n4!XYZPDF',
   [string]$Log = ''
 )
 
@@ -62,6 +93,9 @@ public static class W32 {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint d, int e, int extra, IntPtr h);
   [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hParent, EnumProc cb, IntPtr l);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
+  public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
@@ -101,6 +135,14 @@ function CjStr([int[]]$codePoints) {
   # Chinese interface are built from code points instead.
   -join ($codePoints | ForEach-Object { [char]$_ })
 }
+function Needle([string]$s) {
+  # A run of hex code points ("6587,6863" for that word) lets a caller ask for a Chinese
+  # label from the command line without this file holding a single non-ASCII byte.
+  if ($s -match '^[0-9a-fA-F]+(,[0-9a-fA-F]+)*$') {
+    return CjStr ($s.Split(',') | ForEach-Object { [Convert]::ToInt32($_, 16) })
+  }
+  return $s
+}
 function Pat($e, [string]$name) {
   # GetCurrentPattern THROWS for an unsupported pattern (it does not return null), so the
   # supported list is consulted first.
@@ -124,6 +166,9 @@ function Window($procId) {
   foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $procId))))) {
     if ($w.Current.Name -like '*.pdf*') { return $w }
   }
+  foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $procId))))) {
+    if ($w.Current.Name -like '*XYZPDF*') { return $w }
+  }
   return $null
 }
 function Dialog($procId, [string]$titleNeedle) {
@@ -135,22 +180,73 @@ function Dialog($procId, [string]$titleNeedle) {
   }
   return $null
 }
+function MatchOne($root, $type, [string[]]$needles) {
+  # Dialog labels come from the catalogue, so a mode that must run in either language has to
+  # ask for both spellings of each one.
+  foreach ($n in $needles) { $e = Elem $root $type $n; if ($e) { return $e } }
+  return $null
+}
+function RowAny($procId, [string[]]$needles) {
+  foreach ($n in $needles) { $e = MenuRow $procId $n; if ($e) { return $e } }
+  return $null
+}
+function WaitDialog($procId, [string[]]$needles, [int]$rounds = 12) {
+  # Poll, and require the candidate to be alive: a Window element that is on its way out
+  # still matches by name for a moment, and then answers an empty Name and zero descendants.
+  # Binding to one of those makes "the dialog shows no text" a stale handle, not a finding --
+  # which is exactly what a Chinese run of splitsagain reported before this existed.
+  for ($k = 1; $k -le $rounds; $k++) {
+    foreach ($n in $needles) {
+      foreach ($e in @(FindType (Window $procId) $CT::Window)) {
+        if ($e.Current.Name -like ('*' + $n + '*') -and @($e.FindAll($TS::Children, $ANY)).Count -gt 0) { return $e }
+      }
+    }
+    Start-Sleep -Milliseconds 400
+  }
+  return $null
+}
 function Elem($root, $type, [string]$needle) {
   foreach ($e in @(FindType $root $type)) { if ($e.Current.Name -like ('*' + $needle + '*')) { return $e } }
   return $null
 }
-function TopMenu($procId, [string]$which) {
+function MenuItems($procId) {
+  $found = @()
+  foreach ($e in @($AE::RootElement.FindAll($TS::Descendants, (New-Object $PC($AE::ProcessIdProperty, $procId))))) {
+    if ($e.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem') { $found += $e }
+  }
+  return $found
+}
+function TopMenu($procId, $which) {
+  # $which may be one label or a list of them, because the bar itself is translatable.
+  $needles = @($which)
+  # ExpandCollapse.Expand() opens a Qt menu with no synthesized input, and it has been reliable
+  # for the English bar and unreliable for the Chinese one (sec.34: four attempts, no rows came
+  # back). A real click at the item's own rectangle is the route that has never failed here, so
+  # try Expand first and fall back -- and say which one produced rows, because an empty list
+  # from a channel that never worked reads exactly like a menu with nothing in it.
+  $before = @(MenuItems $procId).Count
   foreach ($bar in @(FindType (Window $procId) $CT::MenuBar)) {
     foreach ($t in @($bar.FindAll($TS::Children, $ANY))) {
-      if ($t.Current.Name -like ('*' + $which + '*')) {
+      $hit = $false
+      foreach ($n in $needles) { if ($t.Current.Name -like ('*' + $n + '*')) { $hit = $true } }
+      if ($hit) {
         $xp = Pat $t 'ExpandCollapse'
-        if ($xp) { $xp.Expand() } else { ClickAt $t }
-        Start-Sleep -Milliseconds 800
+        if ($xp) { try { $xp.Expand() } catch { Say ('  Expand threw: ' + $_.Exception.Message) } }
+        for ($k = 1; $k -le 4; $k++) {
+          Start-Sleep -Milliseconds 300
+          if (@(MenuItems $procId).Count -gt $before) { Say ('  opened [' + $t.Current.Name + '] via Expand'); return $t }
+        }
+        ClickAt $t
+        for ($k = 1; $k -le 6; $k++) {
+          Start-Sleep -Milliseconds 300
+          if (@(MenuItems $procId).Count -gt $before) { Say ('  opened [' + $t.Current.Name + '] via a real click'); return $t }
+        }
+        Say ('  [' + $t.Current.Name + '] found, but neither Expand nor a click produced rows')
         return $t
       }
     }
   }
-  Say ('  no top-level menu matching [' + $which + ']')
+  Say ('  no top-level menu matching [' + ($needles -join ',') + ']')
   return $null
 }
 function MenuRow($procId, [string]$needle) {
@@ -248,6 +344,21 @@ function PickFolder($procId, [string]$directory) {
   Start-Sleep -Milliseconds 1800
   return $true
 }
+function NameField($handles) {
+  # Which Edit is the file-name field is per dialog flavour, and getting it wrong is what made
+  # sec.28 and sec.29 disagree about "the name box": in the save dialog it is control id 1001,
+  # in the open dialog it is 1148 (the Edit inside the ComboBoxEx32), and id 1001 there is the
+  # address ToolbarWindow32. So: prefer 1001, then the ComboBoxEx32's 1148, then any Edit.
+  $any = $null
+  foreach ($h in $handles) {
+    if ([W32]::Cls($h) -ne 'Edit') { continue }
+    $id = [W32]::GetDlgCtrlID($h)
+    if ($id -eq 1001) { return $h }
+    if ($id -eq 1148) { $any = $h }
+    if (-not $any) { $any = $h }
+  }
+  return $any
+}
 function PickFile($procId, [string]$fileName) {
   # The native *open* dialog, for the merge box's file list. Its UIA children are bare
   # Panes with no patterns, so the file is chosen by clicking its row in the folder view
@@ -274,6 +385,10 @@ function PickFile($procId, [string]$fileName) {
     if ($k -eq 4) { foreach ($n in ($names | Select-Object -Unique)) { Say ('  window candidate ' + $n) } }
   }
   if (-not $pk) { Say '  no native dialog within 8s'; return $false }
+  # NOT a route: writing a full path into this dialog's field and pressing id=1 leaves the dialog
+  # open (measured 2026-09-28). The save dialog's name field is control id 1001 and WM_SETTEXT
+  # there works; in the open dialog the Edit under ComboBoxEx32 is 1148 and 1001 is the address
+  # toolbar, so "the name box" is not one id across dialogs. The row click below is the proven way.
   $row = $null
   foreach ($e in @(FindType $pk $CT::ListItem)) {
     if ($e.Current.Name -like ('*' + $fileName + '*')) { $row = $e }
@@ -297,6 +412,112 @@ function PickFile($procId, [string]$fileName) {
   Start-Sleep -Milliseconds 1500
   return $true
 }
+function LanguageNames() {
+  # Every label the interface can show for a language. The native names come from
+  # Languages::available() and are NOT translated -- that is the point of the picker -- so the same
+  # strings have to be asked for in either interface. Only the first row names a behaviour rather
+  # than a language, and that one goes through tr(): "Follow the system" / its source form.
+  return @((CjStr 0x7B80,0x4F53,0x4E2D,0x6587), 'English', 'Follow the system', (CjStr 0x8DDF,0x968F,0x7CFB,0x7EDF))
+}
+function LanguageLabel($procId, [string]$tag) {
+  # The stored language read back THROUGH THE APP, because there is no outside read channel on a
+  # packaged run: the AppContainer storage key for this package holds only ResourcesConfig, the real
+  # values live in the Helium hive (sec.48), and HKCU:\Software\xyzpdf is the dev build's own store
+  # and never moves. The settings dialog prints Languages::nativeName(AppSettings::languageCode())
+  # on one of its buttons, so the interface reports its own setting.
+  TopMenu $procId @('Help', (CjStr 0x5E2E,0x52A9)) | Out-Null
+  $row = RowAny $procId @('Settings', (CjStr 0x8BBE,0x7F6E))
+  if (-not $row) { Say '  no Settings row in the Help menu'; return '' }
+  ClickAt $row
+  $dlg = WaitDialog $procId @('Settings', (CjStr 0x8BBE,0x7F6E))
+  if (-not $dlg) { Say '  the settings dialog did not appear'; return '' }
+  # Printed before filtered, as always: a needle list that omits a label is not evidence the label
+  # is absent, and this dialog's buttons are the only place the language name is drawn.
+  Say ('  ' + $tag + ': buttons in [' + $dlg.Current.Name + ']')
+  $found = ''
+  foreach ($b in @(FindType $dlg $CT::Button)) {
+    $n = $b.Current.Name
+    Say ('    button |' + $n + '|')
+    if (($found -eq '') -and ((LanguageNames) -contains $n)) { $found = $n }
+  }
+  # Cancel, not OK: reject() puts back whatever the dialog had staged, accepted() would not.
+  $cancel = MatchOne $dlg $CT::Button @('Cancel', (CjStr 0x53D6,0x6D88))
+  if ($cancel) { ClickAt $cancel } else { Say '  no Cancel button, leaving the dialog open' }
+  Start-Sleep -Milliseconds 800
+  if ($found -eq '') { Say '  no button named after a language' }
+  return $found
+}
+function MenuBarNames($procId) {
+  # The bar is what a language switch is actually judged by: every top-level entry is tr()'d, and
+  # one of them is deliberately not.
+  $out = @()
+  foreach ($mb in @(FindType (Window $procId) $CT::MenuBar)) {
+    foreach ($t in @($mb.FindAll($TS::Children, $ANY))) { $out += $t.Current.Name }
+  }
+  return $out
+}
+function DismissNotice($procId, [string]$tag) {
+  # What the language change answers with. Its title is QStringLiteral("Language") and its body is
+  # one of our tr() strings, so this single window shows both kinds of string at once -- the
+  # cheapest possible proof that a catalogue is actually loaded in the build being measured.
+  $note = WaitDialog $procId @('Language')
+  if (-not $note) { Say ('  ' + $tag + ': no notice window appeared'); return $false }
+  Say ('  ' + $tag + ': notice window [' + $note.Current.Name + '] class=' + $note.Current.ClassName)
+  $texts = @(FindType $note $CT::Text)
+  Say ('    ' + $texts.Count + ' Text elements')
+  foreach ($t in $texts) { Say ('    text |' + $t.Current.Name + '|') }
+  $ok = MatchOne $note $CT::Button @('OK', 'Close', (CjStr 0x786E,0x5B9A), (CjStr 0x5173,0x95ED))
+  if (-not $ok) {
+    foreach ($b in @(FindType $note $CT::Button)) { Say ('    button |' + $b.Current.Name + '|') }
+    Say '    no accept button this script knows'
+    return $false
+  }
+  Say ('    accept button |' + $ok.Current.Name + '|')
+  ClickAt $ok
+  Start-Sleep -Milliseconds 900
+  return $true
+}
+function LanguageRows($procId, [string]$tag) {
+  # The Language popup with each row's check state. A checkable QAction reaches UIA as TogglePattern,
+  # so which language is live is READ rather than inferred -- which matters twice over here: the
+  # checkmark is the only sign on screen of the chosen row, and a screen-reader user has nothing else.
+  # The bar's own entries are also ControlType.MenuItem, so the bar has to be subtracted or this
+  # list claims eight languages.
+  #
+  # It LEAVES THE MENU OPEN and returns the rows: the click has to go to one of these elements.
+  # TopMenu cannot be run twice on an open menu -- its test for "rows came back" is that the item
+  # count GREW, which an open menu cannot do, and the fallback real click then closes it. That is
+  # how the first run of this mode lost its own row.
+  $barNames = MenuBarNames $procId
+  $n0 = @(MenuItems $procId).Count
+  TopMenu $procId 'Language' | Out-Null
+  $rows = @(@(MenuItems $procId) | Where-Object { $barNames -notcontains $_.Current.Name })
+  Say ('  ' + $tag + ': ' + $rows.Count + ' rows under [Language] (' + $n0 + ' items before, bar is ' + $barNames.Count + ')')
+  foreach ($e in $rows) {
+    $state = '(no TogglePattern)'
+    $tg = Pat $e 'Toggle'
+    if ($tg) { try { $state = $tg.Current.ToggleState.ToString() } catch { $state = 'threw' } }
+    Say ('    row |' + $e.Current.Name + '| enabled=' + $e.Current.IsEnabled + ' toggle=' + $state)
+  }
+  return $rows
+}
+function ClickLanguageRow($rows, [string[]]$names, [string]$tag) {
+  # Rows are matched by EXACT name against a list: the language rows are written in their own
+  # language and so read the same in either interface, but the first one names a behaviour rather
+  # than a language and is translated -- "Follow the system" in English, its source form in Chinese.
+  foreach ($e in $rows) {
+    foreach ($n in $names) {
+      if ($e.Current.Name -eq $n) {
+        Say ('  ' + $tag + ': clicking |' + $e.Current.Name + '|')
+        ClickAt $e
+        Start-Sleep -Milliseconds 900
+        return $true
+      }
+    }
+  }
+  Say ('  ' + $tag + ': nothing among the ' + $rows.Count + ' rows is named [' + ($names -join ', ') + ']')
+  return $false
+}
 function Start-ProbeApp([string]$language) {
   # Kill everything first: a leftover instance swallows the launch (single-instance
   # forwarding), and the run then measures a window with no document in it.
@@ -307,6 +528,18 @@ function Start-ProbeApp([string]$language) {
   $text = "[appearance]`nlanguage=$language`n"
   if ($LastDir) { $text += "[files]`nlastOpenDirectory=$LastDir`n" }
   $text | Out-File -Encoding ASCII $ini
+  if ($Installed) {
+    # The packaged copy ignores XYZPDF_SETTINGS_PATH (the environment never reaches a process
+    # the shell starts), so its language is the system one and its own settings store is used.
+    Start-Process -FilePath 'explorer.exe' -ArgumentList ('shell:AppsFolder' + [char]92 + $AppId)
+    for ($sec = 1; $sec -le 25; $sec++) {
+      Start-Sleep -Seconds 1
+      $cands = @(Get-Process -Name xyzpdf -ErrorAction SilentlyContinue)
+      foreach ($c in $cands) { if (Window $c.Id) { return $c } }
+    }
+    Say 'ABORT: the installed app did not come up with a window'
+    return $null
+  }
   $env:XYZPDF_SETTINGS_PATH = $ini
   $p = Start-Process -FilePath $Exe -ArgumentList $Doc -PassThru
   for ($sec = 1; $sec -le 20; $sec++) {
@@ -317,11 +550,28 @@ function Start-ProbeApp([string]$language) {
   return $null
 }
 
-if (-not (Test-Path $Doc)) { Say ("no document at $Doc -- pass -Doc <path to a pdf>"); exit 1 }
+function Restart-ProbeApp([string]$language) {
+  # A language change is promised for the NEXT start -- that is what the notice says -- so a mode
+  # that judges one has to actually restart. Same kill-everything-then-poll rule as the first
+  # launch: a leftover instance swallows the launch, and a fixed sleep has been seen to come back
+  # holding an empty window (sec.34).
+  Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+  Start-Sleep -Seconds 3
+  return (Start-ProbeApp $language)
+}
+
+if (-not $Installed -and -not (Test-Path $Doc)) { Say ("no document at $Doc -- pass -Doc <path to a pdf>"); exit 1 }
 if ($Log) { $lines.Clear() }
 $app = Start-ProbeApp $Language
 if (-not $app) { exit 1 }
-Say ('window [' + (Window $app.Id).Current.Name + '] pid ' + $app.Id + ' language=' + $Language)
+if ($Installed) {
+  # The -Language value is not applied: the packaged copy never sees the scratch ini,
+  # because the environment does not reach a process the shell starts. So its interface is
+  # whatever its own store says, which on this machine is the system locale.
+  Say ('installed window [' + (Window $app.Id).Current.Name + '] pid ' + $app.Id + ' (-Language ' + $Language + ' is NOT applied to a packaged run)')
+} else {
+  Say ('window [' + (Window $app.Id).Current.Name + '] pid ' + $app.Id + ' language=' + $Language)
+}
 
 switch ($Mode) {
   'inventory' {
@@ -345,16 +595,13 @@ switch ($Mode) {
     Say ('  ' + $seen.Keys.Count + ' distinct names')
   }
   'menudump' {
-    # Expand() reads a Qt menu with no synthesized input at all. It has been reliable for
-    # the English menu bar and unreliable for the Chinese one (no submenu rows appear), so
-    # a missing row in Chinese says nothing until the same script is run with -Language en
-    # and does show rows.
-    TopMenu $app.Id $Menu | Out-Null
-    $rows = @()
-    foreach ($e in @($AE::RootElement.FindAll($TS::Descendants, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
-      if ($e.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem') { $rows += $e }
-    }
-    Say ('  ' + $rows.Count + ' menu items visible after expanding [' + $Menu + ']')
+    # -Menu takes either a word ("Document") or hex code points ("6587,6863") so the Chinese
+    # bar can be asked for from this ASCII file. TopMenu reports which channel opened it, which
+    # is the whole point of running the same mode in both languages.
+    $before = @(MenuItems $app.Id).Count
+    TopMenu $app.Id (Needle $Menu) | Out-Null
+    $rows = @(MenuItems $app.Id)
+    Say ('  ' + $rows.Count + ' menu items after opening [' + (Needle $Menu) + '] (' + $before + ' before)')
     foreach ($e in $rows) { Say ('  row |' + $e.Current.Name + '| enabled=' + $e.Current.IsEnabled) }
   }
   'exportstatus' {
@@ -368,7 +615,7 @@ switch ($Mode) {
       Where-Object { $_.Name.StartsWith($stem) } | Remove-Item -Force
     $ink0 = StatusInk $app.Id (Join-Path $scratch 'status-before.png')
     Say ('before: name=[' + (StatusName $app.Id) + '] ink=' + $ink0)
-    TopMenu $app.Id 'File' | Out-Null
+    TopMenu $app.Id @('File', (CjStr 0x6587,0x4EF6)) | Out-Null
     $row = MenuRow $app.Id 'Export as Images'
     if (-not $row) { Say '  no Export as Images row'; exit 1 }
     ClickAt $row
@@ -407,7 +654,7 @@ switch ($Mode) {
     if (-not $LastDir) { Say 'mergedonor needs -LastDir (the folder holding -Donor)'; exit 1 }
     $undo = {
       param([string]$tag)
-      TopMenu $app.Id 'Document' | Out-Null
+      TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
       foreach ($e in @($AE::RootElement.FindAll($TS::Descendants, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
         if ($e.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' `
             -and $e.Current.Name -like 'Undo*') { Say ('  ' + $tag + 'row |' + $e.Current.Name + '|') }
@@ -415,7 +662,7 @@ switch ($Mode) {
     }
     & $undo 'before: '
     foreach ($donor in @($Donor, 'donor2.pdf')) {
-      TopMenu $app.Id 'Document' | Out-Null
+      TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
       $row = MenuRow $app.Id 'Merge Files In'
       if (-not $row) { Say "  no Merge Files In row"; exit 1 }
       ClickAt $row
@@ -443,6 +690,310 @@ switch ($Mode) {
       & $undo ($donor + ': ')
     }
     Say ('  status: [' + (StatusName $app.Id) + ']')
+  }
+  'splitsagain' {
+    # The re-split aside is the other row whose English had lost its paragraph break, and it
+    # only exists when a split is already recorded AND the new size differs from it -- so this
+    # records one, reopens the box (which seeds its spin from the recorded size) and moves the
+    # number. Two rounds, because the aside names the size being replaced: 1 gives the
+    # singular form, 7 the plural one. Nothing is saved; the run ends by killing the process,
+    # so a recorded split never reaches a file.
+    foreach ($pair in @(@(1, 7), @(7, 3))) {
+      $from = $pair[0]; $to = $pair[1]
+      TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
+      $row = RowAny $app.Id @('Split Files', (CjStr 0x62C6,0x5206,0x6587,0x4EF6))
+      if (-not $row) { Say '  no split row in either language'; exit 1 }
+      ClickAt $row
+      Start-Sleep -Milliseconds 1500
+      $dlg = WaitDialog $app.Id @('Split', (CjStr 0x62C6,0x5206))
+      if (-not $dlg) { Say '  split dialog did not open'; exit 1 }
+      $spin = @(@($dlg.FindAll($TS::Descendants, (New-Object $PC($AE::ControlTypeProperty, $CT::Spinner))))[0])
+      $rv = Pat $spin 'RangeValue'
+      if (-not $rv) { Say '  the spin box has no RangeValuePattern'; exit 1 }
+      $rv.SetValue($from)
+      Start-Sleep -Milliseconds 600
+      $go = MatchOne $dlg $CT::Button @('Split into', (CjStr 0x62C6,0x6210))
+      Say ('  set size ' + $from + '; accept says |' + $go.Current.Name + '| enabled=' + $go.Current.IsEnabled)
+      ClickAt $go
+      Start-Sleep -Milliseconds 1200
+      TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
+      ClickAt (RowAny $app.Id @('Split Files', (CjStr 0x62C6,0x5206,0x6587,0x4EF6)))
+      Start-Sleep -Milliseconds 1500
+      $dlg2 = WaitDialog $app.Id @('Split', (CjStr 0x62C6,0x5206))
+      if (-not $dlg2) { Say '  reopened split dialog not found alive'; exit 1 }
+      $spin2 = @(@($dlg2.FindAll($TS::Descendants, (New-Object $PC($AE::ControlTypeProperty, $CT::Spinner))))[0])
+      (Pat $spin2 'RangeValue').SetValue($to)
+      Start-Sleep -Milliseconds 800
+      Say ('  reopened (seeded at ' + $from + '), now asking ' + $to + ':')
+      # Count what is there before filtering by length: "no summary printed" has to be
+      # distinguishable from "no summary found".
+      $texts = @(FindType $dlg2 $CT::Text)
+      if (-not $texts.Count) {
+        Say ('    every descendant of [' + $dlg2.Current.Name + ']:')
+        foreach ($e in @($dlg2.FindAll($TS::Descendants, $ANY))) {
+          Say ('      ' + $e.Current.ControlType.ProgrammaticName + ' |' + $e.Current.Name + '|')
+        }
+      }
+      Say ('    ' + $texts.Count + ' Text elements in the dialog, longest ' + `
+           $(if ($texts.Count) { ($texts | ForEach-Object { $_.Current.Name.Length } | Measure-Object -Maximum).Maximum } else { 0 }) + ' chars')
+      foreach ($e in $texts) {
+        if ($e.Current.Name.Length -gt 12) {
+          Say ('    text |' + $e.Current.Name.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+        }
+      }
+      ClickAt (MatchOne $dlg2 $CT::Button @('Split into', (CjStr 0x62C6,0x6210)))
+      Start-Sleep -Milliseconds 1200
+    }
+    TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
+    foreach ($e in @($AE::RootElement.FindAll($TS::Descendants, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
+      if ($e.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' `
+          -and ($e.Current.Name -like 'Undo*' -or $e.Current.Name -like ((CjStr 0x64A4,0x9500) + '*'))) {
+        Say ('  undo row |' + $e.Current.Name + '|') }
+    }
+  }
+  'saverename' {
+    # Renaming in the native save box works, and the route is neither of the two obvious ones
+    # (measured 2026-09-27, sec.44; it cost sec.41 a whole round of wrong conclusions):
+    #   * WM_SETTEXT to the Edit with control id 1001 DOES change the name -- proven by the file
+    #     that comes out, because WM_GETTEXT on that same Edit answers empty while the screen
+    #     shows text, so the box cannot be read back at all.
+    #   * BM_CLICK to the button with control id 1 does NOT accept this dialog, even though the
+    #     same call accepts the native open dialog (sec.29) and the folder picker (sec.37/38).
+    #     What accepts it is a real click at the button's own GetWindowRect centre.
+    #   * The keyboard is not an option here: SendKeys into this box gets eaten by the Pinyin IME
+    #     ("renamed-44.pdf" came out as composition text with a candidate strip open).
+    # Acceptance is then read from our own receipts: the file on disk, the tab, the status line,
+    # and the source hash, which must not move.
+    $target = Join-Path $OutDir ('renamed-' + [System.DateTime]::Now.ToString('HHmmss') + '.pdf')
+    # Backslashes, not forward ones: this string goes into a Win32 field read by the shell.
+    if (Test-Path $target) { Remove-Item $target -Force }
+    $sourceHash = (Get-FileHash -Path $Doc -Algorithm SHA256).Hash
+
+    if ($Installed) {
+      # Nothing behind the native open dialog had ever been reached on the packaged copy until
+      # sec.43; an edit needs a document first, and the packaged app starts without one.
+      TopMenu $app.Id @('File', (CjStr 0x6587,0x4EF6)) | Out-Null
+      ClickAt (RowAny $app.Id @('Open', (CjStr 0x6253,0x5F00)))
+      if (-not (PickFile $app.Id ([System.IO.Path]::GetFileName($Doc)))) { exit 1 }
+      Start-Sleep -Seconds 2
+      Say ('  document window [' + (Window $app.Id).Current.Name + ']')
+    }
+
+    TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
+    ClickAt (RowAny $app.Id @('Rotate Pages', (CjStr 0x65CB,0x8F6C,0x9875,0x9762)))
+    Start-Sleep -Milliseconds 1500
+    # Print what is actually there before filtering it: every guess about a dialog title or
+    # a button label has been wrong at least once in this suite.
+    foreach ($w in @(FindType (Window $app.Id) $CT::Window)) {
+      Say ('  window in subtree [' + $w.Current.Name + '] class=' + $w.Current.ClassName)
+    }
+    # Ours by CLASS: a Qt dialog reports its widget class name, which no translation can change,
+    # while its title is one of our own translatable strings.
+    $rot = $null
+    foreach ($w in @(FindType (Window $app.Id) $CT::Window)) {
+      if ($w.Current.ClassName -eq 'RotatePagesDialog') { $rot = $w }
+    }
+    if (-not $rot) { Say '  rotate dialog not found'; exit 1 }
+    foreach ($b in @(FindType $rot $CT::Button)) {
+      Say ('    button |' + $b.Current.Name + '| enabled=' + $b.Current.IsEnabled)
+    }
+    # The box opens on the typed-range choice with an empty field, so its accept is greyed by
+    # design (sec.14: refuse before the press rather than guess a range). Name a page first.
+    $cur = MatchOne $rot $CT::RadioButton @('Current page', (CjStr 0x5F53,0x524D,0x9875))
+    if ($cur) { ClickAt $cur; Start-Sleep -Milliseconds 600; Say ('  picked |' + $cur.Current.Name + '|') }
+    $ok = MatchOne $rot $CT::Button @('Rotate', (CjStr 0x65CB,0x8F6C))
+    if (-not ($ok -and $ok.Current.IsEnabled)) { Say '  rotate accept not lit'; exit 1 }
+    Say ('  recording: |' + $ok.Current.Name + '|')
+    ClickAt $ok
+    Start-Sleep -Milliseconds 1200
+
+    # The row click is retried: Expand() has been seen to report the menu as open without the
+    # following click landing, so the dialog's absence is polled for and the whole attempt redone
+    # rather than concluding the menu is broken.
+    $sv = $null
+    for ($try = 1; $try -le 3 -and -not $sv; $try++) {
+      TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
+      $saveRow = RowAny $app.Id @('Save Changes As', (CjStr 0x4FDD,0x5B58,0x4FEE,0x6539,0x4E3A))
+      if (-not $saveRow) { Say '  no Save Changes As row'; exit 1 }
+      $rr = $saveRow.Current.BoundingRectangle
+      Say ('  try ' + $try + ': menu row |' + $saveRow.Current.Name + '| enabled=' + $saveRow.Current.IsEnabled + ' at ' + [int]$rr.X + ',' + [int]$rr.Y + ' ' + [int]$rr.Width + 'x' + [int]$rr.Height)
+      ClickAt $saveRow
+      for ($k = 1; $k -le 8; $k++) {
+        Start-Sleep -Milliseconds 500
+      foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
+        foreach ($e in (@($w) + @(FindType $w $CT::Window))) {
+          if ($e.Current.ClassName -eq '#32770') { $sv = $e }
+        }
+      }
+        if ($sv) { break }
+      }
+    }
+    if (-not $sv) { Say '  no native save dialog after three tries'; exit 1 }
+    Say ('  save dialog [' + $sv.Current.Name + ']')
+    $kids = New-Object System.Collections.Generic.List[IntPtr]
+    $cb = [W32+EnumProc] { param($h, $l) $kids.Add($h); return $true }
+    [W32]::EnumChildWindows([IntPtr]$sv.Current.NativeWindowHandle, $cb, [IntPtr]::Zero) | Out-Null
+    $go = $null
+    foreach ($h in $kids) {
+      $cls = [W32]::Cls($h); $id = [W32]::GetDlgCtrlID($h)
+      # The text printed here is what Win32 ANSWERS, not what is drawn: on the name field it
+      # is empty while the screen shows the seeded file name.
+      if ($cls -eq 'Edit') { Say ('    Edit id=' + $id + ' answers [' + [W32]::Text($h) + ']') }
+      if ($cls -eq 'Button' -and $id -eq 1) { $go = $h }
+    }
+    $nameBox = NameField $kids
+    if (-not ($nameBox -and $go)) { Say '  no file-name field / no Button id=1'; exit 1 }
+    [W32]::SendMessageW($nameBox, 0x000C, [IntPtr]0, $target) | Out-Null
+    Start-Sleep -Milliseconds 700
+    $blind = [W32]::Text($nameBox)
+    Say ('  wrote [' + $target + '], box answers [' + $blind + '] -- an empty answer proves nothing, see the note above')
+    # A real click on the drawn button: BM_CLICK to this control id is answered by the open
+    # dialog and the folder picker, but NOT by the save dialog.
+    $gr = [W32]::Rect([IntPtr]$go)
+    [W32]::Click([int](($gr.left + $gr.right) / 2), [int](($gr.top + $gr.bottom) / 2))
+    Start-Sleep -Seconds 4
+    Say ('  target exists: ' + (Test-Path $target) + ' size ' + `
+         $(if (Test-Path $target) { (Get-Item $target).Length } else { 0 }))
+    Say ('  source hash unchanged: ' + `
+         $((Get-FileHash -Path $Doc -Algorithm SHA256).Hash -eq $sourceHash))
+    Say ('  status: [' + (StatusName $app.Id) + ']')
+    foreach ($t in @(FindType (Window $app.Id) $CT::TabItem)) { Say ('  tab |' + $t.Current.Name + '|') }
+  }
+  'langswitch' {
+    # An installed copy speaks the system locale, and no setting written from outside can reach it
+    # (sec.48 measured a whole packaged session that left HKCU:\Software\xyzpdf untouched). The door
+    # in is the app's own Language menu, and the reason a reader can find that door at all is
+    # deliberate: mainwindow.cpp:1030 gives it QStringLiteral("Language") rather than tr(), because
+    # whoever needs the entry is looking at an interface they cannot read.
+    #
+    # Nothing here is read from the registry. This package's AppContainer storage key holds only
+    # ResourcesConfig\ManifestLanguagesList -- the values themselves live in the Helium hive, which
+    # no shell outside the container opens -- so the app's own settings dialog is the instrument.
+    $want = Needle $To
+    Say ('  asked for [' + $want + ']  installed=' + [bool]$Installed + '  keep=' + [bool]$Keep)
+    # The settings dialog is read BEFORE the menu is opened, because opening the dialog needs the
+    # Help menu, and a Help click while the Language popup is open would be read as the popup
+    # misbehaving rather than as the route it is.
+    $before = LanguageLabel $app.Id 'at start'
+    Say ('  at start the app reports [' + $before + ']')
+    Say ('  menu bar: |' + ((MenuBarNames $app.Id) -join '| |') + '|')
+    $rows = @(LanguageRows $app.Id 'at start')
+    if (-not (ClickLanguageRow $rows @($want) 'switch')) { exit 1 }
+    if (-not (DismissNotice $app.Id 'switch')) { exit 1 }
+
+    $mid = LanguageLabel $app.Id 'without a restart'
+    Say ('  after the click, before any restart the app reports [' + $mid + '] ' +
+         '-- the store took the value; the interface cannot change under itself by design')
+
+    if ($Keep) { Say '  -Keep set: the language is left as switched'; exit 0 }
+
+    $app2 = Restart-ProbeApp $Language
+    if (-not $app2) { Say '  the relaunch produced no window'; exit 1 }
+    Say ('  relaunched: window [' + (Window $app2.Id).Current.Name + ']')
+    Say ('  menu bar now: |' + ((MenuBarNames $app2.Id) -join '| |') + '|')
+    Say ('  status line now: [' + (StatusName $app2.Id) + ']')
+    Say ('  the app reports [' + (LanguageLabel $app2.Id 'after a restart') + ']')
+    $rows2 = @(LanguageRows $app2.Id 'after a restart')
+
+    # Put it back the way it was, then read the bar and the check once more. A restore that did not
+    # work would be a finding of its own -- a one-way switch is the last thing a user of either
+    # language wants -- and the reopen is also what shows the checkmark MOVES rather than sitting on
+    # whichever row the menu was built from.
+    $back = @($before)
+    if ($before -eq (CjStr 0x8DDF,0x968F,0x7CFB,0x7EDF) -or $before -eq 'Follow the system') {
+      # Whichever interface the restore is clicked in, the row may be spelled either way.
+      $back = @('Follow the system', (CjStr 0x8DDF,0x968F,0x7CFB,0x7EDF))
+    }
+    if (-not (ClickLanguageRow $rows2 $back 'restore')) {
+      Say ('  RESTORE FAILED: the installed copy is left in the language it reported above')
+      exit 1
+    }
+    if (-not (DismissNotice $app2.Id 'restore')) { exit 1 }
+
+    $app3 = Restart-ProbeApp $Language
+    if (-not $app3) { Say '  the second relaunch produced no window'; exit 1 }
+    Say ('  restored: window [' + (Window $app3.Id).Current.Name + ']')
+    Say ('  menu bar now: |' + ((MenuBarNames $app3.Id) -join '| |') + '|')
+    Say ('  the app reports [' + (LanguageLabel $app3.Id 'after the restore') + ']')
+    @(LanguageRows $app3.Id 'after the restore') | Out-Null
+  }
+  'formpage' {
+    # Does this reader DRAW a form field at all? Everything sec.46 to sec.53 measured lives inside the
+    # file; not one round of this suite has looked at a page carrying a widget. So: open one
+    # document, raise the window (a real click on its own title bar -- SetForegroundWindow does
+    # not move it from this harness), crop the page area and count non-white points per horizontal
+    # band. Run the mode twice, once on the plain file and once on the same page with a field on
+    # it, and subtract: a band that differs is where something is drawn, and no band differing is
+    # the answer to the question. Bands rather than one total because the total can hide a small
+    # box under page text -- sec.28's lesson about what a "soft edge" number really measures.
+    $win = $null
+    for ($k = 1; $k -le 10 -and -not $win; $k++) {
+      Start-Sleep -Milliseconds 500
+      $win = Window $app.Id
+    }
+    if (-not $win) { Say '  no window'; exit 1 }
+    $wr = $win.Current.BoundingRectangle
+    [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))   # raise it by its own title bar
+    Start-Sleep -Milliseconds 800
+    $win = Window $app.Id
+    $scale = [W32]::GetDpiForWindow([IntPtr]$win.Current.NativeWindowHandle) / 96.0
+    # Print the candidates before picking one: which element is the page has been guessed wrong
+    # twice in this suite, and a guess that fails quietly reads as "nothing was drawn".
+    $best = $null; $bestTop = -1; $maxArea = 0
+    $cands = New-Object System.Collections.Generic.List[object]
+    foreach ($type in @($CT::Document, $CT::Pane, $CT::Image)) {
+      foreach ($e in @(FindType $win $type)) {
+        $r = $e.Current.BoundingRectangle
+        $area = [int]($r.Width * $r.Height)
+        if ($area -gt 40000) {
+          Say ('  candidate ' + $type.ProgrammaticName + ' ' + [int]$r.X + ',' + [int]$r.Y + ' ' + [int]$r.Width + 'x' + [int]$r.Height)
+          $cands.Add($e)
+          if ($area -gt $maxArea) { $maxArea = $area }
+        }
+      }
+    }
+    # Nested Panes: the OUTER one starts under the toolbar and runs to the window edge, so its top
+    # 36 rows are the tab strip -- and the tab strip carries the document name, which differs
+    # between two files. That is how a plain A/B of "field drawn vs not drawn" first reported 681
+    # differing pixels for a box that was never drawn: the difference was the file name in the tab.
+    # The page view is the INNERMOST of the large panes, so pick by the lowest top edge among
+    # anything within 60% of the largest area, and keep printing every candidate so the choice is
+    # falsifiable rather than a guess with a rule bolted on.
+    foreach ($e in $cands) {
+      $r = $e.Current.BoundingRectangle
+      if (($r.Width * $r.Height) -lt (0.6 * $maxArea)) { continue }
+      if ([int]$r.Y -gt $bestTop) { $bestTop = [int]$r.Y; $best = $e }
+    }
+    if (-not $best) { Say '  no element big enough to be the page'; exit 1 }
+    $r = $best.Current.BoundingRectangle
+    $left = [int][math]::Round($r.X * $scale)
+    $top = [int][math]::Round($r.Y * $scale)
+    $width = [int][math]::Round($r.Width * $scale)
+    $height = [int][math]::Round($r.Height * $scale)
+    Say ('  page element ' + $best.Current.ControlType.ProgrammaticName + ' at ' + $left + ',' + $top +
+         ' ' + $width + 'x' + $height + ' (scale ' + $scale + ')')
+    $bmp = New-Object System.Drawing.Bitmap($width, $height)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($left, $top, 0, 0, (New-Object System.Drawing.Size($width, $height)))
+    # Named after the document, not a fixed file: an A/B of two runs is only evidence if both
+    # pictures survive, and a shared name means the second run quietly ate the first one's.
+    $shot = Join-Path $scratch ('formpage-' + [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')
+    $bmp.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bands = 12
+    for ($b = 0; $b -lt $bands; $b++) {
+      $y0 = [int]($height * $b / $bands)
+      $y1 = [int]($height * ($b + 1) / $bands)
+      $ink = 0
+      for ($y = $y0; $y -lt $y1; $y += 2) {
+        for ($x = 0; $x -lt $width; $x += 2) {
+          $c = $bmp.GetPixel($x, $y)
+          if ($c.R -lt 245 -or $c.G -lt 245 -or $c.B -lt 245) { $ink++ }
+        }
+      }
+      Say ('  band ' + $b + ' rows ' + $y0 + '-' + $y1 + ' ink=' + $ink)
+    }
+    $g.Dispose(); $bmp.Dispose()
+    Say ('  shot kept at ' + $shot)
   }
 }
 

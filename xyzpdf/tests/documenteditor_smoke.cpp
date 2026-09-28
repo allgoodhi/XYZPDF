@@ -1095,6 +1095,129 @@ QString writeTwoNamelessFields(const QString &source, const QString &destination
     return destination;
 }
 
+// The layer §53 and §54 both named and neither touched: **XFA**. A document can carry a second,
+// complete description of its form -- an XML packet in /AcroForm /XFA, an array of (subtype, stream)
+// pairs -- and in viewers that honour it, that packet, not /AcroForm /Fields, is the form. qpdf has
+// no XFA facility at all (nothing in its headers even names it), so the only question this program
+// can answer is a smaller one with a big consequence: **does anything we do keep it in step, or does
+// it ride along untouched?** The packet below is hand-made and deliberately minimal -- a template
+// that says the form has a page, and a dataset that carries the typed value. That is enough to
+// follow the bytes; it is not a real generator's output, and nothing here claims it is.
+QString writeXfaFieldCopy(const QString &source, const QString &destination,
+                          const QString &fieldName, const QString &fieldValue, QString *error)
+{
+    try {
+        // One pass from the source, not writeFieldCopy followed by a second opening of the result.
+        // The second version was here first and it silently produced a document with the field and
+        // *no packet*: qpdf keeps the file it processed open and reads objects lazily while writing,
+        // so writing back over that same name is what its own documentation warns against -- the
+        // remove-then-rename workaround only turned the silent wrong file into a loud failure.
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+        field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        field.replaceKey("/T", QPDFObjectHandle::newString(fieldName.toUtf8().constData()));
+        field.replaceKey("/V", QPDFObjectHandle::newString(fieldValue.toUtf8().constData()));
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        field.replaceKey("/Rect", rect);
+        field = qpdf.makeIndirectObject(field);
+        field.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(field);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(field);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+
+        const QString templateXml =
+            QStringLiteral("<?xml version=\"1.0\"?><xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xfdf/"
+                           "\"><template><pageSet><page name=\"P1\"/></pageSet></template></xdp:xdp>");
+        const QString datasetXml = QStringLiteral(
+            "<?xml version=\"1.0\"?><xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xfdf/\">"
+            "<datasets><form1><%1>%2</%1></form1></datasets></xdp:xdp>")
+            .arg(fieldName, fieldValue);
+
+        // A stream handle is not a dictionary: keys go through getDict(), and replacing a key on the
+        // stream object itself is answered with a WARNING line and quietly ignored.
+        QPDFObjectHandle packet =
+            QPDFObjectHandle::newStream(&qpdf, templateXml.toUtf8().constData());
+        packet.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
+        QPDFObjectHandle data =
+            QPDFObjectHandle::newStream(&qpdf, datasetXml.toUtf8().constData());
+        data.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
+
+        QPDFObjectHandle xfa = QPDFObjectHandle::newArray();
+        xfa.appendItem(QPDFObjectHandle::newString(""));
+        xfa.appendItem(packet);
+        xfa.appendItem(QPDFObjectHandle::newString("datasets"));
+        xfa.appendItem(data);
+        form.replaceKey("/XFA", xfa);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// The packet as the file holds it: how many (subtype, stream) pairs, and what the concatenated
+// bytes say. Asked of the bytes rather than of a parser because nothing in this build parses XFA,
+// and because the claim under test is exactly "the same XML text is still in there".
+struct XfaReport
+{
+    bool present = false;
+    int pairs = 0;
+    QString text;
+};
+
+XfaReport readXfa(const QString &path)
+{
+    XfaReport report;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const QPDFObjectHandle form = qpdf.getRoot().getKey("/AcroForm");
+        const QPDFObjectHandle xfa = form.getKey("/XFA");
+        if (!xfa.isArray())
+            return report;
+        report.present = true;
+        for (int index = 0; index < xfa.getArrayNItems(); ++index) {
+            QPDFObjectHandle item = xfa.getArrayItem(index);
+            if (!item.isStream())
+                continue;
+            ++report.pairs;
+            // getStreamData() decodes (the packet is written plain here, but a real one is almost
+            // always /FlateDecode), and it hands back a Buffer whose bytes it owns -- so the text
+            // is copied out, not referenced.
+            const auto buffer = item.getStreamData();
+            if (buffer) {
+                report.text += QString::fromUtf8(
+                    QByteArray::fromRawData(reinterpret_cast<const char*>(buffer->getBuffer()),
+                                           static_cast<int>(buffer->getSize())));
+            }
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the XFA packet out of " << path.toStdString() << ": "
+                  << e.what() << '\n';
+        ++failures;
+    }
+    return report;
+}
+
 // How a file stands with respect to annotations: what each page carries, whether the page
 // that carries an annotation is the one its own `/P` names, whether any annotation object is
 // shared between two pages, and how many fields the document's /AcroForm points at.
@@ -2769,6 +2892,134 @@ int main(int argc, char **argv)
                       .arg(namelessTree.namelessTerminals)
                       .arg(namelessTree.duplicateAddresses)
                       .arg(namelessTree.unregisteredWidgets));
+        }
+
+        // ---- XFA: the form's second copy, and whether anything keeps it in step ----
+        //
+        // §53 and §54 both left this named and untouched. It is the same question as §51 -- what is
+        // left dangling when a page goes out -- asked of a copy of the form that lives in XML rather
+        // than in dictionaries, and that some viewers treat as the form.
+        {
+            const QString xfaFile = scratch.filePath(QStringLiteral("target-with-xfa.pdf"));
+            const QString xfaDonorField = scratch.filePath(QStringLiteral("donor-with-plain-field.pdf"));
+            error.clear();
+            check(!writeXfaFieldCopy(source, xfaFile, QStringLiteral("xfaField"),
+                                     QStringLiteral("typed on page 1"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: a document whose form exists twice, as dictionaries and as XML: %1")
+                      .arg(error));
+            const XfaReport built = readXfa(xfaFile);
+            check(built.present && built.pairs == 2
+                      && built.text.contains(QStringLiteral("<xfaField>typed on page 1</xfaField>"))
+                      && built.text.contains(QStringLiteral("name=\"P1\"")),
+                  QStringLiteral("setup: the packet is really in there -- %1 pairs, the value and a "
+                                 "page named P1 both readable in its bytes")
+                      .arg(built.pairs));
+            check(!writeFieldCopy(donor, xfaDonorField, QStringLiteral("donorField"),
+                                  QStringLiteral("typed in the donor"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: and a donor page carrying an ordinary field: %1").arg(error));
+
+            // A. the field's page deleted: does the XML follow?
+            DocumentEditor gone;
+            check(gone.open(xfaFile, QString(), &error) && gone.deletePages({0}, &error),
+                  QStringLiteral("setup: the packet document opens and loses its first page: %1")
+                      .arg(error));
+            const QString goneOut = scratch.filePath(QStringLiteral("xfa-page-deleted.pdf"));
+            error.clear();
+            check(gone.saveAs(goneOut, &error),
+                  QStringLiteral("and the deletion is written: %1").arg(error));
+            const XfaReport afterDelete = readXfa(goneOut);
+            std::cout << "MEASURE xfa delete: present=" << afterDelete.present
+                      << " pairs=" << afterDelete.pairs << " bytes="
+                      << afterDelete.text.toUtf8().size() << " still says P1="
+                      << afterDelete.text.contains(QStringLiteral("name=\"P1\""))
+                      << " still says the answer="
+                      << afterDelete.text.contains(
+                             QStringLiteral("<xfaField>typed on page 1</xfaField>"))
+                      << " pages=" << readAnnotations(goneOut).countPerPage.size() << '\n';
+            check(afterDelete.present && afterDelete.pairs == 2
+                      && afterDelete.text.contains(QStringLiteral("name=\"P1\"")),
+                  QStringLiteral("KNOWN, measured (docs §55): the packet is carried through the "
+                                 "deletion byte for byte and still describes a page this file no "
+                                 "longer has (%1 pairs in a document of %2 pages) -- nothing in the "
+                                 "write path reads XFA, and qpdf has no XFA facility at all")
+                      .arg(afterDelete.pairs)
+                      .arg(readAnnotations(goneOut).countPerPage.size()));
+
+            // B. a split: every piece gets the whole form.
+            DocumentEditor apart;
+            check(apart.open(xfaFile, QString(), &error) && apart.splitInto(20, &error),
+                  QStringLiteral("setup: the same document is split into two: %1").arg(error));
+            const QString apartPath = scratch.filePath(QStringLiteral("xfa-cut.pdf"));
+            QStringList apartWritten;
+            error.clear();
+            check(apart.saveAs(apartPath, &error, &apartWritten) && apartWritten.size() == 2,
+                  QStringLiteral("and the two pieces are written: %1").arg(error));
+            const XfaReport pieceOne = readXfa(apartWritten.at(0));
+            const XfaReport pieceTwo = readXfa(apartWritten.at(1));
+            std::cout << "MEASURE xfa pieces: one present=" << pieceOne.present << " pairs="
+                      << pieceOne.pairs << " bytes=" << pieceOne.text.toUtf8().size()
+                      << " ; two present=" << pieceTwo.present << " pairs=" << pieceTwo.pairs
+                      << " bytes=" << pieceTwo.text.toUtf8().size() << " same text="
+                      << (pieceOne.text == pieceTwo.text) << '\n';
+            check(pieceOne.present && pieceTwo.present && pieceOne.text == built.text
+                      && pieceTwo.text == built.text,
+                  QStringLiteral("KNOWN, measured (docs §55): both pieces carry the entire packet, "
+                                 "byte-identical to the source's -- so the form definition and every "
+                                 "answer in it reach files that hold only half the pages (%1 and %2 "
+                                 "bytes)")
+                      .arg(pieceOne.text.toUtf8().size())
+                      .arg(pieceTwo.text.toUtf8().size()));
+
+            // C. a field merged INTO the packet document: the packet says nothing about it.
+            DocumentEditor joined;
+            check(joined.open(xfaFile, QString(), &error)
+                      && joined.mergeFile(xfaDonorField, {0}, DocumentEditor::MoveTarget::Back, -1,
+                                          &error),
+                  QStringLiteral("setup: a donor field is merged into the packet document: %1")
+                      .arg(error));
+            const QString joinedOut = scratch.filePath(QStringLiteral("xfa-gained-field.pdf"));
+            error.clear();
+            check(joined.saveAs(joinedOut, &error),
+                  QStringLiteral("and that is written: %1").arg(error));
+            const XfaReport afterMerge = readXfa(joinedOut);
+            const AnnotationReport mergedFields = readAnnotations(joinedOut);
+            std::cout << "MEASURE xfa merge in: pairs=" << afterMerge.pairs << " bytes="
+                      << afterMerge.text.toUtf8().size() << " mentions the new field="
+                      << afterMerge.text.contains(QStringLiteral("donorField"))
+                      << " acroform entries=" << mergedFields.fields << '\n';
+            check(mergedFields.fields == 2 && !afterMerge.text.contains(QStringLiteral("donorField")),
+                  QStringLiteral("the form list grows to %1 fields while the packet stays the size "
+                                 "it was and never mentions the field that arrived -- the two copies "
+                                 "of this form are now different forms (%2 bytes of XML)")
+                      .arg(mergedFields.fields)
+                      .arg(afterMerge.text.toUtf8().size()));
+            check(pagesAsReadByTheReader(joinedOut) == pagesBefore + 1,
+                  "and Qt PDF opens the file whose two form copies disagree");
+
+            // D. a page merged OUT of the packet document: the packet does not travel with the page.
+            DocumentEditor plain;
+            check(plain.open(source, QString(), &error)
+                      && plain.mergeFile(xfaFile, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("setup: a packet-carrying page is merged into a plain document: %1")
+                      .arg(error));
+            const QString plainOut = scratch.filePath(QStringLiteral("xfa-arrived-page.pdf"));
+            error.clear();
+            check(plain.saveAs(plainOut, &error),
+                  QStringLiteral("and that is written: %1").arg(error));
+            const XfaReport arrived = readXfa(plainOut);
+            const AnnotationReport arrivedFields = readAnnotations(plainOut);
+            std::cout << "MEASURE xfa merge out: present=" << arrived.present << " acroform entries="
+                      << arrivedFields.fields << " names=["
+                      << arrivedFields.fieldNames.join(QStringLiteral("|")).toStdString() << "]\n";
+            check(!arrived.present && arrivedFields.fields == 1,
+                  QStringLiteral("the page came, its field came with it, and the packet did not: "
+                                 "present=%1, %2 fields in the form list -- XFA belongs to the "
+                                 "document, not the page, so a merged-in form arrives with only half "
+                                 "of its description")
+                      .arg(arrived.present)
+                      .arg(arrivedFields.fields));
         }
 
         // ---- and a move that leans against one of the two copies ----
@@ -4865,10 +5116,12 @@ int main(int argc, char **argv)
                 const QString flat = QDir(dir).filePath(QStringLiteral("field-flat.pdf"));
                 const QString spread = QDir(dir).filePath(QStringLiteral("field-spread.pdf"));
                 const QString dangling = QDir(dir).filePath(QStringLiteral("field-dangling.pdf"));
+                const QString xfaSample = QDir(dir).filePath(QStringLiteral("field-xfa.pdf"));
                 QFile::remove(plain);
                 QFile::remove(flat);
                 QFile::remove(spread);
                 QFile::remove(dangling);
+                QFile::remove(xfaSample);
                 if (QFile::copy(fixture, plain))
                     std::cout << "SAMPLE plain: " << plain.toStdString() << '\n';
                 if (!writeFieldCopy(fixture, flat, QStringLiteral("sampleField"),
@@ -4902,6 +5155,17 @@ int main(int argc, char **argv)
                     std::cout << "SAMPLE spread: " << spread.toStdString() << '\n';
                 else
                     std::cerr << "FAIL: sample spread: " << e.toStdString() << '\n';
+                // The §55 shape as a file a window and a byte dump can both look at.
+                if (!writeXfaFieldCopy(fixture, xfaSample, QStringLiteral("xfaField"),
+                                       QStringLiteral("typed on page 1"), &e)
+                         .isEmpty()) {
+                    const XfaReport checkPacket = readXfa(xfaSample);
+                    std::cout << "SAMPLE xfa: " << xfaSample.toStdString() << " present="
+                              << checkPacket.present << " pairs=" << checkPacket.pairs << " bytes="
+                              << checkPacket.text.toUtf8().size() << '\n';
+                } else {
+                    std::cerr << "FAIL: sample xfa: " << e.toStdString() << '\n';
+                }
                 // The §51 shape as something a window can be pointed at: the page is gone, and
                 // this document still registers the field that lived on it.
                 DocumentEditor out;

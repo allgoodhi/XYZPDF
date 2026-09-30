@@ -39,11 +39,12 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   （集合对不上、numerus 掉形、两形相同、单数写成多数、段落换行丢）—— 这些都看不出在 (context, source) 上
   是"完全匹配"的
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage`（八种模式都当场跑
-  通过；脚本注释里就是踩过的坑）。装的那份要英文界面走 `-Mode langswitch -Installed`（它的偏好没有
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache`（九种模式
+  都当场跑通过；脚本注释里就是踩过的坑）。装的那份要英文界面走 `-Mode langswitch -Installed`（它的偏好没有
   外面的读路，读数在应用自己的设置框里）。`build-local-release/gui-verify/` 下那些是历次草稿，在
   gitignore 的构建树里、丢了找不回来 —— 量出可用的新路由就收进 `tools/gui-probe.ps1`
 - 带表单字段的样本不用等真文件：`XYZPDF_FORM_SAMPLE_DIR=<目录> build-local-release/tests/xyzpdf_documenteditor_smoke.exe`
-  现造 plain / field-flat / field-spread / field-dangling / field-xfa（目录名里带 `fixtures` 会被拒绝并算失败）。
+  现造 plain / field-flat / field-spread / field-dangling / field-xfa / field-appearance / field-directive
+  （目录名里带 `fixtures` 会被拒绝并算失败）。
   "这台机器上没有真带字段的 PDF"从 §54 起不再成立
 - 编不过就明说"未编译验证"，不要报告成完成

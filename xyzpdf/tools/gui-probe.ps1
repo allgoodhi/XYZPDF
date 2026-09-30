@@ -34,6 +34,9 @@
                      reader draw a form field" becomes a subtraction between two runs instead of a
                      look (sec.54; run it once on the plain file and once on the same page with a
                      field on it).
+      uacache        read one status-bar message four ways at the same instant -- a HELD element, a
+                     freshly found one, one found from the desktop root, and the pixels -- because
+                     sec.37 blamed a lag on the UIA client's property cache and never measured it.
 
     Examples (from the repository root):
       powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1 -Mode inventory
@@ -48,7 +51,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -995,7 +998,42 @@ switch ($Mode) {
     $g.Dispose(); $bmp.Dispose()
     Say ('  shot kept at ' + $shot)
   }
+  'uacache' {
+    # sec.37 recorded that a status-bar message's UIA Name can lag what is on screen and blamed the
+    # .NET UIA client's property cache -- without ever testing the attribution. Two rounds also
+    # disagreed (one refreshed in 7 s, one held a 20-second-old line for 24 s), which is the shape a
+    # comfortable wrong explanation absorbs. So: read the SAME instant four ways and let pixels
+    # arbitrate.
+    #   held  -- one element captured before the message ends and re-read every sample;
+    #   fresh -- the status bar found again from the window each sample (what StatusName does);
+    #   root  -- a brand-new search from the desktop root, so a per-element cache has nowhere to sit;
+    #   ink   -- the truth: non-white points in the message area, grabbed off the screen.
+    # The message is the one the app shows by itself when a document opens (`Opened <name>`, 6 s),
+    # which means no dialog, no file and no picker is in front of the strip while it is measured --
+    # the export route the first version of this mode used needed all three and produced two rounds
+    # of nothing but a covered status bar.
+    $wr = (Window $app.Id).Current.BoundingRectangle
+    [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))   # raise by its own title bar
+    Start-Sleep -Milliseconds 600
+    $heldList = @(FindType (Window $app.Id) $CT::StatusBar)
+    if ($heldList.Count -lt 1) { Say '  no StatusBar element to hold'; exit 1 }
+    $heldElem = $heldList[0]
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    for ($k = 1; $k -le 44; $k++) {
+      $h = ''
+      try { $h = $heldElem.Current.Name } catch { $h = '(threw)' }
+      $f = StatusName $app.Id
+      $rootName = ''
+      $top = $AE::RootElement.FindFirst($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $app.Id)))
+      if ($top) { $sb = @(FindType $top $CT::StatusBar); if ($sb.Count) { $rootName = $sb[0].Current.Name } }
+      $ink = StatusInk $app.Id ''
+      Say ('  t=' + [math]::Round($clock.Elapsed.TotalSeconds, 1) + 's ink=' + $ink +
+           ' held=[' + $h.Substring(0, [math]::Min(27, $h.Length)) + ']' +
+           ' fresh=[' + $f.Substring(0, [math]::Min(27, $f.Length)) + ']' +
+           ' root=[' + $rootName.Substring(0, [math]::Min(27, $rootName.Length)) + ']')
+      Start-Sleep -Milliseconds 500
+    }
+  }
 }
-
 Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
 Say 'DONE'

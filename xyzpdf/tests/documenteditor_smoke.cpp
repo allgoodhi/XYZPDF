@@ -63,6 +63,7 @@
 
 #include <qpdf/Buffer.hh>
 #include <qpdf/QPDF.hh>
+#include <qpdf/QPDFFormFieldObjectHelper.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
@@ -1213,6 +1214,354 @@ XfaReport readXfa(const QString &path)
     } catch (const std::exception &e) {
         std::cerr << "FAIL: could not read the XFA packet out of " << path.toStdString() << ": "
                   << e.what() << '\n';
+        ++failures;
+    }
+    return report;
+}
+
+// A widget that carries an **appearance stream**, which is what every real one does. §54 measured
+// "our reader draws no field" against a widget holding nothing but `/Rect`, `/T` and `/V` -- the
+// shape this file builds because it is the smallest one that is a form field. A file produced by a
+// viewer that the reader actually typed into paints the box through `/AP`, and Qt renders annotation
+// appearances, so §54's number may belong to a shape nobody ships. This helper is the positive
+// control on that conclusion, and its output is also what the screen pass looks at.
+QString writeFieldWithAppearanceCopy(const QString &source, const QString &destination,
+                                     const QString &fieldName, const QString &fieldValue,
+                                     int pageIndex, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(size_t(pageIndex)).getObjectHandle();
+
+        const std::string paint =
+            "q 0.70 0.70 0.90 rg 0 0 200 30 re f "
+            "BT /F1 12 Tf 4 9 Td (APPEARS-HERE) Tj ET Q";
+        QPDFObjectHandle form = QPDFObjectHandle::newStream(&qpdf, paint);
+        QPDFObjectHandle formDict = form.getDict();
+        formDict.replaceKey("/Type", QPDFObjectHandle::newName("/XObject"));
+        formDict.replaceKey("/Subtype", QPDFObjectHandle::newName("/Form"));
+        QPDFObjectHandle bbox = QPDFObjectHandle::newArray();
+        bbox.appendItem(QPDFObjectHandle::newReal(0));
+        bbox.appendItem(QPDFObjectHandle::newReal(0));
+        bbox.appendItem(QPDFObjectHandle::newReal(200));
+        bbox.appendItem(QPDFObjectHandle::newReal(30));
+        formDict.replaceKey("/BBox", bbox);
+        QPDFObjectHandle font = QPDFObjectHandle::newDictionary();
+        font.replaceKey("/Type", QPDFObjectHandle::newName("/Font"));
+        font.replaceKey("/Subtype", QPDFObjectHandle::newName("/Type1"));
+        font.replaceKey("/BaseFont", QPDFObjectHandle::newName("/Helvetica"));
+        QPDFObjectHandle fonts = QPDFObjectHandle::newDictionary();
+        fonts.replaceKey("/F1", qpdf.makeIndirectObject(font));
+        QPDFObjectHandle resources = QPDFObjectHandle::newDictionary();
+        resources.replaceKey("/Font", fonts);
+        formDict.replaceKey("/Resources", resources);
+
+        QPDFObjectHandle appearance = QPDFObjectHandle::newDictionary();
+        appearance.replaceKey("/N", form);
+
+        QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+        field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        field.replaceKey("/T", QPDFObjectHandle::newString(fieldName.toUtf8().constData()));
+        field.replaceKey("/V", QPDFObjectHandle::newString(fieldValue.toUtf8().constData()));
+        field.replaceKey("/AP", appearance);
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        field.replaceKey("/Rect", rect);
+        field = qpdf.makeIndirectObject(field);
+        field.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(field);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(field);
+        QPDFObjectHandle acroForm = QPDFObjectHandle::newDictionary();
+        acroForm.replaceKey("/Fields", fields);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(acroForm));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// What the appearance of each registered field looks like from the outside: is there an /AP /N
+// stream, and does its own content still say the one thing the test paints into it. The second half
+// matters because a stream that survives as bytes but never as a *decoded* drawing is a field the
+// reader sees nothing of, which is the difference between "carried" and "kept".
+int appearancesWithPaint(const QString &path, const QString &says)
+{
+    int matched = 0;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const QPDFObjectHandle fields =
+            qpdf.getRoot().getKey("/AcroForm").getKey("/Fields");
+        for (int index = 0; fields.isArray() && index < fields.getArrayNItems(); ++index) {
+            QPDFObjectHandle normal =
+                fields.getArrayItem(index).getKey("/AP").getKey("/N");
+            if (!normal.isStream())
+                continue;
+            const std::shared_ptr<Buffer> bytes = normal.getStreamData();
+            if (!bytes)
+                continue;
+            const QByteArray paint = QByteArray::fromRawData(
+                reinterpret_cast<const char*>(bytes->getBuffer()), int(bytes->getSize()));
+            if (paint.contains(says.toUtf8()))
+                ++matched;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the appearances out of " << path.toStdString() << ": "
+                  << e.what() << '\n';
+        ++failures;
+    }
+    return matched;
+}
+
+// A form the way a generator that someone has actually typed into leaves it. §57's file carries a
+// widget with its own drawing; this one carries the layer that drawing stands on, which a real form
+// puts in the **document** rather than on the page or the field:
+//
+//   /AcroForm /DA  the operators to draw a field's text with (font, size, colour) -- inherited by
+//                  every field that does not state its own (PDF 2.0 §12.7.3.5);
+//   /AcroForm /DR  the resources that string may name. qpdf's own header notes that Acrobat and
+//                  Reader ignore a /DR on the field, so the document is the only place it can live;
+//   /AcroForm /Q   the alignment, inherited the same way;
+//   /AcroForm /NeedAppearances  "the drawings in here are not to be trusted: make your own";
+//   and the appearance stream's own /Resources, where the font that drawing invokes has to be
+//   findable.
+//
+// Every one of those belongs to the document, and a page is all our write path copies. So this
+// helper builds the shape, and the block that uses it asks what arrives and what stays behind.
+QString writeDirectiveFieldCopy(const QString &source, const QString &destination,
+                                const QString &fieldName, const QString &fieldValue,
+                                const QString &fontKey, const QString &baseFont, int quadding,
+                                bool needAppearances, bool withAppearance, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle font = QPDFObjectHandle::newDictionary();
+        font.replaceKey("/Type", QPDFObjectHandle::newName("/Font"));
+        font.replaceKey("/Subtype", QPDFObjectHandle::newName("/Type1"));
+        font.replaceKey("/BaseFont", QPDFObjectHandle::newName(baseFont.toUtf8().constData()));
+        // One indirect font object, named from two places (the document's /DR and the drawing's own
+        // /Resources) under one key. That is what makes "did the reference come along, or only the
+        // name" a question with an answer.
+        QPDFObjectHandle fontRef = qpdf.makeIndirectObject(font);
+
+        QPDFObjectHandle appearance;
+        if (withAppearance) {
+            // The drawing invokes the font **by the name the document's /DA uses**, and paints the
+            // field's value with it -- the shape a file has once anyone typed into it.
+            const std::string paint = "q 0.92 0.92 0.92 rg 0 0 200 30 re f BT "
+                + fontKey.toStdString() + " 12 Tf 4 9 Td (" + fieldValue.toStdString() + ") Tj ET Q";
+            appearance = QPDFObjectHandle::newStream(&qpdf, paint);
+            QPDFObjectHandle appearanceDict = appearance.getDict();
+            appearanceDict.replaceKey("/Type", QPDFObjectHandle::newName("/XObject"));
+            appearanceDict.replaceKey("/Subtype", QPDFObjectHandle::newName("/Form"));
+            QPDFObjectHandle bbox = QPDFObjectHandle::newArray();
+            bbox.appendItem(QPDFObjectHandle::newReal(0));
+            bbox.appendItem(QPDFObjectHandle::newReal(0));
+            bbox.appendItem(QPDFObjectHandle::newReal(200));
+            bbox.appendItem(QPDFObjectHandle::newReal(30));
+            appearanceDict.replaceKey("/BBox", bbox);
+            QPDFObjectHandle ownFonts = QPDFObjectHandle::newDictionary();
+            ownFonts.replaceKey(fontKey.toStdString(), fontRef);
+            QPDFObjectHandle ownResources = QPDFObjectHandle::newDictionary();
+            ownResources.replaceKey("/Font", ownFonts);
+            appearanceDict.replaceKey("/Resources", ownResources);
+        }
+
+        QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+        field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        field.replaceKey("/T", QPDFObjectHandle::newString(fieldName.toUtf8().constData()));
+        field.replaceKey("/V", QPDFObjectHandle::newString(fieldValue.toUtf8().constData()));
+        // Deliberately no /DA, no /Q, no /DR on the field: its typography comes from the document,
+        // which is the whole thing under test. And withAppearance=false is the other half of the
+        // real world -- a form whose fields have no drawing at all because the file says whoever
+        // opens it will make one.
+        if (withAppearance) {
+            QPDFObjectHandle states = QPDFObjectHandle::newDictionary();
+            states.replaceKey("/N", appearance);
+            field.replaceKey("/AP", states);
+        }
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        field.replaceKey("/Rect", rect);
+        field = qpdf.makeIndirectObject(field);
+        field.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(field);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(field);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        form.replaceKey("/DA",
+                        QPDFObjectHandle::newString(
+                            QStringLiteral("%1 0 Tf 0 g").arg(fontKey).toUtf8().constData()));
+        QPDFObjectHandle documentFonts = QPDFObjectHandle::newDictionary();
+        documentFonts.replaceKey(fontKey.toStdString(), fontRef);
+        QPDFObjectHandle resources = QPDFObjectHandle::newDictionary();
+        resources.replaceKey("/Font", documentFonts);
+        form.replaceKey("/DR", resources);
+        form.replaceKey("/Q", QPDFObjectHandle::newInteger(quadding));
+        form.replaceKey("/NeedAppearances", QPDFObjectHandle::newBool(needAppearances));
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// The directive layer as the file states it, read from the outside: what the document says, what
+// each field is therefore told, and whether the drawing each field carries can still find the font
+// it invokes.
+struct DirectiveReport
+{
+    bool hasForm = false;
+    bool formHasDA = false;
+    bool formHasDR = false;
+    bool needAppearances = false;
+    QStringList formFonts;      // "<key>=<BaseFont>" for every font the document offers
+    int terminals = 0;
+    QStringList ownDirectives;  // per field: "own /DA | own /Q", the ones it states itself
+    QStringList givenDirectives;  // per field: what the inheritance walk hands it
+    QStringList givenFonts;   // per field: the font that /DA names, resolved against /DR
+    int drawings = 0;
+    QStringList drawingFonts;   // per drawing: "invoked=<name> resolves=<BaseFont>"
+    QStringList unresolved;     // per drawing: names invoked that its own /Resources cannot give
+};
+
+DirectiveReport readDirectives(const QString &path)
+{
+    DirectiveReport report;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const QPDFObjectHandle form = qpdf.getRoot().getKey("/AcroForm");
+        report.hasForm = form.isDictionary();
+        if (!report.hasForm)
+            return report;
+        report.formHasDA = form.getKey("/DA").isString();
+        report.formHasDR = form.getKey("/DR").isDictionary();
+        report.needAppearances = form.getKey("/NeedAppearances").getBoolValue();
+        const QPDFObjectHandle documentFonts = form.getKey("/DR").getKey("/Font");
+        if (documentFonts.isDictionary()) {
+            for (const std::string &key : documentFonts.getKeys()) {
+                report.formFonts << QStringLiteral("%1=%2")
+                     .arg(QString::fromUtf8(key.c_str()),
+                          QString::fromUtf8(documentFonts.getKey(key)
+                                .getKey("/BaseFont").getName().c_str()));
+            }
+        }
+
+        static const QRegularExpression fontUse(
+            QStringLiteral("/([A-Za-z0-9._]+)\\s+[0-9.]+\\s+Tf"),
+            QRegularExpression::UseUnicodePropertiesOption);
+
+        const QPDFObjectHandle fields = form.getKey("/Fields");
+        for (int index = 0; fields.isArray() && index < fields.getArrayNItems(); ++index) {
+            QPDFObjectHandle field = fields.getArrayItem(index);
+            ++report.terminals;
+
+            // Asked of qpdf's own inheritance walk rather than of the dictionary, because that walk
+            // is what a viewer does: a field with no /DA of its own is handed the document's. The
+            // helper is non-const by nature (fourth time this suite has been told a QPDFObjectHandle
+            // it wraps can be modified through it), so no const here.
+            QPDFFormFieldObjectHelper helper(field);
+            const std::string given = helper.getDefaultAppearance();
+            report.givenDirectives << QStringLiteral("%1|Q%2")
+                 .arg(QString::fromUtf8(given.c_str())).arg(helper.getQuadding());
+            // And then the question the collision case turns on: the /DA it is handed names a font
+            // **by key**, and the key means whatever the /DR of the document it now sits in says.
+            if (given.empty()) {
+                report.givenFonts << QStringLiteral("<no /DA handed>");
+            } else {
+                const QRegularExpressionMatch named =
+                    fontUse.match(QString::fromUtf8(given.c_str()));
+                if (!named.hasMatch()) {
+                    report.givenFonts << QStringLiteral("<no font in the /DA>");
+                } else {
+                    const QString key = QStringLiteral("/%1").arg(named.captured(1));
+                    const QPDFObjectHandle offered =
+                        documentFonts.getKey(key.toUtf8().constData());
+                    report.givenFonts << QStringLiteral("%1 means=%2")
+                         .arg(key, offered.isDictionary()
+                                   ? QString::fromUtf8(
+                                         offered.getKey("/BaseFont").getName().c_str())
+                                   : QStringLiteral("<not offered by this document>"));
+                }
+            }
+            report.ownDirectives << QStringLiteral("%1|Q%2")
+                 .arg(field.getKey("/DA").isString()
+                          ? QString::fromUtf8(field.getKey("/DA").getStringValue().c_str())
+                          : QStringLiteral("<none>"),
+                      field.getKey("/Q").isInteger()
+                          ? QString::number(int(field.getKey("/Q").getIntValue()))
+                          : QStringLiteral("<none>"));
+
+            // Descend only into a dictionary: asking a null object for a key is answered with a
+            // WARNING line, and the undrawn field below has no /AP at all by construction.
+            const QPDFObjectHandle states = field.getKey("/AP");
+            QPDFObjectHandle normal =
+                states.isDictionary() ? states.getKey("/N") : QPDFObjectHandle::newNull();
+            if (!normal.isStream())
+                continue;
+            ++report.drawings;
+            const std::shared_ptr<Buffer> bytes = normal.getStreamData();
+            if (!bytes)
+                continue;
+            const QByteArray paint = QByteArray::fromRawData(
+                reinterpret_cast<const char*>(bytes->getBuffer()), int(bytes->getSize()));
+            const QRegularExpressionMatch match = fontUse.match(paint);
+            if (!match.hasMatch()) {
+                report.unresolved << QStringLiteral("<no Tf in the drawing>");
+                continue;
+            }
+            const QString used = QStringLiteral("/%1").arg(match.captured(1));
+            // Through getDict(), like the write side (§55's trap, and the same one on the read
+            // side): asking a stream handle for a key is answered with a WARNING line and a null,
+            // which is how "the drawing cannot find its font" got reported before it was checked.
+            const QPDFObjectHandle resolved = normal.getDict()
+                                                 .getKey("/Resources")
+                                                 .getKey("/Font")
+                                                 .getKey(used.toUtf8().constData());
+            if (resolved.isDictionary()) {
+                report.drawingFonts << QStringLiteral("%1 resolves=%2")
+                     .arg(used, QString::fromUtf8(resolved.getKey("/BaseFont").getName().c_str()));
+            } else {
+                report.unresolved << used;
+            }
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the directive layer out of " << path.toStdString()
+                  << ": " << e.what() << '\n';
         ++failures;
     }
     return report;
@@ -3020,6 +3369,357 @@ int main(int argc, char **argv)
                                  "of its description")
                       .arg(arrived.present)
                       .arg(arrivedFields.fields));
+        }
+
+        // ---- a field that brings its own drawing: does §54's "zero pixels" survive that? ----
+        //
+        // §54 measured a widget with nothing but /Rect, /T and /V, which is the smallest shape that
+        // is a form field and not the shape a file carries once anyone has typed into it in a real
+        // viewer. A real widget has an /AP appearance stream -- a little Form XObject that says what
+        // to paint -- and Qt draws those for annotations. So the conclusion needed its own positive
+        // control, and the file-level half of that control is this block.
+        {
+            const QString apFile = scratch.filePath(QStringLiteral("field-with-appearance.pdf"));
+            error.clear();
+            check(!writeFieldWithAppearanceCopy(source, apFile, QStringLiteral("drawnField"),
+                                                QStringLiteral("typed on page 1"), 0, &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: a widget carrying its own appearance stream: %1").arg(error));
+            check(appearancesWithPaint(apFile, QStringLiteral("APPEARS-HERE")) == 1
+                      && readFieldTree(apFile).terminals == 1,
+                  "setup: one field, and its /AP /N decodes to the drawing the test painted");
+
+            // Carried into a document that receives the page.
+            DocumentEditor in;
+            check(in.open(source, QString(), &error)
+                      && in.mergeFile(apFile, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("setup: the drawn page is merged into a plain document: %1")
+                      .arg(error));
+            const QString inOut = scratch.filePath(QStringLiteral("merged-with-appearance.pdf"));
+            error.clear();
+            check(in.saveAs(inOut, &error),
+                  QStringLiteral("and the merge is written: %1").arg(error));
+            std::cout << "MEASURE ap merged in: fields=" << readFieldTree(inOut).terminals
+                      << " appearances carrying the drawing="
+                      << appearancesWithPaint(inOut, QStringLiteral("APPEARS-HERE")) << '\n';
+            check(readFieldTree(inOut).terminals == 1
+                      && appearancesWithPaint(inOut, QStringLiteral("APPEARS-HERE")) == 1,
+                  QStringLiteral("the appearance survives the copy whole: the field arrives with "
+                                 "the drawing that paints it, not just with its value"));
+            check(pagesAsReadByTheReader(inOut) == pagesBefore + 1,
+                  "and the reader still opens the document that gained a drawn field");
+
+            // Carried into a document that no longer has the page -- §51's dangling case, with the
+            // addition that this time what dangles includes pixels.
+            DocumentEditor out;
+            check(out.open(apFile, QString(), &error) && out.deletePages({0}, &error),
+                  QStringLiteral("setup: the drawn field's page is deleted: %1").arg(error));
+            const QString outOut = scratch.filePath(QStringLiteral("appearance-page-deleted.pdf"));
+            error.clear();
+            check(out.saveAs(outOut, &error),
+                  QStringLiteral("and that deletion is written: %1").arg(error));
+            std::cout << "MEASURE ap dangling: fields=" << readFieldTree(outOut).terminals
+                      << " appearances carrying the drawing="
+                      << appearancesWithPaint(outOut, QStringLiteral("APPEARS-HERE"))
+                      << " pages=" << readAnnotations(outOut).countPerPage.size() << '\n';
+            check(readFieldTree(outOut).terminals == 1
+                      && appearancesWithPaint(outOut, QStringLiteral("APPEARS-HERE")) == 1,
+                  QStringLiteral("KNOWN GAP, same one §51 pins, widened here (docs §57): the file "
+                                 "no longer holds the page and still registers the field **and** the "
+                                 "XObject that draws it -- what rides along is not only the answer but "
+                                 "the picture of a box on a page that is gone"));
+
+            // And through 拆分: the piece without the page still gets the whole drawing.
+            DocumentEditor cut;
+            check(cut.open(apFile, QString(), &error) && cut.splitInto(20, &error),
+                  QStringLiteral("setup: the drawn field is split apart: %1").arg(error));
+            const QString cutPath = scratch.filePath(QStringLiteral("appearance-cut.pdf"));
+            QStringList cutWritten;
+            error.clear();
+            check(cut.saveAs(cutPath, &error, &cutWritten) && cutWritten.size() == 2,
+                  QStringLiteral("and the two pieces are written: %1").arg(error));
+            const int firstPiece = appearancesWithPaint(cutWritten.at(0), QStringLiteral("APPEARS-HERE"));
+            const int secondPiece = appearancesWithPaint(cutWritten.at(1), QStringLiteral("APPEARS-HERE"));
+            std::cout << "MEASURE ap split: piece1 appearances=" << firstPiece
+                      << " piece2 appearances=" << secondPiece << '\n';
+            check(firstPiece == 1 && secondPiece == 1,
+                  QStringLiteral("both pieces carry the appearance (piece 2 holds no page it could "
+                                 "be drawn on): %1 and %2 copies of the drawing in the two files")
+                      .arg(firstPiece)
+                      .arg(secondPiece));
+        }
+
+        // ---- the instructions a form's drawing stands on: /DA, /DR, /Q, /NeedAppearances ----
+        //
+        // §57 proved the picture travels. A picture is drawn with a font, and in a real form the
+        // font, the size, the colour and the alignment of a field's text live in the **document's**
+        // /AcroForm and are inherited from there (PDF 2.0 §12.7.3.5), while /NeedAppearances is the
+        // file saying "the drawings in here are not to be trusted, make your own". Our write path
+        // copies pages. So four directions, asked of the bytes: what arrives, what stays behind, and
+        // what the file a reader ends up with then tells whoever opens it.
+        {
+            auto dumpDirectives = [](const char *label, const DirectiveReport &r) {
+                std::cout << "MEASURE " << label << ": form=" << r.hasForm
+                          << " fields=" << r.terminals << " drawings=" << r.drawings
+                          << " docDA=" << r.formHasDA << " docDR=" << r.formHasDR
+                          << " needAppearances=" << r.needAppearances
+                          << " docFonts=[" << r.formFonts.join(QStringLiteral(", ")).toStdString()
+                          << "] given=[" << r.givenDirectives.join(QStringLiteral(", ")).toStdString()
+                          << "] givenFonts=[" << r.givenFonts.join(QStringLiteral(", ")).toStdString()
+                          << "] own=[" << r.ownDirectives.join(QStringLiteral(", ")).toStdString()
+                          << "] drawingFonts=["
+                          << r.drawingFonts.join(QStringLiteral(", ")).toStdString()
+                          << "] unresolved=[" << r.unresolved.join(QStringLiteral(", ")).toStdString()
+                          << "]\n";
+            };
+
+            // Two documents that both call a font /Helv, one meaning Helvetica and the other Times,
+            // so the collision §46/§50 asked about names has its resource-layer twin on hand.
+            const QString helvFile = scratch.filePath(QStringLiteral("directive-helvetica.pdf"));
+            const QString timesFile = scratch.filePath(QStringLiteral("directive-times-donor.pdf"));
+            const QString blankFile = scratch.filePath(QStringLiteral("directive-no-drawing.pdf"));
+            error.clear();
+            check(!writeDirectiveFieldCopy(source, helvFile, QStringLiteral("targetField"),
+                                           QStringLiteral("typed in the target"),
+                                           QStringLiteral("/Helv"), QStringLiteral("/Helvetica"),
+                                           0, false, true, &error)
+                          .isEmpty(),
+                  QStringLiteral("setup: a form whose document offers Helvetica: %1").arg(error));
+            check(!writeDirectiveFieldCopy(source, timesFile, QStringLiteral("donorField"),
+                                           QStringLiteral("typed in the donor"),
+                                           QStringLiteral("/Helv"), QStringLiteral("/Times-Roman"),
+                                           1, true, true, &error)
+                          .isEmpty(),
+                  QStringLiteral("and a donor whose document offers Times under that same name: %1")
+                      .arg(error));
+            check(!writeDirectiveFieldCopy(source, blankFile, QStringLiteral("blankField"),
+                                           QStringLiteral("nothing drawn"),
+                                           QStringLiteral("/Helv"), QStringLiteral("/Times-Roman"),
+                                           0, true, false, &error)
+                          .isEmpty(),
+                  QStringLiteral("and a donor that draws nothing because it asks the viewer to: %1")
+                      .arg(error));
+
+            const DirectiveReport built = readDirectives(timesFile);
+            dumpDirectives("donor as built", built);
+            check(built.terminals == 1 && built.drawings == 1 && built.unresolved.isEmpty(),
+                  QStringLiteral("setup: one field, and its drawing finds the font it invokes: %1")
+                      .arg(built.drawingFonts.join(QStringLiteral(" | "))));
+            check(built.ownDirectives.value(0) == QStringLiteral("<none>|Q<none>")
+                      && built.givenDirectives.value(0) == QStringLiteral("/Helv 0 Tf 0 g|Q1"),
+                  QStringLiteral("setup, and the premise of everything below: the field states "
+                                 "nothing about its own typography (%1) and is handed the document's "
+                                 "by inheritance (%2)")
+                      .arg(built.ownDirectives.value(0), built.givenDirectives.value(0)));
+
+            // ---- in, into a document that never had a form ----
+            DocumentEditor noForm;
+            check(noForm.open(source, QString(), &error)
+                      && noForm.mergeFile(timesFile, {0}, DocumentEditor::MoveTarget::Back, -1,
+                                          &error),
+                  QStringLiteral("setup: the Times donor's page goes into a document with no form: %1")
+                      .arg(error));
+            const QString noFormOut = scratch.filePath(QStringLiteral("directive-into-formless.pdf"));
+            error.clear();
+            check(noForm.saveAs(noFormOut, &error),
+                  QStringLiteral("and that merge is written: %1").arg(error));
+            const DirectiveReport arrived = readDirectives(noFormOut);
+            dumpDirectives("into formless", arrived);
+            check(arrived.hasForm && arrived.terminals == 1,
+                  "the field itself arrives, which is what §36 and §50 pinned");
+            check(arrived.drawings == 1 && arrived.unresolved.isEmpty()
+                      && arrived.drawingFonts.value(0)
+                          == QStringLiteral("/Helv resolves=/Times-Roman"),
+                  QStringLiteral("and it arrives paintable: a drawing carries its own /Resources, so "
+                                 "the font it names is still findable in the file it landed in: %1")
+                      .arg(arrived.drawingFonts.join(QStringLiteral(" | "))));
+            check(arrived.givenDirectives.value(0) == built.givenDirectives.value(0)
+                      && arrived.givenFonts.value(0) == built.givenFonts.value(0),
+                  QStringLiteral("the arriving field is handed the same instruction it was handed at "
+                                 "home (%1, resolving to %2) -- so a viewer that regenerates its "
+                                 "drawing gets the donor's typeface, not the receiver's")
+                      .arg(arrived.givenDirectives.value(0))
+                      .arg(arrived.givenFonts.value(0)));
+            check(arrived.ownDirectives.value(0) == built.givenDirectives.value(0)
+                      && arrived.givenDirectives.value(0) != built.ownDirectives.value(0),
+                  QStringLiteral("and the mechanism, read off the file: the donor's *document* said "
+                                 "%1 and its field said nothing (%2); in the merged file the field "
+                                 "now says that itself (%3). qpdf pushes the inherited attributes down "
+                                 "onto the field it copies, which is the one way a page can leave its "
+                                 "document and keep its typography (docs §58: the claim this block was "
+                                 "written to refute, and failed to)")
+                      .arg(built.givenDirectives.value(0))
+                      .arg(built.ownDirectives.value(0))
+                      .arg(arrived.ownDirectives.value(0)));
+            check(arrived.formHasDR && arrived.formFonts == built.formFonts
+                      && arrived.needAppearances && !arrived.formHasDA,
+                  QStringLiteral("the document-level /DR did come across with the page (fonts %1) and "
+                                 "/NeedAppearances came with it (%2), while the document-level /DA did "
+                                 "not -- it is the one that moved onto the field instead: docDA=%3")
+                      .arg(arrived.formFonts.join(QStringLiteral(", ")))
+                      .arg(int(arrived.needAppearances))
+                      .arg(int(arrived.formHasDA)));
+            check(pagesAsReadByTheReader(noFormOut) == pagesBefore + 1,
+                  "and the reader still opens the document that gained the field");
+
+            // ---- in, where both documents name /Helv and mean different fonts ----
+            DocumentEditor both;
+            check(both.open(helvFile, QString(), &error)
+                      && both.mergeFile(timesFile, {0}, DocumentEditor::MoveTarget::Back, -1,
+                                        &error),
+                  QStringLiteral("setup: the Times donor goes into the Helvetica document: %1")
+                      .arg(error));
+            const QString bothOut = scratch.filePath(QStringLiteral("directive-font-collision.pdf"));
+            error.clear();
+            check(both.saveAs(bothOut, &error),
+                  QStringLiteral("and that merge is written: %1").arg(error));
+            const DirectiveReport collided = readDirectives(bothOut);
+            dumpDirectives("font collision", collided);
+            // Which entry is the arriving one is pinned by its own alignment (the donor's document
+            // said /Q 1, the receiving one said nothing), not by a guess about the order of
+            // /Fields -- a positional assumption is exactly the thing this suite keeps catching
+            // itself making, and the two checks below are worth nothing if they read the wrong row.
+            const int arrivedIndex = collided.givenDirectives.value(0).endsWith(QStringLiteral("|Q1"))
+                ? 0 : 1;
+            check(collided.givenDirectives.value(arrivedIndex)
+                      != collided.givenDirectives.value(1 - arrivedIndex),
+                  QStringLiteral("setup for the two claims below: the two fields are handed "
+                                 "different instructions (%1 against %2), so they are separable and "
+                                 "the row being read is identified")
+                      .arg(collided.givenDirectives.value(arrivedIndex))
+                      .arg(collided.givenDirectives.value(1 - arrivedIndex)));
+            check(collided.terminals == 2 && collided.drawings == 2,
+                  QStringLiteral("both fields are registered and both still carry a drawing: "
+                                 "fields=%1 drawings=%2")
+                      .arg(collided.terminals)
+                      .arg(collided.drawings));
+            check(collided.unresolved.isEmpty(),
+                  QStringLiteral("the invariant this case exists to test: **every drawing in the "
+                                 "merged file resolves the font name it invokes** -- one name, two "
+                                 "fonts is survivable because the incoming drawing's key was "
+                                 "renamed in step with its own content; unresolved: [%1]")
+                      .arg(collided.unresolved.join(QStringLiteral(", "))));
+            // The reading qpdf's header promises ("resolve conflicts ... common resource names
+            // across documents") and delivers, plus the one asymmetry it leaves behind: the
+            // arriving drawing's font key is renamed everywhere the *drawing* is looked at, so the
+            // picture keeps its typeface -- but the arriving *field* has no /DA of its own here, so
+            // the /DA it inherits is the receiving document's string, and in the merged /DR that
+            // name now means the receiving document's font.
+            check(collided.givenFonts.value(arrivedIndex) == QStringLiteral("/Helv means=/Helvetica")
+                      && collided.drawingFonts.value(arrivedIndex)
+                          == QStringLiteral("/Helv_1 resolves=/Times-Roman"),
+                  QStringLiteral("MEASURED AND KNOWN (docs §58), not something this program is "
+                                 "asked to fix: the field that came in is told to draw its text in "
+                                 "%1 while the drawing it brought invokes %2 -- a viewer that "
+                                 "regenerates appearances repaints it in the receiving document's "
+                                 "font, and one that trusts the baked drawing shows the original")
+                      .arg(collided.givenFonts.value(arrivedIndex))
+                      .arg(collided.drawingFonts.value(arrivedIndex)));
+            check(collided.ownDirectives.value(arrivedIndex) == QStringLiteral("<none>|Q1"),
+                  QStringLiteral("and where the two keys parted: the alignment was pushed onto the "
+                                 "arriving field (its own says %1), while the typeface was not -- "
+                                 "with a /DA already on the receiving document there was nothing to "
+                                 "push, so the field inherits a string whose font key now belongs to "
+                                 "the other file. Same push-down mechanism, two different answers")
+                      .arg(collided.ownDirectives.value(arrivedIndex)));
+
+            // ---- in, the field that has no drawing at all ----
+            //
+            // The donor above said "make my drawing, and here is the font to make it with". That is
+            // a complete, ordinary form -- and what it depends on is two document-level keys.
+            DocumentEditor none;
+            check(none.open(source, QString(), &error)
+                      && none.mergeFile(blankFile, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
+                  QStringLiteral("setup: the undrawn field goes into a document with no form: %1")
+                      .arg(error));
+            const QString noneOut = scratch.filePath(QStringLiteral("directive-undrawn-in.pdf"));
+            error.clear();
+            check(none.saveAs(noneOut, &error),
+                  QStringLiteral("and that merge is written: %1").arg(error));
+            const DirectiveReport undrawn = readDirectives(noneOut);
+            dumpDirectives("undrawn field in", undrawn);
+            const DirectiveReport undrawnSource = readDirectives(blankFile);
+            dumpDirectives("undrawn as built", undrawnSource);
+            check(undrawn.terminals == 1 && undrawn.drawings == 0,
+                  QStringLiteral("the field arrives and has no drawing: fields=%1 drawings=%2 -- "
+                                 "nothing was ever supposed to draw it")
+                      .arg(undrawn.terminals)
+                      .arg(undrawn.drawings));
+            check(undrawnSource.needAppearances && undrawnSource.formHasDA
+                      && undrawnSource.drawings == 0,
+                  QStringLiteral("control, the same field in the file it came from: it says "
+                                 "\"make my appearance\" (%1) and offers the font to make it with (%2)"
+                                 " -- so it is a field any viewer can draw")
+                      .arg(int(undrawnSource.needAppearances))
+                      .arg(int(undrawnSource.formHasDA)));
+            check(undrawn.needAppearances && undrawn.formHasDR
+                      && undrawn.givenDirectives.value(0) == QStringLiteral("/Helv 0 Tf 0 g|Q0")
+                      && undrawn.drawings == 0,
+                  QStringLiteral("and the field with no drawing does not arrive mute: the merged "
+                                 "document still says \"make the appearances\" (%1), still offers the "
+                                 "font to make them with (%2), and the field is handed %3 -- so the "
+                                 "box a viewer would have drawn at home it can still draw here. The "
+                                 "predicted gap here was wrong, and the reason it was wrong is the "
+                                 "finding (docs §58)")
+                      .arg(int(undrawn.needAppearances))
+                      .arg(undrawn.givenFonts.value(0))
+                      .arg(undrawn.givenDirectives.value(0)));
+            check(undrawn.formFonts == undrawnSource.formFonts
+                      && undrawn.needAppearances == undrawnSource.needAppearances,
+                  QStringLiteral("measured rather than assumed: the document-level layer that came "
+                                 "across is the same one the donor had -- fonts %1 against %2, "
+                                 "/NeedAppearances %3 against %4")
+                      .arg(undrawn.formFonts.join(QStringLiteral(", ")))
+                      .arg(undrawnSource.formFonts.join(QStringLiteral(", ")))
+                      .arg(int(undrawn.needAppearances))
+                      .arg(int(undrawnSource.needAppearances)));
+            check(pagesAsReadByTheReader(noneOut) == pagesBefore + 1,
+                  "and this one opens too: the file gives no sign it contains an unpaintable field");
+
+            // ---- out: the directives belong to the document, and every piece is a document ----
+            DocumentEditor dCut;
+            check(dCut.open(timesFile, QString(), &error) && dCut.splitInto(20, &error),
+                  QStringLiteral("setup: the Times donor document is split: %1").arg(error));
+            const QString dCutPath = scratch.filePath(QStringLiteral("directive-cut.pdf"));
+            QStringList dCutWritten;
+            error.clear();
+            check(dCut.saveAs(dCutPath, &error, &dCutWritten) && dCutWritten.size() == 2,
+                  QStringLiteral("and the two pieces are written: %1").arg(error));
+            const DirectiveReport pieceOne = readDirectives(dCutWritten.at(0));
+            const DirectiveReport pieceTwo = readDirectives(dCutWritten.at(1));
+            dumpDirectives("piece holding the page", pieceOne);
+            dumpDirectives("piece without it", pieceTwo);
+            check(pieceOne.hasForm && pieceOne.formHasDA && pieceOne.formHasDR
+                      && pieceOne.needAppearances && pieceOne.formFonts == built.formFonts
+                      && pieceOne.drawings == 1,
+                  QStringLiteral("the piece that holds the page keeps the whole directive layer: "
+                                 "fonts=%1, 'make your own' still set")
+                      .arg(pieceOne.formFonts.join(QStringLiteral(", "))));
+            check(pieceTwo.hasForm && pieceTwo.formHasDA && pieceTwo.formHasDR
+                      && pieceTwo.needAppearances && pieceTwo.terminals == 1
+                      && pieceTwo.drawings == 1,
+                  QStringLiteral("KNOWN GAP, the §51 leak widened a third time (docs §58): the piece "
+                                 "with no page for the field to sit on still registers it (%1), still "
+                                 "carries the drawing that would paint it (%2) and now also carries "
+                                 "the font and the instruction to make one -- the answer, the picture, "
+                                 "the type and the order to redraw travel together")
+                      .arg(pieceTwo.terminals)
+                      .arg(pieceTwo.drawings));
+
+            DocumentEditor dGone;
+            check(dGone.open(timesFile, QString(), &error) && dGone.deletePages({0}, &error),
+                  QStringLiteral("setup: the field's page is deleted from the donor document: %1")
+                      .arg(error));
+            const QString dGoneOut = scratch.filePath(QStringLiteral("directive-page-gone.pdf"));
+            error.clear();
+            check(dGone.saveAs(dGoneOut, &error),
+                  QStringLiteral("and that deletion is written: %1").arg(error));
+            const DirectiveReport gone = readDirectives(dGoneOut);
+            dumpDirectives("page deleted", gone);
+            check(gone.terminals == 1 && gone.drawings == 1 && gone.formHasDA && gone.formHasDR
+                      && gone.needAppearances && gone.unresolved.isEmpty(),
+                  QStringLiteral("same shape from 删除页面: no page is left, and the file still "
+                                 "registers the field, its drawing, its font and 'make your own'"));
         }
 
         // ---- and a move that leans against one of the two copies ----
@@ -5117,11 +5817,15 @@ int main(int argc, char **argv)
                 const QString spread = QDir(dir).filePath(QStringLiteral("field-spread.pdf"));
                 const QString dangling = QDir(dir).filePath(QStringLiteral("field-dangling.pdf"));
                 const QString xfaSample = QDir(dir).filePath(QStringLiteral("field-xfa.pdf"));
+                const QString drawn = QDir(dir).filePath(QStringLiteral("field-appearance.pdf"));
+                const QString directive = QDir(dir).filePath(QStringLiteral("field-directive.pdf"));
                 QFile::remove(plain);
                 QFile::remove(flat);
                 QFile::remove(spread);
                 QFile::remove(dangling);
                 QFile::remove(xfaSample);
+                QFile::remove(drawn);
+                QFile::remove(directive);
                 if (QFile::copy(fixture, plain))
                     std::cout << "SAMPLE plain: " << plain.toStdString() << '\n';
                 if (!writeFieldCopy(fixture, flat, QStringLiteral("sampleField"),
@@ -5155,6 +5859,35 @@ int main(int argc, char **argv)
                     std::cout << "SAMPLE spread: " << spread.toStdString() << '\n';
                 else
                     std::cerr << "FAIL: sample spread: " << e.toStdString() << '\n';
+                // §57's shape: a widget that carries its own /AP appearance stream, which is what a
+                // field looks like after anyone has filled it in with a real viewer.
+                if (!writeFieldWithAppearanceCopy(fixture, drawn, QStringLiteral("sampleField"),
+                                                  QStringLiteral("typed on page 1"), 0, &e)
+                         .isEmpty())
+                    std::cout << "SAMPLE drawn: " << drawn.toStdString() << " appearances="
+                              << appearancesWithPaint(drawn, QStringLiteral("APPEARS-HERE")) << '\n';
+                else
+                    std::cerr << "FAIL: sample drawn: " << e.toStdString() << '\n';
+                // §58's shape: the same field with the document-level instructions a real form
+                // carries around it -- /DA says what to draw text with, /DR offers the font, /Q the
+                // alignment, /NeedAppearances tells the viewer to build the drawings itself.
+                if (!writeDirectiveFieldCopy(fixture, directive, QStringLiteral("sampleField"),
+                                             QStringLiteral("typed on page 1"),
+                                             QStringLiteral("/Helv"), QStringLiteral("/Helvetica"),
+                                             1, true, true, &e)
+                             .isEmpty()) {
+                    const DirectiveReport sample = readDirectives(directive);
+                    std::cout << "SAMPLE directive: " << directive.toStdString()
+                              << " docDA=" << sample.formHasDA << " docDR=" << sample.formHasDR
+                              << " needAppearances=" << sample.needAppearances
+                              << " drawings=" << sample.drawings << " fields=" << sample.terminals
+                              << " fonts=[" << sample.formFonts.join(QStringLiteral(", ")).toStdString()
+                              << "] handed=["
+                              << sample.givenDirectives.join(QStringLiteral(", ")).toStdString()
+                              << "]\n";
+                } else {
+                    std::cerr << "FAIL: sample directive: " << e.toStdString() << '\n';
+                }
                 // The §55 shape as a file a window and a byte dump can both look at.
                 if (!writeXfaFieldCopy(fixture, xfaSample, QStringLiteral("xfaField"),
                                        QStringLiteral("typed on page 1"), &e)

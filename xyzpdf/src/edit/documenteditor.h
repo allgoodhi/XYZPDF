@@ -213,6 +213,10 @@ public:
     {
         QString path;
         int pageCount = 0;
+        // Whether this file has an /AcroForm with fields. Recorded when it is first looked over,
+        // because a merge can bring a form into a document that had none, and 拆分文件 asks
+        // hasFormFields() before it says anything about answers (§77).
+        bool hasFormFields = false;
     };
 
     // What a save should do about protection. Plain data on purpose: the dialog fills one
@@ -634,6 +638,13 @@ public:
     // has to be told where the difference came from.
     int importedPageCount() const;
 
+    // Whether this document has a form at all -- /AcroForm with a non-empty /Fields. The 删除页面 and
+    // 拆分文件 boxes ask it because both commands can move a page out of the file a save writes, and
+    // §77 made that mean something for forms: an answer typed into a field is stored under the page
+    // the field is drawn on, so it does not travel to a file without that page. That is a sentence
+    // worth saying before the press -- and only when there is a form to say it about.
+    bool hasFormFields() const;
+
     // The pages a save would write, in the order it would write them. Read-only, and
     // here because one dialog needs more than the counts above: 合并文件进来 can be
     // asked for several files at once, and the summary it shows has to say where the
@@ -647,7 +658,8 @@ public:
     // guesses -- and because a document that needs a password to open is refused here,
     // in front of the reader who still has time to go and type that password
     // somewhere else, rather than after they have chosen a destination for the merge.
-    static bool inspectImport(const QString &path, int *pageCount, QString *error);
+    static bool inspectImport(const QString &path, int *pageCount, QString *error,
+                              bool *hasFormFields = nullptr);
 
     // ---- the operations ----
     //
@@ -967,6 +979,10 @@ private:
     // count. Not re-derived at save time: by then the reader may have asked for a change,
     // and "what it was" has to stay answerable to show them what they are about to undo.
     bool sourceEncrypted = false;
+    // Whether the file on disk has an /AcroForm with something in /Fields. Read once in open() for
+    // the same reason as the two lines above and below it: this class keeps no QPDF open, and the
+    // 删除页面 / 拆分文件 boxes ask on every keystroke whether to mention form answers (§77).
+    bool sourceHasFormFields = false;
     Protection sourceProtect;
     int originalPages = 0;
     // Which pages are still present, in the order they would be written. An identity

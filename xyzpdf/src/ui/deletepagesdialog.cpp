@@ -110,6 +110,15 @@ void DeletePagesDialog::updateSummary()
                    nullptr, editor->pageCount())
                     .arg(editor->importedPageCount());
     }
+    // Said before the press, because §77 made 删除页面 able to take content out of the file a save
+    // writes: a field's answer is stored on the field, but it belongs to the page the field is drawn
+    // on, and a file that does not contain that page does not carry the answer either. The field
+    // stays registered (that is what the reader's own form layout says), so the sentence has to name
+    // both halves or it reads as "the field is gone".
+    if (editor && editor->hasFormFields()) {
+        line += tr("\n\n这份文档有表单字段：字段填的答案属于它画在哪一页上，删掉的那一页上填的答案"
+                   "不会出现在保存出来的文件里（字段本身还登记着）。");
+    }
     // Said every time, because this is the first command in the program that can
     // make a document smaller, and what a reader needs to know before pressing the
     // button is that the file they opened is not the file that changes -- and that

@@ -251,7 +251,16 @@ The original file is not touched. This step only records the change; a save is s
         <translation>The document as it stands has %1 pages: taking out %2 more leaves %3.</translation>
     </message>
     <message>
-        <location filename="../../src/ui/deletepagesdialog.cpp" line="117"/>
+        <location filename="../../src/ui/deletepagesdialog.cpp" line="119"/>
+        <source>
+
+这份文档有表单字段：字段填的答案属于它画在哪一页上，删掉的那一页上填的答案不会出现在保存出来的文件里（字段本身还登记着）。</source>
+        <translation>
+
+This document has form fields. An answer belongs to the page its field is drawn on, so what was typed on a page you delete will not be in the file that gets saved (the field itself stays listed).</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/deletepagesdialog.cpp" line="126"/>
         <source>%1
 
 原来那份文件不会改动。这一步只是记下修改，要它成为一个文件，还得走保存。</source>
@@ -277,38 +286,38 @@ This document&apos;s only page came in from another file: the screen has no page
 <context>
     <name>DocumentEditor</name>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="404"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="407"/>
         <source>另一份文件</source>
         <translation>another file</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="420"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="423"/>
         <location filename="../../tests/i18n_smoke.cpp" line="515"/>
         <source>去掉口令</source>
         <translation>Remove password</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="423"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="426"/>
         <source>只改权限（不设打开口令）</source>
         <translation>Change the permissions only (no opening password)</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="424"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="427"/>
         <source>加上打开口令（AES-256）</source>
         <translation>Add an opening password (AES-256)</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="426"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="429"/>
         <source>按原来的口令写出去</source>
         <translation>Write it out with the original password</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="449"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="452"/>
         <source>删掉全部书签</source>
         <translation>Delete all bookmarks</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="450"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="453"/>
         <source>设置书签（%n 条）</source>
         <translation>
             <numerusform>Set %n bookmark</numerusform>
@@ -316,19 +325,19 @@ This document&apos;s only page came in from another file: the screen has no page
         </translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="767"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="908"/>
         <source>%1 指向第 %2 页，而这份文档只有 %3 页。</source>
         <translation>%1 points at page %2, and this document has only %3 pages.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="768"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1477"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1488"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="909"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1618"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1629"/>
         <source>一条书签</source>
         <translation>A bookmark</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1006"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1147"/>
         <source>这份文档正在阅读中，但结构编辑用的解析器打不开它。
 
 解析器说：%1</source>
@@ -337,12 +346,12 @@ This document&apos;s only page came in from another file: the screen has no page
 The parser says: %1</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1013"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1154"/>
         <source>这份 PDF 一页也没有，没法在上面做任何页面修改。</source>
         <translation>This PDF has no pages at all, so no page change can be made to it.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1064"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1205"/>
         <source>%1 要用口令才能打开，不知道口令的文档合不进来。
 
 想合并它，先把它本身打开一次，或者去掉它的口令。</source>
@@ -351,8 +360,8 @@ The parser says: %1</translation>
 To merge it, open it on its own once first, or remove its password.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1067"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1070"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1208"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1211"/>
         <source>%1 打不开，所以合不进来。
 
 解析器说：%2</source>
@@ -361,219 +370,219 @@ To merge it, open it on its own once first, or remove its password.</translation
 The parser says: %2</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1078"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1219"/>
         <source>%1 一页也没有，没什么可合并的。</source>
         <translation>%1 has no pages at all, so there is nothing to merge from it.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1089"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1124"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1156"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1206"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1292"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1332"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1357"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1390"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1464"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1905"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1230"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1265"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1297"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1347"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1433"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1473"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1498"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1531"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1605"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2046"/>
         <source>还没有打开任何文档。</source>
         <translation>No document has been opened yet.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1098"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1170"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1239"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1311"/>
         <source>那些页在还没保存的修改里已经删掉了。</source>
         <translation>Those pages are already gone in the changes that have not been saved.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1099"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1240"/>
         <source>页码范围里没有可删除的页面。</source>
         <translation>The page range names no pages that can be deleted.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1103"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1244"/>
         <source>不能把每一页都删掉：一个不剩的 PDF 不是 PDF，任何阅读器都打不开它。想丢掉整份文档，就把文件本身删掉。</source>
         <translation>Every page cannot be deleted: a PDF with no pages is not a PDF, and no reader can open it. To get rid of the whole document, delete the file itself.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1131"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1272"/>
         <source>旋转只能是 90° 的整倍数。</source>
         <translation>A rotation can only be a whole multiple of 90°.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1140"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1281"/>
         <source>页码范围里没有可旋转的页面。</source>
         <translation>The page range names no pages that can be rotated.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1164"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1305"/>
         <source>要说移到第几页之后，而那个页码不在这份文档里。</source>
         <translation>It has to say which page to move behind, and that number is not a page in this document.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1171"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1312"/>
         <source>页码范围里没有可移动的页面。</source>
         <translation>The page range names no pages that can be moved.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1175"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1316"/>
         <source>第 %1 页就在要移动的页里，这样移等于没移。</source>
         <translation>Page %1 is one of the pages being moved, so moving it behind itself changes nothing.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1182"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1323"/>
         <source>那些页已经在最前头了。</source>
         <translation>Those pages are already at the front.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1183"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1324"/>
         <source>那些页已经在最后了。</source>
         <translation>Those pages are already at the end.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1184"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1325"/>
         <source>那些页已经在第 %1 页后面了。</source>
         <translation>Those pages are already after page %1.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1223"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1364"/>
         <source>要说合并到第几页之后，而那个页码不在这份文档里。</source>
         <translation>It has to say which page to merge behind, and that number is not a page in this document.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1247"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1388"/>
         <source>还没有说出要合并 %1 的哪几页。</source>
         <translation>Nothing has said which pages of %1 to merge in.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1272"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1413"/>
         <source>没有页可以合并进来。</source>
         <translation>There are no pages to merge in.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1307"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1448"/>
         <source>每份至少要有 1 页。</source>
         <translation>A piece has to hold at least 1 page.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1314"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1455"/>
         <source>这份要写出的文档一共 %1 页，每份 %2 页只会写出一份，那就不用拆了。</source>
         <translation>The document this would write has %1 pages in all, and %2 pages a piece writes one piece -- so there is nothing to split.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1347"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1488"/>
         <source>这份要写出的文件已经是这个口令和这些权限了，再要一次不会多改什么。</source>
         <translation>The file this would write already carries this password and these permissions; asking again would change nothing more.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1363"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1504"/>
         <source>这份要写出的文件已经说过要去掉口令了，再要一次不会多去掉什么。</source>
         <translation>The file this would write has already been told to drop its password; asking again would remove nothing more.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1372"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1513"/>
         <source>正在打开的这份文件本身没有口令，也没有权限限制，所以没有东西可去掉。</source>
         <translation>The file being opened has no password and no permission limits of its own, so there is nothing to remove.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1398"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1539"/>
         <source>还没有说水印要写什么字。</source>
         <translation>Nothing has been said about what the watermark should say.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1407"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1548"/>
         <source>不透明度只能是 1% 到 100% 之间的整数。</source>
         <translation>The opacity can only be a whole number between 1% and 100%.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1420"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1561"/>
         <source>页码范围里没有可加水印的页面。</source>
         <translation>The page range names no pages that can be watermarked.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1421"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1562"/>
         <source>那些页在还没保存的修改里已经删掉了，没有可以加水印的。</source>
         <translation>Those pages are already gone in the changes that have not been saved, so there is nothing left to watermark.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1431"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1572"/>
         <source>这份要写出的文件已经带着一模一样的水印了，再要一次不会多改什么。</source>
         <translation>The file this would write already carries exactly this watermark; asking again would change nothing more.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1476"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1617"/>
         <source>“%1” 的层级是 %2，而书签的层级从 1 开始。</source>
         <translation>&quot;%1&quot; is at level %2, and bookmark levels count from 1.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1517"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1658"/>
         <source>这份要写出的文件已经带着一模一样的书签了，再要一次不会多改什么。</source>
         <translation>The file this would write already carries exactly these bookmarks; asking again would change nothing more.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1667"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1808"/>
         <location filename="../../tests/i18n_smoke.cpp" line="506"/>
         <source>，</source>
         <translation>, </translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1796"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1937"/>
         <source>这一页的内容流不是能往上加东西的样子，所以水印没有画上去。</source>
         <translation>This page&apos;s content stream is not a shape that anything can be added to, so the watermark was not drawn.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1826"/>
-        <location filename="../../src/edit/documenteditor.cpp" line="1831"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1967"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1972"/>
         <source>要合并的那一页在这份文件里找不到。</source>
         <translation>The page to merge in cannot be found in that file.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1953"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2094"/>
         <source>拆出来的文件里有一个（%1）就是正在打开的这份。请换一个文件名。</source>
         <translation>One of the split-out files (%1) is the document that is open right now. Please choose another file name.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1955"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2096"/>
         <source>另存为不能覆盖正在打开的文件。请换一个文件名。</source>
         <translation>Save As cannot overwrite the file that is open. Please choose another name.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1965"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2106"/>
         <source>另存为不能覆盖合并进来的文件（%1）。请换一个文件名。</source>
         <translation>Save As cannot overwrite a file that was merged in (%1). Please choose another file name.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="2244"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2394"/>
         <source>拆出来的 %1 个文件里有 %2 个没能放到位。放到位的那些已经在文件夹里了，下面每一条说的是剩下的该去哪儿找。</source>
         <translation>%2 of the %1 split-out files could not be put in place. The ones that made it are already in the folder; each line below says where to find the rest.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1913"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2054"/>
         <source>这些修改会把每一页都删掉，而一个不剩的 PDF 任何阅读器都打不开。</source>
         <translation>These changes would delete every page, and no reader can open a PDF with none left.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1487"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1628"/>
         <source>“%1” 指向第 %2 页，而这份文件打开时是 %3 页。</source>
         <translation>&quot;%1&quot; points at page %2, and this file was opened with %3 pages.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1920"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2061"/>
         <source>文件夹不存在：%1</source>
         <translation>The folder does not exist: %1</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1976"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2117"/>
         <source>%1 那里已经有一个文件了。拆分不会盖掉已经存在的文件，请换一个文件名，或者先把那个文件挪走。</source>
         <translation>There is already a file at %1. Splitting does not overwrite a file that exists: please choose another file name, or move that file away first.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="1991"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2132"/>
         <source>这份文档里既有合并进来的页，又说了要拆分，这两样凑不成一份读者能核对的文件。请先撤销其中一步。</source>
         <translation>This document holds merged-in pages and has been told to split, and those two do not add up to a file a reader can check. Undo one of those steps first.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="2033"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2174"/>
         <source>%1 这时候打不开了，所以这些修改写不出来。原来的文件没有改动。
 
 解析器说：%2</source>
@@ -582,17 +591,17 @@ The parser says: %2</translation>
 The parser says: %2</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="2044"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2185"/>
         <source>%1 在这些修改记下来之后变了：当时是 %2 页，现在只有 %3 页。请撤销那次合并，重新选一遍页码。</source>
         <translation>%1 changed after these edits were recorded: it had %2 pages then and only %3 now. Undo that merge and choose the page numbers again.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="2085"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2226"/>
         <source>这些修改在内存里是一种页序，写到文件时成了另一种，所以这一份没有写。请把这种情况报上来。</source>
         <translation>These edits held one page order in memory and another in the file they would have written, so nothing was written. Please report this.</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="2183"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2333"/>
         <source>写出文件时出错，原来的文件没有改动。
 
 解析器说：%1</source>
@@ -601,12 +610,12 @@ The parser says: %2</translation>
 The parser says: %1</translation>
     </message>
     <message>
-        <location filename="../../src/edit/documenteditor.cpp" line="2225"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="2375"/>
         <source>新文件已经写好，但没法放到 %1 那里去——它可能被别的程序占着，或者这个名字不允许覆盖（Windows 错误 %2）。写好的文件留在 %3。</source>
         <translation>The new file was written, but it could not be put in place at %1 — another program may be holding it, or this name may not be replaced (Windows error %2). The finished file has been left at %3.</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="1239"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1380"/>
         <source>%1 一共 %n 页，没有第 %2 页。</source>
         <translation>
             <numerusform>%1 has %n page in all; there is no page %2.</numerusform>
@@ -614,7 +623,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="385"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="388"/>
         <source>向右转 90°（%n 页）</source>
         <translation>
             <numerusform>Turn right 90° (%n page)</numerusform>
@@ -622,7 +631,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="395"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="398"/>
         <source>移到最后（%n 页）</source>
         <translation>
             <numerusform>Move to the end (%n page)</numerusform>
@@ -630,7 +639,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="402"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="405"/>
         <source>合入 %n 页（%1）</source>
         <translation>
             <numerusform>Merge in %n page (%1)</numerusform>
@@ -638,7 +647,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="1299"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1440"/>
         <source>这份要写出的文档里有 %n 页是合并进来的，而那些页没有你在屏幕上能看到的页号，所以哪几页该进哪一份是说不出来的。先撤销那几次合并再拆。</source>
         <translation>
             <numerusform>The document this would write has %n page that came in from another file, and that page has no page number you can see on the screen, so which piece it belongs in cannot be said. Undo that merge before splitting.</numerusform>
@@ -646,7 +655,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="1216"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="1357"/>
         <location filename="../../tests/i18n_smoke.cpp" line="529"/>
         <location filename="../../tests/i18n_smoke.cpp" line="535"/>
         <source>这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。</source>
@@ -656,7 +665,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="392"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="395"/>
         <source>移到最前（%n 页）</source>
         <translation>
             <numerusform>Move to the front (%n page)</numerusform>
@@ -664,7 +673,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="383"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="386"/>
         <source>向左转 90°（%n 页）</source>
         <translation>
             <numerusform>Turn left 90° (%n page)</numerusform>
@@ -672,7 +681,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="394"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="397"/>
         <source>移到第 %1 页之后（%n 页）</source>
         <translation>
             <numerusform>Move after page %1 (%n page)</numerusform>
@@ -680,7 +689,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="454"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="457"/>
         <source>删除 %n 页</source>
         <translation>
             <numerusform>Delete %n page</numerusform>
@@ -688,7 +697,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="411"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="414"/>
         <source>拆成每 %n 页一份</source>
         <translation>
             <numerusform>Split into a piece of %n page</numerusform>
@@ -696,7 +705,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="381"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="384"/>
         <source>旋转 180°（%n 页）</source>
         <translation>
             <numerusform>Rotate 180° (%n page)</numerusform>
@@ -704,7 +713,7 @@ The parser says: %1</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/edit/documenteditor.cpp" line="438"/>
+        <location filename="../../src/edit/documenteditor.cpp" line="441"/>
         <source>加水印「%1」（%n 页）</source>
         <translation>
             <numerusform>Watermark &quot;%1&quot; (%n page)</numerusform>
@@ -3043,7 +3052,16 @@ But %2 of those %1 pages came in from another file and have no page number on th
 This writes %1 files, and every one of them reads the whole document again, so it takes a while.</translation>
     </message>
     <message>
-        <location filename="../../src/ui/splitpagesdialog.cpp" line="136"/>
+        <location filename="../../src/ui/splitpagesdialog.cpp" line="139"/>
+        <source>
+
+这份文档有表单字段：拆出来的每一份只带着它自己那些页上字段的答案，别的页上填的内容不会跟着过去（字段本身在每份里都还登记着）。</source>
+        <translation>
+
+This document has form fields. Each piece carries only the answers of the fields drawn on its own pages; what was typed on other pages does not travel with it (the fields themselves stay listed in every piece).</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/splitpagesdialog.cpp" line="145"/>
         <source>
 
 原来那份文件不会改动，这一步也不写任何文件——要等按下保存修改为，这 %1 个文件才会一起出现。</source>
@@ -3052,7 +3070,7 @@ This writes %1 files, and every one of them reads the whole document again, so i
 The original file is not touched, and this step writes nothing either: those %1 files only appear together when Save Changes As is pressed.</translation>
     </message>
     <message>
-        <location filename="../../src/ui/splitpagesdialog.cpp" line="141"/>
+        <location filename="../../src/ui/splitpagesdialog.cpp" line="150"/>
         <source>拆成 %1 份</source>
         <translation>Split into %1 files</translation>
     </message>

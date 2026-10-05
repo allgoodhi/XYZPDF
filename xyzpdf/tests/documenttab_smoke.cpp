@@ -52,9 +52,14 @@
 #include <QScrollBar>
 #include <QSpinBox>
 #include <QString>
-#include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTableWidget>
 #include <QThreadPool>
+
+#include <qpdf/QPDF.hh>
+#include <qpdf/QPDFPageDocumentHelper.hh>
+#include <qpdf/QPDFPageObjectHelper.hh>
+#include <qpdf/QPDFWriter.hh>
 
 #include <cmath>
 #include <functional>
@@ -2012,6 +2017,71 @@ int main(int argc, char **argv)
                   QStringLiteral("and no line of numbers is offered for a document that cannot "
                                  "exist: %1")
                       .arg(said));
+        }
+
+        // §77: 删除页面 says, before the press, what taking a page out does to a form answer -- and
+        // only when there is a form to say it about. The book above has no /AcroForm at all, which is
+        // the half that must stay silent; this makes a copy of it with one field on the first page.
+        // Written into a scratch directory, never beside the fixtures: that directory is globbed by
+        // other tests (§17's rule, restated in AGENTS.md).
+        {
+            QTemporaryDir forms;
+            check(forms.isValid(), "setup: a scratch folder for the form-bearing copy");
+            const QString withForm = forms.filePath(QStringLiteral("one-field.pdf"));
+            QString made;
+            bool built = false;
+            try {
+                QPDF qpdf;
+                qpdf.processFile(book.toUtf8().constData());
+                QPDFObjectHandle page =
+                    QPDFPageDocumentHelper(qpdf).getAllPages().front().getObjectHandle();
+                QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+                field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+                field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+                field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+                field.replaceKey("/T", QPDFObjectHandle::newString("onOne"));
+                field.replaceKey("/V", QPDFObjectHandle::newString("typed on page 1"));
+                QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+                rect.appendItem(QPDFObjectHandle::newReal(60));
+                rect.appendItem(QPDFObjectHandle::newReal(600));
+                rect.appendItem(QPDFObjectHandle::newReal(260));
+                rect.appendItem(QPDFObjectHandle::newReal(630));
+                field.replaceKey("/Rect", rect);
+                field = qpdf.makeIndirectObject(field);
+                field.replaceKey("/P", page);
+                QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+                annots.appendItem(field);
+                page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+                QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+                fields.appendItem(field);
+                QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+                form.replaceKey("/Fields", fields);
+                qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+                QPDFWriter writer(qpdf, withForm.toUtf8().constData());
+                writer.write();
+                built = true;
+            } catch (const std::exception &e) {
+                made = QString::fromUtf8(e.what());
+            }
+            check(built, QStringLiteral("setup: a copy of the book carrying one form field: %1")
+                             .arg(made));
+
+            DocumentEditor formBook;
+            check(formBook.open(withForm, QString(), &error),
+                  QStringLiteral("setup: the editor opens it: %1").arg(error));
+            check(formBook.hasFormFields(), "and the model answers that there is a form here");
+            DeletePagesDialog inForm(&tab, 0, &formBook);
+            check(saidOf(inForm).contains(QStringLiteral("字段填的答案属于它画在哪一页上")),
+                  QStringLiteral("so the box says what a deletion does to an answer before the "
+                                 "press: %1").arg(saidOf(inForm)));
+
+            DocumentEditor plain;
+            openBook(plain);
+            check(!plain.hasFormFields(), "the same book with no form answers no");
+            DeletePagesDialog inPlain(&tab, 0, &plain);
+            check(!saidOf(inPlain).contains(QStringLiteral("表单字段")),
+                  QStringLiteral("and the sentence keeps out of a box that has nothing to say about "
+                                 "forms: %1").arg(saidOf(inPlain)));
         }
 
         // 移动 with nothing named AND no anchor number: the pages are the more basic question.

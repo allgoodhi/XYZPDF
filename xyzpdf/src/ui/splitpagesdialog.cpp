@@ -130,6 +130,15 @@ void SplitPagesDialog::updateSummary()
     if (qint64(pieces.size()) * qint64(pageTotal) >= 12000) {
         line += tr("\n\n这要写 %1 个文件，每个都要把整份文档重读一遍，会等一会儿。").arg(pieces.size());
     }
+    // §77, said where it matters most: a split is the command that sends pieces to different people,
+    // and before it each piece carried every answer typed anywhere in the form -- invisible on the
+    // page, present in /AcroForm. Now a piece carries only the answers of the fields it can draw.
+    // The field names stay in every piece (that is what a spread field needs, §52), so the sentence
+    // says which of the two goes.
+    if (editor && editor->hasFormFields()) {
+        line += tr("\n\n这份文档有表单字段：拆出来的每一份只带着它自己那些页上字段的答案，"
+                   "别的页上填的内容不会跟着过去（字段本身在每份里都还登记着）。");
+    }
     // Said every time, like the other three dialogs here do, and more needed here than
     // there: a split is the one entry in the list that writes no page differently, so the
     // only thing it changes is how many files come out at the end.

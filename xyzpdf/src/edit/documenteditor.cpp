@@ -25,7 +25,9 @@
 
 #include <qpdf/QPDFAcroFormDocumentHelper.hh>
 #include <qpdf/QPDF.hh>
+#include <qpdf/QPDFAnnotationObjectHelper.hh>
 #include <qpdf/QPDFExc.hh>
+#include <qpdf/QPDFObjGen.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
@@ -35,6 +37,7 @@
 #include <cstdio>
 #include <functional>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -522,6 +525,19 @@ int DocumentEditor::importedPageCount() const
     return imported;
 }
 
+bool DocumentEditor::hasFormFields() const
+{
+    if (sourceHasFormFields)
+        return true;
+    // A merge can bring a form into a document that had none, and the pages that came with it are
+    // the ones 删除页面 / 拆分文件 can take out -- so the answer has to count the imports too.
+    for (const Import &one : imports) {
+        if (one.hasFormFields)
+            return true;
+    }
+    return false;
+}
+
 DocumentEditor::Landing DocumentEditor::landingSpot(const QVector<PageRef> &without, MoveTarget to,
                                                    int anchor)
 {
@@ -748,6 +764,129 @@ QPDFObjectHandle writeOutlineItem(QPDF &qpdf, const OutlineNode &node, QPDFObjec
         handle.replaceKey("/Count", QPDFObjectHandle::newInteger(outlineDescendants(node)));
     }
     return handle;
+}
+
+// What one pass over the form tree did, so the caller can say it. Both counts are zero for the
+// common case of a document with no form at all.
+struct FormTidy
+{
+    int boxesDropped = 0;
+    int valuesCleared = 0;
+};
+
+// Make this document's form describe *this* document: take out the boxes no page here carries, and
+// with them the answers that belonged to pages which are not in this file.
+//
+// Why this is one step at save time rather than something the page removal does: a split copies
+// pages, and qpdf copies the field's whole /Kids list along with them, so each piece ends up naming
+// a widget whose page only the other piece has. §51 measured the answer travelling with it; §52
+// measured the shape that rules the obvious repair out -- a field whose two boxes sit on two pages
+// which the split pulls apart, so the field must stay in *both* pieces. What may go is the orphan
+// box, never the name. docs/store-submission.md §51, §52, §76.
+//
+// And a value goes only where it is provably about a page this file does not have. §77 built the
+// case that stops the weaker rule: PDF 2.0 §12.7.5.2 allows a field to be registered with a value
+// and no widget at all (a default, or something a script reads), and after a page is deleted both
+// that field and a boxed field whose page went away have "no box on any page here". Measured on
+// tests/documenteditor_smoke.cpp's boxed-and-value-only sample, the two are told apart by /Rect --
+// present means it was drawn somewhere and lost its page here; absent means it was never on a page
+// at all, and its value is not ours to delete. So the rule is: **drawn somewhere, drawn nowhere
+// here -> the /V goes**. /DV is never touched; that is the form author's default, not an answer
+// anybody typed.
+FormTidy tidyFormForThisDocument(QPDF &qpdf)
+{
+    FormTidy done;
+    QPDFAcroFormDocumentHelper acro(qpdf);
+    if (!acro.hasAcroForm())
+        return done;
+
+    // Which boxes a page here actually carries. Asked of the pages, not of each widget's /P,
+    // because /P is the very thing that can lie or dangle -- §51's reading was built on it, and a
+    // widget with no /P at all is legal.
+    std::set<QPDFObjGen> liveBoxes;
+    const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+    for (const QPDFPageObjectHelper &page : pages) {
+        for (const QPDFAnnotationObjectHelper &box : acro.getWidgetAnnotationsForPage(page))
+            liveBoxes.insert(box.getObjectHandle().getObjGen());
+    }
+
+    // How many objects hang below this array of /Kids, which is what a field's /Count says.
+    // The handles are not const anywhere aitems() is called: qpdf's array accessor is non-const,
+    // which has stopped every helper in this family the moment it was written (the sixth time).
+    auto descendants = [](QPDFObjectHandle kids) {
+        int total = 0;
+        std::function<void(QPDFObjectHandle)> walk = [&](QPDFObjectHandle node) {
+            QPDFObjectHandle children = node.getKey("/Kids");
+            if (!children.isArray())
+                return;
+            for (QPDFObjectHandle child : children.aitems()) {
+                ++total;
+                walk(child);
+            }
+        };
+        for (QPDFObjectHandle child : kids.aitems())
+            walk(child);
+        return total;
+    };
+
+    // Returns {drawn somewhere, drawn in this file} for one field, after its own box list has been
+    // pruned. Both are needed at the parent: a spread field is drawn where *any* of its kids is,
+    // and it is drawn here where any kid survives on a page here.
+    std::function<std::pair<bool, bool>(QPDFObjectHandle)> tidy = [&](QPDFObjectHandle node) {
+        bool drawnSomewhere = node.getKey("/Rect").isArray();
+        bool drawnHere = liveBoxes.count(node.getObjGen()) > 0;
+
+        QPDFObjectHandle kids = node.getKey("/Kids");
+        if (kids.isArray()) {
+            std::vector<QPDFObjectHandle> kept;
+            for (QPDFObjectHandle kid : kids.aitems()) {
+                const QPDFObjectHandle subtype = kid.getKey("/Subtype");
+                const bool boxOnly = kid.getKey("/T").isNull() && subtype.isName()
+                    && subtype.getName() == "/Widget";
+                if (boxOnly) {
+                    drawnSomewhere = true;
+                    if (liveBoxes.count(kid.getObjGen()) == 0) {
+                        ++done.boxesDropped;
+                        continue;
+                    }
+                    drawnHere = true;
+                    kept.push_back(kid);
+                    continue;
+                }
+                const std::pair<bool, bool> below = tidy(kid);
+                drawnSomewhere = drawnSomewhere || below.first;
+                drawnHere = drawnHere || below.second;
+                kept.push_back(kid);
+            }
+            if (kept.size() != size_t(kids.getArrayNItems())) {
+                QPDFObjectHandle replacement = QPDFObjectHandle::newArray();
+                for (QPDFObjectHandle &one : kept)
+                    replacement.appendItem(one);
+                node.replaceKey("/Kids", replacement);
+                // Only rewritten when it was there: /Count is optional, and inventing one where the
+                // source had none would be this program adding structure nobody wrote.
+                if (node.getKey("/Count").isInteger()) {
+                    node.replaceKey("/Count",
+                                    QPDFObjectHandle::newInteger(descendants(replacement)));
+                }
+            }
+        }
+
+        if (drawnSomewhere && !drawnHere && !node.getKey("/V").isNull()) {
+            node.removeKey("/V");
+            ++done.valuesCleared;
+        }
+        return std::make_pair(drawnSomewhere, drawnHere);
+    };
+
+    QPDFObjectHandle fields = qpdf.getRoot().getKey("/AcroForm").getKey("/Fields");
+    if (fields.isArray()) {
+        for (QPDFObjectHandle top : fields.aitems())
+            tidy(top);
+    }
+    if (done.boxesDropped > 0 || done.valuesCleared > 0)
+        acro.invalidateCache();
+    return done;
 }
 
 } // namespace
@@ -994,6 +1133,7 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     sourcePassword.clear();
     sourceEncrypted = false;
     sourceProtect = Protection();
+    sourceHasFormFields = false;
 
     // Parsed, counted, and let go. Holding on to the QPDF is what the alternative
     // design needed and what this class decided not to do; see the header.
@@ -1044,13 +1184,24 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
         sourceProtect.allowFormFilling = document->allowModifyForm();
         sourceProtect.allowModifyOther = document->allowModifyOther();
     }
+    // Read once here, for the same reason `sourceEncrypted` is: the two boxes that can take a page
+    // out ask this on every keystroke to decide whether to say anything about form answers, and
+    // there is no QPDF kept open in this class to ask a second time.
+    {
+        const QPDFObjectHandle form = document->getRoot().getKey("/AcroForm");
+        const QPDFObjectHandle fields = form.getKey("/Fields");
+        sourceHasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
+    }
     return true;
 }
 
-bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString *error)
+bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString *error,
+                                   bool *hasFormFields)
 {
     if (pageCount)
         *pageCount = 0;
+    if (hasFormFields)
+        *hasFormFields = false;
     QString reason;
     int pages = 0;
     try {
@@ -1060,6 +1211,10 @@ bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString 
         QPDF document;
         document.processFile(path.toUtf8().constData());
         pages = int(QPDFPageDocumentHelper(document).getAllPages().size());
+        if (hasFormFields) {
+            const QPDFObjectHandle fields = document.getRoot().getKey("/AcroForm").getKey("/Fields");
+            *hasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
+        }
     } catch (const QPDFExc &e) {
         // QPDF answers a wrong or missing user password the same way it answers a
         // broken file -- by throwing -- so which of the two this is has to be read off
@@ -1236,7 +1391,8 @@ bool DocumentEditor::mergeFile(const QString &path, const QVector<int> &pages, M
     // silent kind of wrong -- the count would look right in the status bar and be wrong
     // in the file.
     int importPages = 0;
-    if (!inspectImport(path, &importPages, error))
+    bool importHasForm = false;
+    if (!inspectImport(path, &importPages, error, &importHasForm))
         return false;
 
     QSet<int> named;
@@ -1279,7 +1435,7 @@ bool DocumentEditor::mergeFile(const QString &path, const QVector<int> &pages, M
         return false;
     }
     if (firstTime)
-        imports.append({path, importPages});
+        imports.append({path, importPages, importHasForm});
 
     Operation op;
     op.kind = Operation::Kind::MergeFile;
@@ -2106,6 +2262,15 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
                         helper.removePage(pages.at(size_t(at)));
                 }
             }
+
+            // §76/§77: a split copies a field's whole /Kids list along with the pages, so each piece
+            // can be left naming a box that belongs to a page only the other piece has -- and with
+            // it, an answer about a page this file does not contain. Both are put right here, for
+            // every output file, because by now the page list in `document` is the list this file
+            // will have: pages may have left through 删除页面 (in apply()) or through 拆分 (the cut
+            // above). Doing it in two places is how one gets missed -- §68's reason for rebuilding
+            // the outline tree rather than patching it, in a different key.
+            tidyFormForThisDocument(*document);
 
             // The bookmarks, after the cut and before any writer exists, because this is the one
             // place that knows both which pages made it into *this* file and in what order. Under

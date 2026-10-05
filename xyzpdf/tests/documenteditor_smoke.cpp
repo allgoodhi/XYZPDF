@@ -740,6 +740,68 @@ QString writeFieldCopy(const QString &source, const QString &destination,
     return destination;
 }
 
+// Two registered fields, one with a box and one deliberately without.
+//
+// The second is the shape that decides what may be done to values. PDF 2.0 §12.7.5.2 allows a field
+// to exist in /AcroForm /Fields with a value and no widget annotation at all -- a default a script
+// reads, a value a template carries. So "this field has no box on any page here" does **not** mean
+// "this field's answer belongs to a page that is gone": for the value-only field it never belonged
+// to a page at all. Clearing on the weaker predicate would delete content nobody asked to delete,
+// which is the same mistake §51 and §52 warned about from the other side.
+//
+// What tells the two apart on the file is the box's own furniture: /Rect (and /P) on the field
+// object means "this object is a widget that lost its page"; their absence means it was never on
+// one. That is the predicate this sample exists to measure.
+QString writeBoxedAndValueOnlyFields(const QString &source, const QString &destination,
+                                     QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle boxed = QPDFObjectHandle::newDictionary();
+        boxed.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        boxed.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+        boxed.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        boxed.replaceKey("/T", QPDFObjectHandle::newString("boxed"));
+        boxed.replaceKey("/V", QPDFObjectHandle::newString("typed on page 1"));
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        boxed.replaceKey("/Rect", rect);
+        boxed = qpdf.makeIndirectObject(boxed);
+        boxed.replaceKey("/P", page);
+
+        QPDFObjectHandle valueOnly = QPDFObjectHandle::newDictionary();
+        valueOnly.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+        valueOnly.replaceKey("/T", QPDFObjectHandle::newString("value only"));
+        valueOnly.replaceKey("/V", QPDFObjectHandle::newString("a default with no page"));
+        valueOnly = qpdf.makeIndirectObject(valueOnly);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(boxed);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+        fields.appendItem(boxed);
+        fields.appendItem(valueOnly);
+        QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+        form.replaceKey("/Fields", fields);
+        qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
 // The layer above that one: the same field, but hanging off a **parent**, which is how a real form
 // spells its names. A field's address in a PDF is not its `/T` -- it is the chain of partial names
 // joined with a period (PDF 2.0 §12.7.5.2), and only the last one is an annotation on the page. So
@@ -818,6 +880,8 @@ struct FieldTreeReport
     int brokenBackLinks = 0;
     int parentChildMismatch = 0;
     int terminalsNamingNoPage = 0;
+    // Per terminal, in the same order as `addresses`: whether that object carries its own /Rect.
+    QVector<bool> hasRect;
     // The object each terminal gets its name from: itself when it carries a /T, its parent when it
     // is a pure widget. Two addresses are only a *collision* when they belong to two different
     // fields -- one field drawn on two pages reuses one address, and that is legal.
@@ -890,6 +954,11 @@ void walkFieldTree(const QPDFObjectHandle &field, const QString &prefix, const Q
     const QPDFObjectHandle owner = field.getKey("/P");
     if (owner.isDictionary() && !pageIds.contains(owner.getObjGen().getObj()))
         ++report.terminalsNamingNoPage;
+    // Does this object carry its own box? §77's question: "no live box on any page here" has two
+    // completely different causes -- a widget whose page was taken out, and a field that was never
+    // on a page at all (a default or a script value, legal per PDF 2.0 §12.7.5.2). /Rect is what
+    // tells them apart on the file, so the reader has to report it.
+    report.hasRect << field.getKey("/Rect").isArray();
     if (back.isDictionary() && !reachable.contains(back.getObjGen().getObj()))
         ++report.brokenBackLinks;
 }
@@ -3315,33 +3384,38 @@ int main(int argc, char **argv)
                                  "so the reading below is about the page going out and not about "
                                  "this reader: %1 fields name no page")
                       .arg(stillFlat.fieldsNamingNoPage));
-            check(orphan.terminals == 1 && orphanFlat.fieldsNamingNoPage == 1,
-                  QStringLiteral("KNOWN GAP, pinned so a fix reddens this on purpose (docs §51): "
-                                 "after its page is deleted the file still registers %1 field "
-                                 "(%2), still holding the answer typed on the page that is gone "
-                                 "(\"%3\"), and its /P names a page this document does not have "
-                                 "(%4 of them)")
+            check(orphan.terminals == 1 && orphanFlat.fieldsNamingNoPage == 1
+                      && orphan.values.value(0).isEmpty(),
+                  QStringLiteral("§77 closed half of §51's row: after its page is deleted the file "
+                                 "still registers the field (%1) and its /P still names a page this "
+                                 "document lacks (%2), but the answer is no longer carried -- the "
+                                 "value reads \"%3\"")
                       .arg(orphan.terminals)
-                      .arg(orphan.addresses.value(0))
-                      .arg(orphan.values.value(0))
-                      .arg(orphanFlat.fieldsNamingNoPage));
+                      .arg(orphanFlat.fieldsNamingNoPage)
+                      .arg(orphan.values.value(0)));
             check(pieceTrees.size() == written.size() && pieceTrees.at(0).terminals == 1
                       && pieceTrees.at(1).terminals == 1 && pieceAnnotations.at(1) == 0
-                      && pieceDangling.at(1) == 1,
-                  QStringLiteral("KNOWN GAP, same one reached by 拆分 (docs §51): the piece that "
-                                 "did not get the page carries no widget at all (%1 on its pages) "
-                                 "and still registers the field with its answer -- a file that "
-                                 "does not contain the page carries what was typed on it")
-                      .arg(pieceAnnotations.at(1)));
+                      && pieceDangling.at(1) == 1
+                      && pieceTrees.at(0).values.value(0) == QStringLiteral("typed on page 1")
+                      && pieceTrees.at(1).values.value(0).isEmpty(),
+                  QStringLiteral("and the row §51 called the serious one is closed: the piece that "
+                                 "got the page keeps the answer (\"%1\") while the piece that did not "
+                                 "carries nothing (\"%2\") -- it still registers the field, which is "
+                                 "the half that stays")
+                      .arg(pieceTrees.at(0).values.value(0))
+                      .arg(pieceTrees.at(1).values.value(0)));
             check(lostTree.parents == 1 && lostTree.terminals == 1
                       && lostTree.addresses.value(0) == QStringLiteral("form.answer")
+                      && lostTree.values.value(0).isEmpty()
                       && lostFlat.fieldsNamingNoPage == 1,
-                  QStringLiteral("and a name assembled out of two dictionaries is no better off: "
-                                 "the parent stays registered over a child whose page is gone "
-                                 "(%1 parents, %2 terminals, %3 naming no page)")
+                  QStringLiteral("a name assembled out of two dictionaries is no better off, and no "
+                                 "worse either: the parent stays registered over a child whose page "
+                                 "is gone (%1 parents, %2 terminals, %3 naming no page) while the "
+                                 "answer under that address reads \"%4\"")
                       .arg(lostTree.parents)
                       .arg(lostTree.terminals)
-                      .arg(lostFlat.fieldsNamingNoPage));
+                      .arg(lostFlat.fieldsNamingNoPage)
+                      .arg(lostTree.values.value(0)));
         }
 
         // ---- one field drawn on two pages, and a split that pulls them apart ----
@@ -3398,27 +3472,32 @@ int main(int argc, char **argv)
                           << "] widgets naming no page=" << piece.terminalsNamingNoPage
                           << " unregisteredWidgets=" << piece.unregisteredWidgets << '\n';
             }
-            // Both readings above say the same thing, which is the point: a split does not give one
-            // piece the field and leave the other with nothing, it gives **both** the whole field.
-            // Each half therefore carries the other half's box -- the widget object, its /Rect and
-            // its /P are written into a file that has no such page -- and the answer is carried
-            // twice over. And neither half can simply lose the field, because each does have a box
-            // on its own pages: this is the case that rules the per-field repair out.
+            // §52 pinned this as a gap and §76 closed the widget half of it. The readings that made
+            // the repair narrow are unchanged and still asserted below -- a split gives **both**
+            // pieces the whole field, and each piece has a box on its own pages, so the field cannot
+            // be dropped. What changed is what hangs in /Kids: the box belonging to the other file's
+            // page is no longer named here (2 terminals → 1, and nothing naming a page this file
+            // lacks). The answer still travels, because it is on the field -- that half is still §51's
+            // open decision, pinned further down and untouched by this fix.
             check(spreadTrees.size() == 2 && spreadOnPages.at(0) == 1 && spreadOnPages.at(1) == 1
-                      && spreadTrees.at(0).terminals == 2 && spreadTrees.at(1).terminals == 2
-                      && spreadTrees.at(0).terminalsNamingNoPage == 1
-                      && spreadTrees.at(1).terminalsNamingNoPage == 1,
-                  QStringLiteral("KNOWN GAP, pinned with §51 (docs §52): each piece of the split "
-                                 "shows one box on its own pages and still lists %1 widgets, one of "
-                                 "which belongs to the other file -- so what dangles is a widget, "
-                                 "not the field, and the field must stay in both pieces")
-                      .arg(spreadTrees.at(0).terminals));
+                      && spreadTrees.at(0).terminals == 1 && spreadTrees.at(1).terminals == 1
+                      && spreadTrees.at(0).terminalsNamingNoPage == 0
+                      && spreadTrees.at(1).terminalsNamingNoPage == 0,
+                  QStringLiteral("§76: each piece keeps exactly the one box that is on its own "
+                                 "pages -- terminals=%1/%2, naming no page=%3/%4, boxes drawn=%5/%6")
+                      .arg(spreadTrees.at(0).terminals).arg(spreadTrees.at(1).terminals)
+                      .arg(spreadTrees.at(0).terminalsNamingNoPage)
+                      .arg(spreadTrees.at(1).terminalsNamingNoPage)
+                      .arg(spreadOnPages.at(0)).arg(spreadOnPages.at(1)));
+            check(spreadTrees.at(0).parents == 1 && spreadTrees.at(1).parents == 1,
+                  QStringLiteral("and the field itself stayed in both pieces, which is the half "
+                                 "§52 ruled out pruning (parents=%1/%2)")
+                      .arg(spreadTrees.at(0).parents).arg(spreadTrees.at(1).parents));
             check(spreadTrees.at(0).values.value(0) == QStringLiteral("typed across two pages")
                       && spreadTrees.at(1).values.value(0) == QStringLiteral("typed across two pages"),
-                  QStringLiteral("and the value the reader typed once is carried by both pieces "
-                                 "(\"%1\" in each): the field must stay in both, so what a repair "
-                                 "could prune is the widget belonging to the other file -- not the "
-                                 "name, and not the answer")
+                  QStringLiteral("and the value the reader typed once is still carried by both "
+                                 "pieces (\"%1\" in each) -- this fix prunes boxes, not answers; "
+                                 "whether the answer should travel is still §51's decision")
                       .arg(spreadTrees.at(0).values.value(0)));
 
             // And the same field with one of its two pages deleted: the name must stay, because a
@@ -3443,14 +3522,140 @@ int main(int argc, char **argv)
                       << " values=[" << half.values.join(QStringLiteral("|")).toStdString()
                       << "] widgets naming no page=" << half.terminalsNamingNoPage << '\n';
 
-            check(half.terminals == 2 && half.widgetsWithoutOwnName == 2 && half.parents == 1
-                      && halfOnPages == 1 && half.terminalsNamingNoPage == 1,
-                  QStringLiteral("KNOWN GAP, pinned with §51 (docs §52): with one of its two pages "
-                                 "deleted the field still lists both widgets -- one of them (%1) "
-                                 "names a page this file does not have -- while exactly one box is "
-                                 "left on screen; the name itself must stay, so a repair has to "
-                                 "prune widgets and not the field")
-                      .arg(half.terminalsNamingNoPage));
+            check(half.terminals == 1 && half.widgetsWithoutOwnName == 1 && half.parents == 1
+                      && halfOnPages == 1 && half.terminalsNamingNoPage == 0,
+                  QStringLiteral("§76: with one of its two pages deleted the field now lists only "
+                                 "the box that is still on a page here (terminals=%1, boxes drawn=%2, "
+                                 "naming no page=%3) -- the name stayed, the answer stayed, and what "
+                                 "went is the widget that could never draw")
+                      .arg(half.terminals).arg(halfOnPages).arg(half.terminalsNamingNoPage));
+            check(half.values.value(0) == QStringLiteral("typed across two pages"),
+                  QStringLiteral("and the value is still the one the reader typed (\"%1\"): pruning "
+                                 "a box must not reach the answer sitting on the field")
+                      .arg(half.values.value(0)));
+
+            {
+                // The safety half nobody had a case for yet: a save that removes no page must not
+                // lose a single box. Without this, "prune the widgets no page carries" is only ever
+                // tested by the files where something is already gone, and a predicate written
+                // against the wrong list would look correct in every check above.
+                DocumentEditor untouchedSpread;
+                error.clear();
+                check(untouchedSpread.open(spread, QString(), &error),
+                      QStringLiteral("setup: the spread form opens with nothing asked of it: %1")
+                          .arg(error));
+                const QString roundPath = scratch.filePath(QStringLiteral("spread-no-edit.pdf"));
+                error.clear();
+                check(untouchedSpread.saveAs(roundPath, &error),
+                      QStringLiteral("setup: and a plain save writes it: %1").arg(error));
+                const FieldTreeReport round = readFieldTree(roundPath);
+                const AnnotationReport roundFlat = readAnnotations(roundPath);
+                int roundOnPages = 0;
+                for (int page = 0; page < roundFlat.countPerPage.size(); ++page)
+                    roundOnPages += roundFlat.countPerPage.at(page);
+                std::cout << "MEASURE spread no-edit: pages=" << roundFlat.countPerPage.size()
+                          << " widgetsOnPages=" << roundOnPages << " terminals=" << round.terminals
+                          << " naming no page=" << round.terminalsNamingNoPage << '\n';
+                check(round.terminals == 2 && roundOnPages == 2 && round.terminalsNamingNoPage == 0,
+                      QStringLiteral("a save with no page gone keeps both boxes on both pages "
+                                     "(terminals=%1, drawn=%2) -- the prune is a repair for absent "
+                                     "pages, not a cleaner")
+                          .arg(round.terminals).arg(roundOnPages));
+            }
+        }
+
+        // ---- §77: the field that was never on a page at all ----
+        //
+        // §51 left "should the answer travel" open, and that question cannot be answered without this
+        // shape: a field registered in /Fields with a value and no widget, which PDF 2.0 §12.7.5.2
+        // allows (a default, or a value a script reads). "Has no box on any page of this file" is
+        // true of it AND of a widget whose page was deleted -- so the weaker predicate would delete a
+        // legitimate value. What separates them on the file is /Rect, which the reader reports per
+        // terminal from here on. The lines below are measurements first; the assertions follow what
+        // they say.
+        {
+            const QString twoShapes = scratch.filePath(QStringLiteral("boxed-and-value-only.pdf"));
+            error.clear();
+            check(!writeBoxedAndValueOnlyFields(source, twoShapes, &error).isEmpty(),
+                  QStringLiteral("setup: one field with a box, one registered without: %1")
+                      .arg(error));
+            const FieldTreeReport both = readFieldTree(twoShapes);
+            std::cout << "MEASURE value-only as built: terminals=" << both.terminals
+                      << " withRect=" << both.hasRect.count(true)
+                      << " namingNoPage=" << both.terminalsNamingNoPage << " values=["
+                      << both.values.join(QStringLiteral("|")).toStdString() << "]\n";
+
+            DocumentEditor out;
+            error.clear();
+            check(out.open(twoShapes, QString(), &error) && out.deletePages({0}, &error),
+                  QStringLiteral("setup: the page under the boxed one is deleted: %1").arg(error));
+            const QString gonePath = scratch.filePath(QStringLiteral("boxed-and-value-only-gone.pdf"));
+            error.clear();
+            check(out.saveAs(gonePath, &error),
+                  QStringLiteral("setup: and that is written: %1").arg(error));
+            const FieldTreeReport gone = readFieldTree(gonePath);
+            std::cout << "MEASURE value-only after the page is gone: terminals=" << gone.terminals
+                      << " withRect=" << gone.hasRect.count(true)
+                      << " namingNoPage=" << gone.terminalsNamingNoPage << " values=["
+                      << gone.values.join(QStringLiteral("|")).toStdString() << "]\n";
+
+            check(both.terminals == 2 && both.hasRect.count(true) == 1,
+                  QStringLiteral("the two shapes are told apart on the file: %1 of %2 terminals "
+                                 "carry a /Rect")
+                      .arg(both.hasRect.count(true)).arg(both.terminals));
+            check(both.values.value(0) == QStringLiteral("typed on page 1")
+                      && both.values.value(1) == QStringLiteral("a default with no page"),
+                  QStringLiteral("and as built both hold their value (\"%1\" / \"%2\")")
+                      .arg(both.values.value(0)).arg(both.values.value(1)));
+
+            check(gone.terminals == 2 && gone.hasRect.count(true) == 1
+                      && gone.terminalsNamingNoPage == 1,
+                  QStringLiteral("after the page goes, both have no live box and the file still "
+                                 "registers both (%1 terminals, %2 naming a page that is gone) -- "
+                                 "which is exactly why \"no box here\" cannot be the rule")
+                      .arg(gone.terminals).arg(gone.terminalsNamingNoPage));
+            check(gone.values.value(0).isEmpty()
+                      && gone.values.value(1) == QStringLiteral("a default with no page"),
+                  QStringLiteral("§77: the answer that belonged to the deleted page is not written "
+                                 "out (\"%1\"), while the value that was never on a page is left "
+                                 "exactly where its author put it (\"%2\") -- /Rect is what "
+                                 "separates them")
+                      .arg(gone.values.value(0)).arg(gone.values.value(1)));
+
+            {
+                // The guard §76 needed for boxes, now on the value side: a save that takes no page
+                // out must not clear anything. Without it, "drawn nowhere here" could be satisfied by
+                // a broken live-box set and every check above would still pass -- §76's second
+                // control found exactly that failure mode on the other object.
+                DocumentEditor kept;
+                error.clear();
+                check(kept.open(twoShapes, QString(), &error),
+                      QStringLiteral("setup: the two-shape form opens with nothing asked: %1")
+                          .arg(error));
+                const QString keptPath =
+                    scratch.filePath(QStringLiteral("boxed-and-value-only-noedit.pdf"));
+                error.clear();
+                check(kept.saveAs(keptPath, &error),
+                      QStringLiteral("setup: and a plain save writes it: %1").arg(error));
+                const FieldTreeReport held = readFieldTree(keptPath);
+                std::cout << "MEASURE value-only no-edit save: terminals=" << held.terminals
+                          << " values=[" << held.values.join(QStringLiteral("|")).toStdString()
+                          << "]\n";
+                check(held.terminals == 2
+                          && held.values.value(0) == QStringLiteral("typed on page 1")
+                          && held.values.value(1) == QStringLiteral("a default with no page"),
+                      QStringLiteral("a save with no page gone writes both answers out (\"%1\" / "
+                                     "\"%2\") -- the value rule fires on absent pages only")
+                          .arg(held.values.value(0)).arg(held.values.value(1)));
+                check(kept.hasFormFields(),
+                      "and the model answers the question the two boxes ask before they say anything "
+                      "about answers: this document has a form");
+            }
+            DocumentEditor plain;
+            error.clear();
+            check(plain.open(source, QString(), &error) && !plain.hasFormFields(),
+                  QStringLiteral("the same question on a document with no form says no: %1")
+                      .arg(error));
         }
 
         // ---- the last two shapes at the edge of the naming rule: an alias, and no name ----

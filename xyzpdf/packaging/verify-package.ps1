@@ -112,6 +112,64 @@ $total = ($files | Measure-Object Length -Sum).Sum
 Write-Host ('{0} unpacks to {1:N1} MB in {2} files' -f
             (Split-Path -Leaf $Package), ($total / 1MB), $files.Count)
 
+# ---------------------------------------------------------------------------
+# 1b. The same file list against the last package this script looked at.
+#
+# Added because of sec.59: two builds of byte-identical program code staged
+# different payloads -- the imageformats plugin set went from 5 DLLs to 10, about
+# 1.1 MB -- and nothing here said so. The "should not be here" list below names a
+# handful of files, so a file nobody names is invisible, and a file count read out
+# of memory is not a comparison: the tree that would have shown the difference is
+# the one the install overwrites. So the list becomes an artifact, kept outside the
+# package directory because build-package.ps1 deletes that tree at the start of
+# every run. A change is reported as a note rather than a problem, because the
+# payload is allowed to move (a Qt upgrade does it) -- what is not allowed is that
+# it moves silently.
+# ---------------------------------------------------------------------------
+
+$history = Join-Path $Project 'build-local-release\payload-history'
+if (-not (Test-Path $history)) { New-Item -ItemType Directory -Force -Path $history | Out-Null }
+
+$current = @($files | ForEach-Object {
+    [pscustomobject]@{
+        name   = ($_.FullName.Substring($UnpackTo.Length + 1) -replace '\\', '/')
+        length = $_.Length
+    }
+})
+$newNames = @($current | ForEach-Object { $_.name })
+$exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $UnpackTo $executable)).Hash
+$exeHash = $exeHash.Substring(0, 12).ToLower()
+$stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+$listing = Join-Path $history ('payload-{0}-{1}.txt' -f $exeHash, $stamp)
+
+$prior = Get-ChildItem -LiteralPath $history -Filter 'payload-*.txt' -File |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($prior) {
+    $oldNames = @((Get-Content -LiteralPath $prior.FullName) |
+        Where-Object { $_ } | ForEach-Object { ($_ -split "`t")[0] })
+    $versus = Compare-Object $oldNames $newNames
+    $gained = @($versus | Where-Object { $_.SideIndicator -eq '=>' } | ForEach-Object { $_.InputObject })
+    $lost = @($versus | Where-Object { $_.SideIndicator -eq '<=' } | ForEach-Object { $_.InputObject })
+    if ($gained.Count -eq 0 -and $lost.Count -eq 0) {
+        $notes += ('payload is the same {0} file(s) as {1}' -f $newNames.Count, $prior.Name)
+    } else {
+        $detail = ''
+        foreach ($name in $gained) { $detail += (' [+' + $name + ']') }
+        foreach ($name in $lost) { $detail += (' [-' + $name + ']') }
+        $notes += ('PAYLOAD CHANGED against {0}: gained {1} file(s), lost {2}{3}' -f
+                   $prior.Name, $gained.Count, $lost.Count, $detail)
+    }
+} else {
+    Write-Host 'no previous payload manifest to compare against; this run starts the history'
+}
+
+$written = 0
+foreach ($entry in ($current | Sort-Object name)) {
+    Add-Content -LiteralPath $listing -Value ("{0}`t{1}" -f $entry.name, $entry.length) -Encoding ascii
+    $written++
+}
+Write-Host ('payload manifest of {0} file(s) written to {1}' -f $written, $listing)
+
 $required = @(
     # The index. Listed first because its absence is the one failure here with no
     # symptom to trace back from.

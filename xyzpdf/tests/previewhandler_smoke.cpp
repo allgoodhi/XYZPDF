@@ -338,6 +338,52 @@ std::wstring siblingFixture(const std::wstring &fixture, const wchar_t *name)
     return fixture.substr(0, cut + 1) + name;
 }
 
+// How many copies the preview pane has staged for itself in the temp folder. The names carry a uuid,
+// so a leak cannot be looked for by name -- which is why this counts the pattern instead, before and
+// after one preview, and the assertion is about the difference.
+int countStagedCopies()
+{
+    wchar_t dir[MAX_PATH] = {};
+    const DWORD length = GetTempPathW(MAX_PATH, dir);
+    if (length == 0 || length > MAX_PATH)
+        return -1;
+    const std::wstring pattern = std::wstring(dir) + L"xyzpdf-preview-*.pdf";
+    WIN32_FIND_DATAW found = {};
+    const HANDLE scan = FindFirstFileW(pattern.c_str(), &found);
+    if (scan == INVALID_HANDLE_VALUE)
+        return 0;
+    int seen = 1;
+    while (FindNextFileW(scan, &found))
+        ++seen;
+    FindClose(scan);
+    return seen;
+}
+
+// Called once before anything is previewed, so the "left nothing behind" assertion below measures
+// this run rather than whatever an earlier crashed one stranded. The pattern belongs to the handler,
+// which is why a test may clear it.
+void removeStagedCopies()
+{
+    wchar_t dir[MAX_PATH] = {};
+    const DWORD length = GetTempPathW(MAX_PATH, dir);
+    if (length == 0 || length > MAX_PATH)
+        return;
+    const std::wstring directory = std::wstring(dir) + L"xyzpdf-preview-*.pdf";
+    WIN32_FIND_DATAW found = {};
+    const HANDLE scan = FindFirstFileW(directory.c_str(), &found);
+    if (scan == INVALID_HANDLE_VALUE)
+        return;
+    // The directory prefix, not `found.cFileName`: what that returns is a bare name, and a bare
+    // name resolves against the working directory -- so the first version of this "clear the slate"
+    // call deleted nothing, and the leftover from a previous run made the next run's
+    // "the pane staged a copy" check true with the staging switched off. A control caught it.
+    const std::wstring parent = std::wstring(dir);
+    DeleteFileW((parent + found.cFileName).c_str());
+    while (FindNextFileW(scan, &found))
+        DeleteFileW((parent + found.cFileName).c_str());
+    FindClose(scan);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -354,6 +400,10 @@ int main(int argc, char **argv)
         printf("FAIL: CoInitializeEx failed, so nothing below this can mean anything\n");
         return 1;
     }
+
+    // Before anything is previewed, so the "leaves nothing behind" assertion at the end measures this
+    // run rather than whatever an earlier crashed one stranded.
+    removeStagedCopies();
 
     // The whole point of this line: after it, the only directory the loader will
     // consult for a bare module name is System32, which is where DllHost.exe is.
@@ -602,6 +652,52 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- the pane must not be why the file cannot be deleted ----
+    //
+    // What a reader does after single-clicking a PDF in Explorer is look at the pane, then delete the
+    // file -- and until §66 that second step answered "in use", because PDFium keeps the handle it
+    // opened for the life of the document and does not share it for delete. So: hand the pane a copy
+    // of the fixture, delete that copy while the pane is showing it, and ask whether the page is still
+    // on screen afterwards. A pane that went blank when its file vanished would pass a delete-only
+    // check, which is why the drawing is read on both sides of it.
+    //
+    // Nothing is unloaded here: a COM handler is not reusable after Unload, and the sections below
+    // this one still have to run against it. That is also why the "left nothing behind" assertion sits
+    // at the final Unload rather than here.
+    if (child && initialise) {
+        wchar_t tempDir[MAX_PATH] = {};
+        const DWORD tempLength = GetTempPathW(MAX_PATH, tempDir);
+        // Deliberately NOT named like the pane's own copies: the assertion below counts
+        // `xyzpdf-preview-*` to prove the pane staged one, and a test file matching the same
+        // pattern makes that count true whatever the handler does. The control found that -- with
+        // staging switched off the count was still >=1, because this file was sitting in it.
+        const std::wstring copy =
+            tempLength > 0 ? std::wstring(tempDir) + L"xyzpdf-pane-lock-target.pdf" : std::wstring();
+        const bool copied = !copy.empty() && CopyFileW(fixture.c_str(), copy.c_str(), FALSE);
+        check(copied, "a copy of the fixture is in the temp folder for this part");
+        if (copied) {
+            check(SUCCEEDED(initialise->Initialize(copy.c_str(), STGM_READ)),
+                  "the pane is given that copy");
+            check(SUCCEEDED(handler->DoPreview()), "and it previews it");
+            check(waitForStable(child, 420, 560, 20000),
+                  "the page is drawn before anything is deleted");
+            check(DeleteFileW(copy.c_str()),
+                  "the file can be deleted while the pane is still showing it");
+            check(drewSomething(child, 420, 560),
+                  "and the pane still shows its page afterwards");
+            // Counted with the pane's own naming pattern only, so what is in this number is the copy
+            // it made for itself. This is the half that carries the fix: "the delete worked" can also
+            // mean "the pane never opened the file at all", and a pane that reads the original would
+            // still pass the end-of-suite "nothing left behind" check.
+            check(countStagedCopies() >= 1,
+                  "and the pane is reading a copy, not the file it was named");
+            // Best effort, and only for the run where the check above just failed: that file *is* the
+            // lock being asserted, and leaving it in the temp folder would make the next run's
+            // failure its own rather than the code's.
+            DeleteFileW(copy.c_str());
+        }
+    }
+
     // And the other half: a file that is not a PDF has to say so in the pane
     // rather than leave it blank, which is what a reader reads as "still loading".
     if (child) {
@@ -634,6 +730,10 @@ int main(int argc, char **argv)
     }
 
     check(SUCCEEDED(handler->Unload()), "Unload succeeds");
+    // The copy the pane made for itself leaves with it. Counted rather than looked for by name,
+    // because the name carries a uuid -- and a leftover per file a reader glanced at is a leak that
+    // nobody would notice until the temp folder was full of PDFs.
+    check(countStagedCopies() == 0, "and it leaves no copy of any document behind");
 
     // Looked up rather than called by name: the test links nothing, which is the
     // point -- the DLL is loaded the way a host loads it.

@@ -22,6 +22,8 @@
         <file alias="icons/chevron_down_light.svg">Resources/icons/chevron_down_light.svg</file>
         <file alias="icons/chevron_up_dark.svg">Resources/icons/chevron_up_dark.svg</file>
         <file alias="icons/chevron_up_light.svg">Resources/icons/chevron_up_light.svg</file>
+        <file alias="icons/tab_close_dark.svg">Resources/icons/tab_close_dark.svg</file>
+        <file alias="icons/tab_close_light.svg">Resources/icons/tab_close_light.svg</file>
 
         <file alias="licenses/LGPL-3.0.txt">Resources/licenses/LGPL-3.0.txt</file>
         <file alias="licenses/GPL-3.0.txt">Resources/licenses/GPL-3.0.txt</file>

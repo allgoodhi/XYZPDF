@@ -446,6 +446,22 @@ if ($Install) {
         # A signed package goes in through its own path, because that is the only
         # way to get a deployed package, which is what the certification tests
         # need; the loose registration below cannot give it.
+        #
+        # The remove first is not ceremony. Every local repack so far has produced 0.1.0.0 -- the
+        # project version is one line in CMakeLists.txt and is not bumped to satisfy a reinstall --
+        # and Add-AppxPackage refuses the same version already installed with 0x80073CFB
+        # ("already installed and updates of the same version are blocked"), which is exactly what
+        # this line used to die on: measured
+        # 2026-10-05, docs/store-submission.md sec.73, where the failure landed on the operator
+        # instead of the script. Say what the remove costs, because it is not nothing: the package's
+        # own settings container goes with it, so the installed copy comes back on the system
+        # language with an empty recent-files list (sec.48 and sec.62 measured that store).
+        $old = @(Get-AppxPackage -Name $identity.Name -ErrorAction SilentlyContinue)
+        if ($old) {
+            Write-Host ("removing " + $old.Count + " installed copy/copies of " + $identity.Name `
+                        + " -- the package's own settings (language, recent files, last folder) go with it")
+            $old | ForEach-Object { Remove-AppxPackage $_.PackageFullName }
+        }
         Add-AppxPackage -Path $package
         Write-Host "installed from $package"
     } else {

@@ -217,7 +217,10 @@ QString ThemeManager::styleSheetFor(AppTheme theme)
         QTabBar::tab:hover { background: $HOVER; color: $TEXT; }
         QTabBar::tab:selected { background: $WINDOW_BACKGROUND; color: $TEXT;
                                 border-top: 2px solid $ACCENT; }
-        QTabBar::close-button { image: url($CHEVRON_DOWN); }
+        /* The tab's close button. It has to be its own image: this rule used to point at the
+           combo box's chevron, which is a different shape saying a different thing -- a reader
+           who clicks the arrow expecting to close the tab gets nothing. */
+        QTabBar::close-button { image: url($TAB_CLOSE); }
 
         /* The page surface draws itself; this only says what its surround is.
            Selected by name because the class carries no Q_OBJECT of its own. */
@@ -257,6 +260,9 @@ QString ThemeManager::styleSheetFor(AppTheme theme)
     replaceToken(styleSheet, QStringLiteral("CHEVRON_DOWN"),
                  c.dark ? QStringLiteral(":/icons/chevron_down_dark.svg")
                         : QStringLiteral(":/icons/chevron_down_light.svg"));
+    replaceToken(styleSheet, QStringLiteral("TAB_CLOSE"),
+                 c.dark ? QStringLiteral(":/icons/tab_close_dark.svg")
+                        : QStringLiteral(":/icons/tab_close_light.svg"));
     replaceToken(styleSheet, QStringLiteral("SELECTION_TEXT"),
                  cssColor(c.dark ? QColor(250, 252, 255) : QColor(255, 255, 255)));
     replaceToken(styleSheet, QStringLiteral("SELECTION"), cssColor(c.selection));

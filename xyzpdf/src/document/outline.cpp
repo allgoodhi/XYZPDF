@@ -15,6 +15,21 @@ void flatten(const QVector<OutlineNode> &nodes, QVector<const OutlineNode *> *in
     }
 }
 
+// The same walk, counting how deep each node sits, because the flat list's `level` is depth plus
+// one (see outline.h: Qt's own Level role counts from 0 and the read that fills rows adds one).
+void flattenRows(const QVector<OutlineNode> &nodes, int level, QVector<OutlineRow> *into)
+{
+    for (const OutlineNode &node : nodes) {
+        OutlineRow row;
+        row.title = node.title;
+        row.level = level;
+        row.page = node.page;
+        row.location = node.location;
+        into->append(row);
+        flattenRows(node.children, level + 1, into);
+    }
+}
+
 } // namespace
 
 int Outline::count() const
@@ -66,4 +81,25 @@ Outline outlineFromRows(const QVector<OutlineRow> &rows)
         path.append(children->size() - 1);
     }
     return tree;
+}
+
+QVector<OutlineRow> outlineRowsOf(const Outline &tree)
+{
+    QVector<OutlineRow> rows;
+    flattenRows(tree.nodes, 1, &rows);
+    return rows;
+}
+
+int outlineSubtreeEnd(const QVector<OutlineRow> &rows, int index)
+{
+    if (index < 0 || index >= rows.size())
+        return index;
+    // Everything after it that sits deeper belongs to this row; the first row at the same depth or
+    // shallower is where the block ends -- and a row with no children returns index + 1, which is
+    // why the callers do not need a special case for a leaf.
+    const int level = rows.at(index).level;
+    int end = index + 1;
+    while (end < rows.size() && rows.at(end).level > level)
+        ++end;
+    return end;
 }

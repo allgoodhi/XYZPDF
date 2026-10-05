@@ -10,7 +10,9 @@
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
 #include "src/translate/translator.h"
+#include "src/ui/bookmarkdialog.h"
 #include "src/ui/deletepagesdialog.h"
+#include "src/ui/bookmarkdialog.h"
 #include "src/ui/findbar.h"
 #include "src/ui/imageexportdialog.h"
 #include "src/ui/mergepagesdialog.h"
@@ -1322,6 +1324,33 @@ void DocumentTab::addWatermark()
     QString error;
     if (!document->addWatermark(dialog.request(), &error)) {
         WindowDialogs::warning(window(), tr("加水印"), error);
+        return;
+    }
+    Q_EMIT editStateChanged();
+}
+
+void DocumentTab::editOutline()
+{
+    DocumentEditor *document = editSession();
+    if (!document)
+        return;
+
+    // The tree the sidebar is showing right now, which is the file's own bookmarks: what the box opens
+    // on when nothing has been asked for yet, and what "you have not changed anything" is measured
+    // against. Read from the renderer rather than handed to the editor, because the editor
+    // deliberately never looks at a /Outlines it was not asked to replace -- and §70 pinned what it
+    // then does with the tree it inherits (all of it, including a bookmark whose page has gone).
+    BookmarkDialog dialog(window(), document, backend->outline());
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    // The dialog's summary and this call read the same list, so the sentence the reader just agreed to
+    // and the operation the save replays cannot be two answers about which bookmark points where --
+    // and the model's own refusals (a level of 0, a page past the file) are the backstop behind a box
+    // that greys 确定 for both.
+    QString error;
+    if (!document->setOutline(dialog.rows(), &error)) {
+        WindowDialogs::warning(window(), tr("编辑书签"), error);
         return;
     }
     Q_EMIT editStateChanged();

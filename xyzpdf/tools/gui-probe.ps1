@@ -34,9 +34,40 @@
                      reader draw a form field" becomes a subtraction between two runs instead of a
                      look (sec.54; run it once on the plain file and once on the same page with a
                      field on it).
+      openpicker       launch, raise the window by its own title bar, open the native open dialog and
+                     print the rows it shows -- which is how "where does our own start directory put the
+                     dialog, and does the shell's per-application memory matter" was judged (sec.62). The
+                     dialog's folder is never exposed as a readable Name, so the FOLDER is read from its
+                     contents. It raises the window by its title bar first because that is what the earlier
+                     modes that work with pixels do -- but do NOT read that as the cure for the rounds where
+                     nothing lands: sec.62 recorded four dead rounds, then two that worked with this raise in
+                     place, then this same mode failing three tries again minutes later. Whether synthesised
+                     input lands at all is per-round (sec.41); the raise is a precaution, and the reason this
+                     mode prints the row it aims at is so a dead round leaves a reading behind.
       uacache        read one status-bar message four ways at the same instant -- a HELD element, a
                      freshly found one, one found from the desktop root, and the pixels -- because
                      sec.37 blamed a lag on the UIA client's property cache and never measured it.
+      outlinetree    open the reading sidebar and count what the bookmark tree on screen actually holds:
+                     TreeItem descendants, the root's own children, and how many names start with a digit
+                     -- that last one because a root-only read cannot produce a digit-starting name at all,
+                     so it separates "the nesting is on screen" from "there are just more rows". sec.64 fixed
+                     the tree read with file-level evidence only; this is the screen half of it, and it opens
+                     the sidebar through its own menu row and reads that row's TogglePattern state on both
+                     sides of the click rather than assuming the panel came up.
+      tabstrip       crop the document tab strip to a PNG, which is the only way to see what its
+                     buttons are drawn as. A stylesheet rule can point at any picture it likes and
+                     every count in this harness stays green -- sec.66 found the tab's close button
+                     showing the combo box's down arrow that way, and no number could have said so.
+      bookdialog     open the bookmark editor from the Document menu and walk it to the end: the
+                     table's UIA shape (a QTableWidget has never been read by this harness, and
+                     sec.65's QTreeView result says the shape is unknown until measured), the cells
+                     read one by one -- three consecutive DataItem names are one row's title, level
+                     and page, which is how sec.72 caught the level column being silent and sec.74
+                     checks it is not -- whether the accept button really arrives greyed on an
+                     untouched box, what it says after a row is added, the refusal typed into a cell
+                     through its own Value pattern, and which row the menu shows once the request is
+                     recorded. exec() blocks, so this is the only route through
+                     menu -> dialog -> setOutline that any check has ever taken.
 
     Examples (from the repository root):
       powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1 -Mode inventory
@@ -44,6 +75,8 @@
       ... -Mode exportstatus -OutDir H:/tmp/xyzpdf-probe
       ... -Mode mergedonor -LastDir H:/tmp/xyzpdf-probe -Donor donor1.pdf
       ... -Mode langswitch -Installed -To English
+      ... -Mode outlinetree -Doc H:/tmp/outline/real-book.pdf -Log H:/tmp/outline/outlinetree.txt
+      ... -Mode bookdialog -Doc H:/tmp/outline/real-book.pdf -Log H:/tmp/outline/bookdialog.txt
 
     -Log takes a UTF-8 file, which is the only way to read a Chinese interface back from this
     console (it is GBK, so the window title alone arrives as mojibake). Write such a path with
@@ -51,7 +84,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -94,6 +127,9 @@ using System.Runtime.InteropServices;
 public static class W32 {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint d, int e, int extra, IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr h, bool alternate);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hParent, EnumProc cb, IntPtr l);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -131,6 +167,14 @@ function Say([string]$s) {
   # become part of what that helper returns.
   [Console]::Out.WriteLine($s)
   if ($Log) { $script:lines | Out-File -Encoding UTF8 $Log }
+}
+# A mode that gives up partway must leave nothing behind: a bare `exit` skips the kill at the end of
+# this file, and the next run then launches a second instance whose document is forwarded to the stale
+# one -- so it drives a window it did not open. sec.74 lost a round that way.
+function Bail([string]$why) {
+  Say ('  ' + $why)
+  Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+  exit 1
 }
 function CjStr([int[]]$codePoints) {
   # This file must stay pure ASCII: Windows PowerShell reads a BOM-less .ps1 as ANSI, so a
@@ -775,8 +819,38 @@ switch ($Mode) {
     if ($Installed) {
       # Nothing behind the native open dialog had ever been reached on the packaged copy until
       # sec.43; an edit needs a document first, and the packaged app starts without one.
-      TopMenu $app.Id @('File', (CjStr 0x6587,0x4EF6)) | Out-Null
-      ClickAt (RowAny $app.Id @('Open', (CjStr 0x6253,0x5F00)))
+      #
+      # The click is retried up to three times, the way the save row below has been since sec.45,
+      # because Expand() reports the menu as open even on rounds where the following click does
+      # not land (measured again 2026-09-30: two rounds printed 'opened [File] via Expand' and
+      # then 'no native dialog within 8s', with nothing but the main window in the subtree). Each
+      # try prints the row it aimed at and the dialog it looked for, so a miss is a reading rather
+      # than a guess about routing. Success is judged by the dialog's CLASS, '#32770', never by
+      # its title -- the caption is our own translatable string (sec.39).
+      $picked = $false
+      for ($try = 1; $try -le 3 -and -not $picked; $try++) {
+        TopMenu $app.Id @('File', (CjStr 0x6587,0x4EF6)) | Out-Null
+        $openRow = RowAny $app.Id @('Open', (CjStr 0x6253,0x5F00))
+        if (-not $openRow) { Say ('  try ' + $try + ': no Open row under File'); Start-Sleep -Milliseconds 600; continue }
+        $or = $openRow.Current.BoundingRectangle
+        Say ('  try ' + $try + ': menu row |' + $openRow.Current.Name + '| enabled=' + $openRow.Current.IsEnabled +
+             ' at ' + [int]$or.X + ',' + [int]$or.Y + ' ' + [int]$or.Width + 'x' + [int]$or.Height)
+        ClickAt $openRow
+        for ($k = 1; $k -le 8 -and -not $picked; $k++) {
+          Start-Sleep -Milliseconds 500
+          foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
+            foreach ($e in (@($w) + @(FindType $w $CT::Window))) {
+              if ($e.Current.ClassName -eq '#32770') {
+                Say ('  native dialog after try ' + $try + ' round ' + [math]::Round($k * 0.5, 1) + 's [' + $e.Current.Name + ']')
+                $picked = $true
+                break
+              }
+            }
+            if ($picked) { break }
+          }
+        }
+      }
+      if (-not $picked) { Say '  the open dialog never came up in three tries'; exit 1 }
       if (-not (PickFile $app.Id ([System.IO.Path]::GetFileName($Doc)))) { exit 1 }
       Start-Sleep -Seconds 2
       Say ('  document window [' + (Window $app.Id).Current.Name + ']')
@@ -920,6 +994,87 @@ switch ($Mode) {
     Say ('  the app reports [' + (LanguageLabel $app3.Id 'after the restore') + ']')
     @(LanguageRows $app3.Id 'after the restore') | Out-Null
   }
+  'openpicker' {
+    # Where does our own open dialog start when the program is given no directory at all?
+    # sec.48 left that half-unjudged: two channels could put a folder in front of the reader --
+    # the one we store (files/lastOpenDirectory, which mainwindow.cpp:1554 hands the dialog
+    # explicitly, falling back to QDir::homePath()) and the shell's per-application dialog memory
+    # (HKCU:\...\Explorer\ComDlg32\LastVisitedPidlMRU, filed under the EXE NAME, which both this
+    # dev build and the packaged copy share because both are called xyzpdf.exe).
+    #
+    # Reading the registry cannot decide it, and the first version of this note claimed it could:
+    # every instance this script launches gets XYZPDF_SETTINGS_PATH pointed at a scratch ini, so
+    # the dev build's HKCU:\Software\xyzpdf value is untouched by these runs -- it is a residue of
+    # someone launching the exe by hand. The discriminating run is instead: launch WITHOUT -LastDir
+    # (then the ini has no [files] section at all, our key reads empty, and the code says
+    # "homePath"), and see which folder the dialog shows. Home means our explicit directory wins;
+    # the folder this app last saved into means the shell's memory does.
+    #
+    # The window is raised by its own title bar first because that is what the pixel modes do
+    # (sec.28/sec.54) -- NOT because it fixes the rounds where nothing lands: sec.62 watched this same
+    # mode succeed with the raise and then fail all three tries with the raise still in place. Whether
+    # synthesised input lands at all is per-round (sec.41), which is why every attempt prints the row it
+    # aimed at below.
+    $win = $null
+    for ($k = 1; $k -le 10 -and -not $win; $k++) {
+      Start-Sleep -Milliseconds 500
+      $win = Window $app.Id
+    }
+    if (-not $win) { Say '  no window'; exit 1 }
+    $wr = $win.Current.BoundingRectangle
+    [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))
+    Start-Sleep -Milliseconds 800
+    $pk = $null
+    for ($try = 1; $try -le 3 -and -not $pk; $try++) {
+      TopMenu $app.Id @('File', (CjStr 0x6587,0x4EF6)) | Out-Null
+      $row = RowAny $app.Id @('Open', (CjStr 0x6253,0x5F00))
+      if (-not $row) { Say ('  try ' + $try + ': no Open row under File'); Start-Sleep -Milliseconds 600; continue }
+      $rr = $row.Current.BoundingRectangle
+      Say ('  try ' + $try + ': menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled +
+           ' at ' + [int]$rr.X + ',' + [int]$rr.Y + ' ' + [int]$rr.Width + 'x' + [int]$rr.Height)
+      ClickAt $row
+      for ($k = 1; $k -le 8 -and -not $pk; $k++) {
+        Start-Sleep -Milliseconds 500
+        foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
+          foreach ($e in (@($w) + @(FindType $w $CT::Window))) {
+            if ($e.Current.ClassName -eq '#32770') { $pk = $e; break }
+          }
+          if ($pk) { break }
+        }
+      }
+      if ($pk) { Say ('  native dialog up after try ' + $try + ' [' + $pk.Current.Name + ']') }
+    }
+    if (-not $pk) { Say '  the open dialog never came up in three tries'; exit 1 }
+    # The dialog's own folder is not exposed as a readable Name anywhere (sec.29: the picker gives
+    # no patterns; sec.44: its text fields answer empty to WM_GETTEXT), so the FOLDER is read from
+    # what is inside it -- the rows. Home and a scratch folder look nothing like each other.
+    $rows = @(FindType $pk $CT::ListItem)
+    Say ('  ' + $rows.Count + ' row(s) in the folder the dialog opened at:')
+    foreach ($e in ($rows | Select-Object -First 24)) { Say ('    row |' + $e.Current.Name + '|') }
+    # Also print the tree of headers/edit boxes: the address band sometimes reports the path there
+    # where it reports nothing in the name field.
+    foreach ($h in @(FindType $pk $CT::Header)) { Say ('  header |' + $h.Current.Name + '|') }
+    foreach ($t in @(FindType $pk $CT::Edit)) {
+      $idh = [W32]::GetDlgCtrlID([IntPtr]$t.Current.NativeWindowHandle)
+      Say ('  edit id=' + $idh + ' answers |' + [W32]::Text([IntPtr]$t.Current.NativeWindowHandle) + '|')
+    }
+    # Close it without choosing anything: control id 2 is Cancel in a #32770, and BM_CLICK is
+    # honoured by the OPEN dialog (sec.44 measured that the SAVE dialog is the one that ignores it).
+    $kids = New-Object System.Collections.Generic.List[IntPtr]
+    $cb = [W32+EnumProc] { param($h, $l) $kids.Add($h); return $true }
+    [W32]::EnumChildWindows([IntPtr]$pk.Current.NativeWindowHandle, $cb, [IntPtr]::Zero) | Out-Null
+    $cancel = $null
+    foreach ($h in $kids) {
+      if ([W32]::Cls($h) -eq 'Button' -and [W32]::GetDlgCtrlID($h) -eq 2) { $cancel = $h }
+    }
+    if ($cancel) {
+      [W32]::PostMessageW($cancel, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+      Start-Sleep -Milliseconds 800
+      Say '  cancelled without picking'
+    } else {
+      Say '  no Cancel button with control id 2; leaving the dialog open and saying so'
+    }
+  }
   'formpage' {
     # Does this reader DRAW a form field at all? Everything sec.46 to sec.53 measured lives inside the
     # file; not one round of this suite has looked at a page carrying a widget. So: open one
@@ -1032,6 +1187,595 @@ switch ($Mode) {
            ' fresh=[' + $f.Substring(0, [math]::Min(27, $f.Length)) + ']' +
            ' root=[' + $rootName.Substring(0, [math]::Min(27, $rootName.Length)) + ']')
       Start-Sleep -Milliseconds 500
+    }
+  }
+  'outlinetree' {
+    # sec.64 fixed the bookmark tree read on file-level evidence, and its own record says the screen was
+    # never looked at. So ask the window: with a document that has a real outline open, how many rows does
+    # the tree element expose, how many of them belong to the root, and do the nested ones exist on screen
+    # at all. The numbers to compare against are the file's: tests/outlineprobe.cpp section D counted 184
+    # items with 14 under the root for this very document.
+    #
+    # Every count is printed beside a shape that distinguishes it, because "no rows" here has three causes
+    # and two of them are the instrument: the sidebar is hidden until asked for (documenttab.cpp:113), the
+    # panel lands on the bookmark tab only when the document has bookmarks (documenttab.cpp:652), and a
+    # tree that is not the current tab has no rows to report. So the tab labels, the TogglePattern state of
+    # the row that opens the sidebar, and the tree's own rectangle are printed before any count is believed.
+    #
+    # The digit needle is what makes a nested read falsifiable rather than a bigger number: on this book the
+    # 14 roots are chapter headings (none starts with a digit) and the 170 nested ones are numbered sections
+    # (1.1, 10.9.2). A root-only read cannot produce a single digit-starting name, whatever else it shows.
+    $win = $null
+    for ($k = 1; $k -le 10 -and -not $win; $k++) {
+      Start-Sleep -Milliseconds 500
+      $win = Window $app.Id
+    }
+    if (-not $win) { Say '  no window'; exit 1 }
+    $wr = $win.Current.BoundingRectangle
+    [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))   # raise it by its own title bar
+    Start-Sleep -Milliseconds 800
+    $win = Window $app.Id
+
+    $outlineNeedles = @('Outline', (CjStr 0x5927, 0x7EB2))
+    $tabs = @(FindType $win $CT::TabItem)
+    foreach ($t in $tabs) {
+      $tr = $t.Current.BoundingRectangle
+      Say ('  tab |' + $t.Current.Name + '| at ' + [int]$tr.X + ',' + [int]$tr.Y + ' ' +
+           [int]$tr.Width + 'x' + [int]$tr.Height)
+    }
+    Say ('  ' + $tabs.Count + ' tab item(s), ' + @(FindType $win $CT::Tree).Count + ' tree element(s)')
+
+    # What counts as "the sidebar is up" is read two ways, because the first round of this mode learned
+    # that neither alone is enough: the bookmark panel shows as a TabItem labelled 'Outline' (its Chinese
+    # form is 0x5927 0x7EB2) only if Qt exposes that QTabBar, and as a Tree element only if that panel is
+    # the current one. A round that finds neither is an input round that did not land (sec.41), not a
+    # document with no bookmarks, so each attempt below prints both counts.
+    $tab = $null
+    $tree = $null
+    function FindOutlineTab($w, [string[]]$needles) {
+      foreach ($t in @(FindType $w $CT::TabItem)) {
+        foreach ($n in $needles) { if ($t.Current.Name -eq $n) { return $t } }
+      }
+      return $null
+    }
+    $tab = FindOutlineTab $win $outlineNeedles
+    $found = @(FindType $win $CT::Tree)
+    if ($found.Count -gt 0) { $tree = $found[0] }
+
+    if (-not $tab -and -not $tree) {
+      # The sidebar is closed (documenttab.cpp:113 hides it until asked for). Open it through its own
+      # menu row -- a checkable QAction reaches UIA as TogglePattern (sec.49), so its state is read on
+      # both sides of each attempt rather than assumed.
+      # The bar's label is 0x67E5 0x770B with (&V) -- "look", not the 0x89C6 0x56FE ("view") this mode's
+      # first round asked for; that round reported "no top-level menu matching", which is the instrument
+      # failing, not the app having no menu.
+      $rowNeedles = @('Navigation Sidebar', (CjStr 0x5BFC, 0x822A, 0x4FA7, 0x680F))
+      # Two channels, tried in this order, for a reason this mode measured rather than guessed: a
+      # TogglePattern call on a row of an OPEN Qt menu does nothing at all (the round above: toggle=Off
+      # before, nothing after), and it leaves the popup up. A popup still open is what makes the next
+      # attempt lie -- re-asking the bar for a menu that is already open CLOSES it (sec.56), so the row
+      # is then gone and "no Navigation Sidebar row" reads like the app has none. Hence every attempt
+      # first collapses whatever is expanded, and the real click goes first because it is the channel
+      # that has worked for menu rows since sec.34.
+      foreach ($way in @('real click', 'toggle-pattern')) {
+        foreach ($bar in @(FindType $win $CT::MenuBar)) {
+          foreach ($t in @($bar.FindAll($TS::Children, $ANY))) {
+            $xp = Pat $t 'ExpandCollapse'
+            if ($xp -and $xp.Current.ExpandCollapseState.ToString() -eq 'Expanded') {
+              try { $xp.Collapse(); Say ('  collapsed an open [' + $t.Current.Name + '] first') } catch { }
+            }
+          }
+        }
+        Start-Sleep -Milliseconds 400
+        TopMenu $app.Id @('View', (CjStr 0x67E5, 0x770B)) | Out-Null
+        $row = RowAny $app.Id $rowNeedles
+        if (-not $row) { Say ('  ' + $way + ': no Navigation Sidebar row in the View menu'); continue }
+        $tg = Pat $row 'Toggle'
+        $before = '(no TogglePattern)'
+        if ($tg) { $before = $tg.Current.ToggleState.ToString() }
+        $rr = $row.Current.BoundingRectangle
+        Say ('  ' + $way + ': aiming at |' + $row.Current.Name + '| at ' + [int]$rr.X + ',' + [int]$rr.Y +
+             ' enabled=' + $row.Current.IsEnabled + ' toggle=' + $before)
+        if ($way -eq 'toggle-pattern') {
+          if (-not $tg) { Say '  no TogglePattern to call'; continue }
+          try { $tg.Toggle() } catch { Say ('  Toggle threw: ' + $_.Exception.Message) }
+        } else {
+          ClickAt $row
+        }
+        for ($k = 1; $k -le 6 -and -not $tab -and -not $tree; $k++) {
+          Start-Sleep -Milliseconds 500
+          $win = Window $app.Id
+          $tab = FindOutlineTab $win $outlineNeedles
+          $found = @(FindType $win $CT::Tree)
+          if ($found.Count -gt 0) { $tree = $found[0] }
+        }
+        Say ('  ' + $way + ' gave ' + @(FindType $win $CT::TabItem).Count + ' tab item(s), ' +
+             $found.Count + ' tree element(s)')
+        if ($tab -or $tree) { break }
+      }
+    }
+    if (-not $tab -and -not $tree) {
+      Say '  the sidebar did not come up -- every name this window has, so a dead round is a reading'
+      $seen = @{}
+      foreach ($e in @($win.FindAll($TS::Descendants, $ANY))) {
+        $nm = $e.Current.Name
+        if ($null -eq $nm) { continue }
+        $nm = $nm.Replace("`r", ' ').Replace("`n", ' ').Trim()
+        if ($nm.Length -lt 2) { continue }
+        $key = $e.Current.ControlType.ProgrammaticName.Replace('ControlType.', '') + ' |' + $nm + '|'
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = 1
+        Say ('    ' + $key)
+      }
+      exit 1
+    }
+
+    if (-not $tree) {
+      # A tab but no tree: the panel is up on the other page, so make this one current.
+      for ($k = 1; $k -le 6 -and -not $tree; $k++) {
+        ClickAt $tab
+        Start-Sleep -Milliseconds 700
+        $win = Window $app.Id
+        $found = @(FindType $win $CT::Tree)
+        if ($found.Count -gt 0) { $tree = $found[0] }
+      }
+    }
+    if (-not $tree) { Say '  no Tree element on screen'; exit 1 }
+    $r = $tree.Current.BoundingRectangle
+    Say ('  tree element at ' + [int]$r.X + ',' + [int]$r.Y + ' ' + [int]$r.Width + 'x' + [int]$r.Height)
+
+    # Ask the same question through two more patterns before trusting a count of found elements: this
+    # widget answers Grid and Table but not Scroll, and the rows UIA hands back are the realised ones.
+    # A grid's own RowCount is the widget's answer about its model, which is what "how many bookmarks are
+    # on screen" was meant to measure. Reading several channels at once is sec.56's rule.
+    $gp = Pat $tree 'Grid'
+    if ($gp) {
+      Say ('  GridPattern rows=' + $gp.Current.RowCount + ' columns=' + $gp.Current.ColumnCount)
+    }
+    $tp = Pat $tree 'Table'
+    if ($tp) {
+      Say ('  TablePattern rows=' + $tp.Current.RowCount)
+    }
+    $sp = Pat $tree 'Selection'
+    if ($sp) {
+      Say ('  SelectionPattern holds ' + $sp.Current.GetSelection().Length + ' selected item(s)')
+    }
+
+    $all = @(FindType $tree $CT::TreeItem)
+    $rootRows = @($tree.FindAll($TS::Children, (New-Object $PC($AE::ControlTypeProperty, $CT::TreeItem))))
+    $named = @($all | Where-Object { $_.Current.Name.Trim().Length -gt 0 })
+    $digits = @($all | Where-Object { $_.Current.Name -match '^[0-9]' })
+    Say ('  TreeItem descendants=' + $all.Count + '  named=' + $named.Count +
+         '  root children=' + $rootRows.Count + '  digit-starting=' + $digits.Count)
+    foreach ($e in @($all | Select-Object -First 18)) {
+      $kids = @($e.FindAll($TS::Children, (New-Object $PC($AE::ControlTypeProperty, $CT::TreeItem))))
+      Say ('  row children=' + $kids.Count + ' |' + $e.Current.Name.Trim() + '|')
+    }
+    if ($rootRows.Count -gt 0) {
+      $ex = Pat $rootRows[0] 'ExpandCollapse'
+      $state = '(no ExpandCollapsePattern)'
+      if ($ex) { $state = $ex.Current.ExpandCollapseState.ToString() }
+      Say ('  first root row expand state: ' + $state)
+      # QTreeView::expandToDepth(0) leaves exactly one level open (outlinepanel.cpp:45), so the deepest
+      # rows are collapsed by design. Open every root row and recount, so "the tree holds 184" and "the
+      # screen shows 103 because two are folded" stay two separate readings.
+      $opened = 0
+      foreach ($e in $rootRows) {
+        $ex = Pat $e 'ExpandCollapse'
+        if ($ex -and $ex.Current.ExpandCollapseState.ToString() -ne 'Expanded') {
+          try { $ex.Expand(); $opened++ } catch { }
+        }
+      }
+      Start-Sleep -Milliseconds 900
+      $all2 = @(FindType $tree $CT::TreeItem)
+      $digits2 = @($all2 | Where-Object { $_.Current.Name -match '^[0-9]' })
+      Say ('  after expanding ' + $opened + ' root row(s): descendants=' + $all2.Count +
+           ' digit-starting=' + $digits2.Count)
+    }
+
+    # The count above is the VIEWPORT, not the document: Qt hands UIA only the rows it has realised, so a
+    # 184-row tree shows ~26 at a time and expanding a collapsed row swaps rows in and out instead of
+    # adding any. Measured, not assumed -- the expand step changed nothing. So sweep the scroll position
+    # and accumulate distinct names, which is the only way this channel can answer "all of them on screen".
+    $scroll = Pat $tree 'Scroll'
+    if (-not $scroll) {
+      # Print what the element does support instead of silently reporting the viewport count: whether a
+      # channel exists at all is the first question here, and a pattern that is absent looks exactly like
+      # a tree with nothing to show.
+      $have = @($tree.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName.Replace('PatternIdentifiers.', '') })
+      Say ('  the tree element supports: ' + ($have -join ', '))
+      $scrollers = @()
+      foreach ($e in @($win.FindAll($TS::Descendants, $ANY))) {
+        if (Pat $e 'Scroll') { $scrollers += $e }
+      }
+      Say ('  ' + $scrollers.Count + ' element(s) in this window carry a ScrollPattern')
+      foreach ($e in @($scrollers | Select-Object -First 4)) {
+        $sr = $e.Current.BoundingRectangle
+        Say ('    scroller ' + $e.Current.ControlType.ProgrammaticName + ' |' + $e.Current.Name + '| at ' +
+             [int]$sr.X + ',' + [int]$sr.Y + ' ' + [int]$sr.Width + 'x' + [int]$sr.Height)
+      }
+      if ($scrollers.Count -gt 0) {
+        foreach ($e in $scrollers) {
+          $sr = $e.Current.BoundingRectangle
+          if ($sr.Width -gt 40 -and $sr.X -lt ($r.X + $r.Width)) { $scroll = Pat $e 'Scroll'; break }
+        }
+      }
+    }
+    if ($scroll) {
+      $seenNames = @{}
+      $steps = 14
+      for ($s = 0; $s -le $steps; $s++) {
+        try {
+          $scroll.SetHorizontalScrollPercent(-1)
+          $scroll.SetVerticalScrollPercent([double]($s * 100 / $steps))
+        } catch {
+          Say ('  SetVerticalScrollPercent threw: ' + $_.Exception.Message)
+          break
+        }
+        Start-Sleep -Milliseconds 350
+        foreach ($e in @(FindType $tree $CT::TreeItem)) {
+          $nm = $e.Current.Name.Trim()
+          if ($nm.Length -gt 0) { $seenNames[$nm] = 1 }
+        }
+      }
+    } else {
+      # No scroll channel at all, so drive the widget the way a reader does: a real click inside it to
+      # take focus, then page it from the keyboard. SendKeys reaches the foreground window, which is why
+      # the title-bar raise at the top of this mode is not decoration.
+      Add-Type -AssemblyName System.Windows.Forms
+      ClickAt $tree
+      Start-Sleep -Milliseconds 500
+      $seenNames = @{}
+      $stale = 0
+      for ($s = 1; $s -le 24 -and $stale -lt 3; $s++) {
+        [System.Windows.Forms.SendKeys]::SendWait('{PGDN}')
+        Start-Sleep -Milliseconds 300
+        $before = $seenNames.Keys.Count
+        foreach ($e in @(FindType $tree $CT::TreeItem)) {
+          $nm = $e.Current.Name.Trim()
+          if ($nm.Length -gt 0) { $seenNames[$nm] = 1 }
+        }
+        if ($seenNames.Keys.Count -eq $before) { $stale++ } else { $stale = 0 }
+      }
+      [System.Windows.Forms.SendKeys]::SendWait('^({END})')
+      Start-Sleep -Milliseconds 500
+      foreach ($e in @(FindType $tree $CT::TreeItem)) {
+        $nm = $e.Current.Name.Trim()
+        if ($nm.Length -gt 0) { $seenNames[$nm] = 1 }
+      }
+      Say ('  paged with the keyboard: ' + $seenNames.Keys.Count + ' distinct row name(s)')
+    }
+    $digitSeen = @($seenNames.Keys | Where-Object { $_ -match '^[0-9]' })
+    Say ('  the sweep accumulated ' + $seenNames.Keys.Count +
+         ' distinct row name(s), ' + $digitSeen.Count + ' of them starting with a digit')
+    foreach ($nm in @($seenNames.Keys | Select-Object -Last 3)) { Say ('  sample |' + $nm + '|') }
+  }
+  'tabstrip' {
+    # Crop the tab strip and keep the picture. Everything else this harness does is a count, and a
+    # count cannot see which glyph a stylesheet rule drew: sec.66's close button was the combo box's
+    # down arrow, and the only reading that could tell was the pixels. So print the geometry the crop
+    # came from (a crop of the wrong rectangle looks exactly like a tab with no button on it), and
+    # name the file after the document so two runs do not eat each other's picture.
+    $win = $null
+    for ($k = 1; $k -le 10 -and -not $win; $k++) {
+      Start-Sleep -Milliseconds 500
+      $win = Window $app.Id
+    }
+    if (-not $win) { Say '  no window'; exit 1 }
+    $wr = $win.Current.BoundingRectangle
+    # Pixels need the z-order, which UIA does not: the first round of this mode cropped a tab strip
+    # and got the IDE that was sitting on top of our window at those coordinates. SwitchToThisWindow
+    # is the Alt+Tab call and crosses processes without the foreground-ownership fight that
+    # SetForegroundWindow has; the title-bar click that follows is the old route, kept because it
+    # also wakes the window. And the foreground title is printed, so a crop of somebody else's
+    # window says so in the log instead of reading as "a tab with no button on it".
+    $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+    [W32]::SwitchToThisWindow($hwnd, $true)
+    Start-Sleep -Milliseconds 500
+    Say ('  foreground before the click [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
+    [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))   # raise it by its own title bar
+    Start-Sleep -Milliseconds 800
+    $win = Window $app.Id
+    Say ('  foreground after the click  [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
+    $scale = [W32]::GetDpiForWindow([IntPtr]$win.Current.NativeWindowHandle) / 96.0
+
+    $tab = $null
+    foreach ($t in @(FindType $win $CT::TabItem)) {
+      $tr = $t.Current.BoundingRectangle
+      Say ('  tab |' + $t.Current.Name + '| at ' + [int]$tr.X + ',' + [int]$tr.Y + ' ' +
+           [int]$tr.Width + 'x' + [int]$tr.Height)
+      if ($t.Current.Name -like '*.pdf*' -and -not $tab) { $tab = $t }
+    }
+    if (-not $tab) { Say '  no document tab to crop'; exit 1 }
+
+    $r = $tab.Current.BoundingRectangle
+
+    # The window asked to paint itself into a bitmap rather than grabbed off the screen, because
+    # z-order is not a fight this harness wins: the round before this one captured the tab strip and
+    # got a third-party trial dialog that sits above every window on the desktop, and the foreground
+    # title said our window was up while its pixels were not. PrintWindow asks the window itself.
+    $fw = [int][math]::Ceiling($wr.Width * $scale)
+    $fh = [int][math]::Ceiling($wr.Height * $scale)
+    $winBmp = New-Object System.Drawing.Bitmap($fw, $fh)
+    $wg = [System.Drawing.Graphics]::FromImage($winBmp)
+    $hdc = $wg.GetHdc()
+    # 2 = PW_RENDERFULLCONTENT, which is the flag a DirectComposition-backed window needs.
+    $painted = [W32]::PrintWindow([IntPtr]$win.Current.NativeWindowHandle, $hdc, 2)
+    $wg.ReleaseHdc($hdc)
+    $winShot = Join-Path $scratch ('tabstrip-win-' +
+                                   [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')
+    $winBmp.Save($winShot, [System.Drawing.Imaging.ImageFormat]::Png)
+    $wg.Dispose()
+    Say ('  PrintWindow returned ' + $painted + ', window ' + $fw + 'x' + $fh + ' kept at ' + $winShot)
+
+    # The tab strip cropped out of that picture, in window-local coordinates. A few pixels of slack on
+    # every side and room past the name: the button sits at the tab's trailing edge, and a crop of the
+    # text alone would cut it off and read as "no button".
+    $left = [int][math]::Floor(($r.X - $wr.X - 4) * $scale)
+    $top = [int][math]::Floor(($r.Y - $wr.Y - 3) * $scale)
+    $width = [int][math]::Ceiling(($r.Width + 14) * $scale)
+    $height = [int][math]::Ceiling(($r.Height + 6) * $scale)
+    if ($left -lt 0) { $left = 0 }
+    if ($top -lt 0) { $top = 0 }
+    if ($left + $width -gt $fw) { $width = $fw - $left }
+    if ($top + $height -gt $fh) { $height = $fh - $top }
+    $cropRect = New-Object System.Drawing.Rectangle($left, $top, $width, $height)
+    $bmp = $winBmp.Clone($cropRect, $winBmp.PixelFormat)
+    $shot = Join-Path $scratch ('tabstrip-' + [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')
+    $bmp.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+    # Ink per column in the trailing quarter, so "there is a glyph at the right end" is a number
+    # beside the picture rather than only a look -- and a crop that missed the button says so here.
+    $from = [int]($width * 0.72)
+    for ($x = $from; $x -lt $width; $x += 4) {
+      $ink = 0
+      for ($y = 0; $y -lt $height; $y++) {
+        $c = $bmp.GetPixel($x, $y)
+        if ($c.R -lt 200 -or $c.G -lt 200 -or $c.B -lt 200) { $ink++ }
+      }
+      if ($ink -gt 0) { Say ('  column ' + ($x - $from) + ' ink=' + $ink) }
+    }
+    $bmp.Dispose(); $winBmp.Dispose()
+    Say ('  crop ' + $width + 'x' + $height + ' at window-local ' + $left + ',' + $top +
+         ' kept at ' + $shot)
+  }
+  'bookdialog' {
+    # The bookmark editor, opened the way a reader opens it. Nothing else in this harness has ever
+    # gone through menu -> dialog -> setOutline, because dialog.exec() blocks the caller and no test
+    # can press a button that is inside a blocking call -- so the whole chain was unexercised when the
+    # headless suite went green. Three things are read here that a headless check cannot: the UIA
+    # shape of a QTableWidget (sec.65's QTreeView result says a control's shape is unknown until it
+    # is measured -- totals from GridPattern, never from FindAll of what looked like rows), whether an
+    # untouched box on a 184-bookmark document really arrives with its accept button greyed, and
+    # which row the
+    # Document menu shows once the request is recorded. Nothing is saved; the run ends by killing the
+    # process, so a recorded tree never reaches anybody's file.
+    $docMenu = (CjStr 0x6587, 0x6863)                # the Document menu, Chinese interface
+    $edit = (CjStr 0x7F16, 0x8F91, 0x4E66, 0x7B7E)  # Edit Bookmarks / the dialog title
+    $add = (CjStr 0x52A0, 0x4E00, 0x6761)          # Add one
+    $remove = (CjStr 0x5220, 0x4E00, 0x6761)       # Remove one
+    $up = (CjStr 0x4E0A, 0x79FB)                   # Move Up
+    $down = (CjStr 0x4E0B, 0x79FB)                 # Move Down
+    $write = (CjStr 0x5199, 0x8FD9)                # Write these %n bookmarks
+    $cancel = (CjStr 0x53D6, 0x6D88)               # Cancel
+    $undoNeedle = (CjStr 0x64A4, 0x9500)           # Undo
+
+    Say ('  window title before: [' + (Window $app.Id).Current.Name + ']')
+    TopMenu $app.Id @('Document', $docMenu) | Out-Null
+    $row = RowAny $app.Id @('Edit Bookmarks', $edit)
+    if (-not $row) { Bail 'no bookmark row in either language' }
+    Say ('  menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled)
+    ClickAt $row
+    Start-Sleep -Milliseconds 1500
+    $dlg = WaitDialog $app.Id @('Edit Bookmarks', $edit)
+    if (-not $dlg) { Bail 'the bookmark dialog did not open' }
+    $r = $dlg.Current.BoundingRectangle
+    Say ('  dialog [' + $dlg.Current.Name + '] at ' + [int]$r.X + ',' + [int]$r.Y + ' ' +
+         [int]$r.Width + 'x' + [int]$r.Height)
+
+    # The table's shape, printed before any count is taken from it.
+    $tables = @(FindType $dlg $CT::Table)
+    Say ('  ' + $tables.Count + ' element(s) of ControlType.Table')
+    foreach ($t in $tables) {
+      $g = Pat $t 'Grid'
+      if ($g) {
+        Say ('  GridPattern rows=' + $g.Current.RowCount + ' columns=' + $g.Current.ColumnCount)
+      } else {
+        Say '  the table hands no GridPattern -- a row total cannot be read from this control'
+      }
+    }
+    $all = @($dlg.FindAll($TS::Descendants, $ANY))
+    foreach ($kind in @('DataItem', 'Custom', 'Text', 'Edit', 'Spinner', 'Button', 'Header', 'HeaderItem')) {
+      # Counted off the descendant list rather than with a ControlType built by name: the first
+      # version of this line asked ControlType for each kind and reported zero of every one of them,
+      # including the DataItems and Buttons sitting plainly in the dump below it. A channel that
+      # cannot find a thing reads exactly like a window that has no such thing (sec.58, sec.65).
+      $hits = @($all | Where-Object { $_.Current.ControlType.ProgrammaticName -eq ('ControlType.' + $kind) })
+      Say ('  ' + $kind + ': ' + $hits.Count)
+    }
+    Say ('  ' + $all.Count + ' descendants in total; the first 20 as type |name| patterns:')
+    foreach ($e in @($all | Select-Object -First 20)) {
+      $pats = @($e.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName.Replace('Pattern', '') })
+      $n = $e.Current.Name
+      if ($n.Length -gt 46) { $n = $n.Substring(0, 46) + '...' }
+      Say ('    ' + $e.Current.ControlType.ProgrammaticName + ' |' + $n.Replace("`r", ' ').Replace("`n", ' / ') +
+           '| ' + ($pats -join ','))
+    }
+
+    $btns = @(FindType $dlg $CT::Button)
+    Say ('  buttons (' + $btns.Count + '):')
+    foreach ($b in $btns) {
+      Say ('    |' + $b.Current.Name + '| enabled=' + $b.Current.IsEnabled)
+    }
+
+    # Cell by cell, which is the reading sec.74 exists for. A QTableWidget hands UIA one DataItem per
+    # cell and only for the viewport, so three consecutive names are one row: title, level, page. sec.72
+    # measured the middle of every triple as empty -- the level was a widget inside the cell, and a cell
+    # widget does not appear in the tree at all -- so the numbers that follow are the whole question:
+    # if the middle still reads empty, the column is still silent to a screen reader and the fix is a
+    # comment. The empty total cannot be read as a pass or fail on its own, because a bookmark with no
+    # page has a genuinely blank page cell.
+    $items = @($all | Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.DataItem' })
+    $blankCells = @($items | Where-Object { $_.Current.Name -eq '' }).Count
+    $digitCells = @($items | Where-Object { $_.Current.Name -match '^[0-9]{1,4}$' }).Count
+    Say ('  cells: ' + $items.Count + ' DataItem, ' + $blankCells + ' with an empty Name, ' +
+         $digitCells + ' whose Name is just a number')
+    for ($i = 0; $i + 2 -lt [math]::Min(12, $items.Count); $i += 3) {
+      $triple = @()
+      foreach ($c in @($items[$i], $items[$i + 1], $items[$i + 2])) {
+        $cn = ''
+        if ($c) { $cn = $c.Current.Name }
+        if ($cn.Length -gt 20) { $cn = $cn.Substring(0, 20) + '...' }
+        $triple += ('|' + $cn + '|')
+      }
+      Say ('    row ' + [int]($i / 3 + 1) + ': title ' + $triple[0] + ' level ' + $triple[1] +
+           ' page ' + $triple[2])
+    }
+    $texts = @(FindType $dlg $CT::Text)
+    $longest = ''
+    foreach ($t in $texts) { if ($t.Current.Name.Length -gt $longest.Length) { $longest = $t.Current.Name } }
+    Say ('  summary (longest of ' + $texts.Count + ' Text): |' +
+         $longest.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+
+    # The pixels, because a count cannot see whether 184 rows fit, whether the level column reads as
+    # a number to an eye, or whether the empty page cells look like anything at all.
+    $hwnd = [IntPtr]$dlg.Current.NativeWindowHandle
+    [W32]::SwitchToThisWindow($hwnd, $true)
+    Start-Sleep -Milliseconds 600
+    $scale = [W32]::GetDpiForWindow($hwnd) / 96.0
+    # The bitmap has to be the window's OUTER size. UIA's BoundingRectangle for a Qt top-level is its
+    # client area, while PrintWindow draws the whole window including the title bar -- framing the shot
+    # at the client size cut the accept button's row off the bottom of the picture, which reads exactly
+    # like a dialog whose layout does not fit. The rect line below is what tells the two apart.
+    $outer = [W32]::Rect($hwnd)
+    $fw = [int][math]::Ceiling(($outer.Right - $outer.Left) * $scale)
+    $fh = [int][math]::Ceiling(($outer.Bottom - $outer.Top) * $scale)
+    if ($fw -lt $r.Width -or $fh -lt $r.Height) {
+      $fw = [int][math]::Ceiling($r.Width * $scale)
+      $fh = [int][math]::Ceiling($r.Height * $scale)
+    }
+    $bmp = New-Object System.Drawing.Bitmap($fw, $fh)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $hdc = $g.GetHdc()
+    $painted = [W32]::PrintWindow($hwnd, $hdc, 2)
+    $g.ReleaseHdc($hdc)
+    $shot = Join-Path $scratch ('bookdialog-' + [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')
+    $bmp.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+    $g.Dispose(); $bmp.Dispose()
+    Say ('  PrintWindow returned ' + $painted + ', shot ' + $fw + 'x' + $fh +
+         ' (UIA client ' + [int]$r.Width + 'x' + [int]$r.Height + ') kept at ' + $shot)
+
+    # Untouched: the accept button must be off, and say why in the summary. This is the rule the
+    # model cannot hold (it never reads the file's own /Outlines), so the screen is where it either
+    # exists or does not.
+    $go = MatchOne $dlg $CT::Button @('Write', $write)
+    if (-not $go) { Bail 'no accept button found by either name' }
+    Say ('  untouched accept |' + $go.Current.Name + '| enabled=' + $go.Current.IsEnabled)
+    # Where the accept button actually sits. A picture that cuts its bottom edge cannot say which of
+    # two things happened: the layout pushed the row below the window's own bottom (a product defect,
+    # and the English summary is taller than the Chinese one), or the bitmap is short because UIA's
+    # rectangle is the client area while PrintWindow draws the frame as well. Two rectangles answer it.
+    $br = $go.Current.BoundingRectangle
+    Say ('  accept rect ' + [int]$br.X + ',' + [int]$br.Y + ' ' + [int]$br.Width + 'x' + [int]$br.Height +
+         ' ; dialog rect ' + [int]$r.X + ',' + [int]$r.Y + ' ' + [int]$r.Width + 'x' + [int]$r.Height +
+         ' ; button bottom is ' + [int]([math]::Abs($br.Bottom - $r.Bottom)) + ' px ' +
+         $(if ($br.Bottom -gt $r.Bottom) { 'BELOW' } else { 'inside' }) + ' the dialog edge')
+
+    # One click on Add one, which is a real button press inside the blocking dialog -- the first
+    # input this dialog has ever received from outside its own class.
+    $addBtn = MatchOne $dlg $CT::Button @('Add one', $add)
+    if (-not $addBtn) { Bail 'no Add one button' }
+    ClickAt $addBtn
+    Start-Sleep -Milliseconds 900
+    $dlg = WaitDialog $app.Id @('Edit Bookmarks', $edit)
+    $t2 = @(FindType $dlg $CT::Table)
+    foreach ($t in $t2) {
+      $g2 = Pat $t 'Grid'
+      if ($g2) { Say ('  after Add one, GridPattern rows=' + $g2.Current.RowCount) }
+    }
+    $go = MatchOne $dlg $CT::Button @('Write', $write)
+    Say ('  after Add one, accept |' + $go.Current.Name + '| enabled=' + $go.Current.IsEnabled)
+    $texts2 = @(FindType $dlg $CT::Text)
+    $longest2 = ''
+    foreach ($t in $texts2) { if ($t.Current.Name.Length -gt $longest2.Length) { $longest2 = $t.Current.Name } }
+    Say ('  and the summary: |' + $longest2.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+
+    # The refusal on screen, written through the cell's own Value pattern (sec.72's dump shows every
+    # cell offers one). Two claims are tested here and only the screen can hold either: that a typed 0
+    # stops the press, and that the cell can be written at all -- which is the thing a spin box inside
+    # a cell could never be, since it was not in the tree. One attempt each way; if this channel does
+    # not carry a write, that is the reading, not something to retry (sec.41).
+    $levelNeedle = (CjStr 0x5C42, 0x7EA7)   # "level", the word the refusal sentence names
+    $desc2 = @($dlg.FindAll($TS::Descendants, $ANY))
+    $items2 = @($desc2 | Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.DataItem' })
+    Say ('  cells after Add one: ' + $items2.Count)
+    if ($items2.Count -ge 3) {
+      Say ('    first row: |' + $items2[0].Current.Name + '| |' + $items2[1].Current.Name + '| |' +
+           $items2[2].Current.Name + '|')
+      $val = Pat $items2[1] 'Value'
+      if (-not $val) {
+        Say '  the second cell of the row hands no Value pattern -- nothing to type into'
+      } else {
+        Say ('    its Value=[' + $val.Current.Value + '] isReadOnly=' + $val.Current.IsReadOnly)
+        try {
+          $val.SetValue('0')
+        } catch {
+          Say ('  SetValue threw: ' + $_.Exception.Message)
+        }
+        Start-Sleep -Milliseconds 800
+        $go = MatchOne $dlg $CT::Button @('Write', $write)
+        $said = ''
+        foreach ($t in @(FindType $dlg $CT::Text)) {
+          if ($t.Current.Name.Length -gt $said.Length) { $said = $t.Current.Name }
+        }
+        # Matched in either language on purpose: this harness starts the app from its own scratch ini,
+        # which says Language=en, so a Chinese-only needle reads "the sentence is not there" while the
+        # sentence is on the screen in English -- the false negative sec.42 recorded for a different row.
+        $namesLevel = ($said -like ('*' + $levelNeedle + '*')) -or ($said -like '*level*')
+        Say ('  after typing 0 into that cell: accept enabled=' + $go.Current.IsEnabled +
+             ', summary names the level column=' + $namesLevel)
+        Say ('    summary: |' + $said.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+        try {
+          $val.SetValue('1')
+        } catch {
+          Say ('  SetValue back threw: ' + $_.Exception.Message)
+        }
+        Start-Sleep -Milliseconds 800
+        $go = MatchOne $dlg $CT::Button @('Write', $write)
+        Say ('  after typing 1 back: accept enabled=' + $go.Current.IsEnabled)
+      }
+    }
+
+    ClickAt $go
+    Start-Sleep -Milliseconds 1200
+    $still = WaitDialog $app.Id @('Edit Bookmarks', $edit) 3
+    if ($still) { Say '  the dialog is still up after the accept click -- the request was not recorded' }
+    Say ('  window title after: [' + (Window $app.Id).Current.Name + ']')
+
+    # Every row of the Document menu, rather than a grep for the sentence expected: a needle list
+    # that omits a row reads exactly like a row that is not there.
+    TopMenu $app.Id @('Document', $docMenu) | Out-Null
+    Start-Sleep -Milliseconds 500
+    $rows = @(MenuItems $app.Id)
+    Say ('  Document menu now has ' + $rows.Count + ' rows:')
+    foreach ($e in $rows) {
+      Say ('    |' + $e.Current.Name + '| enabled=' + $e.Current.IsEnabled)
+    }
+    $undoRow = $null
+    foreach ($e in $rows) {
+      if ($e.Current.Name -like ('*' + $undoNeedle + '*') -or $e.Current.Name -like 'Undo*') { $undoRow = $e; break }
+    }
+    if ($undoRow) {
+      ClickAt $undoRow
+      Start-Sleep -Milliseconds 900
+      Say ('  after clicking it, window title: [' + (Window $app.Id).Current.Name + ']')
+      TopMenu $app.Id @('Document', $docMenu) | Out-Null
+      Start-Sleep -Milliseconds 500
+      foreach ($e in @(MenuItems $app.Id)) {
+        if ($e.Current.Name -like ('*' + $undoNeedle + '*') -or $e.Current.Name -like 'Undo*' `
+            -or $e.Current.Name -like 'Redo*') { Say ('    |' + $e.Current.Name + '| enabled=' + $e.Current.IsEnabled) }
+      }
+    } else {
+      Say '  no undo row at all in the Document menu'
     }
   }
 }

@@ -39,8 +39,23 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   （集合对不上、numerus 掉形、两形相同、单数写成多数、段落换行丢）—— 这些都看不出在 (context, source) 上
   是"完全匹配"的
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache`（九种模式
-  都当场跑通过；脚本注释里就是踩过的坑）。装的那份要英文界面走 `-Mode langswitch -Installed`（它的偏好没有
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog`（十三种模式
+  都当场跑通过；脚本注释里就是踩过的坑）。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
+  它的总数来自 GridPattern 的 rows（UIA 只交出现在视口的行，而 Qt 在这棵树上不供 ScrollPattern）。
+  `QTableWidget` 同理：`-Mode bookdialog` 开"编辑书签"框，总数读 GridPattern 的 rows，格子是 DataItem
+  （只有视口里那几十格存在），**而格子里放控件（QSpinBox）那个控件根本不进 UIA 树** —— 所以层级那一列
+  从 §74 起是**正文格**：一行的三个连续 DataItem 就是 标题/层级/页码，**数在 Name 里**（同一格的
+  `Value` 是空串 —— 不进编辑态 Qt 不供值，只看 Value 会把这列又读成空的），而文本格可以被
+  `ValuePattern.SetValue` 写进去（§74 就是这样在屏幕上验出那句拒话的）。要看某个控件画成了什么样用
+  `-Mode tabstrip`：它用 `PrintWindow` 让窗口自己画 ——
+  屏幕截图在这台机器上会裁到盖在上面的第三方 topmost 窗口（§66 就是这样裁到了一个 WinZip 试用弹窗），而
+  z-order 不是这个 harness 能赢的。**布局这种事只有图能看出来**：§71 的框 620 宽时第三列被切在窗口外，
+  所有计数全绿。**反过来图也会说谎**：UIA 的 `BoundingRectangle` 对 Qt 顶层窗口是**客户区**，而
+  `PrintWindow` 画的是**整个窗口**（含标题栏与边框）—— 按客户区尺寸开图必然切掉最底一行（§74 差点把
+  这个当成"按钮被挤出窗口"的产品缺陷），所以开图按 `GetWindowRect` 的外框尺寸，判"在不在窗口里"用
+  两个矩形比。**模式早退必须走 `Bail`**（说一句 + kill 掉 xyzpdf + exit 1）：裸 `exit` 会跳过文件末尾
+  那句 kill，残留实例会喂给下一轮，看着像"框没起来"（§74 真丢了一轮才抓到）。
+  装的那份要英文界面走 `-Mode langswitch -Installed`（它的偏好没有
   外面的读路，读数在应用自己的设置框里）。`build-local-release/gui-verify/` 下那些是历次草稿，在
   gitignore 的构建树里、丢了找不回来 —— 量出可用的新路由就收进 `tools/gui-probe.ps1`
 - 带表单字段的样本不用等真文件：`XYZPDF_FORM_SAMPLE_DIR=<目录> build-local-release/tests/xyzpdf_documenteditor_smoke.exe`

@@ -21,6 +21,7 @@
 #include "../documenttab.h"
 #include "../src/edit/documenteditor.h"
 #include "../src/theme/thememanager.h"
+#include "../src/ui/bookmarkdialog.h"
 #include "../src/ui/deletepagesdialog.h"
 #include "../src/ui/findbar.h"
 #include "../src/ui/mergepagesdialog.h"
@@ -404,6 +405,22 @@ int main(int argc, char **argv)
                   .arg(expected.red())
                   .arg(expected.green())
                   .arg(expected.blue()));
+    }
+
+    // ---- every stylesheet rule points at the asset it means ----
+    //
+    // A stylesheet is a string, so a rule can name the wrong picture and only a screenshot would
+    // notice. One did: the tab's close button was given the combo box's down chevron (the same token
+    // two rules away), which reads as "there is a menu here", closes nothing, and stays plausible
+    // looking until someone clicks it.
+    for (const AppTheme theme : { AppTheme::Default, AppTheme::DefaultDark }) {
+        const QString sheet = ThemeManager::styleSheetFor(theme);
+        const int at = sheet.indexOf(QStringLiteral("QTabBar::close-button"));
+        const int end = at < 0 ? -1 : sheet.indexOf(QLatin1Char('}'), at);
+        const QString rule = (at < 0 || end < 0) ? QString() : sheet.mid(at, end - at).trimmed();
+        check(rule.contains(QStringLiteral("tab_close_")) && !rule.contains(QStringLiteral("chevron")),
+              QStringLiteral("the tab close button names a close image, not another widget's arrow (%1)")
+                  .arg(rule.isEmpty() ? QStringLiteral("no rule found") : rule));
     }
 
     // ---- dragging over the text selects it ----
@@ -2057,7 +2074,386 @@ int main(int argc, char **argv)
         }
     }
 
-    // ---- the page the status bar names is the page on the screen ----
+    // ---- 编辑书签: the box that shows a tree as a list, and greys what would change nothing ----
+    //
+    // The eighth recorder, and the only one whose subject is a structure rather than a number or a
+    // range. Three things are checked here that no model test can see. One is what the box opens on:
+    // the sidebar's own tree, so the reader edits the list they can see rather than an empty grid.
+    // Two is the rule the model does *not* have: pressing 确定 on a box nobody touched would record a
+    // request, dirty the tab and hand out an undo row that puts the file back exactly as it was --
+    // setOutline() only refuses an identical *pending* tree (§69), and nothing but this box can see
+    // the document's own. Three is §70's owed sentence: a bookmark naming a page an earlier 删页 took
+    // out is said out loud *before* the press and still let through, because the model's answer to it
+    // is a heading, which is the same answer it gives for a page lost after the ask.
+    {
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+
+        // A tree the shape of a real chapter list: five bookmarks, three depths, one of them a
+        // heading that names no page.
+        const QVector<OutlineRow> sample = {
+            {QStringLiteral("第一章"), 1, 0, QPointF()},
+            {QStringLiteral("1.1"), 2, 2, QPointF()},
+            {QStringLiteral("1.1.1"), 3, 4, QPointF()},
+            {QStringLiteral("1.2"), 2, 6, QPointF()},
+            {QStringLiteral("第二章"), 1, -1, QPointF()},
+        };
+        const Outline tree = outlineFromRows(sample);
+
+        const auto gridOf = [](BookmarkDialog &box) { return box.findChild<QTableWidget *>(); };
+        const auto okayOf = [](BookmarkDialog &box) {
+            auto *buttons = box.findChild<QDialogButtonBox *>();
+            return buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+        };
+        const auto saidBy = [](BookmarkDialog &box) {
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        const auto button = [](BookmarkDialog &box, const QString &name) {
+            const auto buttons = box.findChildren<QPushButton *>();
+            for (QPushButton *one : buttons) {
+                if (one->text() == name)
+                    return one;
+            }
+            return static_cast<QPushButton *>(nullptr);
+        };
+        const auto orderOf = [](BookmarkDialog &box) {
+            QStringList titles;
+            const QVector<OutlineRow> rows = box.rows();
+            for (const OutlineRow &row : rows)
+                titles << QStringLiteral("%1/%2/%3").arg(row.title).arg(row.level).arg(row.page);
+            return titles.join(QStringLiteral(", "));
+        };
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(book, QString(), &error),
+              QStringLiteral("setup: a 40-page document opens: %1").arg(error));
+
+        {
+            BookmarkDialog box(&tab, &editor, tree);
+            QTableWidget *grid = gridOf(box);
+            check(grid != nullptr, "the box shows the bookmarks as a grid");
+            check(grid && grid->rowCount() == 5,
+                  QStringLiteral("it opens on the tree the sidebar is showing, not on an empty "
+                                 "list (%1 rows)")
+                      .arg(grid ? grid->rowCount() : -1));
+            // 1-based in the cell: this is the number the reader counts on screen (§70), so a page
+            // index of 0 has to read as 第 1 页 or every number in the box is one off from the bar.
+            check(grid && grid->item(0, 2) && grid->item(0, 2)->text() == QStringLiteral("1"),
+                  QStringLiteral("and the page column is the numbering on the screen: %1")
+                      .arg(grid && grid->item(0, 2) ? grid->item(0, 2)->text() : QStringLiteral("(none)")));
+            check(grid && grid->item(4, 2) && grid->item(4, 2)->text().isEmpty(),
+                  "a bookmark with no page opens with an empty cell rather than a 0 or a 1");
+            QPushButton *okay = okayOf(box);
+            check(okay && !okay->isEnabled(),
+                  "an untouched box is off: pressing it would record a change that is not one");
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("一模一样")) && said.contains(QStringLiteral("不会多改什么")),
+                  QStringLiteral("and it says that in those words: %1").arg(said));
+            check(said.contains(QStringLiteral("其中 1 条不指向任何一页")) == false,
+                  QStringLiteral("the untouched box says nothing about headings, because the "
+                                 "sentence about a change belongs to a change: %1")
+                      .arg(said));
+        }
+
+        {
+            // One keystroke and the box becomes a request: the count, the heading aside, and the
+            // family's ending all have to arrive together, or the reader agrees to a sentence that
+            // stopped being true when they typed.
+            BookmarkDialog box(&tab, &editor, tree);
+            QTableWidget *grid = gridOf(box);
+            check(grid && grid->item(0, 0), "setup: the first row has a name cell");
+            grid->item(0, 0)->setText(QStringLiteral("第一章 改名"));
+            QPushButton *okay = okayOf(box);
+            const QString renamed = saidBy(box);
+            check(okay && okay->isEnabled(),
+                  QStringLiteral("renaming one row is a change, and the button knows: %1")
+                      .arg(renamed));
+            check(okay && okay->text() == QStringLiteral("写这 5 条书签"),
+                  QStringLiteral("and the button counts them: %1")
+                      .arg(okay ? okay->text() : QStringLiteral("(none)")));
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("会有 5 条书签")) && said.contains(QStringLiteral("原来那份文件")),
+                  QStringLiteral("the summary repeats the count and keeps the save promise: %1")
+                      .arg(said));
+            check(said.contains(QStringLiteral("其中 1 条不指向任何一页")),
+                  QStringLiteral("and says which of the five is a heading: %1").arg(said));
+        }
+
+        {
+            // §70's owed sentence, on the only path that can produce it: the page was taken out by an
+            // edit that has not been saved, so the reader's number still names a page on screen and
+            // nothing at all in the file a save would write.
+            DocumentEditor deleted;
+            QString e;
+            check(deleted.open(book, QString(), &e), QStringLiteral("setup: opens again: %1").arg(e));
+            check(deleted.deletePages({2}, &e), QStringLiteral("setup: the third page is pending-deleted: %1").arg(e));
+            const QVector<OutlineRow> naming = {
+                {QStringLiteral("还在一起"), 1, 0, QPointF()},
+                {QStringLiteral("被删那页"), 1, 2, QPointF()},
+            };
+            BookmarkDialog box(&tab, &deleted, outlineFromRows(naming));
+            QTableWidget *grid = gridOf(box);
+            // A change first, because an untouched box is not a request at all (that is the rule two
+            // blocks above pin): what is being asked here is whether the box tells the reader about
+            // the page that is already gone *while* they are making an edit that will write it.
+            grid->item(0, 0)->setText(QStringLiteral("还在一起 改名"));
+            QPushButton *okay = okayOf(box);
+            check(okay && okay->isEnabled(),
+                  QStringLiteral("renaming is a change, so the press is allowed through: %1")
+                      .arg(saidBy(box)));
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("在前面的修改里已经删掉了")),
+                  QStringLiteral("and the box says which kind of bookmark they are about to write: %1")
+                      .arg(said));
+            check(said.contains(QStringLiteral("有 1 条")),
+                  QStringLiteral("counted, not vaguely mentioned: %1").arg(said));
+            check(box.rows().at(1).page == 2,
+                  "the row keeps the number the reader typed rather than being renumbered here");
+        }
+
+        {
+            // Sharing a page is not the same as losing one, and this is the case that was missed
+            // until a real book was opened in the box: 184 bookmarks over fewer pages, with several
+            // rows on the same page. Asking "how many of my rows are still on a page" of a function
+            // that counts *distinct pages* subtracts the duplicates and reports them as deleted --
+            // which is how the box told a reader who had deleted nothing that 77 bookmarks pointed at
+            // pages that were gone (docs/store-submission.md §72).
+            DocumentEditor shared;
+            QString e;
+            check(shared.open(book, QString(), &e), QStringLiteral("setup: opens for the shared page: %1").arg(e));
+            const QVector<OutlineRow> threeOnTwo = {
+                {QStringLiteral("One"), 1, 5, QPointF()},
+                {QStringLiteral("Two"), 1, 5, QPointF()},
+                {QStringLiteral("Three"), 1, 6, QPointF()},
+            };
+            BookmarkDialog box(&tab, &shared, outlineFromRows(threeOnTwo));
+            box.findChild<QTableWidget *>()->item(0, 0)->setText(QStringLiteral("One 改名"));
+            const QString said = saidBy(box);
+            check(!said.contains(QStringLiteral("在前面的修改里已经删掉了")),
+                  QStringLiteral("three bookmarks on two pages, nothing deleted, so nothing is "
+                                 "reported as taken out: %1")
+                      .arg(said));
+            QPushButton *okay = okayOf(box);
+            check(okay && okay->isEnabled(), "and the change itself is still a change");
+
+            // The positive half: the same box, with a page genuinely pending-deleted behind it, says
+            // the sentence about the one row that lost its page -- so the check above is not green
+            // because the sentence can never appear.
+            check(shared.deletePages({6}, &e), QStringLiteral("setup: page 7 is now pending-deleted: %1").arg(e));
+            box.findChild<QTableWidget *>()->item(1, 0)->setText(QStringLiteral("Two 改名"));
+            const QString gone = saidBy(box);
+            check(gone.contains(QStringLiteral("在前面的修改里已经删掉了")) && gone.contains(QStringLiteral("有 1 条")),
+                  QStringLiteral("counted as rows, not as pages: %1").arg(gone));
+        }
+
+        {
+            // The two ways a page cell can be wrong, and that both stop the press.
+            DocumentEditor strict;
+            QString e;
+            check(strict.open(book, QString(), &e), QStringLiteral("setup: opens for the bounds: %1").arg(e));
+            const QVector<OutlineRow> one = {
+                {QStringLiteral("Only"), 1, 5, QPointF()},
+            };
+            BookmarkDialog box(&tab, &strict, outlineFromRows(one));
+            QTableWidget *grid = gridOf(box);
+            grid->item(0, 2)->setText(QStringLiteral("999"));
+            QPushButton *okay = okayOf(box);
+            const QString said = saidBy(box);
+            check(okay && !okay->isEnabled(), "a page the file never had is refused before the press");
+            check(said.contains(QStringLiteral("第 1 行")) && said.contains(QStringLiteral("40 页")),
+                  QStringLiteral("naming the row and the file's own page count: %1").arg(said));
+            grid->item(0, 2)->setText(QStringLiteral("第三" /* not a number */));
+            const QString again = saidBy(box);
+            check(again.contains(QStringLiteral("不是数字")) && again.contains(QStringLiteral("留空")),
+                  QStringLiteral("and a cell that is not a number is told apart from a blank one, "
+                                 "with the way to mean no page: %1")
+                      .arg(again));
+        }
+
+        {
+            // The 层级 column is a text cell, and that swap is the whole of §74: the first version put a
+            // spin box *inside* the cell, and §72 read this box off the real window and found that cell
+            // empty in the UIA tree -- a number on the screen and nothing for a screen reader. A text
+            // cell is reachable, but it can now hold "0", "深" or nothing at all, so the bound the spin
+            // enforced silently is said out loud before the press instead. Both halves are pinned here:
+            // the shape the accessibility tree can reach, and the refusal that replaced the clamp.
+            DocumentEditor levels;
+            QString e;
+            check(levels.open(book, QString(), &e),
+                  QStringLiteral("setup: opens for the level column: %1").arg(e));
+            const QVector<OutlineRow> nested = {
+                {QStringLiteral("章"), 1, 0, QPointF()},
+                {QStringLiteral("节"), 2, 2, QPointF()},
+            };
+            BookmarkDialog box(&tab, &levels, outlineFromRows(nested));
+            QTableWidget *grid = gridOf(box);
+            check(grid->item(1, 1) && grid->item(1, 1)->text() == QStringLiteral("2"),
+                  QStringLiteral("the level is the cell's own text, which is what the tree reads: %1")
+                      .arg(grid->item(1, 1) ? grid->item(1, 1)->text() : QStringLiteral("(none)")));
+            check(grid->cellWidget(0, 1) == nullptr && grid->cellWidget(1, 1) == nullptr,
+                  "and no widget sits in those cells, because a cell widget is absent from UIA (§72)");
+
+            QPushButton *okay = okayOf(box);
+            // A real request first. Without this the button would be grey for the *other* reason -- an
+            // untouched box (§71) -- and a refusal asserted as "grey" would be green whether or not the
+            // level check exists at all.
+            grid->item(0, 0)->setText(QStringLiteral("章 改名"));
+            check(okay && okay->isEnabled(), "setup: renaming made it a request");
+
+            grid->item(0, 1)->setText(QStringLiteral("0"));
+            QString said = saidBy(box);
+            check(okay && !okay->isEnabled(),
+                  QStringLiteral("a typed 0 is refused before the press, not clamped to 1: %1").arg(said));
+            check(said.contains(QStringLiteral("第 1 行的层级")) && said.contains(QStringLiteral("1 或更大")),
+                  QStringLiteral("naming the row, the column and what a level looks like: %1").arg(said));
+            check(box.rows().at(0).level == 0,
+                  "and the list keeps the number that was typed, so nothing is quietly re-nested");
+
+            grid->item(0, 1)->setText(QString());
+            said = saidBy(box);
+            check(!okay->isEnabled() && said.contains(QStringLiteral("第 1 行的层级")),
+                  QStringLiteral("a blank level is the same refusal, because a blank is not a level: %1")
+                      .arg(said));
+
+            grid->item(0, 1)->setText(QStringLiteral("深"));
+            said = saidBy(box);
+            check(!said.contains(QStringLiteral("不是数字")),
+                  QStringLiteral("and it does not borrow the page column's non-number sentence, whose "
+                                 "second half tells the reader to leave the cell empty -- here empty is "
+                                 "not an answer: %1").arg(said));
+
+            grid->item(0, 1)->setText(QStringLiteral("3"));
+            said = saidBy(box);
+            check(okay->isEnabled(), QStringLiteral("a level of 3 is a request again: %1").arg(said));
+            check(box.rows().at(0).level == 3, "and that is the number the model gets");
+
+            grid->item(0, 1)->setText(QStringLiteral("0"));
+            grid->item(0, 2)->setText(QStringLiteral("999"));
+            said = saidBy(box);
+            check(said.contains(QStringLiteral("层级")) && !said.contains(QStringLiteral("不在这份文件里")),
+                  QStringLiteral("a row broken in two columns is asked about left first: %1").arg(said));
+
+            {
+                // Writing back the digits a row already had is not an edit: §71's "untouched box" rule
+                // compares the parsed number, so a cell re-typed as "1" has to land back on the level
+                // it opened with rather than reading as a change.
+                grid->item(0, 0)->setText(QStringLiteral("章"));
+                grid->item(0, 1)->setText(QStringLiteral("1"));
+                grid->item(0, 2)->setText(QStringLiteral("1"));
+                grid->item(1, 1)->setText(QStringLiteral("2"));
+                const QString back = saidBy(box);
+                check(!okay->isEnabled(),
+                      QStringLiteral("back to exactly what it opened with, so the press is off again: %1")
+                          .arg(back));
+                check(back.contains(QStringLiteral("一模一样")),
+                      QStringLiteral("and it says the untouched sentence, not a count of what would be "
+                                     "written: %1").arg(back));
+            }
+        }
+
+        {
+            // Which message wins when two rows are broken: the topmost row. A box that answered by
+            // *kind* would name row 5's page while the reader is looking at row 2's empty name.
+            const QVector<OutlineRow> two = {
+                {QStringLiteral("First"), 1, 0, QPointF()},
+                {QString(), 1, 3, QPointF()},
+                {QStringLiteral("Last"), 1, 999, QPointF()},
+            };
+            BookmarkDialog box(&tab, &editor, outlineFromRows(two));
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("第 2 行还没有名字")),
+                  QStringLiteral("the earlier row is the one it asks about: %1").arg(said));
+            check(!said.contains(QStringLiteral("第 3 行")),
+                  QStringLiteral("and it does not talk about the third row yet: %1").arg(said));
+        }
+
+        {
+            // 加一条 puts the new row beside the selected one -- after its whole subtree, which is
+            // the one question outlineSubtreeEnd() answers. A row inserted directly under a chapter
+            // would become its child and rearrange a tree the reader did not touch.
+            BookmarkDialog box(&tab, &editor, tree);
+            QTableWidget *grid = gridOf(box);
+            grid->setCurrentCell(0, 0);
+            QPushButton *add = button(box, QStringLiteral("加一条"));
+            check(add && add->isEnabled(), "a box with rows in it can take one more");
+            add->click();
+            const QVector<OutlineRow> after = box.rows();
+            check(after.size() == 6, QStringLiteral("one row was added, not one child: %1")
+                                          .arg(after.size()));
+            check(after.at(4).title == QStringLiteral("新书签") && after.at(4).level == 1,
+                  QStringLiteral("and it landed after 第一章's whole block, at the top level (%1)")
+                      .arg(orderOf(box)));
+            check(after.at(5).title == QStringLiteral("第二章") && after.at(5).page == -1,
+                  QStringLiteral("with the file's own last bookmark still last and still without a "
+                                 "page (%1)")
+                      .arg(orderOf(box)));
+        }
+
+        {
+            // 删一条 takes the subtree with it. The children have nowhere else to go: left behind,
+            // outlineFromRows would hang them on whatever row precedes them, which is a different
+            // document than the one the reader was looking at.
+            BookmarkDialog box(&tab, &editor, tree);
+            QTableWidget *grid = gridOf(box);
+            grid->setCurrentCell(0, 0);
+            QPushButton *remove = button(box, QStringLiteral("删一条"));
+            check(remove && remove->isEnabled(), "a selected row can be taken out");
+            remove->click();
+            check(box.rows().size() == 1,
+                  QStringLiteral("taking the chapter out took its three descendants with it: %1")
+                      .arg(orderOf(box)));
+        }
+
+        {
+            // 上移/下移 move a block past a sibling and are off where there is no sibling to pass.
+            BookmarkDialog box(&tab, &editor, tree);
+            QTableWidget *grid = gridOf(box);
+            grid->setCurrentCell(1, 0); // 1.1, a level-2 row with a child and one sibling (1.2)
+            QPushButton *up = button(box, QStringLiteral("上移"));
+            QPushButton *down = button(box, QStringLiteral("下移"));
+            check(up && !up->isEnabled(),
+                  "a first child cannot move above its parent, and the button says so");
+            check(down && down->isEnabled(), "but it has a sibling below to swap with");
+            down->click();
+            check(orderOf(box) == QStringLiteral(
+                      "第一章/1/0, 1.2/2/6, 1.1/2/2, 1.1.1/3/4, 第二章/1/-1"),
+                  QStringLiteral("and the swap carried the child along with its parent: %1")
+                      .arg(orderOf(box)));
+        }
+
+        {
+            // Opening on what is already pending, and the difference between "same as the file" and
+            // "same as the last request": both grey the button, and they have to say different things,
+            // because the first is nothing to undo and the second is an edit that is already recorded.
+            DocumentEditor pending;
+            QString e;
+            check(pending.open(book, QString(), &e), QStringLiteral("setup: opens for the pending tree: %1").arg(e));
+            check(pending.setOutline(sample, &e), QStringLiteral("setup: a tree is recorded: %1").arg(e));
+            // The file's own tree, deliberately a different size, so that "it opened on the recorded
+            // list" and "it opened on the bookmarks in the file" cannot both be true of one reading.
+            const QVector<OutlineRow> asInFile = {
+                {QStringLiteral("旧封面"), 1, 0, QPointF()},
+                {QStringLiteral("旧版权"), 1, 1, QPointF()},
+            };
+            BookmarkDialog box(&tab, &pending, outlineFromRows(asInFile));
+            QTableWidget *grid = gridOf(box);
+            check(grid && grid->rowCount() == 5,
+                  QStringLiteral("the box opens on the recorded tree, not on the file's own bookmarks "
+                                 "(%1 rows)")
+                      .arg(grid ? grid->rowCount() : -1));
+            QPushButton *okay = okayOf(box);
+            check(okay && !okay->isEnabled(), "and untouched, it is still not a change");
+            grid->item(0, 0)->setText(QStringLiteral("第一章 又改"));
+            const QString said = saidBy(box);
+            check(said.contains(QStringLiteral("这会把前面记下的那一条")),
+                  QStringLiteral("now it says which list is being replaced: %1").arg(said));
+        }
+    }
+
     //
     // §13 wrote this down from a real window: after a zoom-mode change the pages in
     // front were 5 and 6 while the bar still read "2 / 40", and pressing a paging key

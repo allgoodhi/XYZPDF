@@ -64,6 +64,8 @@
 #include <qpdf/Buffer.hh>
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFFormFieldObjectHelper.hh>
+#include <qpdf/QPDFOutlineDocumentHelper.hh>
+#include <qpdf/QPDFOutlineObjectHelper.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
@@ -71,8 +73,10 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <vector>
 
 namespace {
 
@@ -1437,6 +1441,220 @@ QString writeDirectiveFieldCopy(const QString &source, const QString &destinatio
         return {};
     }
     return destination;
+}
+
+// A bookmark tree the way a generator leaves one: two chapters, the first holding two sections, the
+// first of those holding one sub-section -- five items over three depths, every destination an
+// explicit array.
+//
+// This exists because there is no other way to put a tree in a file here: QPDF's outline helper is
+// read-only (its constructors are private and it has no setter), so writing bookmarks means the
+// seven keys by hand -- /Title /Parent /First /Last /Prev /Next /Count plus /Dest. The shapes and
+// the four deliberate breakages are measured in tests/outlineprobe.cpp; what this file needs is the
+// one healthy tree that the read path can be checked against, because that check runs through Qt's
+// bookmark model, and the model alone decides whether the nesting survives.
+bool writeNestedOutlineSample(const QString &source, const QString &destination, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        auto pageAt = [&](int index) { return pages.at(size_t(index)).getObjectHandle(); };
+
+        QPDFObjectHandle root = QPDFObjectHandle::newDictionary();
+        root.replaceKey("/Type", QPDFObjectHandle::newName("/Outlines"));
+        root = qpdf.makeIndirectObject(root);
+
+        auto item = [&qpdf, &pageAt](const std::string &title, QPDFObjectHandle parent,
+                                     int pageIndex) {
+            QPDFObjectHandle handle = QPDFObjectHandle::newDictionary();
+            handle.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(title));
+            handle.replaceKey("/Parent", parent);
+            QPDFObjectHandle dest = QPDFObjectHandle::newArray();
+            dest.appendItem(pageAt(pageIndex));
+            dest.appendItem(QPDFObjectHandle::newName("/Fit"));
+            handle.replaceKey("/Dest", dest);
+            return qpdf.makeIndirectObject(handle);
+        };
+
+        // One level of siblings: /Prev and /Next along the row, /First and /Last from the parent,
+        // and /Count as how many items hang below it. §63's controls are why this computes the
+        // links instead of typing them: a root that lists no /First loses the whole outline in all
+        // three readers, and a broken /Next on a top-level item truncates everything after it.
+        //
+        // The row is taken by value because replaceKey() is non-const on a handle that has to be
+        // written into -- the same shape that has stopped every qpdf helper in this file before it.
+        auto link = [](QPDFObjectHandle parent, std::vector<QPDFObjectHandle> children,
+                       int descendants) {
+            for (size_t i = 0; i < children.size(); ++i) {
+                if (i > 0)
+                    children[i].replaceKey("/Prev", children[i - 1]);
+                if (i + 1 < children.size())
+                    children[i].replaceKey("/Next", children[i + 1]);
+            }
+            parent.replaceKey("/First", children.front());
+            parent.replaceKey("/Last", children.back());
+            parent.replaceKey("/Count", QPDFObjectHandle::newInteger(descendants));
+        };
+
+        const QPDFObjectHandle chapterOne = item("Chapter 1", root, 0);
+        const QPDFObjectHandle chapterTwo = item("Chapter 2", root, 10);
+        link(root, { chapterOne, chapterTwo }, 5);
+
+        const QPDFObjectHandle sectionOne = item("Section 1.1", chapterOne, 3);
+        const QPDFObjectHandle sectionTwo = item("Section 1.2", chapterOne, 6);
+        link(chapterOne, { sectionOne, sectionTwo }, 3);
+
+        const QPDFObjectHandle subSection = item("Sub 1.1.1", sectionOne, 4);
+        link(sectionOne, { subSection }, 1);
+
+        qpdf.getRoot().replaceKey("/Outlines", root);
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return false;
+    }
+    return true;
+}
+
+// A row for DocumentEditor::writeOutline, in the flat shape the writer takes (1-based depth, the
+// same one outlineFromRows assembles against).
+OutlineRow outlineRow(const QString &title, int level, int page)
+{
+    OutlineRow row;
+    row.title = title;
+    row.level = level;
+    row.page = page;
+    return row;
+}
+
+// Write `rows` into a copy of `source` through the product's own writer, and save it.
+bool writeOutlineWithProduct(const QString &source, const QString &destination,
+                             const QVector<OutlineRow> &rows, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        if (!DocumentEditor::writeOutline(qpdf, rows, error))
+            return false;
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return false;
+    }
+    return true;
+}
+
+// The outline as qpdf walks it: how many items in the whole tree, and how many under the root.
+// Walking rather than counting dictionary keys is the point -- the thing a reader can reach is the
+// thing that was written.
+struct OutlineWalk
+{
+    int total = 0;
+    int top = 0;
+    QStringList titles;
+};
+
+bool walkOutlineFile(const QString &path, OutlineWalk &out, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        QPDFOutlineDocumentHelper helper(qpdf);
+        std::function<void(std::vector<QPDFOutlineObjectHelper>)> walk =
+            [&](std::vector<QPDFOutlineObjectHelper> items) {
+                for (QPDFOutlineObjectHelper &item : items) {
+                    ++out.total;
+                    out.titles.append(QString::fromUtf8(item.getTitle().c_str()));
+                    walk(item.getKids());
+                }
+            };
+        const std::vector<QPDFOutlineObjectHelper> tops = helper.getTopLevelOutlines();
+        out.top = int(tops.size());
+        walk(tops);
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return false;
+    }
+    return true;
+}
+
+// Take one key out of a file the product's own writer produced. This is §63's control promoted to
+// a standing assertion: it says the tree we wrote is held up by those keys rather than by anything
+// a reader guesses, and it is the only way the "5 items" check below can be told apart from a
+// reader that ignores the structure entirely.
+bool breakOutlineKey(const QString &source, const QString &destination, const QString &which,
+                     QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        QPDFObjectHandle root = qpdf.getRoot().getKey("/Outlines");
+        if (root.isNull()) {
+            *error = QStringLiteral("no /Outlines to break");
+            return false;
+        }
+        if (which == QStringLiteral("root-ends")) {
+            root.removeKey("/First");
+            root.removeKey("/Last");
+        } else if (which == QStringLiteral("first-next")) {
+            root.getKey("/First").removeKey("/Next");
+        } else {
+            *error = QStringLiteral("unknown break %1").arg(which);
+            return false;
+        }
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return false;
+    }
+    return true;
+}
+
+// One bookmark as the sidebar's own tree reports it: what it is called and which page it reaches.
+// Read off the assembled tree rather than off the file's keys, because the question §69's design
+// rests on is "which page does this bookmark land on once the pages have moved", and that is a
+// question about what a reader can click.
+struct BookmarkRead
+{
+    QString title;
+    int page = -1;
+};
+
+// Depth-first, in the order a sidebar draws them, using Outline's own index so the nesting is the
+// reader's rather than something this test re-walks.
+QVector<BookmarkRead> bookmarksAsTheSidebarSees(const Outline &tree)
+{
+    QVector<BookmarkRead> seen;
+    for (int index = 0; index < tree.count(); ++index) {
+        const OutlineNode *node = tree.nodeAt(index);
+        if (node != nullptr)
+            seen.append({node->title, node->page});
+    }
+    return seen;
+}
+
+QString bookmarksAsText(const QVector<BookmarkRead> &seen)
+{
+    QStringList parts;
+    parts.reserve(seen.size());
+    for (const BookmarkRead &one : seen)
+        parts << QStringLiteral("%1@%2").arg(one.title).arg(one.page);
+    return parts.join(QStringLiteral(", "));
+}
+
+// What the sidebar would show for a file on disk, as "title@page" pairs. A helper because a split
+// asks the same question of two files in one block, and asking it inline needs a backend declared
+// beside the assertion that reads it.
+QString bookmarksShownInFile(const QString &path)
+{
+    QtPdfBackend reader;
+    if (reader.load(path, QString()) != Document::Status::Ready)
+        return QStringLiteral("(the file would not open)");
+    return bookmarksAsText(bookmarksAsTheSidebarSees(reader.outline()));
 }
 
 // The directive layer as the file states it, read from the outside: what the document says, what
@@ -5783,15 +6001,572 @@ int main(int argc, char **argv)
                      .arg(realPages)
                      .arg(QFileInfo(real).size() / 1024)
                      .arg(taken));
-            if (!done)
+            // §63 measured what the sidebar used to lose on this very file: 14 of 184 bookmarks.
+            // A note rather than a check, because the number belongs to a file that is not in the
+            // repository and another machine's book will disagree.
+            QtPdfBackend realReader;
+            if (realReader.load(real, QString()) == Document::Status::Ready) {
+                const Outline realTree = realReader.outline();
+                note(QStringLiteral("%1 holds %2 bookmarks, %3 of them at the top level")
+                         .arg(QFileInfo(real).fileName())
+                         .arg(realTree.count())
+                         .arg(realTree.nodes.size()));
+            }
+            if (!done) {
                 std::cerr << "FAIL: the real document could not be edited: "
                           << error.toStdString() << '\n';
-            else
+                // Counted, not just printed. A path that exists but cannot be opened -- naming the
+                // fixtures *folder* here is enough, and is what I did -- used to print this line and
+                // still exit 0 under "all checks passed", so a reading nobody had to act on.
+                ++failures;
+            } else {
                 check(pagesAsReadByTheReader(realResult) == realPages - 3,
                       "and the copy of the real document reads back three pages shorter");
+            }
             check(hashOfFile(real) == before,
                   "and the document on disk outside the repository is byte for byte what it was");
         }
+    }
+
+    // ---- the sidebar's read path: a tree rather than the top level of one (§63) ----
+    //
+    // The two counting checks are written as a pair on purpose, because the two ways this went
+    // wrong have the same symptom. Reading Qt's model as a flat list (which is what
+    // qtpdfbackend.cpp used to do, on the strength of a comment claiming the model was flat) hands
+    // back only the rows under the root -- 14 of a real book's 184 bookmarks. And Qt's Level role
+    // counts from 0 while outlineFromRows assembles against levels counting from 1, so a tree that
+    // *was* walked correctly still lands every chapter and every section at the top. Either half
+    // alone leaves "the top level has two roots" green; only the total alongside it goes red.
+    {
+        const QString outlineFile = scratch.filePath(QStringLiteral("nested-outline.pdf"));
+        QString outlineError;
+        check(writeNestedOutlineSample(source, outlineFile, &outlineError),
+              QStringLiteral("a bookmark tree can be written by hand: %1").arg(outlineError));
+        QtPdfBackend withBookmarks;
+        const bool opened = withBookmarks.load(outlineFile, QString()) == Document::Status::Ready;
+        check(opened, "and the file carrying it opens in the reader");
+        const Outline tree = opened ? withBookmarks.outline() : Outline();
+        check(tree.count() == 5,
+              "all five bookmarks are in the tree, not just the two the model lists under its root");
+        check(tree.nodes.size() == 2, "and exactly two of them are at the top level");
+
+        const OutlineNode *chapter = tree.nodes.isEmpty() ? nullptr : &tree.nodes.at(0);
+        check(chapter && chapter->title == QStringLiteral("Chapter 1")
+                  && chapter->children.size() == 2,
+              "the first chapter holds its two sections");
+        const OutlineNode *section =
+            chapter && !chapter->children.isEmpty() ? &chapter->children.at(0) : nullptr;
+        check(section && section->title == QStringLiteral("Section 1.1")
+                  && section->children.size() == 1,
+              "and the first of those holds a sub-section -- the third depth a root-only read never reached");
+        const OutlineNode *sub =
+            section && !section->children.isEmpty() ? &section->children.at(0) : nullptr;
+        check(sub && sub->title == QStringLiteral("Sub 1.1.1") && sub->page == 4,
+              "and three levels down the bookmark still names the page it was written against");
+        check(tree.nodes.size() == 2 && tree.nodes.at(1).title == QStringLiteral("Chapter 2")
+                  && tree.nodes.at(1).page == 10 && tree.nodes.at(1).children.isEmpty(),
+              "the second chapter stays a root rather than being adopted by the first");
+    }
+
+    // ---- and the same tree written *out*, by the product ----
+    //
+    // §63 measured what the seven keys do when one of them is wrong; §64 fixed the way in; this is
+    // the way out. The tree is written by DocumentEditor::writeOutline and then walked back by two
+    // readers that have no knowledge of each other -- qpdf's outline helper and our own backend,
+    // which is what the sidebar is built from. The two deliberate breakages below are what make the
+    // counts evidence: a file whose items are all in one flat row would satisfy "5 titles" too.
+    {
+        const QString written = scratch.filePath(QStringLiteral("written-outline.pdf"));
+        const QVector<OutlineRow> rows = {
+            outlineRow(QStringLiteral("Chapter 1"), 1, 0),
+            outlineRow(QStringLiteral("Section 1.1"), 2, 3),
+            outlineRow(QStringLiteral("Sub 1.1.1"), 3, 4),
+            outlineRow(QStringLiteral("Section 1.2"), 2, 6),
+            outlineRow(QStringLiteral("Chapter 2"), 1, 10),
+        };
+        QString error;
+        check(writeOutlineWithProduct(source, written, rows, &error),
+              QStringLiteral("the product writes a five-item, three-deep outline: %1").arg(error));
+
+        OutlineWalk walked;
+        error.clear();
+        check(walkOutlineFile(written, walked, &error),
+              QStringLiteral("and qpdf can walk the file it wrote: %1").arg(error));
+        check(walked.total == 5 && walked.top == 2,
+              QStringLiteral("5 items with 2 under the root, not %1 with %2")
+                  .arg(walked.total)
+                  .arg(walked.top));
+        const QStringList expected = {QStringLiteral("Chapter 1"), QStringLiteral("Section 1.1"),
+                                      QStringLiteral("Sub 1.1.1"), QStringLiteral("Section 1.2"),
+                                      QStringLiteral("Chapter 2")};
+        check(walked.titles == expected,
+              QStringLiteral("and depth-first, the order a sidebar draws them (%1)")
+                  .arg(walked.titles.join(QStringLiteral(", "))));
+
+        QtPdfBackend reader;
+        check(reader.load(written, QString()) == Document::Status::Ready,
+              "the written file opens in the reader");
+        const Outline tree = reader.outline();
+        check(tree.count() == 5 && tree.nodes.size() == 2,
+              QStringLiteral("and the sidebar's own tree agrees: %1 items, %2 at the top")
+                  .arg(tree.count())
+                  .arg(tree.nodes.size()));
+        check(!tree.nodes.isEmpty() && tree.nodes.at(0).children.size() == 2
+                  && !tree.nodes.at(0).children.isEmpty()
+                  && tree.nodes.at(0).children.at(0).children.size() == 1,
+              "with the nesting intact two levels down, not a flat list of five");
+
+        // A second write replaces the tree rather than appending to it -- that is what "the reader
+        // undid their edit" has to mean for a bookmark list, and it is the one thing about this
+        // writer that a reader would notice as a bug if it worked the other way.
+        const QString rewritten = scratch.filePath(QStringLiteral("rewritten-outline.pdf"));
+        const QVector<OutlineRow> twoRows = {outlineRow(QStringLiteral("Only one"), 1, 2),
+                                             outlineRow(QStringLiteral("Only two"), 1, 5)};
+        error.clear();
+        check(writeOutlineWithProduct(written, rewritten, twoRows, &error),
+              QStringLiteral("writing again over a file that already has an outline works: %1")
+                  .arg(error));
+        OutlineWalk second;
+        error.clear();
+        check(walkOutlineFile(rewritten, second, &error), "and that file walks back");
+        check(second.total == 2 && second.top == 2 && !second.titles.contains(expected.at(2)),
+              QStringLiteral("the old tree is gone rather than left behind (%1)")
+                  .arg(second.titles.join(QStringLiteral(", "))));
+
+        // Empty means "no bookmarks", and the file for that has no outline at all.
+        const QString emptied = scratch.filePath(QStringLiteral("outline-removed.pdf"));
+        error.clear();
+        check(writeOutlineWithProduct(rewritten, emptied, QVector<OutlineRow>{}, &error),
+              QStringLiteral("an empty list is accepted as removing them: %1").arg(error));
+        OutlineWalk none;
+        error.clear();
+        check(walkOutlineFile(emptied, none, &error) && none.total == 0,
+              "and nothing is left to walk");
+
+        // A row naming a page the document does not have is refused with a sentence, because every
+        // other dialog here numbers pages the same way and the reader checks them against the
+        // status bar.
+        error.clear();
+        const QString beyond = scratch.filePath(QStringLiteral("outline-beyond.pdf"));
+        check(!writeOutlineWithProduct(source, beyond,
+                                       {outlineRow(QStringLiteral("Nowhere"), 1, 999)}, &error),
+              "a bookmark naming a page that is not there is refused");
+        // 1000 rather than 999: the sentence is for a reader, and every page number they have ever
+        // seen in this program is 1-based on the way out.
+        check(!error.isEmpty() && error.contains(QStringLiteral("1000")),
+              QStringLiteral("and the sentence says which page: %1").arg(error));
+
+        // ---- the two controls, as standing assertions ----
+        //
+        // §63 measured these on hand-built files; here they run against the file this writer
+        // produced, which is the only version of the claim that can rot. One key out of a chain of
+        // five is not a smaller outline -- it is a much smaller one, in the way the arrows say.
+        const QString lostNext = scratch.filePath(QStringLiteral("outline-lost-next.pdf"));
+        error.clear();
+        check(breakOutlineKey(written, lostNext, QStringLiteral("first-next"), &error),
+              QStringLiteral("the control can take the first item's /Next out: %1").arg(error));
+        OutlineWalk afterNext;
+        error.clear();
+        const bool nextWalked = walkOutlineFile(lostNext, afterNext, &error);
+        check(nextWalked, QStringLiteral("the file with a broken /Next still walks: %1").arg(error));
+        // Measured, and it is not the number §63 printed: 4 rather than 1, because §63 counted
+        // top-level items while this counts the whole tree. Chapter 1 and its three descendants are
+        // still reachable from /First; everything past the missing /Next -- Chapter 2 -- is gone.
+        // One broken link loses a span, which is the sentence the writer's design rests on.
+        check(afterNext.total == 4 && afterNext.top == 1 && !afterNext.titles.contains(expected.at(4)),
+              QStringLiteral("one broken /Next leaves 4 items under 1 root rather than 5 under 2 "
+                             "(it left %1 under %2)")
+                  .arg(afterNext.total)
+                  .arg(afterNext.top));
+
+        const QString lostEnds = scratch.filePath(QStringLiteral("outline-lost-ends.pdf"));
+        error.clear();
+        check(breakOutlineKey(written, lostEnds, QStringLiteral("root-ends"), &error),
+              QStringLiteral("the control can take the root's /First and /Last out: %1").arg(error));
+        OutlineWalk afterEnds;
+        error.clear();
+        const bool endsWalked = walkOutlineFile(lostEnds, afterEnds, &error);
+        check(endsWalked, QStringLiteral("the file with no ends still walks: %1").arg(error));
+        check(afterEnds.total == 0 && afterEnds.top == 0,
+              "and a root that names no /First /Last loses the entire outline, not one item");
+    }
+
+    // ---- the tree a reader asks for, through the pending list and out through a save (§69) ----
+    //
+    // §68 handed DocumentEditor::writeOutline a tree and read the bytes back. This is the seam above
+    // it, where the two things that only exist there can go wrong: a bookmark request goes through
+    // the same pending list as a 删页, so 撤销 has to take it back before anything reaches disk; and
+    // it has to survive pages moving under it, which is why an OutlineEdit holds a page *reference*
+    // rather than the number the reader typed. Both are read off what our own reader hands the
+    // sidebar, because "the file has an outline" was never the claim -- reaching the page the reader
+    // pointed at is.
+    {
+        DocumentEditor nothing;
+        QString error;
+        const QVector<OutlineRow> oneRow = {outlineRow(QStringLiteral("Only"), 1, 0)};
+        const bool refused = nothing.setOutline(oneRow, &error);
+        check(!refused && !error.isEmpty(),
+              "an editor that has opened nothing refuses a bookmark request, with a sentence");
+
+        DocumentEditor asked;
+        const bool opened = asked.open(source, QString(), &error);
+        check(opened, QStringLiteral("setup: the editor opens the source: %1").arg(error));
+
+        // Refused before anything is recorded, and said with the numbers the reader has: the level
+        // as it was written, the page 1-based on the way out like every other sentence here.
+        error.clear();
+        const bool badLevel = asked.setOutline({outlineRow(QStringLiteral("Low"), 0, 1)}, &error);
+        check(!badLevel && error.contains(QStringLiteral("Low"))
+                  && error.contains(QStringLiteral("层级")),
+              QStringLiteral("a bookmark at level 0 is refused, naming it and its level: %1")
+                  .arg(error));
+        error.clear();
+        const bool badPage = asked.setOutline({outlineRow(QStringLiteral("Far"), 1, pagesBefore)},
+                                              &error);
+        check(!badPage && error.contains(QStringLiteral("Far"))
+                  && error.contains(QString::number(pagesBefore + 1)),
+              QStringLiteral("a bookmark naming page %1 of a %2-page document is refused, and the "
+                             "sentence says that page: %3")
+                  .arg(pagesBefore + 1)
+                  .arg(pagesBefore)
+                  .arg(error));
+        check(!asked.isDirty() && asked.pendingCount() == 0,
+              "and neither refusal put anything in the pending list");
+
+        // Five bookmarks, three depths, one of them landing on the page the next block deletes.
+        const QVector<OutlineRow> five = {
+            outlineRow(QStringLiteral("Root A"), 1, 0),
+            outlineRow(QStringLiteral("Child A1"), 2, 2),
+            outlineRow(QStringLiteral("Grandchild A1a"), 3, 4),
+            outlineRow(QStringLiteral("Child A2"), 2, 6),
+            outlineRow(QStringLiteral("Root B"), 1, 10),
+        };
+        const QStringList fiveTitles = {QStringLiteral("Root A"), QStringLiteral("Child A1"),
+                                        QStringLiteral("Grandchild A1a"), QStringLiteral("Child A2"),
+                                        QStringLiteral("Root B")};
+
+        error.clear();
+        const bool recorded = asked.setOutline(five, &error);
+        check(recorded, QStringLiteral("asking for a bookmark tree is recorded: %1").arg(error));
+        check(asked.isDirty() && asked.pendingCount() == 1,
+              "and exactly one operation is pending, which is what makes the tab say it has work");
+        check(asked.outlineAsked() && asked.outlineToWrite().size() == 5,
+              "and a save would write this tree");
+        // Spelled out in full, for the same reason 删除 2 页 is: `%n` is filled by the lookup, so a
+        // row that read 设置书签（%n 条） on screen would still satisfy every check above.
+        const QString undoRow = asked.undoDescription();
+        check(undoRow == QStringLiteral("设置书签（5 条）"),
+              QStringLiteral("the undo row names its own count (got \"%1\")").arg(undoRow));
+
+        error.clear();
+        const bool twice = asked.setOutline(five, &error);
+        check(!twice && asked.pendingCount() == 1 && asked.canUndo(),
+              "asking twice for the identical tree is refused, not recorded as a second change");
+        check(!error.isEmpty(), "and the refusal says why");
+
+        const QString asAsked = scratch.filePath(QStringLiteral("outline-as-asked.pdf"));
+        const QString sourceBefore = hashOfFile(source);
+        error.clear();
+        const bool wrote = asked.saveAs(asAsked, &error);
+        check(wrote, QStringLiteral("and the save writes it: %1").arg(error));
+        check(hashOfFile(source) == sourceBefore,
+              "the document on disk is byte for byte what it was");
+
+        OutlineWalk walked;
+        error.clear();
+        const bool walkedBack = walkOutlineFile(asAsked, walked, &error);
+        check(walkedBack, QStringLiteral("qpdf walks the file a reader asked for: %1").arg(error));
+        check(walked.total == 5 && walked.top == 2,
+              QStringLiteral("5 items with 2 under the root, not %1 with %2")
+                  .arg(walked.total)
+                  .arg(walked.top));
+        check(walked.titles == fiveTitles,
+              QStringLiteral("depth-first, in the order a sidebar draws them (%1)")
+                  .arg(walked.titles.join(QStringLiteral(", "))));
+
+        QtPdfBackend pane;
+        check(pane.load(asAsked, QString()) == Document::Status::Ready,
+              "the file a reader asked for opens in the reader");
+        const QString asShown = bookmarksAsText(bookmarksAsTheSidebarSees(pane.outline()));
+        check(asShown == QStringLiteral("Root A@0, Child A1@2, Grandchild A1a@4, Child A2@6, Root B@10"),
+              QStringLiteral("and the sidebar reaches the page each bookmark was asked for (%1)")
+                  .arg(asShown));
+
+        // ---- taking it back before anything was written ----
+        check(asked.undo(), "undo takes the bookmark request back");
+        check(!asked.outlineAsked() && !asked.isDirty(),
+              "and the bookmark question now answers \"nobody asked\", not \"an empty tree\"");
+        const QString undoneFile = scratch.filePath(QStringLiteral("outline-undone.pdf"));
+        error.clear();
+        const bool wroteNone = asked.saveAs(undoneFile, &error);
+        check(wroteNone, QStringLiteral("the save after the undo still writes the document: %1")
+                             .arg(error));
+        OutlineWalk none;
+        error.clear();
+        const bool noneWalked = walkOutlineFile(undoneFile, none, &error);
+        check(noneWalked && none.total == 0 && none.top == 0,
+              QStringLiteral("and it holds no outline at all -- not an empty root left behind (%1 "
+                             "items)")
+                  .arg(none.total));
+        check(asked.redo(), "redo puts the request back");
+        const QString redoneFile = scratch.filePath(QStringLiteral("outline-redone.pdf"));
+        error.clear();
+        const bool wroteRedo = asked.saveAs(redoneFile, &error);
+        OutlineWalk redone;
+        error.clear();
+        const bool redoWalked = walkOutlineFile(redoneFile, redone, &error);
+        check(wroteRedo && redoWalked && redone.total == 5,
+              QStringLiteral("and the same save writes the tree again once the list is put back (%1 "
+                             "items)")
+                  .arg(redone.total));
+
+        // ---- a page that goes away between the asking and the writing ----
+        //
+        // The whole reason OutlineEdit stores a reference. The reader points five bookmarks at five
+        // pages, then takes one of those pages out; what has to come back is the four that still
+        // have pages, on the pages they were pointed at, and the fifth still there with no target.
+        {
+            DocumentEditor moved;
+            error.clear();
+            const bool openedMoved = moved.open(source, QString(), &error);
+            check(openedMoved, QStringLiteral("setup: a fresh editor on the same document: %1")
+                                   .arg(error));
+            const bool marked = moved.setOutline(five, &error);
+            check(marked, QStringLiteral("the tree is asked for first: %1").arg(error));
+            const QString afterDelete = scratch.filePath(QStringLiteral("outline-after-delete.pdf"));
+            error.clear();
+            const bool deleted = moved.deletePages({2}, &error);
+            const bool movedWrote = deleted && moved.saveAs(afterDelete, &error);
+            check(movedWrote, QStringLiteral("then a page is taken out and the file written: %1")
+                                  .arg(error));
+            check(pagesAsReadByTheReader(afterDelete) == pagesBefore - 1,
+                  "setup: that save really did take a page out");
+            QtPdfBackend movedReader;
+            check(movedReader.load(afterDelete, QString()) == Document::Status::Ready,
+                  "and the file opens");
+            const QVector<BookmarkRead> seen = bookmarksAsTheSidebarSees(movedReader.outline());
+            const QString seenText = bookmarksAsText(seen);
+            check(seen.size() == 5,
+                  QStringLiteral("all five bookmarks survive the page that went: %1 of them are in "
+                                 "the file")
+                      .arg(seen.size()));
+            // The one on the deleted page does not borrow its neighbour's page: a bookmark whose
+            // target is gone is a heading, which is what outline.h already says to draw.
+            check(seenText
+                      == QStringLiteral(
+                             "Root A@0, Child A1@-1, Grandchild A1a@3, Child A2@5, Root B@9"),
+                  QStringLiteral("each bookmark reached the page it was pointed at, and nothing "
+                                 "kept the stale number (read: %1)")
+                      .arg(seenText));
+        }
+
+        // ---- a bookmark that names no page at all ----
+        {
+            const QString headingFile = scratch.filePath(QStringLiteral("outline-heading.pdf"));
+            DocumentEditor heading;
+            error.clear();
+            const bool openedHeading = heading.open(source, QString(), &error);
+            check(openedHeading, QStringLiteral("setup: the document for a bookmark with no page: %1")
+                                     .arg(error));
+            const bool askedHeading = heading.setOutline(
+                {outlineRow(QStringLiteral("Part One"), 1, 0),
+                 outlineRow(QStringLiteral("Notes"), 2, -1)},
+                &error);
+            check(askedHeading, QStringLiteral("a bookmark with no page is accepted: %1").arg(error));
+            const bool wroteHeading = heading.saveAs(headingFile, &error);
+            check(wroteHeading, QStringLiteral("and it writes: %1").arg(error));
+            OutlineWalk headingWalk;
+            error.clear();
+            const bool headingBack = walkOutlineFile(headingFile, headingWalk, &error);
+            check(headingBack && headingWalk.total == 2,
+                  QStringLiteral("qpdf walks both items, the one with no destination included (%1)")
+                      .arg(headingWalk.total));
+            QtPdfBackend headingReader;
+            check(headingReader.load(headingFile, QString()) == Document::Status::Ready,
+                  "and the file opens");
+            const QString headingText = bookmarksAsText(bookmarksAsTheSidebarSees(headingReader.outline()));
+            check(headingText == QStringLiteral("Part One@0, Notes@-1"),
+                  QStringLiteral("and the one with no page still has no page on the way back, "
+                                 "rather than becoming page 1 (%1)")
+                      .arg(headingText));
+        }
+
+        // ---- the counterfactual: not asked for is not rewritten ----
+        //
+        // §63 measured this shape on a hand-built file and found the two readers disagree about a
+        // bookmark whose page has gone: qpdf still resolves the object, our own reader says it is
+        // not in the document. Pinned here because it is what a save that was never asked about
+        // bookmarks does -- the tree comes through as the document had it -- and because that is a
+        // leak worth naming, not a behaviour to describe as correct.
+        {
+            const QString handwritten = scratch.filePath(QStringLiteral("handwritten-outline.pdf"));
+            error.clear();
+            const bool built = writeNestedOutlineSample(source, handwritten, &error);
+            check(built, QStringLiteral("setup: a file whose outline this test did not write: %1")
+                             .arg(error));
+            const QString carried = scratch.filePath(QStringLiteral("outline-carried.pdf"));
+            DocumentEditor untouched;
+            error.clear();
+            const bool openedCarried = untouched.open(handwritten, QString(), &error);
+            check(openedCarried, QStringLiteral("and it opens in the editor: %1").arg(error));
+            check(!untouched.outlineAsked(), "and nothing was asked of the bookmarks");
+            const bool deletedCarried = untouched.deletePages({0}, &error);
+            const bool carriedWrote = deletedCarried && untouched.saveAs(carried, &error);
+            check(carriedWrote, QStringLiteral("a page is taken out, with no bookmark request: %1")
+                                    .arg(error));
+            OutlineWalk still;
+            error.clear();
+            const bool carriedWalked = walkOutlineFile(carried, still, &error);
+            check(carriedWalked && still.total == 5,
+                  QStringLiteral("the document's own tree comes through untouched, all %1 items")
+                      .arg(still.total));
+            QtPdfBackend carriedReader;
+            check(carriedReader.load(carried, QString()) == Document::Status::Ready,
+                  "and the copy opens in the reader");
+            const QString carriedText = bookmarksAsText(bookmarksAsTheSidebarSees(carriedReader.outline()));
+            check(carriedText
+                      == QStringLiteral(
+                             "Chapter 1@-1, Section 1.1@2, Sub 1.1.1@3, Section 1.2@5, Chapter 2@9"),
+                  QStringLiteral("and what the sidebar makes of it: the bookmark whose page was "
+                                 "deleted is still in the file and reaches nothing, while the other "
+                                 "four follow their pages (%1)")
+                      .arg(carriedText));
+        }
+
+        // ---- under a split, where each piece is a separate document ----
+        //
+        // The bookmark request is one, the files are several, and each of them gets the tree
+        // resolved against *its own* pages -- which is what outlineRowsFor() being called per piece
+        // buys. What the two reads below also pin is the shape of the leak that comes with it: a
+        // piece carries the whole tree, with the pages belonging to the other piece reduced to
+        // headings. Nothing is dropped, and nothing is filtered either. docs/store-submission.md
+        // §69 records that as a decision rather than an accident.
+        {
+            const int pieceSize = pagesBefore / 2;
+            DocumentEditor apart;
+            error.clear();
+            const bool openedSplit = apart.open(source, QString(), &error);
+            check(openedSplit, QStringLiteral("setup: the document to split: %1").arg(error));
+            const QVector<OutlineRow> spread = {
+                outlineRow(QStringLiteral("Front"), 1, 0),
+                outlineRow(QStringLiteral("Front child"), 2, 2),
+                outlineRow(QStringLiteral("Back"), 1, pieceSize),
+                outlineRow(QStringLiteral("Back child"), 2, pieceSize + 5),
+                outlineRow(QStringLiteral("Last"), 2, pagesBefore - 1),
+            };
+            const bool markedApart = apart.setOutline(spread, &error);
+            check(markedApart, QStringLiteral("a tree spread over both halves is asked for: %1")
+                                   .arg(error));
+            check(apart.splitInto(pieceSize, &error), "and the document is told to split in two");
+            const QString splitPath = scratch.filePath(QStringLiteral("outline-split.pdf"));
+            QStringList pieces;
+            error.clear();
+            const bool splitWrote = apart.saveAs(splitPath, &error, &pieces);
+            check(splitWrote && pieces.size() == 2,
+                  QStringLiteral("and both pieces are written: %1").arg(error));
+            if (pieces.size() == 2) {
+                const QString firstPiece = bookmarksShownInFile(pieces.at(0));
+                check(firstPiece == QStringLiteral(
+                          "Front@0, Front child@2, Back@-1, Back child@-1, Last@-1"),
+                      QStringLiteral("the first piece holds all five bookmarks, three of them as "
+                                     "headings pointing at nothing it has (%1)")
+                          .arg(firstPiece));
+                const QString secondPiece = bookmarksShownInFile(pieces.at(1));
+                check(secondPiece == QStringLiteral(
+                          "Front@-1, Front child@-1, Back@0, Back child@5, Last@19"),
+                      QStringLiteral("and the second resolves the same request against its own "
+                                     "pages: the pages renumber from its first, the others are "
+                                     "headings (%1)")
+                          .arg(secondPiece));
+            } else {
+                check(false, "the split produced two files to read");
+            }
+        }
+    }
+
+    // ---- which numbering a bookmark's page number is in (§70, asked before any dialog exists) ----
+    //
+    // §69 stored `live.at(row.page)` and its comment claimed that is "the numbering every other
+    // dialog here uses". It is not: the six siblings read a typed number as a page of the file
+    // **as opened** (`live.contains({0, page})` in rotatePages/deletePages, `anchor >= originalPages`
+    // in movePages), while `live.at()` is a position in the list the pending edits have shrunk.
+    // Every §69 check passed because each of them asked for the bookmarks on a fresh editor, where
+    // the two coincide. The screen decides: an edit here is only *recorded*, never applied, so the
+    // page a reader can check a typed number against is the one in the file they opened -- and this
+    // block asks for bookmarks *after* a 删页, which is the only order that can tell them apart.
+    {
+        DocumentEditor after;
+        QString error;
+        const bool openedAfter = after.open(source, QString(), &error);
+        check(openedAfter, QStringLiteral("setup: the editor opens the source: %1").arg(error));
+        check(after.deletePages({2}, &error),
+              QStringLiteral("setup: an earlier 删页 takes the third page out: %1").arg(error));
+        check(after.pageCount() == pagesBefore - 1,
+              "setup: and the list a save will cut is one page short");
+
+        // The reader's 「第 6 页」 is index 5 of the file on screen. After that delete it sits at
+        // position 4 of what gets written; read as a position it would mean index 6 -- one page
+        // further along than the number the reader typed, with no sentence anywhere saying so.
+        const bool askedAfter = after.setOutline({outlineRow(QStringLiteral("Sixth"), 1, 5)}, &error);
+        check(askedAfter, QStringLiteral("a bookmark naming page 6 is accepted after a delete: %1")
+                              .arg(error));
+        const QString numberingFile = scratch.filePath(QStringLiteral("outline-numbering.pdf"));
+        error.clear();
+        const bool afterWrote = after.saveAs(numberingFile, &error);
+        check(afterWrote, QStringLiteral("and the save writes it: %1").arg(error));
+        const QString numberingRead = bookmarksShownInFile(numberingFile);
+        check(numberingRead == QStringLiteral("Sixth@4"),
+              QStringLiteral("the bookmark lands on the page the reader counted on screen -- index "
+                             "5 of the opened file, which is the 5th page of what was written (%1)")
+                  .arg(numberingRead));
+
+        // A number whose page an earlier 删页 took out is not refused: the model's existing answer
+        // to a bookmark with no page is a heading, and that is what §69 pinned for a page lost
+        // *after* the ask. What it must not do is borrow the neighbour's page. (The dialog owes the
+        // reader that sentence before the press, not after -- recorded as §71's.)
+        error.clear();
+        const bool namedGone = after.setOutline({outlineRow(QStringLiteral("Third"), 1, 2)}, &error);
+        check(namedGone, QStringLiteral("naming the page that is already gone is accepted: %1")
+                             .arg(error));
+        const QString goneFile = scratch.filePath(QStringLiteral("outline-naming-gone.pdf"));
+        error.clear();
+        const bool goneWrote = after.saveAs(goneFile, &error);
+        const QString goneRead = bookmarksShownInFile(goneFile);
+        check(goneWrote && goneRead == QStringLiteral("Third@-1"),
+              QStringLiteral("and that bookmark comes back with no page rather than taking the one "
+                             "next to it (%1)")
+                  .arg(goneRead));
+
+        // Validity runs against the file the reader is counting on, not the shortened list: page 40
+        // of a 40-page document has to stay typeable after one page is taken out, or the last page
+        // on the screen would be unreachable for a reason nobody could see.
+        error.clear();
+        const bool lastPage = after.setOutline(
+            {outlineRow(QStringLiteral("Last page"), 1, pagesBefore - 1)}, &error);
+        check(lastPage, QStringLiteral("the opened file's last page is still addressable after a "
+                                       "delete: %1")
+                            .arg(error));
+        const QString lastFile = scratch.filePath(QStringLiteral("outline-last-page.pdf"));
+        error.clear();
+        const bool lastWrote = after.saveAs(lastFile, &error);
+        const QString lastRead = bookmarksShownInFile(lastFile);
+        check(lastWrote && lastRead == QStringLiteral("Last page@%1").arg(pagesBefore - 2),
+              QStringLiteral("and it lands on the last page of what was written (%1)")
+                  .arg(lastRead));
+
+        // And the boundary is that same file: a page the opened document never had is refused, with
+        // the count the reader has on their status bar -- not the count of pages still pending.
+        error.clear();
+        const bool beyond = after.setOutline({outlineRow(QStringLiteral("Beyond"), 1, pagesBefore)},
+                                            &error);
+        check(!beyond && error.contains(QString::number(pagesBefore + 1))
+                            && error.contains(QString::number(pagesBefore)),
+              QStringLiteral("a page past the opened file's last is refused, naming that file's "
+                             "page count: %1")
+                  .arg(error));
+        check(after.pendingCount() == 4,
+              QStringLiteral("setup: the four accepted requests are the only things in the list (%1)")
+                  .arg(after.pendingCount()));
     }
 
     // A generator, not a test. Since §46 this suite has been saying "no document with a form field

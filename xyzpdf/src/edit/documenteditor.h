@@ -153,6 +153,8 @@
 // stream on the way out: 600 pages measured 72-80 ms carried, 45-50 ms stripped.
 #pragma once
 
+#include "../document/outline.h"
+
 #include <QRectF>
 #include <QString>
 #include <QVector>
@@ -318,6 +320,33 @@ public:
         bool operator!=(const Watermark &other) const { return !(*this == other); }
     };
 
+    // One bookmark, as it waits in the pending list.
+    //
+    // The page is a reference rather than a number on purpose. Every other page-naming
+    // operation here stores the number the reader was looking at, because that is what a dialog
+    // can show them; a bookmark outlives more than one of those edits, and a bookmark that stored
+    // "page 12" would point at whatever ends up at 12 after a delete and a merge. The reference
+    // says *which* page, and outlineRowsFor() turns it into a number once, against the pages that
+    // are actually in the file being written.
+    struct OutlineEdit
+    {
+        QString title;
+        // 1 for outermost, the same counting outlineFromRows and writeOutline use.
+        int depth = 1;
+        // `page.page` of -1 is a heading: a bookmark that names no page, which PDF allows and
+        // the sidebar shows greyed rather than hiding.
+        PageRef page;
+
+        // Same tree entry: same wording, same place in the hierarchy, same page. setOutline()
+        // goes through this to refuse a request that would write what is already pending, and
+        // a "nothing changed here" check that ignored `depth` would pass on a tree the reader
+        // deliberately re-nested.
+        bool operator==(const OutlineEdit &other) const
+        {
+            return title == other.title && depth == other.depth && page == other.page;
+        }
+    };
+
     // One structural change, as it waits in the pending list.
     struct Operation
     {
@@ -338,7 +367,12 @@ public:
             // that changes what is drawn on one. Like the two above it reaches a save rather
             // than the screen, and undoing it is taking one entry out of a list -- but it is
             // not inert the same way, because what it changes is the page's own content stream.
-            Watermark
+            Watermark,
+            // 书签: the fourth kind that moves no page. It replaces the document's whole
+            // bookmark tree at save time -- see writeOutline() for why the unit of editing is
+            // the tree rather than one entry -- and it changes nothing about the pages
+            // themselves, so undoing it is taking one entry out of the list.
+            SetOutline
         };
         Kind kind = Kind::DeletePages;
         // Delete/Rotate/Move: original page numbers -- positions in the document as
@@ -380,6 +414,11 @@ public:
         // pages themselves keep their order and their count -- `pages` is a request about
         // ink, not about the page tree -- so this is the only thing a replay has to know.
         Watermark watermark;
+        // SetOutline only: the tree a save should write, one entry per bookmark. Recorded as
+        // page *references* rather than as positions, so that a 删除页面 or a 合并 replayed
+        // after this one still lands each bookmark on the page the reader pointed at -- or
+        // leaves it with no target, which outlineRowsFor() says out loud.
+        QVector<OutlineEdit> outline;
     };
 
     // What a delete request means for the document as it stands, worked out
@@ -418,7 +457,18 @@ public:
     // stands. The rotate dialog needs it for exactly what the delete dialog
     // needs planDelete() for: the count it shows has to be the count the editor
     // will act on.
+    //
+    // It answers "how many *pages*", and de-duplicates for that reason -- every caller hands it a
+    // page range. A list of *rows* is a different question: docs/store-submission.md §72 is the
+    // bookmark box subtracting this from its own row count and telling a reader that 77 of 184
+    // bookmarks pointed at deleted pages, when what they did was share a page with each other.
+    // Anything counting rows goes through pageStillExists() below instead.
     int pagesStillThere(const QVector<int> &pages) const;
+
+    // Does this one page number still name a page of the document as it stands? The row-level form
+    // of the question above, because a bookmark list has one entry per bookmark and many of them can
+    // name the same page.
+    bool pageStillExists(int page) const;
 
     // What a move request means for the document as it stands: the order a save
     // would write, and the three ways the request can be one that moves nothing.
@@ -510,6 +560,26 @@ public:
     // everything, which is what lets the save loop over pieces without a special case for
     // "and also the case where nothing was split".
     static QVector<PieceRange> pieceRanges(int total, int pieceSize);
+
+    // ---- bookmarks: the one thing here that is written rather than moved ----
+    //
+    // QPDF cannot do this. QPDFOutlineObjectHelper's constructors are all private and it has no
+    // setter -- that is what tests/outlineprobe.cpp established before any of this was written --
+    // so "edit the bookmarks" means writing /Outlines by hand: /Title /Parent /First /Last /Prev
+    // /Next /Count on every item, and a /Dest on the ones that name a page.
+    //
+    // The whole tree is rewritten each time rather than one item patched in place, and that choice
+    // came out of the measurements rather than taste. Breaking the chain in exactly one place --
+    // the first top-level item's /Next -- makes all three readers lose every item after it; leaving
+    // /First and /Last off the root makes them lose the entire outline while /Count still reports
+    // how many items there were. A patch that fails that quietly is invisible until somebody
+    // scrolls, and rebuilding from a list cannot fail that way at all.
+    //
+    // Rows arrive as the flat list with 1-based depth that outlineFromRows already assembles (see
+    // src/document/outline.h), so the sidebar's tree and the file's tree are the same vocabulary.
+    // An empty list removes the outline. Returns false, with a sentence for the user, when a row
+    // names a page the document does not have.
+    static bool writeOutline(QPDF &qpdf, const QVector<OutlineRow> &rows, QString *error);
 
     // A run of pages the way a reader writes it: "21" for one page, "21-41" for a run.
     // 0-based and inclusive like every page number inside this class, 1-based on the way out.
@@ -701,6 +771,60 @@ public:
     // one: the dialog's summary and the pixels a save draws must not be two answers to "which
     // pages get what".
     Watermark watermarkToWrite() const;
+
+    // Recording that a save should replace the document's bookmarks with `rows`. The whole tree
+    // each time, for the reason writeOutline() documents: the keys that hold a bookmark tree
+    // together fail loudly when one of them is patched wrong, and a rebuild cannot be wrong that
+    // way. An empty list is a request for no bookmarks at all.
+    //
+    // `rows` are the flat list with 1-based depth that the sidebar already holds (see
+    // src/document/outline.h), and each `page` is **the number the reader types**: its position in
+    // the file as it was opened, which is the numbering on their screen, because nothing here is
+    // applied to the screen before a save. That is the same address 删除页面 and 旋转页面 read a
+    // typed range through (`{0, page}`), and the reason it is not a position in the pending-modified
+    // list is measured in docs/store-submission.md §70: after one page is pending-deleted, a position
+    // puts 「第 6 页」's bookmark on page 7 and lets a bookmark naming the gone page borrow its
+    // neighbour. -1 names no page: a heading. A page an earlier 删页 took out is not an error -- it
+    // resolves to nothing at write time and stays a heading, one answer for both orderings.
+    //
+    // Pages that came in from a 合并 have no number in the reader's numbering at all (the same
+    // exclusion 水印 states out loud), so this call cannot name one; the list below holds page
+    // references, so a bookmark that does point at a merged page is carried and resolved correctly --
+    // there is just nothing in the interface that can ask for one yet.
+    bool setOutline(const QVector<OutlineRow> &rows, QString *error);
+
+    // The bookmark tree a save would write, and whether one was asked for at all. The second
+    // question is separate because an empty tree is a real request ("delete them"), and an empty
+    // answer to the first cannot mean both "nothing pending" and "no bookmarks".
+    //
+    // The last SetOutline in the pending list wins, the same rule watermarkToWrite() follows --
+    // a second tree is the reader correcting the first, not two trees to write.
+    QVector<OutlineEdit> outlineToWrite() const;
+    bool outlineAsked() const;
+
+    // The tree as one output file should hold it: each edit's page reference resolved to a
+    // position among `written`, the pages going into that file in order. A reference that is not
+    // in `written` -- a page a later 删除页面 took out, or one that went into another piece of a
+    // split -- comes back with no page rather than being dropped: the bookmark is something the
+    // reader asked for, and outline.h's own rule for a bookmark that names no page is to show it
+    // and not to pretend it is gone.
+    //
+    // Static and public because it is the whole answer to "which page does this bookmark land on
+    // once the pages have moved", and the save and the test have to read it off one function --
+    // the reason pieceRanges() and planMove() are each one function.
+    static QVector<OutlineRow> outlineRowsFor(const QVector<OutlineEdit> &edits,
+                                              const QVector<PageRef> &written);
+
+    // The pending tree in the numbering a reader types, so that 编辑书签 can open on it the way the
+    // other five boxes open on what is already recorded. It is the exact inverse of what setOutline()
+    // stored, and it is total: setOutline() is the only thing that can put an OutlineEdit in the list,
+    // and it stores either `PageRef()` (a heading, `page` -1) or `{0, n}` (the page's own number), so
+    // reading `page.page` back out gives the number that went in.
+    //
+    // Here rather than in the dialog because §70 settled what a bookmark's page number *means*, and a
+    // box that worked that out again is how "which page is this" becomes two answers -- the reason
+    // pieceRanges(), planMove() and outlineRowsFor() are each one function.
+    QVector<OutlineRow> outlineToEdit() const;
 
     // Where one watermark's bitmap lands on one page, as the six numbers a PDF `cm` takes.
     //

@@ -248,6 +248,8 @@ set(XYZPDF_SOURCES
     src/translate/translator.h
     src/translate/translator.cpp
 
+    src/ui/bookmarkdialog.h
+    src/ui/bookmarkdialog.cpp
     src/ui/documenttabbar.h
     src/ui/documenttabbar.cpp
     src/ui/deletepagesdialog.h
@@ -549,6 +551,23 @@ if(XYZPDF_BUILD_WATERMARKPROBE)
         LIBRARIES Qt6::Pdf qpdf::libqpdf)
 endif()
 
+# Whether 书签编辑 can be a feature at all, and what it would have to keep true. QPDF's outline
+# helpers are read-only -- QPDFOutlineObjectHelper cannot be constructed by a caller and has no
+# setter -- so an editor here means writing /Outlines by hand: /Title /Parent /First /Last /Prev
+# /Next /Count, over the four destination shapes a real file uses. The probe builds one outline in
+# every shape, breaks one consistency at a time in a separate file, and reads all of them back
+# through three readers: qpdf, Qt's bookmark model (what the sidebar shows), and our own
+# QtPdfBackend::outline(). See the header comment of tests/outlineprobe.cpp.
+option(XYZPDF_BUILD_OUTLINEPROBE "Build the outline-editing measurement" OFF)
+if(XYZPDF_BUILD_OUTLINEPROBE)
+    xyzpdf_add_test(outlineprobe
+        SOURCES src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+                src/edit/documenteditor.cpp
+        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+endif()
+
 # The performance baseline. Built with everything else and deliberately not run:
 # tools/build_all_tests.py skips any target whose name contains 'bench', because
 # this prints numbers instead of passing or failing, and a threshold weak enough
@@ -660,6 +679,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ocr/ocrengine.cpp
                 src/print/printjob.cpp
                 src/translate/translator.cpp
+                src/ui/bookmarkdialog.cpp
                 src/ui/deletepagesdialog.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
@@ -721,6 +741,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/documenttabbar.cpp
+                src/ui/bookmarkdialog.cpp
                 src/ui/deletepagesdialog.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp

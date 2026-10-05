@@ -224,6 +224,12 @@ public:
     // content stream, which is why its dialog spends a line of the summary saying the marks
     // are a picture rather than text. Like the two above, nothing reaches a file until 保存.
     void addWatermark();
+    // 书签: the eighth, and the only one whose subject is something the reader is looking at in
+    // another window -- the sidebar's own tree is what this box opens on, and what it writes replaces
+    // wholesale (§68). Like 水印 and 加密 it moves no page, so 撤销 is again one entry out of the
+    // list; unlike all seven before it, the request is a *list*, so the box compares what it shows
+    // against what it opened with and greys 确定 when they are the same.
+    void editOutline();
     void undoEdit();
     void redoEdit();
     // Names the file to write into, replays the list onto the source and writes

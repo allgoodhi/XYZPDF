@@ -13,6 +13,8 @@
 #include <QDateTime>
 #include <QFileInfo>
 
+#include <functional>
+
 #include <limits>
 
 namespace {
@@ -139,6 +141,11 @@ Document::Status QtPdfBackend::load(const QString &path, const QString &password
     // whole document a second time.
     document->setPassword(password);
 
+    // PDFium opens the file itself here, and that is deliberate: reading it through a QIODevice of
+    // ours was tried -- that is the other way to stop a handle blocking a delete -- and it hangs.
+    // The render in documenttab_smoke never finished, 600 s waiting on a latch. The lock that
+    // matters is the preview pane's, and src/windows/previewhandler.cpp solves that with a staged
+    // copy instead, where PDFium's handle is on a file nobody is trying to delete.
     const QPdfDocument::Error error = document->load(path);
     if (error != QPdfDocument::Error::None) {
         // A lambda named `tr`, not QObject::tr. This class has no Q_OBJECT
@@ -497,27 +504,39 @@ Outline QtPdfBackend::outline() const
     if (loadedPath.isEmpty())
         return tree;
 
-    // Qt's bookmark model is a flat list whose rows carry their nesting level,
-    // which is what outlineFromRows turns back into a tree. The Level role is
-    // read rather than the model's parent()/index() because the model is flat:
-    // every row is a child of the root there, and reading it as a tree would
-    // return the top level and nothing else.
+    // The model is a tree, not a flat list. Asking it for the rows under the root
+    // returns the top level and nothing else -- measured on a real book with 184
+    // bookmarks, `rowCount(QModelIndex())` gives 14 of them (tests/outlineprobe.cpp,
+    // section A and section D). So the walk goes through the hierarchy itself.
+    //
+    // The depth emitted is ours, counting from 1, because that is what
+    // outlineFromRows assembles against. Qt's own Level role counts from 0, and
+    // handing it over unchanged makes every chapter and every section land at
+    // depth 0 -- a second way to lose the nesting, on top of the flat read, with
+    // the same symptom. That is why the checks on this function are a pair: the
+    // node total has to be the whole tree, and the top level has to be the root's
+    // rows only.
     QVector<OutlineRow> rows;
-    const int count = bookmarks->rowCount(QModelIndex());
-    rows.reserve(count);
-    for (int row = 0; row < count; ++row) {
-        const QModelIndex index = bookmarks->index(row, 0, QModelIndex());
-        if (!index.isValid())
-            continue;
-        OutlineRow entry;
-        entry.title = bookmarks->data(index, static_cast<int>(QPdfBookmarkModel::Role::Title))
-                          .toString();
-        entry.level = bookmarks->data(index, static_cast<int>(QPdfBookmarkModel::Role::Level))
-                          .toInt();
-        entry.page = bookmarks->data(index, static_cast<int>(QPdfBookmarkModel::Role::Page))
-                         .toInt();
-        rows.append(entry);
-    }
+    const std::function<void(const QModelIndex &, int)> appendRows =
+        [&](const QModelIndex &parent, int depth) {
+            const int count = bookmarks->rowCount(parent);
+            for (int row = 0; row < count; ++row) {
+                const QModelIndex index = bookmarks->index(row, 0, parent);
+                if (!index.isValid())
+                    continue;
+                OutlineRow entry;
+                entry.title =
+                    bookmarks->data(index, static_cast<int>(QPdfBookmarkModel::Role::Title))
+                        .toString();
+                entry.page =
+                    bookmarks->data(index, static_cast<int>(QPdfBookmarkModel::Role::Page))
+                        .toInt();
+                entry.level = depth + 1;
+                rows.append(entry);
+                appendRows(index, depth + 1);
+            }
+        };
+    appendRows(QModelIndex(), 0);
     return outlineFromRows(rows);
 }
 

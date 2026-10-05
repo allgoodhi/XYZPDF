@@ -943,6 +943,22 @@ void MainWindow::buildMenus()
     });
     documentMenu->addAction(watermarkAction);
 
+    // (&B): 书签 has no Latin letter either, and its pinyin's initial (S) is 保存修改为's; B is the
+    // letter the sidebar's own tab and every other reader's menu already use for the thing.
+    bookmarkAction = makeAction(tr("编辑书签(&B)…"), QKeySequence());
+    bookmarkAction->setObjectName(QStringLiteral("bookmarkAction"));
+    // The row says what the box cannot show afterwards: the sidebar keeps listing the bookmarks the
+    // file has until a save writes a new one, so a reader who arranged six rows and saw no change on
+    // screen has to be told the list is a request, not an edit to the window they are looking at.
+    bookmarkAction->setToolTip(
+        tr("记下这份文档要带哪几条书签，按保存修改为才写成一个新文件；正在读的这份不动，"
+           "侧栏里那棵树也要等新文件打开才是这个样子"));
+    connect(bookmarkAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->editOutline();
+    });
+    documentMenu->addAction(bookmarkAction);
+
     documentMenu->addSeparator();
 
     // The undo item says what it would take back -- "撤销（删除 3 页）" -- because
@@ -2134,7 +2150,7 @@ void MainWindow::updateForCurrentTab()
                             exportWordAction, printAction, exportImagesAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,
-                            watermarkAction,
+                            watermarkAction, bookmarkAction,
                             viewToolAction, selectToolAction,
                             recognizeToolAction}) {
         if (action)

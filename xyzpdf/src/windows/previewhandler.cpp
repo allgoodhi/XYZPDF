@@ -104,11 +104,16 @@
 #include "../document/document.h"
 #include "../document/qtpdfbackend.h"
 
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QImage>
 #include <QPainter>
 #include <QSet>
 #include <QString>
+#include <QUuid>
 #include <QVector>
 
 #include <algorithm>
@@ -137,6 +142,12 @@ const wchar_t kWindowClass[] = L"xyzpdfPreviewWindow";
 constexpr int kRenderScale = 3;
 constexpr int kMaxRenderWidth = 2400;
 constexpr int kMinRenderWidth = 600;
+
+// Above this the document is opened where it is rather than copied. A copy is what lets Explorer
+// delete a file the pane is showing (see stageSource), and past a few hundred megabytes the copy
+// costs more than the inconvenience it removes -- a reader who wants to delete a 400 MB file can
+// close the pane first, which is not an invitation to lose data.
+constexpr qint64 kMaxStagedBytes = 256LL * 1024 * 1024;
 
 // How many rendered pages are held. A scanned A4 at the widths above is a few
 // megabytes each, and a pane that remembered every page it ever showed is how a
@@ -410,6 +421,9 @@ public:
         layout_.clear();
         pageSizes_.clear();
         document_.reset();
+        // After the document, because until it is gone the copy is a file with an open handle and
+        // cannot be deleted at all.
+        removeStaged();
         return S_OK;
     }
 
@@ -645,6 +659,69 @@ private:
         SetScrollInfo(window_, SB_VERT, &info, TRUE);
     }
 
+    // Anything staged more than a day ago is left over from a process that never got its Unload --
+    // Explorer closing, DllHost being recycled, a crash. Swept before each new copy so a crash cannot
+    // leave a reader's document sitting in the temp folder indefinitely. A copy some other pane is
+    // still reading refuses to be deleted, which is the right outcome and needs no special case.
+    void sweepStaleStagedCopies()
+    {
+        const QDir temp(QDir::tempPath());
+        const QDateTime oldest = QDateTime::currentDateTimeUtc().addDays(-1);
+        const QFileInfoList copies = temp.entryInfoList(
+            {QStringLiteral("xyzpdf-preview-*.pdf")}, QDir::Files, QDir::NoSort);
+        for (const QFileInfo &copy : copies) {
+            if (copy.birthTime().toUTC() > oldest)
+                continue;
+            QFile::remove(copy.absoluteFilePath());
+        }
+    }
+
+    // The copy the document is opened from, and why there is one.
+    //
+    // PDFium keeps the handle it opens for the life of the document, and it opens without
+    // FILE_SHARE_DELETE -- measured, and the same is true of a plain QFile -- so a pane that is only
+    // *showing* a file is the reason Explorer says "in use" when the reader tries to delete it. The
+    // bytes are copied to a temporary file and that copy is what gets opened: the user's file is
+    // touched for the length of one sequential read, and the copy leaves with the pane.
+    //
+    // True when `stagedPath` names something to open. False for a file too big to copy, where the
+    // original is opened in place instead -- see kMaxStagedBytes.
+    bool stageSource()
+    {
+        sweepStaleStagedCopies();
+        if (stagedFrom_ == path_ && QFile::exists(stagedPath_))
+            return true; // the same document, already copied for this pane
+        removeStaged();
+
+        const qint64 bytes = QFileInfo(path_).size();
+        if (bytes > kMaxStagedBytes)
+            return false;
+
+        const QString name =
+            QStringLiteral("xyzpdf-preview-%1.pdf")
+                .arg(QUuid::createUuid().toString(QUuid::WithoutBraces).left(13));
+        const QString target = QDir::tempPath() + QLatin1Char('/') + name;
+        if (!QFile::copy(path_, target))
+            return false;
+
+        stagedPath_ = target;
+        stagedFrom_ = path_;
+        return true;
+    }
+
+    // Best effort: while PDFium still has the copy open the delete is refused, and a leftover in
+    // %TEMP% is a smaller problem than refusing to show the document. Unload() calls this again
+    // after the document is gone, which is when it always succeeds.
+    void removeStaged()
+    {
+        if (stagedPath_.isEmpty())
+            return;
+        if (QFile::remove(stagedPath_)) {
+            stagedPath_.clear();
+            stagedFrom_.clear();
+        }
+    }
+
     // The one place the document is opened, and the one place anything about this
     // file can go wrong in a way worth saying. False when there is nothing to show,
     // which is also the answer to "may the worker start".
@@ -667,10 +744,24 @@ private:
             return false;
         }
 
-        if (!document_)
-            document_ = std::make_unique<QtPdfBackend>();
+        // The previous document goes before the copy it was opened from is removed -- while PDFium
+        // still holds that file nothing can delete it, and a leftover per document the pane glanced
+        // at is a leak with a different name. Safe to drop here because DoPreview() joined the worker
+        // before calling this.
+        document_ = std::make_unique<QtPdfBackend>();
 
-        const Document::Status status = document_->load(path_, QString());
+        Document::Status status = Document::Status::FileError;
+        if (stageSource()) {
+            status = document_->load(stagedPath_, QString());
+            if (status != Document::Status::Ready) {
+                // The copy is not the thing worth telling the reader about: retry the file they
+                // clicked, whose name belongs in the sentence. The copy stays where it is until
+                // Unload(), which is also the point at which it can always be deleted.
+                status = document_->load(path_, QString());
+            }
+        } else {
+            status = document_->load(path_, QString());
+        }
         if (status != Document::Status::Ready) {
             // The backend's own sentence, already worded for a person: it knows the
             // difference between "this is not a PDF" and "this PDF is not readable",
@@ -916,6 +1007,10 @@ private:
     IUnknown *site_ = nullptr;
     HWND window_ = nullptr;
     QString path_;
+    // The copy the document is opened from, and which file that copy was made from. Both empty when
+    // the document is being read where it is -- see stageSource for why that is the default.
+    QString stagedPath_;
+    QString stagedFrom_;
     std::unique_ptr<Document> document_;
     QVector<QRect> layout_;
     QVector<QSizeF> pageSizes_;

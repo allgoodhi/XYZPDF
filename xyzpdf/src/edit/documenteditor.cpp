@@ -437,6 +437,18 @@ QString DocumentEditor::describeOperation(const Operation &op) const
         // delete took out, so this size is the same number the summary showed at the press.
         return tr("加水印「%1」（%n 页）", nullptr, op.watermark.pages.size()).arg(op.watermark.text);
     }
+    if (op.kind == Operation::Kind::SetOutline) {
+        // The size of the tree, not the shared `count`: like 水印 and 加密 this operation records
+        // no structural pages, so `op.pages` is empty and the row would read 设置书签（0 页） next
+        // to a dialog that had just said 12 条书签.
+        //
+        // Taking them all away is its own row rather than "设置书签（0 条）", because a count of
+        // zero does not read as something a reader asked for -- and this row names the thing that
+        // comes back when the row is undone, which for an empty tree is every bookmark.
+        if (op.outline.isEmpty())
+            return tr("删掉全部书签");
+        return tr("设置书签（%n 条）", nullptr, op.outline.size());
+    }
     // The row that first proved the mechanism (docs/store-submission.md sec.32), and still
     // the simplest one: one number, one noun for the English to agree with it about.
     return tr("删除 %n 页", nullptr, count);
@@ -490,6 +502,14 @@ int DocumentEditor::pagesStillThere(const QVector<int> &pages) const
             named.insert(page);
     }
     return named.size();
+}
+
+bool DocumentEditor::pageStillExists(int page) const
+{
+    // The same address every other reader-typed page number uses (§70), asked of one row rather
+    // than of a set: pagesStillThere() counts distinct pages, which is what a range caller wants
+    // and what a bookmark list does not -- two bookmarks on one page are two bookmarks.
+    return page >= 0 && live.contains({0, page});
 }
 
 int DocumentEditor::importedPageCount() const
@@ -659,6 +679,127 @@ QVector<DocumentEditor::PieceRange> DocumentEditor::pieceRanges(int total, int p
         pieces.append(piece);
     }
     return pieces;
+}
+
+namespace {
+
+// How many items hang below this one, not counting it. /Count is exactly that number, and it is
+// computed rather than carried because of what tests/outlineprobe.cpp measured: a /Count that
+// disagrees with the chain is invisible to all three readers, so nothing would ever tell us we
+// wrote a wrong one -- the only defence is not to write one.
+int outlineDescendants(const OutlineNode &node)
+{
+    int below = 0;
+    for (const OutlineNode &child : node.children)
+        below += 1 + outlineDescendants(child);
+    return below;
+}
+
+// One item, then its children, then the links that make the row readable as a row. A null return
+// means `*error` already holds the sentence: the only way this fails is a page number that is not
+// in the document, which the caller has refused before getting here.
+QPDFObjectHandle writeOutlineItem(QPDF &qpdf, const OutlineNode &node, QPDFObjectHandle parent,
+                                  const std::vector<QPDFPageObjectHelper> &pages, QString *error)
+{
+    QPDFObjectHandle item = QPDFObjectHandle::newDictionary();
+    item.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(node.title.toUtf8().constData()));
+    if (!parent.isNull())
+        item.replaceKey("/Parent", parent);
+    if (node.page >= 0) {
+        if (node.page >= int(pages.size())) {
+            *error = QStringLiteral("bookmark page %1 is not in the document").arg(node.page);
+            return QPDFObjectHandle::newNull();
+        }
+        // /Fit rather than /XYZ: a bookmark written here says "the top of this page", which is
+        // what the sidebar's click does with it, and there is no place in this program yet that
+        // would carry a position to aim at (docs/store-submission.md §63, item 6).
+        QPDFObjectHandle dest = QPDFObjectHandle::newArray();
+        dest.appendItem(pages.at(size_t(node.page)).getObjectHandle());
+        dest.appendItem(QPDFObjectHandle::newName("/Fit"));
+        item.replaceKey("/Dest", dest);
+    }
+    QPDFObjectHandle handle = qpdf.makeIndirectObject(item);
+
+    std::vector<QPDFObjectHandle> children;
+    for (const OutlineNode &child : node.children) {
+        QPDFObjectHandle written = writeOutlineItem(qpdf, child, handle, pages, error);
+        if (written.isNull())
+            return written;
+        children.push_back(written);
+    }
+    if (!children.empty()) {
+        // The chain both ways, and the parent's two ends. These four keys are the load-bearing
+        // ones: §63's controls showed that a missing /Next on the first item loses every item
+        // after it in all three readers, and a parent with no /First /Last loses its whole subtree.
+        for (size_t i = 0; i < children.size(); ++i) {
+            if (i > 0)
+                children[i].replaceKey("/Prev", children[i - 1]);
+            if (i + 1 < children.size())
+                children[i].replaceKey("/Next", children[i + 1]);
+        }
+        handle.replaceKey("/First", children.front());
+        handle.replaceKey("/Last", children.back());
+        handle.replaceKey("/Count", QPDFObjectHandle::newInteger(outlineDescendants(node)));
+    }
+    return handle;
+}
+
+} // namespace
+
+bool DocumentEditor::writeOutline(QPDF &qpdf, const QVector<OutlineRow> &rows, QString *error)
+{
+    const Outline tree = outlineFromRows(rows);
+
+    // An empty list is "no bookmarks", and the honest file for that has no /Outlines at all --
+    // an empty root would be a thing the readers have to guess the meaning of.
+    if (tree.nodes.isEmpty()) {
+        qpdf.getRoot().removeKey("/Outlines");
+        return true;
+    }
+
+    const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+
+    // The rows are assembled by the same function that builds the sidebar's tree, so what this
+    // writes and what the reader shows cannot disagree about where a bookmark sits -- and a row
+    // naming a page the document does not have is refused here rather than written and dropped.
+    for (const OutlineRow &row : rows) {
+        if (row.page >= int(pages.size())) {
+            *error = tr("%1 指向第 %2 页，而这份文档只有 %3 页。")
+                         .arg(row.title.isEmpty() ? tr("一条书签") : row.title)
+                         .arg(row.page + 1)
+                         .arg(int(pages.size()));
+            return false;
+        }
+    }
+
+    QPDFObjectHandle root = QPDFObjectHandle::newDictionary();
+    root.replaceKey("/Type", QPDFObjectHandle::newName("/Outlines"));
+    root = qpdf.makeIndirectObject(root);
+
+    std::vector<QPDFObjectHandle> tops;
+    for (const OutlineNode &node : tree.nodes) {
+        QPDFObjectHandle written = writeOutlineItem(qpdf, node, root, pages, error);
+        if (written.isNull())
+            return false;
+        tops.push_back(written);
+    }
+    for (size_t i = 0; i < tops.size(); ++i) {
+        if (i > 0)
+            tops[i].replaceKey("/Prev", tops[i - 1]);
+        if (i + 1 < tops.size())
+            tops[i].replaceKey("/Next", tops[i + 1]);
+    }
+    root.replaceKey("/First", tops.front());
+    root.replaceKey("/Last", tops.back());
+    int total = 0;
+    for (const OutlineNode &node : tree.nodes)
+        total += 1 + outlineDescendants(node);
+    root.replaceKey("/Count", QPDFObjectHandle::newInteger(total));
+
+    // Replacing the key is the whole of "remove the old outline": the previous tree becomes
+    // unreachable from the catalog, and qpdf does not write what nothing points at.
+    qpdf.getRoot().replaceKey("/Outlines", root);
+    return true;
 }
 
 QString DocumentEditor::pageSpan(int first, int last)
@@ -1317,6 +1458,132 @@ DocumentEditor::Watermark DocumentEditor::watermarkToWrite() const
     return Watermark();
 }
 
+bool DocumentEditor::setOutline(const QVector<OutlineRow> &rows, QString *error)
+{
+    if (live.isEmpty()) {
+        *error = tr("还没有打开任何文档。");
+        return false;
+    }
+
+    QVector<OutlineEdit> edits;
+    edits.reserve(rows.size());
+    for (const OutlineRow &row : rows) {
+        if (row.level < 1) {
+            // Refused rather than clamped: a tree that quietly moved a bookmark a level would be a
+            // different tree from the one that was arranged. The box greys 确定 for such a row before
+            // the press (§74), so this is the backstop for a caller that is not the box -- and since
+            // §74 the level is a text cell, so a 0 is something a reader can actually type.
+            *error = tr("“%1” 的层级是 %2，而书签的层级从 1 开始。")
+                         .arg(row.title.isEmpty() ? tr("一条书签") : row.title)
+                         .arg(row.level);
+            return false;
+        }
+        if (row.page < -1 || row.page >= originalPages) {
+            // The bound is the file the reader opened, not the list the pending edits have shrunk:
+            // an edit here is only recorded, never applied, so the page they can check a typed
+            // number against is the one on their screen. Validating against `live` instead made the
+            // last page of a 40-page document un-typeable as soon as one page was pending-deleted
+            // (measured: `“Last page” 指向第 40 页，而现在这份文档只有 39 页。`).
+            *error = tr("“%1” 指向第 %2 页，而这份文件打开时是 %3 页。")
+                         .arg(row.title.isEmpty() ? tr("一条书签") : row.title)
+                         .arg(row.page + 1)
+                         .arg(originalPages);
+            return false;
+        }
+        OutlineEdit edit;
+        edit.title = row.title;
+        edit.depth = row.level;
+        // The number becomes the page's identity here and nowhere else afterwards: a delete
+        // replayed later, or a split's pieces, each resolve the reference against the pages that
+        // actually reach the file. Storing the position would store a number that the next
+        // operation is free to change under it.
+        //
+        // `{0, n}` is the same address `deletePages()`/`rotatePages()` read a typed number through
+        // (`live.contains({0, page})`) and `positionsOf()` resolves -- which is why it is *not*
+        // `live.at(n)`: measured (§70), on a document with one page pending-deleted, `live.at(5)`
+        // put a bookmark named for 「第 6 页」 on the page after it, and naming the page already
+        // taken out borrowed its neighbour instead of losing its page. A number whose page is gone
+        // still resolves, to nothing: `outlineRowsFor()` finds no such page in the output and the
+        // bookmark comes back a heading, which is what §69 already pins for a page lost *after* the
+        // ask. One answer for both orders.
+        edit.page = row.page < 0 ? PageRef() : PageRef{0, row.page};
+        edits.append(edit);
+    }
+
+    if (outlineAsked() && outlineToWrite() == edits) {
+        // The same refusal addWatermark() and splitInto() make: asking twice for the identical
+        // tree is not a change, and recording it would dirty the tab and hand the reader an undo
+        // row that puts the file back exactly as it was.
+        *error = tr("这份要写出的文件已经带着一模一样的书签了，再要一次不会多改什么。");
+        return false;
+    }
+
+    Operation op;
+    op.kind = Operation::Kind::SetOutline;
+    op.outline = edits;
+    // record() only: no page is taken out, moved or turned, so this is one entry out of a list to
+    // undo it -- and nothing has been written yet, which is the whole point of the replay design.
+    record(op);
+    return true;
+}
+
+QVector<DocumentEditor::OutlineEdit> DocumentEditor::outlineToWrite() const
+{
+    for (auto it = pending.crbegin(); it != pending.crend(); ++it) {
+        if (it->kind == Operation::Kind::SetOutline)
+            return it->outline;
+    }
+    return {};
+}
+
+bool DocumentEditor::outlineAsked() const
+{
+    for (auto it = pending.crbegin(); it != pending.crend(); ++it) {
+        if (it->kind == Operation::Kind::SetOutline)
+            return true;
+    }
+    return false;
+}
+
+QVector<OutlineRow> DocumentEditor::outlineRowsFor(const QVector<OutlineEdit> &edits,
+                                                   const QVector<PageRef> &written)
+{
+    QVector<OutlineRow> rows;
+    rows.reserve(edits.size());
+    for (const OutlineEdit &edit : edits) {
+        OutlineRow row;
+        row.title = edit.title;
+        row.level = edit.depth;
+        // A heading stays a heading; everything else is looked up by *which* page it names, so a
+        // bookmark follows its page through a reorder and a merge. Not found means the page is not
+        // in this output -- the bookmark stays, without a target, which is what outline.h already
+        // says to do with a bookmark that names no page rather than dropping it.
+        row.page = edit.page.page < 0 ? -1 : written.indexOf(edit.page);
+        rows.append(row);
+    }
+    return rows;
+}
+
+QVector<OutlineRow> DocumentEditor::outlineToEdit() const
+{
+    QVector<OutlineRow> rows;
+    const QVector<OutlineEdit> edits = outlineToWrite();
+    rows.reserve(edits.size());
+    for (const OutlineEdit &edit : edits) {
+        OutlineRow row;
+        row.title = edit.title;
+        row.level = edit.depth;
+        // The reference goes back to the number that came in, for the reason its declaration gives:
+        // `PageRef()` reads as -1 (a heading) and `{0, n}` reads as n. Nothing else can be in here,
+        // so there is no third case to write a branch for -- if one ever is, this is the line that
+        // would silently turn a merged page's bookmark into a heading, and the comment on
+        // setOutline() is where the numbering rule lives.
+        row.page = edit.page.page;
+        rows.append(row);
+    }
+    return rows;
+}
+
 void DocumentEditor::record(const Operation &op)
 {
     pending.append(op);
@@ -1416,7 +1683,8 @@ QVector<int> DocumentEditor::positionsOf(const QVector<PageRef> &present,
 void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<PageRef> &present,
                            QPDF *mergeSource)
 {
-    if (op.kind == Operation::Kind::SplitBySize || op.kind == Operation::Kind::Protect) {
+    if (op.kind == Operation::Kind::SplitBySize || op.kind == Operation::Kind::Protect
+        || op.kind == Operation::Kind::SetOutline) {
         // A split says how many files the save writes; it takes nothing out of the page
         // tree, moves nothing in it and turns nothing. The pruning into pieces happens in
         // saveAs(), after this walk has agreed with `live` -- so that the page order every
@@ -1427,6 +1695,13 @@ void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<PageRef>
         // here rather than in a branch of its own is what lets a 删页 and a 加密 ride one
         // save -- the replay reaches the writer with the pages already rearranged, and the
         // protection is then a property of the bytes going out, not of the tree.
+        //
+        // A bookmark tree is the third of these, and it is inert for a reason the other two
+        // do not have: it must be written *after* the piece is cut, against the pages that are
+        // in this file, so resolving its page references here would answer the question too
+        // early. Skipping the replay is what makes a bookmark survive a 删页 in the same save as
+        // landing on the page the reader pointed at rather than on whatever sits where that
+        // page used to be.
         return;
     }
 
@@ -1823,6 +2098,32 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
                 for (int at = int(pages.size()) - 1; at >= 0; --at) {
                     if (at < keep.first || at > keep.last)
                         helper.removePage(pages.at(size_t(at)));
+                }
+            }
+
+            // The bookmarks, after the cut and before any writer exists, because this is the one
+            // place that knows both which pages made it into *this* file and in what order. Under
+            // no split `keep` is the whole document, so `here` is `present` -- the same page order
+            // the check above just agreed to. Under a split it is one piece, which is what makes
+            // each piece carry the bookmarks whose pages came out in it and no others; a reference
+            // that is not in `here` -- a page a 删除页面 took out, or one that went into a
+            // different piece -- stays in the tree as a heading rather than vanishing, because
+            // the reader asked for that bookmark and outline.h's own rule for a bookmark with no
+            // page is to show it and not to pretend it is gone.
+            //
+            // The tree is written whole rather than patched onto whatever the source had, which
+            // is what makes 撤销 of a bookmark operation mean "the previous tree, or none": the
+            // pending list holds the last request and this line is the only place that reaches
+            // the file.
+            if (outlineAsked()) {
+                const QVector<PageRef> here = present.mid(keep.first, keep.count());
+                QString outlineError;
+                if (!writeOutline(*document, outlineRowsFor(outlineToWrite(), here),
+                                  &outlineError)) {
+                    // No removal here, unlike the catch below: stagedPath() only chooses a name,
+                    // and the writer that would have put a file behind it has not run yet.
+                    *error = outlineError;
+                    return false;
                 }
             }
 

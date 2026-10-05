@@ -711,8 +711,14 @@ QPDFObjectHandle writeOutlineItem(QPDF &qpdf, const OutlineNode &node, QPDFObjec
             return QPDFObjectHandle::newNull();
         }
         // /Fit rather than /XYZ: a bookmark written here says "the top of this page", which is
-        // what the sidebar's click does with it, and there is no place in this program yet that
-        // would carry a position to aim at (docs/store-submission.md §63, item 6).
+        // what the sidebar's click does with it. The reason is now measured rather than assumed
+        // (docs/store-submission.md §75): the row this writer is handed has no position in it,
+        // because the read path never asks Qt's model for its Location role -- and asking for that
+        // role would not be enough anyway, since Qt reports no position for /FitH, which is the
+        // shape a real book's bookmarks use (184 of 184 in the book measured here). So a fix has
+        // to carry the destination from the file, not just read one more role. Until it does, the
+        // flattening is pinned as a KNOWN GAP in documenteditor_smoke, with a check on the cause
+        // and a separate one on the effect.
         QPDFObjectHandle dest = QPDFObjectHandle::newArray();
         dest.appendItem(pages.at(size_t(node.page)).getObjectHandle());
         dest.appendItem(QPDFObjectHandle::newName("/Fit"));

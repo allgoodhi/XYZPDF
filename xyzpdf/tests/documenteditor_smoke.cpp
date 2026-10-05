@@ -61,6 +61,10 @@
 #include <QTemporaryDir>
 #include <QVector>
 
+#include <QPdfBookmarkModel>
+#include <QPdfDocument>
+#include <QModelIndex>
+
 #include <qpdf/Buffer.hh>
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFFormFieldObjectHelper.hh>
@@ -1518,6 +1522,74 @@ bool writeNestedOutlineSample(const QString &source, const QString &destination,
     return true;
 }
 
+// Four bookmarks whose destinations are not the page's top: one /XYZ naming a spot, one /FitH
+// naming a height, one plain /Fit, one with no destination at all.
+//
+// Nothing else in this file can produce this shape, because our writer only ever emits /Fit (§68).
+// So the input §75 asks about -- a file whose bookmarks name a place *inside* a page -- has to be
+// hand-built. And the two positional shapes are not decoration: tests/outlineprobe.cpp measured
+// that a real book's 184 bookmarks are all /FitH with a top coordinate, so /FitH is what the wild
+// looks like while /XYZ is the shape Qt's own model reports a position for. A fix that only asks
+// Qt would save one and flatten the other, and that distinction is why this sample carries both.
+bool writePositionalOutlineSample(const QString &source, const QString &destination, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        auto pageAt = [&](int index) { return pages.at(size_t(index)).getObjectHandle(); };
+
+        QPDFObjectHandle root = QPDFObjectHandle::newDictionary();
+        root.replaceKey("/Type", QPDFObjectHandle::newName("/Outlines"));
+        root = qpdf.makeIndirectObject(root);
+
+        auto item = [&qpdf](const std::string &title, QPDFObjectHandle parent) {
+            QPDFObjectHandle handle = QPDFObjectHandle::newDictionary();
+            handle.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(title));
+            handle.replaceKey("/Parent", parent);
+            return qpdf.makeIndirectObject(handle);
+        };
+        // By value on purpose: replaceKey() is non-const, and a handle is a reference to the object,
+        // so writing through the copy writes into the item.
+        auto addDest = [](QPDFObjectHandle handle, std::vector<QPDFObjectHandle> parts) {
+            QPDFObjectHandle dest = QPDFObjectHandle::newArray();
+            for (QPDFObjectHandle &part : parts)
+                dest.appendItem(part);
+            handle.replaceKey("/Dest", dest);
+        };
+
+        const QPDFObjectHandle xyz = item("Xyz spot", root);
+        addDest(xyz, { pageAt(1), QPDFObjectHandle::newName("/XYZ"),
+                       QPDFObjectHandle::newReal(0), QPDFObjectHandle::newReal(700),
+                       QPDFObjectHandle::newReal(0) });
+        const QPDFObjectHandle fitHorizontal = item("FitH spot", root);
+        addDest(fitHorizontal, { pageAt(4), QPDFObjectHandle::newName("/FitH"),
+                                 QPDFObjectHandle::newReal(650) });
+        const QPDFObjectHandle fit = item("Fit page", root);
+        addDest(fit, { pageAt(7), QPDFObjectHandle::newName("/Fit") });
+        const QPDFObjectHandle heading = item("Heading", root);
+
+        std::vector<QPDFObjectHandle> row = { xyz, fitHorizontal, fit, heading };
+        for (size_t i = 0; i < row.size(); ++i) {
+            if (i > 0)
+                row[i].replaceKey("/Prev", row[i - 1]);
+            if (i + 1 < row.size())
+                row[i].replaceKey("/Next", row[i + 1]);
+        }
+        root.replaceKey("/First", row.front());
+        root.replaceKey("/Last", row.back());
+        root.replaceKey("/Count", QPDFObjectHandle::newInteger(int(row.size())));
+
+        qpdf.getRoot().replaceKey("/Outlines", root);
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return false;
+    }
+    return true;
+}
+
 // A row for DocumentEditor::writeOutline, in the flat shape the writer takes (1-based depth, the
 // same one outlineFromRows assembles against).
 OutlineRow outlineRow(const QString &title, int level, int page)
@@ -1555,7 +1627,39 @@ struct OutlineWalk
     int total = 0;
     int top = 0;
     QStringList titles;
+    // One entry per item, in the same order as `titles`: the destination in its own words, e.g.
+    // "[/XYZ 0 700 0]" or "[/Fit]" or "none". §75 needs the *kind*, because the question there is
+    // whether a position survives a save, and an item count cannot answer a question about the
+    // shape of a /Dest.
+    QStringList destinations;
 };
+
+// A /Dest array read as name-plus-numbers. An array's length cannot tell /XYZ 0 700 0 from
+// /FitH 650 from /Fit, so the length is not what this reports.
+QString describeDestination(const QPDFObjectHandle &dest)
+{
+    if (dest.isNull())
+        return QStringLiteral("none");
+    if (dest.isName())
+        return QStringLiteral("named:%1").arg(QString::fromUtf8(dest.getName().c_str()));
+    if (dest.isString())
+        return QStringLiteral("named:%1").arg(QString::fromUtf8(dest.getStringValue().c_str()));
+    if (!dest.isArray())
+        return QStringLiteral("other");
+    QStringList parts;
+    for (int i = 1; i < dest.getArrayNItems(); ++i) {
+        const QPDFObjectHandle arg = dest.getArrayItem(i);
+        if (arg.isName())
+            parts << QString::fromUtf8(arg.getName().c_str());
+        else if (arg.isNull())
+            parts << QStringLiteral("null");
+        else if (arg.isNumber())
+            parts << QString::number(arg.getNumericValue(), 'g', 6);
+        else
+            parts << QStringLiteral("...");
+    }
+    return QStringLiteral("[%1]").arg(parts.join(QLatin1Char(' ')));
+}
 
 bool walkOutlineFile(const QString &path, OutlineWalk &out, QString *error)
 {
@@ -1568,6 +1672,7 @@ bool walkOutlineFile(const QString &path, OutlineWalk &out, QString *error)
                 for (QPDFOutlineObjectHelper &item : items) {
                     ++out.total;
                     out.titles.append(QString::fromUtf8(item.getTitle().c_str()));
+                    out.destinations.append(describeDestination(item.getDest()));
                     walk(item.getKids());
                 }
             };
@@ -6431,6 +6536,91 @@ int main(int argc, char **argv)
                                  "deleted is still in the file and reaches nothing, while the other "
                                  "four follow their pages (%1)")
                       .arg(carriedText));
+        }
+
+        // ---- §75: does a bookmark naming a spot *inside* a page survive the round trip? ----
+        //
+        // §71 recorded this as an inferred consequence and never tested it. The inference holds, and
+        // the test adds something the inference did not have: which of the two candidate fixes would
+        // actually work. The read path asks Qt's model for Title and Page and nothing else
+        // (qtpdfbackend.cpp:527-534), and the writer emits /Fit for every row
+        // (documenteditor.cpp:713-719) -- so both halves are pinned below. The second is a KNOWN GAP
+        // in §47's sense: it says what the product does today, not what it should do, so a real fix
+        // reddens it on purpose.
+        {
+            const QString positional = scratch.filePath(QStringLiteral("positional-outline.pdf"));
+            error.clear();
+            check(writePositionalOutlineSample(source, positional, &error),
+                  QStringLiteral("setup: a file whose bookmarks name a spot inside a page: %1")
+                      .arg(error));
+            OutlineWalk before;
+            error.clear();
+            check(walkOutlineFile(positional, before, &error) && before.total == 4,
+                  QStringLiteral("and all four items are readable from the file: %1")
+                      .arg(before.total));
+            check(before.destinations.join(QStringLiteral(", "))
+                      == QStringLiteral("[/XYZ 0 700 0], [/FitH 650], [/Fit], none"),
+                  QStringLiteral("the four destination shapes, as written: %1")
+                      .arg(before.destinations.join(QStringLiteral(", "))));
+
+            // What Qt's own model sees, because that decides the cost of a fix. It reports a
+            // position for /XYZ and none for /FitH -- and outlineprobe measured that a real book's
+            // 184 bookmarks are all /FitH. So "just ask the model for its Location role" would
+            // rescue one row out of four here, and nothing in that book.
+            QPdfDocument qtDocument;
+            check(qtDocument.load(positional) == QPdfDocument::Error::None,
+                  "and Qt opens the same file");
+            QPdfBookmarkModel qtBookmarks;
+            qtBookmarks.setDocument(&qtDocument);
+            const auto qtLocationOf = [&qtBookmarks](int row) {
+                const QModelIndex index = qtBookmarks.index(row, 0, QModelIndex());
+                if (!index.isValid())
+                    return QPointF(-1, -1);
+                return qtBookmarks.data(index, static_cast<int>(QPdfBookmarkModel::Role::Location))
+                    .toPointF();
+            };
+            const QPointF xyzSeen = qtLocationOf(0);
+            const QPointF fitHorizontalSeen = qtLocationOf(1);
+            check(xyzSeen.y() > 0.0,
+                  QStringLiteral("Qt reports the /XYZ bookmark's position at (%1,%2) -- in "
+                                 "top-left origin, so a writer has to convert it back")
+                      .arg(xyzSeen.x()).arg(xyzSeen.y()));
+            check(fitHorizontalSeen.isNull(),
+                  QStringLiteral("and no position at all for the /FitH one, at (%1,%2) -- the "
+                                 "shape real books use")
+                      .arg(fitHorizontalSeen.x()).arg(fitHorizontalSeen.y()));
+
+            QtPdfBackend ours;
+            check(ours.load(positional, QString()) == Document::Status::Ready,
+                  "our reader opens it too");
+            const QVector<OutlineRow> asSeen = outlineRowsOf(ours.outline());
+            check(asSeen.size() == 4,
+                  QStringLiteral("four rows reach the flat list the box would show (%1)")
+                      .arg(asSeen.size()));
+            check(asSeen.at(0).location.isNull() && asSeen.at(1).location.isNull(),
+                  "KNOWN GAP §75, the cause: our read path hands the sidebar no position for "
+                  "either of them, though the file has both and Qt reports the first");
+
+            DocumentEditor flattener;
+            error.clear();
+            check(flattener.open(positional, QString(), &error)
+                      && flattener.setOutline(asSeen, &error),
+                  QStringLiteral("setup: asking for the tree exactly as read is accepted: %1")
+                      .arg(error));
+            const QString afterPath = scratch.filePath(QStringLiteral("positional-after.pdf"));
+            error.clear();
+            check(flattener.saveAs(afterPath, &error),
+                  QStringLiteral("setup: and that request is written: %1").arg(error));
+            OutlineWalk after;
+            error.clear();
+            check(walkOutlineFile(afterPath, after, &error) && after.total == 4,
+                  QStringLiteral("the copy still holds all four bookmarks: %1").arg(after.total));
+            check(after.destinations.join(QStringLiteral(", "))
+                      == QStringLiteral("[/Fit], [/Fit], [/Fit], none"),
+                  QStringLiteral("KNOWN GAP §75, the effect: every position is gone -- both the "
+                                 "/XYZ and the /FitH came out as /Fit, so a reader who renames one "
+                                 "bookmark moves all the others to the top of their pages: %1")
+                      .arg(after.destinations.join(QStringLiteral(", "))));
         }
 
         // ---- under a split, where each piece is a separate document ----

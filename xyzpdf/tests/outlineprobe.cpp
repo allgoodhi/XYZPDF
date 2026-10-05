@@ -30,10 +30,13 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QMap>
 #include <QPointF>
 #include <QString>
 #include <QTemporaryDir>
 #include <QVector>
+
+#include <algorithm>
 
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFOutlineDocumentHelper.hh>
@@ -310,16 +313,66 @@ QString buildOutlineSample(const QString &source, const QString &destination, in
 
 // ---- reader 1: qpdf. It resolves named destinations for us, which is one of the answers. ----
 
+// The destination in its own words: which kind, and with what numbers. An array's *length* cannot
+// tell /XYZ 0 700 0 from /FitH 650 from /Fit, and §75's whole question is which of those a save
+// leaves behind -- so the line has to say the name, not the count of slots.
+QString describeDest(const QPDFObjectHandle &dest)
+{
+    if (dest.isNull())
+        return QStringLiteral("none");
+    if (dest.isName())
+        return QStringLiteral("named:%1").arg(QString::fromUtf8(dest.getName().c_str()));
+    if (dest.isString())
+        return QStringLiteral("named:%1").arg(QString::fromUtf8(dest.getStringValue().c_str()));
+    if (dest.isDictionary())
+        return QStringLiteral("dict");
+    if (!dest.isArray())
+        return QStringLiteral("unreadable");
+    QStringList parts;
+    for (int i = 1; i < dest.getArrayNItems(); ++i) {
+        const QPDFObjectHandle arg = dest.getArrayItem(i);
+        if (arg.isName())
+            parts << QString::fromUtf8(arg.getName().c_str());
+        else if (arg.isNull())
+            parts << QStringLiteral("null");
+        else if (arg.isNumber())
+            parts << QString::number(arg.getNumericValue(), 'g', 6);
+        else
+            parts << QStringLiteral("...");
+    }
+    return QStringLiteral("[%1]").arg(parts.join(QLatin1Char(' ')));
+}
+
+// How many destinations of each kind a file has. The before/after of a save is one line each way;
+// reading two printed trees against each other is how a measurement like this gets away from you.
+void tallyDestinations(const QString &label, const QString &path)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        QPDFOutlineDocumentHelper helper(qpdf);
+        QMap<QString, int> seen;
+        std::function<void(QPDFOutlineObjectHelper &)> count = [&](QPDFOutlineObjectHelper &item) {
+            seen[describeDest(item.getDest())]++;
+            for (QPDFOutlineObjectHelper &child : item.getKids())
+                count(child);
+        };
+        for (QPDFOutlineObjectHelper &item : helper.getTopLevelOutlines())
+            count(item);
+        QStringList parts;
+        for (auto it = seen.constBegin(); it != seen.constEnd(); ++it)
+            parts << QStringLiteral("%1 x%2").arg(it.key()).arg(it.value());
+        say(QStringLiteral("  %1: %2").arg(label, parts.isEmpty() ? QStringLiteral("(no outlines)")
+                                                                  : parts.join(QStringLiteral(", "))));
+    } catch (const std::exception &e) {
+        say(QStringLiteral("  %1: qpdf threw %2").arg(label, QString::fromUtf8(e.what())));
+    }
+}
+
 void walkQpdf(QPDFOutlineObjectHelper &item, int depth)
 {
     const QPDFObjectHandle dest = item.getDest();
-    QString kind = QStringLiteral("none");
-    if (dest.isName())
-        kind = QStringLiteral("named:%1").arg(QString::fromUtf8(dest.getName().c_str()));
-    else if (dest.isArray())
-        kind = QStringLiteral("array(%1)").arg(dest.getArrayNItems());
-    else if (dest.isDictionary())
-        kind = QStringLiteral("dict");
+    const QString kind = describeDest(dest);
     const QPDFObjectHandle page = item.getDestPage();
     say(QStringLiteral("    %1%2 | dest=%3 | count=%4 | page=%5")
             .arg(QString(depth * 2, QChar(' ')), QString::fromUtf8(item.getTitle().c_str()), kind)
@@ -524,8 +577,46 @@ int main(int argc, char **argv)
             say("  (no real outline-bearing file given; pass it as the second argument)");
         else {
             say(QStringLiteral("  file: %1").arg(QFileInfo(real).fileName()));
+            tallyDestinations("real book, as it came", real);
             readAllThree("real document, nothing done to it", real);
         }
+    }
+
+    say("");
+    say("=== E. what a save through our own writer leaves on a destination ===");
+    {
+        // §71 wrote this down as an inferred consequence and never tested it: the read path asks Qt's
+        // model for Title and Page and nothing else (qtpdfbackend.cpp:527-534 -- no Location role, no
+        // Zoom role, although both exist), and the writer emits /Fit for every row
+        // (documenteditor.cpp:713-719). If that is right, a bookmark naming a spot halfway down a page
+        // loses that spot on the way through the sidebar and one save. The sample's "Top xyz" row is
+        // the case: /XYZ 0 700 0 on an 842-point-tall page, which Qt itself reads back as loc=0,142
+        // (top-left origin -- the number a writer would have to convert back).
+        tallyDestinations("before, as built", whole);
+
+        QtPdfBackend backend;
+        check(backend.load(whole, QString()) == Document::Status::Ready,
+              "setup: the sample opens through our own backend");
+        const QVector<OutlineRow> asSeen = outlineRowsOf(backend.outline());
+        const int carrying = static_cast<int>(std::count_if(
+            asSeen.begin(), asSeen.end(),
+            [](const OutlineRow &row) { return !row.location.isNull(); }));
+        // isNull() is "both coordinates are 0", so a bookmark that genuinely aims at the page's top
+        // left corner and a bookmark whose position was never read look identical in this type. That
+        // is part of what a fix would have to settle, not a quirk of this line.
+        say(QStringLiteral("  our reader's %1 row(s), of which %2 carry any location")
+                .arg(asSeen.size()).arg(carrying));
+
+        DocumentEditor editor;
+        error.clear();
+        check(editor.open(whole, QString(), &error) && editor.setOutline(asSeen, &error),
+              QStringLiteral("setup: asking for the tree our reader saw is accepted: %1").arg(error));
+        const QString after = scratch.filePath(QStringLiteral("outline-roundtrip.pdf"));
+        error.clear();
+        check(editor.saveAs(after, &error),
+              QStringLiteral("setup: and that request is written: %1").arg(error));
+        tallyDestinations("after setOutline + saveAs", after);
+        readWithQpdf(after);
     }
 
     say("");

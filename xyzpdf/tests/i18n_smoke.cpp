@@ -210,6 +210,13 @@ int main(int argc, char **argv)
             { "DocumentEditor", "向左转 90°（%n 页）", 1 },
             { "DocumentEditor", "旋转 180°（%n 页）", 1 },
             { "DocumentEditor", "另存为不能覆盖正在打开的文件。请换一个文件名。" },
+            // §79's neighbour, and the same refusal family: the name is readable, the save simply
+            // cannot replace it while something holds it open. Listed beside the two it completes --
+            // overwriting this tab's own file, and overwriting a merge donor -- because those are
+            // the three ways a destination can already be spoken for.
+            { "DocumentEditor",
+              "%1 现在盖不掉：它正被读着（可能是别的程序，也可能是这个程序的另一个窗口）。"
+              "请换一个文件名，或者先关掉正在读它的那一个。" },
             { "DocumentEditor", "还没有打开任何文档。" },
             // The reorder that came after those two, and the undo/redo item names --
             // those four are here because the sweep found its first real defect

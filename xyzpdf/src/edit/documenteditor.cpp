@@ -28,6 +28,7 @@
 #include <qpdf/QPDFAnnotationObjectHelper.hh>
 #include <qpdf/QPDFExc.hh>
 #include <qpdf/QPDFObjGen.hh>
+#include <qpdf/QPDFOutlineDocumentHelper.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
@@ -36,6 +37,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -89,6 +91,89 @@ QVector<DocumentEditor::PageRef> openedDocumentInOrder(int pageCount)
     for (int page = 0; page < pageCount; ++page)
         pages.append({0, page});
     return pages;
+}
+
+// Can this name still be replaced, right now? The last step of a save is one MoveFileExW per file
+// with MOVEFILE_REPLACE_EXISTING, and Windows lets that through only while the file's current
+// reader allows the delete share -- so a program holding the file open for plain reading makes the
+// name unreplaceable even though every byte of it is readable. Measured: with a tab of this window
+// reading the name, the move came back as error 5 after the whole document had already been
+// rebuilt and written to a temporary name (tests/documenttab_smoke.cpp pins that, and §66's
+// "应用自己开 PDF 仍锁文件" is the same fact seen from the other side).
+//
+// Asking for the DELETE right is the same question the move itself will ask, and it touches no
+// contents. The alternative tried first was to rename the file and rename it back, which really
+// moves the reader's document and leaves it renamed if anything goes wrong in between. And only a
+// refusal to share the delete counts here: any other failure -- a folder this user may not open,
+// a reparse point, an antivirus saying no -- is left for the move itself to report, because turning
+// an unknown into a refusal would stop saves that work today.
+bool replaceableDespiteBeingRead(const QString &path)
+{
+    const std::wstring native = QDir::toNativeSeparators(path).toStdWString();
+    const HANDLE probe = CreateFileW(native.c_str(), DELETE,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (probe != INVALID_HANDLE_VALUE) {
+        CloseHandle(probe);
+        return true;
+    }
+    const DWORD refused = GetLastError();
+    return refused != ERROR_ACCESS_DENIED && refused != ERROR_SHARING_VIOLATION;
+}
+
+// How many of this file's own bookmarks name a place inside a page rather than the page.
+//
+// §75 measured what the save does to them: `writeOutlineItem` emits /Fit for every row it is given,
+// because the read path hands the tree over as a title and a page number and nothing else
+// (`qtpdfbackend.cpp` asks two roles of Qt's bookmark model), so a destination that said "page 12,
+// 700 points up, at this zoom" comes back out as "page 12, top". Nothing in the program notices;
+// the number of bookmarks is unchanged and every one still lands on the page it named.
+//
+// So the count is taken off the file, not off the tree the dialog is showing -- the dialog is
+// showing the very reading that already dropped the information, and asking it would answer zero
+// for every document. Which is also why this is a sentence rather than a number the reader can
+// check: they cannot see the positions anywhere, and that is the honest description of the state.
+//
+// /Fit is the one destination that survives unchanged, and a destination naming only a page has no
+// position to lose. Anything else -- /XYZ with a top and a zoom, /FitH with a height, /FitV, /FitR,
+// /FitB, /FitBV -- is counted. getDest() resolves named destinations and a destination carried by a
+// GoTo action, so a bookmark that cannot be resolved at all answers null: those are left out here,
+// because this count is a statement about positions and not about every way a bookmark can be
+// written less precisely than the file had it.
+int countPositionalBookmarks(QPDF &qpdf)
+{
+    int total = 0;
+    QPDFOutlineDocumentHelper outlines(qpdf);
+    if (!outlines.hasOutlines())
+        return 0;
+    // Walked by hand rather than with the helper's walk() callback because the recursion has to
+    // count *and* read: a nested bookmark is as much at risk as a top-level one, and the tree is
+    // what the file has, not what our list can hold.
+    std::function<void(const std::vector<QPDFOutlineObjectHelper> &)> visit
+        = [&](const std::vector<QPDFOutlineObjectHelper> &items) {
+            for (const QPDFOutlineObjectHelper &listed : items) {
+                QPDFOutlineObjectHelper item = listed;
+                const QPDFObjectHandle dest = item.getDest();
+                bool onlyThePage = false;
+                if (dest.isArray()) {
+                    // [page] and [page /Fit] say nothing about where inside the page to look.
+                    const int parts = dest.getArrayNItems();
+                    if (parts <= 1)
+                        onlyThePage = true;
+                    else {
+                        const QPDFObjectHandle kind = dest.getArrayItem(1);
+                        onlyThePage = kind.isName() && kind.getName() == "/Fit";
+                    }
+                } else if (dest.isNull()) {
+                    onlyThePage = true; // no destination to lose
+                }
+                if (!onlyThePage)
+                    ++total;
+                visit(item.getKids());
+            }
+        };
+    visit(outlines.getTopLevelOutlines());
+    return total;
 }
 
 // Whether a page of a file a merge drew from is one this request names. Repeats
@@ -889,6 +974,92 @@ FormTidy tidyFormForThisDocument(QPDF &qpdf)
     return done;
 }
 
+// What one pass over the references *between* annotations did, so the caller can say it.
+struct LinkTidy
+{
+    int popupsMadePrivate = 0;
+    int threadsDropped = 0;
+};
+
+// Put the annotation-to-annotation references right for *this* document, the same way the pass
+// above puts the form right for it.
+//
+// Two kinds of reference exist, and neither is in the page's /Annots array, which is why a page
+// copy can leave them pointing somewhere else. A popup annotation is named only by its owner's
+// /Popup and answers with /Parent; PDF 2.0 §12.5.2.17 gives it exactly one owner. A reply names
+// the annotation it answers with /IRT. §47 measured what a merge does to them: the copies each got
+// their own note, but both notes still named one shared popup whose /Parent was the donor's note,
+// and both replies threaded to that same donor's note -- an object no page of this document shows.
+//
+// The popup half is not a judgement call: the /Parent that comes back is wrong for at least one
+// owner either way, so each owner gets a popup of its own, and the copy answers to the annot that
+// carries it. The keys are copied by hand rather than the whole object because /Parent is the one
+// key that must not come along; everything else, including any appearance the popup carries, is
+// shared read-only, which is the same trade §76 made about a widget's appearance stream.
+//
+// The reply half only reaches as far as the file can decide. A thread that lands on an annotation
+// some page here shows is left exactly as it is -- replies across pages are legal inside one
+// document, and §70's lesson is that "not where I expected it" is not the same as "wrong". What is
+// taken off is a /IRT naming something no page of this file shows: no reader can resolve it, the
+// target may not even be in the file any more (that is what 删除页面 leaves), and what goes is the
+// link, never the words -- the reply keeps its own /Contents, so this is a dead reference being
+// removed rather than content being tidied away.
+//
+// Deliberately not done: re-pointing a stray thread at "the one note on this page that looks like
+// what the reply meant". It reads as provable when the page holds exactly one such note, and the
+// merged-twice sample above is full of those, but the candidate is picked by /Contents matching,
+// which two notes in one document can share; a wrong guess attaches a reply to a annotation it was
+// never about, which is worse than the dead link this branch leaves alone.
+LinkTidy tidyAnnotationLinksForThisDocument(QPDF &qpdf)
+{
+    LinkTidy done;
+    const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+
+    // Which annotations this document can show, and on which page. From the pages, not from each
+    // annot's /P -- the same reason §76 does not read /P: it is the thing that can dangle, and a
+    // popup is legal without one.
+    std::map<QPDFObjGen, size_t> shownOn;
+    for (size_t index = 0; index < pages.size(); ++index) {
+        // Not const anywhere aitems() is called: qpdf's array accessor is non-const, which has
+        // stopped every helper in this family the moment it was written (the eighth time).
+        QPDFObjectHandle annots = pages.at(index).getObjectHandle().getKey("/Annots");
+        if (!annots.isArray())
+            continue;
+        for (QPDFObjectHandle item : annots.aitems())
+            shownOn.insert(std::make_pair(item.getObjGen(), index));
+    }
+
+    for (size_t index = 0; index < pages.size(); ++index) {
+        QPDFObjectHandle annots = pages.at(index).getObjectHandle().getKey("/Annots");
+        if (!annots.isArray())
+            continue;
+        for (QPDFObjectHandle owner : annots.aitems()) {
+            QPDFObjectHandle popup = owner.getKey("/Popup");
+            if (popup.isDictionary()
+                && popup.getKey("/Parent").getObjGen() != owner.getObjGen()) {
+                QPDFObjectHandle fresh = QPDFObjectHandle::newDictionary();
+                for (const std::string &key : popup.getKeys()) {
+                    if (key != "/Parent")
+                        fresh.replaceKey(key, popup.getKey(key));
+                }
+                fresh.replaceKey("/Parent", owner);
+                owner.replaceKey("/Popup", qpdf.makeIndirectObject(fresh));
+                ++done.popupsMadePrivate;
+            }
+
+            if (!owner.hasKey("/IRT"))
+                continue;
+            const QPDFObjectHandle target = owner.getKey("/IRT");
+            if (shownOn.count(target.getObjGen()) > 0)
+                continue; // shown by some page here: legal, same page or not
+            owner.removeKey("/IRT");
+            owner.removeKey("/RT");
+            ++done.threadsDropped;
+        }
+    }
+    return done;
+}
+
 } // namespace
 
 bool DocumentEditor::writeOutline(QPDF &qpdf, const QVector<OutlineRow> &rows, QString *error)
@@ -1134,6 +1305,7 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     sourceEncrypted = false;
     sourceProtect = Protection();
     sourceHasFormFields = false;
+    sourcePositionalBookmarkCount = 0;
 
     // Parsed, counted, and let go. Holding on to the QPDF is what the alternative
     // design needed and what this class decided not to do; see the header.
@@ -1187,11 +1359,22 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     // Read once here, for the same reason `sourceEncrypted` is: the two boxes that can take a page
     // out ask this on every keystroke to decide whether to say anything about form answers, and
     // there is no QPDF kept open in this class to ask a second time.
+    //
+    // The type check is not decoration. Asking /Fields of the answer to /AcroForm when the file has
+    // no form at all makes qpdf print a WARNING line per call, and a document without a form is the
+    // ordinary case -- §58's "a second key asked of a null also reports a WARNING", met again in
+    // the code §77 added, where it fired on every open and every import check.
     {
         const QPDFObjectHandle form = document->getRoot().getKey("/AcroForm");
-        const QPDFObjectHandle fields = form.getKey("/Fields");
+        const QPDFObjectHandle fields = form.isDictionary() ? form.getKey("/Fields")
+                                                            : QPDFObjectHandle::newNull();
         sourceHasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
     }
+    // And how many of its bookmarks name a place inside a page, while the parser still has the
+    // file. The 编辑书签 box asks this every time its summary changes, and by then this class holds
+    // no QPDF at all -- §75's flattening is invisible from the tree the box shows, because the
+    // reading that built that tree is what dropped the positions.
+    sourcePositionalBookmarkCount = countPositionalBookmarks(*document);
     return true;
 }
 
@@ -1212,7 +1395,9 @@ bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString 
         document.processFile(path.toUtf8().constData());
         pages = int(QPDFPageDocumentHelper(document).getAllPages().size());
         if (hasFormFields) {
-            const QPDFObjectHandle fields = document.getRoot().getKey("/AcroForm").getKey("/Fields");
+            const QPDFObjectHandle form = document.getRoot().getKey("/AcroForm");
+            const QPDFObjectHandle fields = form.isDictionary() ? form.getKey("/Fields")
+                                                                : QPDFObjectHandle::newNull();
             *hasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
         }
     } catch (const QPDFExc &e) {
@@ -2140,6 +2325,22 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
                          .arg(QFileInfo(one).fileName());
             return false;
         }
+
+        // §79: the same name, readable but not replaceable. Nothing was wrong with this name when
+        // the save dialog asked about overwriting it, and the dialog cannot know what this can:
+        // replacing takes the delete right, which Windows withholds while a program holds the file
+        // open. Measured on a name another tab of this very window was reading --
+        // tests/documenttab_smoke.cpp pins it -- the last step of the save came back with error 5
+        // *after* the whole document had been rebuilt and written under a temporary name, and the
+        // reader was told the file might be held by "别的程序", when the program holding it was us.
+        // Saying it before any byte is staged is the difference between a name to change now and a
+        // finished new file to go and look for in the temporary folder.
+        if (QFileInfo::exists(one) && !replaceableDespiteBeingRead(one)) {
+            *error = tr("%1 现在盖不掉：它正被读着（可能是别的程序，也可能是这个程序的另一个窗口）。"
+                        "请换一个文件名，或者先关掉正在读它的那一个。")
+                         .arg(QFileInfo(one).fileName());
+            return false;
+        }
     }
 
     if (pieces.size() > 1) {
@@ -2271,6 +2472,14 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
             // above). Doing it in two places is how one gets missed -- §68's reason for rebuilding
             // the outline tree rather than patching it, in a different key.
             tidyFormForThisDocument(*document);
+
+            // §78: the same argument one key lower. A merged page's own annotations came over as
+            // private copies, but the references *between* them -- a popup's /Parent, a reply's
+            // /IRT -- were left naming the document the page came out of, and a page that loses its
+            // note to 删除页面 leaves a reply threaded to nothing. Also here, also once per output
+            // file, for the reason above: this is the first point at which the page list is the one
+            // this file will have.
+            tidyAnnotationLinksForThisDocument(*document);
 
             // The bookmarks, after the cut and before any writer exists, because this is the one
             // place that knows both which pages made it into *this* file and in what order. Under

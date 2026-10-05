@@ -878,6 +878,14 @@ public:
     bool sourceIsProtected() const { return sourceEncrypted; }
     Protection sourceProtection() const { return sourceProtect; }
 
+    // How many of the bookmarks in the file on disk name a place *inside* a page rather than the
+    // page. Read once in open(), for the same reason as the two lines above: this class keeps no
+    // QPDF, and the 编辑书签 box asks on every keystroke whether to say what a save will cost.
+    // It is not derived from what the box is showing, because the box shows what this program's
+    // own reading of the tree carried -- and that reading keeps a title and a page number and
+    // nothing else (§75), which is exactly the information at risk.
+    int sourcePositionalBookmarks() const { return sourcePositionalBookmarkCount; }
+
     // ---- the list, and moving through it ----
     //
     // Undo and redo are moves between `pending` and `undone`, nothing more. A
@@ -983,6 +991,9 @@ private:
     // the same reason as the two lines above and below it: this class keeps no QPDF open, and the
     // 删除页面 / 拆分文件 boxes ask on every keystroke whether to mention form answers (§77).
     bool sourceHasFormFields = false;
+    // How many /Dest entries in the file on disk name a place inside a page. §75: our writer emits
+    // /Fit for every bookmark it is given, so each one of these is information a save takes away.
+    int sourcePositionalBookmarkCount = 0;
     Protection sourceProtect;
     int originalPages = 0;
     // Which pages are still present, in the order they would be written. An identity

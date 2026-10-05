@@ -407,6 +407,22 @@ void BookmarkDialog::updateSummary()
                        nullptr, gone);
         }
 
+        // §75's third route, and the only one this version takes: the data path stays as it is --
+        // the tree is read as titles and page numbers and written back as /Fit -- so a bookmark that
+        // named a place inside a page will come back naming the top of it. Nothing on this screen
+        // can show that, because the column that would hold it does not exist, so the one thing left
+        // is to say it before the press and mean it: counted off the file on disk, not off this list.
+        //
+        // Not said when the document has none, for the same reason §77 gives for the form sentence:
+        // a warning about a loss that cannot happen here teaches the reader to ignore the warnings
+        // that can.
+        const int positional = editor ? editor->sourcePositionalBookmarks() : 0;
+        if (positional > 0) {
+            line += tr("\n\n这份文档里有 %n 条书签指着页面内的某个位置（不只是第几页）。按确定再保存，"
+                       "它们都会变成整页适配 —— 那一层位置这一版留不住，书签的名字、层级和页码照旧。",
+                       nullptr, positional);
+        }
+
         if (editor && editor->outlineAsked()) {
             line += tr("\n\n这会把前面记下的那一条（%1 条）换掉；撤销一次回到那一个。")
                         .arg(editor->outlineToEdit().size());

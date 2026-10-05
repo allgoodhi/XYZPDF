@@ -24,6 +24,9 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
 ## 约定
 
 - 源码含中文字面量，MSVC 全目标加 `/utf-8`
+- 往一个已有 `.cpp` 里加 `#include <windows.h>` 之前，先 grep 那文件里有没有 `small` / `interface` /
+  `status` 这类宏名：rpcndr.h 会 `#define small char`，于是你改的是 include 那一行、报错却出现在 800 行
+  之外一个你从没碰过的局部变量上（§79 实测）。跟着来一句 `#undef small`，别去改别人的名字。
 - 版本号只写在 `project(... VERSION ...)`，其余三处（About / VERSIONINFO / 包 manifest）生成
 - 所有用户可见字符串走 `tr()`
 - 所有对话框走 `WindowDialogs`（窗口级模态）
@@ -59,7 +62,20 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   外面的读路，读数在应用自己的设置框里）。`build-local-release/gui-verify/` 下那些是历次草稿，在
   gitignore 的构建树里、丢了找不回来 —— 量出可用的新路由就收进 `tools/gui-probe.ps1`
 - 带表单字段的样本不用等真文件：`XYZPDF_FORM_SAMPLE_DIR=<目录> build-local-release/tests/xyzpdf_documenteditor_smoke.exe`
-  现造 plain / field-flat / field-spread / field-dangling / field-xfa / field-appearance / field-directive
+  现造 plain / field-flat / field-spread / field-dangling / field-xfa / field-appearance / field-directive，
+  外加注释层的三种 markup-highlight / markup-square / markup-note（§81，都是**不带 /AP** 的形状）
   （目录名里带 `fixtures` 会被拒绝并算失败）。
   "这台机器上没有真带字段的 PDF"从 §54 起不再成立
+- **像素问题从头测，别从屏幕测**：`-Mode formpage` 用 `CopyFromScreen`，会被盖在上面的第三方窗口
+  污染 —— §81 实测四份不同文件给出**完全相同的 band 计数**和**四个不同的 PNG 哈希**（差的是那个窗口
+  自己的时钟）。要看"某一层画不画"就调 `QtPdfBackend::render(0, size, RenderOptions{})`，那才是应用走的
+  那条路：**直接调 `QPdfDocument::render` 会得到假阴性**，因为 Qt 的默认 render flags 不带 `Annotations`，
+  而本项目的 `RenderOptions::annotations` 默认是 true（§81 就是这样先量错了一次）。**表单 widget 这一类
+  在这一层天生 0 像素**：同一份 `/AP /N` 挂到 `/Square` 上画满 6000 格、挂到 `/Widget` 上一格不画，
+  注册与否、`/NeedAppearances` 与否都不改变（§82）—— Qt 这版只供 `RenderFlag::Annotations` 一个相关
+  开关，别去找第二个。
+- **`build-local-release/xyzpdf.exe` 的哈希不是内容指纹**（§82 逐字节量过）：不是可重现链接，同一份源码
+  重链只差 4 个字节 —— COFF 头与 debug directory 里各一份链接时间戳。所以**哈希变了不说明代码变了**
+  （只 `touch` 一下也换），哈希相同也不说明源码相同；别拿重建后的哈希互相比，要问"装上的那份是不是
+  这次构建的字节"就查打包复制那条链（§16 的"三处相同"因此仍然有效）。
 - 编不过就明说"未编译验证"，不要报告成完成

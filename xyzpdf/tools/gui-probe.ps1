@@ -1699,6 +1699,17 @@ switch ($Mode) {
     foreach ($t in $texts2) { if ($t.Current.Name.Length -gt $longest2.Length) { $longest2 = $t.Current.Name } }
     Say ('  and the summary: |' + $longest2.Replace("`r", ' ').Replace("`n", ' / ') + '|')
 
+    # sec.80's sentence, on the same request the Add-one round just made. The box says, before the
+    # press, how many of the file's own bookmarks name a place inside a page and that a save flattens
+    # them -- and the count is taken off the file, not off this list, which is the whole reason the
+    # screen has to be the one that reads it: the headless suites see a tree that has already lost
+    # the difference. Needled in both languages for sec.42's reason (this harness starts in English,
+    # and a Chinese-only needle reads "not there" while it is on the screen).
+    $placeNeedle = (CjStr 0x9875, 0x7684, 0x67D0, 0x4E2A, 0x4F4D, 0x7F6E)  # "...certain place"
+    $namesPlaces = ($longest2 -like ('*' + $placeNeedle + '*')) -or
+                   ($longest2 -like '*a place inside a page*')
+    Say ('  summary names the positions-at-risk sentence=' + $namesPlaces)
+
     # The refusal on screen, written through the cell's own Value pattern (sec.72's dump shows every
     # cell offers one). Two claims are tested here and only the screen can hold either: that a typed 0
     # stops the press, and that the cell can be written at all -- which is the thing a spin box inside

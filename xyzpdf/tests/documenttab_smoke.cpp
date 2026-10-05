@@ -38,6 +38,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -55,6 +56,17 @@
 #include <QTemporaryDir>
 #include <QTableWidget>
 #include <QThreadPool>
+
+// The overwrite measurement asks the same question the save's last step does, and that is a Win32
+// call rather than a Qt one.
+//
+// The #undef is not tidiness: rpcndr.h (pulled in by windows.h) does `#define small char`, and this
+// file already had a local named `small` several hundred lines below the include -- so adding the
+// header rewrote a line nobody was working on, and the compiler complained about a QString two
+// variables away from the change. undef'ing it here keeps the pre-existing code meaning what it
+// said; the alternative was to rename something this slice has no business renaming.
+#include <windows.h>
+#undef small
 
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
@@ -75,6 +87,17 @@ void check(bool condition, const QString &what)
         return;
     std::cerr << "FAIL: " << what.toStdString() << '\n';
     ++failures;
+}
+
+int measurements = 0;
+
+// Printed rather than asserted, and counted -- §78's rule: a reading a later slice compares against
+// a recorded number has to go through the counter, or the "N measurement(s)" line and the lines the
+// run printed stop describing the same run.
+void note(const QString &what)
+{
+    std::cout << "note: " << what.toStdString() << '\n';
+    ++measurements;
 }
 
 // Pumps the event loop until `ready` says so, or the time runs out. The
@@ -2524,6 +2547,119 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- the box says what a save will cost the file's own bookmarks (§80) ----
+    //
+    // §75 measured that every bookmark this program writes comes out as /Fit, so a document whose
+    // bookmarks name a place inside a page loses that layer on a save -- and nothing on this screen
+    // can show it, because the tree being edited holds a title, a level and a page number and no
+    // position at all. §75's third route is the one taken: say it before the press. Both halves are
+    // pinned -- it is said for a file that carries positions, and *not* said for one that does not,
+    // for §77's reason that a warning about a loss which cannot happen here trains the reader to
+    // ignore the warnings that can.
+    //
+    // The sample is hand-built for the same reason §75's was: our own writer cannot produce a
+    // bookmark with a position in it, so no file written by this program ever reaches this branch.
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "setup: a temporary folder for the bookmark sample");
+        const QString sample = dir.filePath(QStringLiteral("positional-bookmarks.pdf"));
+        bool built = false;
+        QString why;
+        try {
+            QPDF qpdf;
+            qpdf.processFile((directory + QStringLiteral("/many-pages.pdf")).toUtf8().constData());
+            const std::vector<QPDFPageObjectHelper> pages =
+                QPDFPageDocumentHelper(qpdf).getAllPages();
+            auto pageAt = [&](int index) { return pages.at(size_t(index)).getObjectHandle(); };
+            QPDFObjectHandle root = QPDFObjectHandle::newDictionary();
+            root.replaceKey("/Type", QPDFObjectHandle::newName("/Outlines"));
+            root = qpdf.makeIndirectObject(root);
+            auto item = [&qpdf](const std::string &title, QPDFObjectHandle parent) {
+                QPDFObjectHandle handle = QPDFObjectHandle::newDictionary();
+                handle.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(title));
+                handle.replaceKey("/Parent", parent);
+                return qpdf.makeIndirectObject(handle);
+            };
+            auto addDest = [](QPDFObjectHandle handle, std::vector<QPDFObjectHandle> parts) {
+                QPDFObjectHandle dest = QPDFObjectHandle::newArray();
+                for (QPDFObjectHandle &part : parts)
+                    dest.appendItem(part);
+                handle.replaceKey("/Dest", dest);
+            };
+            const QPDFObjectHandle xyz = item("Xyz spot", root);
+            addDest(xyz, { pageAt(1), QPDFObjectHandle::newName("/XYZ"),
+                           QPDFObjectHandle::newReal(0), QPDFObjectHandle::newReal(700),
+                           QPDFObjectHandle::newReal(0) });
+            const QPDFObjectHandle fitHorizontal = item("FitH spot", root);
+            addDest(fitHorizontal, { pageAt(4), QPDFObjectHandle::newName("/FitH"),
+                                     QPDFObjectHandle::newReal(650) });
+            const QPDFObjectHandle fit = item("Fit page", root);
+            addDest(fit, { pageAt(7), QPDFObjectHandle::newName("/Fit") });
+            const QPDFObjectHandle heading = item("Heading", root);
+            std::vector<QPDFObjectHandle> row = { xyz, fitHorizontal, fit, heading };
+            for (size_t i = 0; i < row.size(); ++i) {
+                if (i > 0)
+                    row[i].replaceKey("/Prev", row[i - 1]);
+                if (i + 1 < row.size())
+                    row[i].replaceKey("/Next", row[i + 1]);
+            }
+            root.replaceKey("/First", row.front());
+            root.replaceKey("/Last", row.back());
+            root.replaceKey("/Count", QPDFObjectHandle::newInteger(int(row.size())));
+            qpdf.getRoot().replaceKey("/Outlines", root);
+            QPDFWriter writer(qpdf, sample.toUtf8().constData());
+            writer.write();
+            built = true;
+        } catch (const std::exception &e) {
+            why = QString::fromUtf8(e.what());
+        }
+        check(built,
+              QStringLiteral("setup: a file whose bookmarks name a spot inside a page: %1").arg(why));
+
+        const auto saidByBox = [](QDialog &box) {
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+
+        DocumentEditor carrying;
+        QString e;
+        check(carrying.open(sample, QString(), &e),
+              QStringLiteral("setup: the positional file opens for the editor: %1").arg(e));
+        check(carrying.sourcePositionalBookmarks() == 2,
+              QStringLiteral("and the editor counts two of its four bookmarks as carrying a "
+                             "position: %1").arg(carrying.sourcePositionalBookmarks()));
+
+        const QVector<OutlineRow> one = { { QStringLiteral("改一下"), 1, 0, QPointF() } };
+        BookmarkDialog box(&tab, &carrying, outlineFromRows(one));
+        // A real request first: the clause sits with the other "what pressing will do" sentences, and
+        // an untouched box answers 一模一样 instead (§71) -- without this the check below could be
+        // reading a summary that never reached the branch it claims to test.
+        box.findChild<QTableWidget *>()->item(0, 0)->setText(QStringLiteral("改一下名字"));
+        const QString said = saidByBox(box);
+        check(said.contains(QStringLiteral("2 条书签指着页面内的某个位置")),
+              QStringLiteral("the box says, before the press, how many positions a save will drop: %1")
+                  .arg(said));
+        check(said.contains(QStringLiteral("整页适配")) && said.contains(QStringLiteral("留不住")),
+              QStringLiteral("and says what they become, and that this version cannot keep them: %1")
+                  .arg(said));
+
+        // The negative half, same box, a document with nothing at risk.
+        DocumentEditor plain;
+        check(plain.open(path, QString(), &e),
+              QStringLiteral("setup: a document with no bookmarks at all opens: %1").arg(e));
+        check(plain.sourcePositionalBookmarks() == 0,
+              QStringLiteral("and the count there is zero: %1").arg(plain.sourcePositionalBookmarks()));
+        BookmarkDialog quiet(&tab, &plain, outlineFromRows(one));
+        quiet.findChild<QTableWidget *>()->item(0, 0)->setText(QStringLiteral("改一下名字"));
+        const QString kept = saidByBox(quiet);
+        check(!kept.contains(QStringLiteral("页面内的某个位置")),
+              QStringLiteral("nothing is said about positions for a file that has none: %1").arg(kept));
+    }
+
     //
     // §13 wrote this down from a real window: after a zoom-mode change the pages in
     // front were 5 and 6 while the bar still read "2 / 40", and pressing a paging key
@@ -2811,8 +2947,92 @@ int main(int argc, char **argv)
         QObject::disconnect(listening);
     }
 
+    // ---- what a save does to a name another tab of this program is already reading ----
+    //
+    // The last step of DocumentEditor::saveAs is one MoveFileExW per file with
+    // MOVEFILE_REPLACE_EXISTING, and the name the save dialog hands back can perfectly well be a PDF
+    // this very window has open in a different tab -- the editor refuses its own source file and any
+    // page it merged in from (documenteditor.cpp:2201, :2215), and nothing refuses a tab. Two bad
+    // endings are possible and which one happens has never been asked of a file: the move fails and
+    // the reader is told the name is "locked by another program" while the program is us, or the move
+    // succeeds and the other tab goes on showing bytes that no longer exist on disk. Printing both
+    // answers here, before choosing a fix, is §58's rule -- a suspicion written as a run rather than
+    // as a sentence.
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "setup: a temporary folder for the overwrite measurement");
+        const QString beingRead = dir.filePath(QStringLiteral("being-read.pdf"));
+        const QString stagedFile = dir.filePath(QStringLiteral("staged-overwrite.pdf"));
+        check(QFile::copy(path, beingRead),
+              "setup: the name another tab will read is a copy in the scratch folder");
+        check(QFile::copy(directory + QStringLiteral("/many-pages.pdf"), stagedFile),
+              "setup: the file that will be moved onto it is the many-page one");
+
+        DocumentTab other;
+        other.resize(700, 500);
+        other.show();
+        check(other.open(beingRead) == Document::Status::Ready,
+              QStringLiteral("setup: another tab has that name open: %1").arg(other.lastError()));
+        PageView *otherView = viewOf(other);
+        check(waitFor([otherView] { return otherView->hasImageFor(0); }),
+              "setup: and its first page is drawn, so the tab is idle the way a reader's would be");
+        const int pagesWhileOpen = other.pageCount();
+
+        const std::wstring from = QDir::toNativeSeparators(stagedFile).toStdWString();
+        const std::wstring to = QDir::toNativeSeparators(beingRead).toStdWString();
+        const BOOL moved = MoveFileExW(from.c_str(), to.c_str(),
+                                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        const DWORD lastError = moved ? 0 : GetLastError();
+
+        int pagesOnDisk = -1;
+        try {
+            QPDF probe;
+            probe.processFile(beingRead.toUtf8().constData());
+            pagesOnDisk = int(QPDFPageDocumentHelper(probe).getAllPages().size());
+        } catch (const std::exception &e) {
+            std::cerr << "FAIL: could not read the name the move left at: " << e.what() << '\n';
+            ++failures;
+        }
+        note(QStringLiteral("sec79 move onto a name another tab reads: moved=%1 win32=%2, the tab "
+                            "says %3 pages, the file at that name now says %4, the staged file is "
+                            "still there: %5")
+                 .arg(moved ? 1 : 0)
+                 .arg(lastError)
+                 .arg(pagesWhileOpen)
+                 .arg(pagesOnDisk)
+                 .arg(QFile::exists(stagedFile) ? 1 : 0));
+
+        // The premise §79's early refusal rests on, pinned as checks rather than left as printed
+        // numbers: a name one tab is reading cannot be replaced, and the failed attempt leaves both
+        // files whole. If a future Qt starts sharing the delete, these redden -- and the refusal
+        // that cites this measurement should be relaxed in the same change, not left telling a
+        // reader a name is unavailable when it has become available.
+        check(!moved,
+              QStringLiteral("a name another tab of this program is reading cannot be replaced "
+                             "(win32 %1)").arg(lastError));
+        check(QFile::exists(stagedFile),
+              "and the file that was to be moved into its place is still where it was");
+        check(pagesOnDisk == pagesWhileOpen,
+              QStringLiteral("and the name still holds the document the reader was looking at "
+                             "(disk says %1, the tab said %2)").arg(pagesOnDisk).arg(pagesWhileOpen));
+        check(other.pageCount() == pagesWhileOpen,
+              "and the reading tab is left showing that same document, not a half-applied one");
+
+        // The second half, which only matters if the move went through: does the tab that is still
+        // looking at that name notice the change? Asked twice -- what it says now, and what it says
+        // after being told to open the same path again.
+        const int pagesStillSaid = other.pageCount();
+        const Document::Status reopened = other.open(beingRead);
+        note(QStringLiteral("sec79 that tab says %1 pages after the move; opening the same path "
+                            "again returns status=%2 and then says %3 pages")
+                 .arg(pagesStillSaid)
+                 .arg(static_cast<int>(reopened))
+                 .arg(other.pageCount()));
+    }
+
     if (failures == 0) {
-        std::cout << "the view and the tab hold together\n";
+        std::cout << "the view and the tab hold together (" << measurements
+                  << " measurement(s) printed above)\n";
         return 0;
     }
     std::cerr << failures << " failure(s)\n";

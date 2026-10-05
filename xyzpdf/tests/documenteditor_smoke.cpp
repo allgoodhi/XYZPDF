@@ -637,17 +637,107 @@ QString writeLinkedAnnotationsCopy(const QString &source, const QString &destina
     return destination;
 }
 
-// What the references between annotations look like from the outside: whether a popup is
-// shared by two pages, whether a popup's /Parent names the annotation that points at it, and
-// whether a reply's /IRT names an annotation that is on the same page as the reply.
+// The same two annotations, but one page apart: the note (with its popup) on page 1 and the reply
+// that answers it on page 2.
+//
+// This is the shape that tells the two readings of §78's rule apart, and the first sample here is
+// structurally unable to: with the note and the reply on one page, "the thread is legal because it
+// is inside this document" and "the thread dangles because it names the donor's object" arrive as
+// the same integer. Only a thread that crosses pages can be left alone by the repair while still
+// naming an annotation the file shows -- so this generator exists to hold the fix to its own
+// boundary, and the case below that deletes a page neither of them is on is what proves it.
+QString writeCrossPageThreadCopy(const QString &source, const QString &destination, QString *error)
+{
+    auto rect = [](double left, double top, double right, double bottom) {
+        QPDFObjectHandle value = QPDFObjectHandle::newArray();
+        value.appendItem(QPDFObjectHandle::newReal(left));
+        value.appendItem(QPDFObjectHandle::newReal(top));
+        value.appendItem(QPDFObjectHandle::newReal(right));
+        value.appendItem(QPDFObjectHandle::newReal(bottom));
+        return value;
+    };
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        // Not const: replaceKey() is a non-const member, which has stopped every generator here
+        // the moment it was written (§76's note about aitems(), the same trap one call over).
+        QPDFObjectHandle first = pages.at(0).getObjectHandle();
+        QPDFObjectHandle second = pages.at(1).getObjectHandle();
+
+        QPDFObjectHandle note = QPDFObjectHandle::newDictionary();
+        note.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        note.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+        note.replaceKey("/Rect", rect(60, 700, 90, 730));
+        note.replaceKey("/Contents", QPDFObjectHandle::newString("the note on the page before"));
+        note = qpdf.makeIndirectObject(note);
+        note.replaceKey("/P", first);
+
+        QPDFObjectHandle popup = QPDFObjectHandle::newDictionary();
+        popup.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        popup.replaceKey("/Subtype", QPDFObjectHandle::newName("/Popup"));
+        popup.replaceKey("/Rect", rect(95, 700, 240, 780));
+        popup = qpdf.makeIndirectObject(popup);
+        popup.replaceKey("/Parent", note);
+        note.replaceKey("/Popup", popup);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(note);
+        first.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFObjectHandle reply = QPDFObjectHandle::newDictionary();
+        reply.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        reply.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+        reply.replaceKey("/Rect", rect(60, 600, 90, 630));
+        reply.replaceKey("/Contents", QPDFObjectHandle::newString("a reply across the pages"));
+        reply.replaceKey("/IRT", note);
+        reply.replaceKey("/RT", QPDFObjectHandle::newName("/R"));
+        reply = qpdf.makeIndirectObject(reply);
+        reply.replaceKey("/P", second);
+
+        QPDFObjectHandle other = QPDFObjectHandle::newArray();
+        other.appendItem(reply);
+        second.replaceKey("/Annots", qpdf.makeIndirectObject(other));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// What the references between annotations look like from the outside: whether a popup is shared by
+// two pages, whether a popup's /Parent names the annotation that points at it, and where a reply's
+// /IRT actually lands -- on the reply's own page, on another page this file shows, or on something
+// no page of this file shows.
+//
+// That three-way split of the reply target is §78's instrument, and it exists because two readings
+// used to collapse into one number. A thread that crosses pages *inside this document* is legal
+// (PDF 2.0 §12.5.5 lets a reply answer an annotation elsewhere in the same file), while a thread
+// naming an object no page shows is exactly what a page copy leaves behind. Counting both as "not
+// on this page" would judge the repair with a number that also rises when the file is fine -- §77's
+// lesson about a predicate that cannot see the difference between two legal shapes.
+//
+// `popupRects` is here because a save has to be shown to have *kept* the popup it fixed, not
+// swapped it for an empty dictionary: the counts alone read the same either way, and object ids
+// cannot serve as the fingerprint, since qpdf's writer renumbers every object on each write.
+// `texts` is here so "the thread was dropped" can be told apart from "the reply was deleted": the
+// link is the thing that goes, never the words.
 struct LinkReport
 {
     int notes = 0;
     int popups = 0;
     int popupsSharedByTwoPages = 0;
     int popupsNamingWrongOwner = 0;
+    int popupsNamingStrayOwner = 0;
     int replies = 0;
     int repliesNamingForeignTarget = 0;
+    int repliesOnAnotherPage = 0;
+    int repliesOnNoPage = 0;
+    QStringList popupRects;
+    QStringList texts;
 };
 
 LinkReport readLinkedAnnotations(const QString &path)
@@ -657,6 +747,14 @@ LinkReport readLinkedAnnotations(const QString &path)
         QPDF qpdf;
         qpdf.processFile(path.toUtf8().constData());
         const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        // Every annotation any page of this file shows, asked of the pages rather than of each
+        // annot's /P, for the reason §76 gives.
+        QSet<int> shownAnywhere;
+        for (const QPDFPageObjectHelper &page : pages) {
+            const QPDFObjectHandle annots = page.getObjectHandle().getKey("/Annots");
+            for (int index = 0; annots.isArray() && index < annots.getArrayNItems(); ++index)
+                shownAnywhere.insert(annots.getArrayItem(index).getObjGen().getObj());
+        }
         QSet<int> seenPopups;
         for (const QPDFPageObjectHelper &page : pages) {
             const QPDFObjectHandle annots = page.getObjectHandle().getKey("/Annots");
@@ -672,16 +770,32 @@ LinkReport readLinkedAnnotations(const QString &path)
                     if (seenPopups.contains(id))
                         ++report.popupsSharedByTwoPages;
                     seenPopups.insert(id);
-                    if (popup.getKey("/Parent").getObjGen().getObj() != item.getObjGen().getObj())
+                    report.popupRects
+                        << QString::fromStdString(popup.getKey("/Rect").unparse());
+                    const int owner = popup.getKey("/Parent").getObjGen().getObj();
+                    if (owner != item.getObjGen().getObj())
                         ++report.popupsNamingWrongOwner;
+                    if (!shownAnywhere.contains(owner))
+                        ++report.popupsNamingStrayOwner;
                 }
-                if (item.getKey("/IRT").isDictionary()) {
+                const QPDFObjectHandle target = item.getKey("/IRT");
+                if (target.isDictionary()) {
                     ++report.replies;
-                    if (!onThisPage.contains(item.getKey("/IRT").getObjGen().getObj()))
+                    const int landed = target.getObjGen().getObj();
+                    if (!onThisPage.contains(landed))
                         ++report.repliesNamingForeignTarget;
+                    if (shownAnywhere.contains(landed)) {
+                        if (!onThisPage.contains(landed))
+                            ++report.repliesOnAnotherPage;
+                    } else {
+                        ++report.repliesOnNoPage;
+                    }
                 }
                 if (item.getKey("/Subtype").getName() == "/Text" && !item.hasKey("/IRT"))
                     ++report.notes;
+                const QPDFObjectHandle body = item.getKey("/Contents");
+                if (body.isString())
+                    report.texts << QString::fromUtf8(body.getStringValue().c_str());
             }
         }
     } catch (const std::exception &e) {
@@ -730,6 +844,165 @@ QString writeFieldCopy(const QString &source, const QString &destination,
         QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
         form.replaceKey("/Fields", fields);
         qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// One page of the given source, carrying exactly one annotation of the asked-for kind, with no
+// /AP appearance stream on it.
+//
+// §81 asks the question §54/§57 asked about form fields, for the layer nobody has asked about: a
+// reader highlights a passage in another program, saves, opens the file here -- does a single pixel
+// change? Every annotation type in PDF may carry an optional /AP stream, and PDF 2.0 §12.5.3 says a
+// viewer without one has to draw its own appearance (a highlight paints its quad points with the
+// annotation's colour, a note draws an icon). So a file with no /AP is not "a page with nothing to
+// draw" -- it is a page that tests whether this renderer asks the annotation layer at all. That is
+// the same distinction §57 built field-appearance.pdf for, one layer over: there it was "the widget
+// has its own drawing and still shows nothing", here it is "there is nothing for the widget to
+// draw and yet a reader that supports annotations shows something".
+QString writeMarkupSample(const QString &source, const QString &destination, const QString &kind,
+                          QString *error)
+{
+    auto rect = [](double left, double top, double right, double bottom) {
+        QPDFObjectHandle value = QPDFObjectHandle::newArray();
+        value.appendItem(QPDFObjectHandle::newReal(left));
+        value.appendItem(QPDFObjectHandle::newReal(top));
+        value.appendItem(QPDFObjectHandle::newReal(right));
+        value.appendItem(QPDFObjectHandle::newReal(bottom));
+        return value;
+    };
+    auto colour = [&](double red, double green, double blue) {
+        QPDFObjectHandle value = QPDFObjectHandle::newArray();
+        value.appendItem(QPDFObjectHandle::newReal(red));
+        value.appendItem(QPDFObjectHandle::newReal(green));
+        value.appendItem(QPDFObjectHandle::newReal(blue));
+        return value;
+    };
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle annot = QPDFObjectHandle::newDictionary();
+        annot.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        if (kind == QStringLiteral("highlight")) {
+            annot.replaceKey("/Subtype", QPDFObjectHandle::newName("/Highlight"));
+            annot.replaceKey("/Rect", rect(70, 770, 300, 792));
+            // Quad points are the highlight's geometry: two per line, counter-clockwise, and a
+            // viewer paints these quads with a multiply blend. Without them a highlight has no
+            // area to paint, and "nothing was drawn" would be about the file rather than the reader.
+            QPDFObjectHandle quads = QPDFObjectHandle::newArray();
+            for (double y : {772.0, 790.0}) {
+                quads.appendItem(QPDFObjectHandle::newReal(70));
+                quads.appendItem(QPDFObjectHandle::newReal(y));
+                quads.appendItem(QPDFObjectHandle::newReal(300));
+                quads.appendItem(QPDFObjectHandle::newReal(y));
+            }
+            annot.replaceKey("/QuadPoints", quads);
+            annot.replaceKey("/C", colour(1.0, 0.85, 0.20));
+        } else if (kind == QStringLiteral("square")) {
+            annot.replaceKey("/Subtype", QPDFObjectHandle::newName("/Square"));
+            annot.replaceKey("/Rect", rect(70, 700, 260, 760));
+            annot.replaceKey("/C", colour(0.90, 0.10, 0.10));
+        } else {
+            annot.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+            annot.replaceKey("/Rect", rect(320, 770, 344, 794));
+            annot.replaceKey("/Name", QPDFObjectHandle::newName("/Comment"));
+            annot.replaceKey("/Contents",
+                            QPDFObjectHandle::newString("a note left in another reader"));
+            annot.replaceKey("/C", colour(1.0, 1.0, 0.0));
+            annot.replaceKey("/Open", QPDFObjectHandle::newBool(false));
+        }
+        annot = qpdf.makeIndirectObject(annot);
+        annot.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(annot);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// What one page's annotation layer looks like from the file: the subtype, whether a /QuadPoints or
+// /Contents came with it, and -- the part §81's screen reading depends on -- whether it carries an
+// /AP appearance stream. A sample that silently lost its annotation would produce a correct-looking
+// zero pixel difference, which is §57's objection turned around.
+struct MarkupReport
+{
+    QString subtype;
+    bool hasQuadPoints = false;
+    bool hasContents = false;
+    bool hasAppearance = false;
+};
+
+MarkupReport readMarkupAnnotation(const QString &path)
+{
+    MarkupReport report;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        const QPDFObjectHandle annots = pages.at(0).getObjectHandle().getKey("/Annots");
+        if (!annots.isArray() || annots.getArrayNItems() < 1)
+            return report;
+        const QPDFObjectHandle annot = annots.getArrayItem(0);
+        report.subtype = QString::fromUtf8(annot.getKey("/Subtype").getName().c_str());
+        report.hasQuadPoints = annot.getKey("/QuadPoints").isArray();
+        report.hasContents = annot.getKey("/Contents").isString();
+        report.hasAppearance = annot.getKey("/AP").isDictionary();
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the annotation out of " << path.toStdString() << ": "
+                  << e.what() << '\n';
+        ++failures;
+    }
+    return report;
+}
+
+// The same page with a rectangle painted into its **own content stream**, at the exact area the
+// highlight above claims. No annotation of any kind.
+//
+// This exists because "0 pixels differ" is only a finding about the annotation layer if the
+// instrument would have noticed a mark there at all. Appending a second stream to /Contents is legal
+// in PDF (the array is concatenated at draw time), so the page keeps its text and gains one filled
+// box -- the same pixels the highlight would have covered, reached by the route this renderer
+// definitely reads.
+QString writePaintedRectSample(const QString &source, const QString &destination, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle painted = QPDFObjectHandle::newStream(&qpdf);
+        painted.replaceStreamData(
+            std::make_shared<Buffer>(std::string("q\n0.2 0.6 1.0 rg\n70 770 230 22 re f\nQ\n")),
+            QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
+        painted = qpdf.makeIndirectObject(painted);
+
+        const QPDFObjectHandle existing = page.getKey("/Contents");
+        QPDFObjectHandle contents = QPDFObjectHandle::newArray();
+        if (existing.isArray()) {
+            for (int index = 0; index < existing.getArrayNItems(); ++index)
+                contents.appendItem(existing.getArrayItem(index));
+        } else if (!existing.isNull()) {
+            contents.appendItem(existing);
+        }
+        contents.appendItem(painted);
+        page.replaceKey("/Contents", contents);
 
         QPDFWriter writer(qpdf, destination.toUtf8().constData());
         writer.write();
@@ -1302,6 +1575,39 @@ XfaReport readXfa(const QString &path)
 // viewer that the reader actually typed into paints the box through `/AP`, and Qt renders annotation
 // appearances, so §54's number may belong to a shape nobody ships. This helper is the positive
 // control on that conclusion, and its output is also what the screen pass looks at.
+// The /AP dictionary §57's and §82's generators share: one /N entry holding a Form XObject that
+// fills its own box and says APPEARS-HERE inside it. 200x30 because that is the /Rect both write,
+// so nothing has to be scaled to see whether the drawing arrived.
+QPDFObjectHandle paintedAppearance(QPDF &qpdf)
+{
+    const std::string paint =
+        "q 0.70 0.70 0.90 rg 0 0 200 30 re f "
+        "BT /F1 12 Tf 4 9 Td (APPEARS-HERE) Tj ET Q";
+    QPDFObjectHandle form = QPDFObjectHandle::newStream(&qpdf, paint);
+    QPDFObjectHandle formDict = form.getDict();
+    formDict.replaceKey("/Type", QPDFObjectHandle::newName("/XObject"));
+    formDict.replaceKey("/Subtype", QPDFObjectHandle::newName("/Form"));
+    QPDFObjectHandle bbox = QPDFObjectHandle::newArray();
+    bbox.appendItem(QPDFObjectHandle::newReal(0));
+    bbox.appendItem(QPDFObjectHandle::newReal(0));
+    bbox.appendItem(QPDFObjectHandle::newReal(200));
+    bbox.appendItem(QPDFObjectHandle::newReal(30));
+    formDict.replaceKey("/BBox", bbox);
+    QPDFObjectHandle font = QPDFObjectHandle::newDictionary();
+    font.replaceKey("/Type", QPDFObjectHandle::newName("/Font"));
+    font.replaceKey("/Subtype", QPDFObjectHandle::newName("/Type1"));
+    font.replaceKey("/BaseFont", QPDFObjectHandle::newName("/Helvetica"));
+    QPDFObjectHandle fonts = QPDFObjectHandle::newDictionary();
+    fonts.replaceKey("/F1", qpdf.makeIndirectObject(font));
+    QPDFObjectHandle resources = QPDFObjectHandle::newDictionary();
+    resources.replaceKey("/Font", fonts);
+    formDict.replaceKey("/Resources", resources);
+
+    QPDFObjectHandle appearance = QPDFObjectHandle::newDictionary();
+    appearance.replaceKey("/N", form);
+    return appearance;
+}
+
 QString writeFieldWithAppearanceCopy(const QString &source, const QString &destination,
                                      const QString &fieldName, const QString &fieldValue,
                                      int pageIndex, QString *error)
@@ -1312,31 +1618,7 @@ QString writeFieldWithAppearanceCopy(const QString &source, const QString &desti
         const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
         QPDFObjectHandle page = pages.at(size_t(pageIndex)).getObjectHandle();
 
-        const std::string paint =
-            "q 0.70 0.70 0.90 rg 0 0 200 30 re f "
-            "BT /F1 12 Tf 4 9 Td (APPEARS-HERE) Tj ET Q";
-        QPDFObjectHandle form = QPDFObjectHandle::newStream(&qpdf, paint);
-        QPDFObjectHandle formDict = form.getDict();
-        formDict.replaceKey("/Type", QPDFObjectHandle::newName("/XObject"));
-        formDict.replaceKey("/Subtype", QPDFObjectHandle::newName("/Form"));
-        QPDFObjectHandle bbox = QPDFObjectHandle::newArray();
-        bbox.appendItem(QPDFObjectHandle::newReal(0));
-        bbox.appendItem(QPDFObjectHandle::newReal(0));
-        bbox.appendItem(QPDFObjectHandle::newReal(200));
-        bbox.appendItem(QPDFObjectHandle::newReal(30));
-        formDict.replaceKey("/BBox", bbox);
-        QPDFObjectHandle font = QPDFObjectHandle::newDictionary();
-        font.replaceKey("/Type", QPDFObjectHandle::newName("/Font"));
-        font.replaceKey("/Subtype", QPDFObjectHandle::newName("/Type1"));
-        font.replaceKey("/BaseFont", QPDFObjectHandle::newName("/Helvetica"));
-        QPDFObjectHandle fonts = QPDFObjectHandle::newDictionary();
-        fonts.replaceKey("/F1", qpdf.makeIndirectObject(font));
-        QPDFObjectHandle resources = QPDFObjectHandle::newDictionary();
-        resources.replaceKey("/Font", fonts);
-        formDict.replaceKey("/Resources", resources);
-
-        QPDFObjectHandle appearance = QPDFObjectHandle::newDictionary();
-        appearance.replaceKey("/N", form);
+        const QPDFObjectHandle appearance = paintedAppearance(qpdf);
 
         QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
         field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
@@ -1370,6 +1652,119 @@ QString writeFieldWithAppearanceCopy(const QString &source, const QString &desti
         return {};
     }
     return destination;
+}
+
+// §82: one painted appearance, hung on the page several ways.
+//
+// §81 ended with the annotation layer proven to reach the page image (highlight / square / note all
+// draw, all without an /AP) and a widget with no /AP drawing nothing. The one shape nobody had
+// measured off this channel was §57's: a widget that *brings* its own /AP /N. That is the difference
+// between two sentences with very different owners -- "our renderer ignores appearance streams" (a
+// Qt/PDFium statement about a layer) versus "it ignores widget annotations specifically" (a
+// statement about one subtype, which every form in the world uses). So each variant changes exactly
+// one thing:
+//   subtype            -- /Square carries the identical drawing. If that paints and the widget does
+//                         not, the stream itself is drawable and only the widget path is closed.
+//   registeredField    -- whether the annotation is also listed in /AcroForm /Fields, which is what
+//                         makes a viewer's form module own it instead of the annotation layer.
+//   needAppearances    -- the document-level instruction "build the drawings yourself" (§58 read it
+//                         off a screen and concluded 0 pixels; here it is read as a possible *reason*
+//                         a brought-along /AP gets bypassed).
+//   fieldKeys          -- /FT, /T and /V on an annotation whose /Subtype is *not* /Widget. This is
+//                         the one that decides what the sentence is about: if a square stops drawing
+//                         as soon as it looks like a field, the renderer keys off field-ness; if it
+//                         keeps drawing, only the /Widget name is being refused -- which matters,
+//                         because a document may carry a widget no viewer ever registered.
+struct AppearanceProbe
+{
+    const char *subtype = "/Widget";
+    bool registeredField = false;
+    bool needAppearances = false;
+    bool fieldKeys = false;
+};
+
+QString writeAppearanceProbeCopy(const QString &source, const QString &destination,
+                                 const AppearanceProbe &probe, QString *error)
+{
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        QPDFObjectHandle annot = QPDFObjectHandle::newDictionary();
+        annot.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        annot.replaceKey("/Subtype", QPDFObjectHandle::newName(probe.subtype));
+        annot.replaceKey("/AP", paintedAppearance(qpdf));
+        QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+        rect.appendItem(QPDFObjectHandle::newReal(60));
+        rect.appendItem(QPDFObjectHandle::newReal(600));
+        rect.appendItem(QPDFObjectHandle::newReal(260));
+        rect.appendItem(QPDFObjectHandle::newReal(630));
+        annot.replaceKey("/Rect", rect);
+        annot = qpdf.makeIndirectObject(annot);
+        annot.replaceKey("/P", page);
+        if (probe.registeredField || probe.fieldKeys) {
+            annot.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+            annot.replaceKey("/T", QPDFObjectHandle::newString("probeField"));
+            annot.replaceKey("/V", QPDFObjectHandle::newString("typed on page 1"));
+        }
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(annot);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+        if (probe.registeredField || probe.needAppearances) {
+            QPDFObjectHandle acroForm = QPDFObjectHandle::newDictionary();
+            if (probe.registeredField) {
+                QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+                fields.appendItem(annot);
+                acroForm.replaceKey("/Fields", fields);
+            }
+            if (probe.needAppearances)
+                acroForm.replaceKey("/NeedAppearances", QPDFObjectHandle::newBool(true));
+            qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(acroForm));
+        }
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
+// How many annotations *page one* carries a /AP /N that still decodes to a drawing saying `says`.
+// `appearancesWithPaint` above walks /AcroForm /Fields, which the two unregistered variants do not
+// have -- and the file-level half of §82 has to ask "is the drawing on this page" rather than "is it
+// in the form", or a variant would be reported as carrying nothing for a reason that has nothing to
+// do with the renderer.
+int pageAnnotationPaints(const QString &path, const QString &says)
+{
+    int matched = 0;
+    try {
+        QPDF qpdf;
+        qpdf.processFile(path.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle annots = pages.at(0).getObjectHandle().getKey("/Annots");
+        for (int index = 0; annots.isArray() && index < annots.getArrayNItems(); ++index) {
+            QPDFObjectHandle normal = annots.getArrayItem(index).getKey("/AP").getKey("/N");
+            if (!normal.isStream())
+                continue;
+            const std::shared_ptr<Buffer> bytes = normal.getStreamData();
+            if (!bytes)
+                continue;
+            const QByteArray paint = QByteArray::fromRawData(
+                reinterpret_cast<const char*>(bytes->getBuffer()), int(bytes->getSize()));
+            if (paint.contains(says.toUtf8()))
+                ++matched;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: could not read the page annotations out of " << path.toStdString()
+                  << ": " << e.what() << '\n';
+        ++failures;
+    }
+    return matched;
 }
 
 // What the appearance of each registered field looks like from the outside: is there an /AP /N
@@ -3112,24 +3507,159 @@ int main(int argc, char **argv)
                   QStringLiteral("and both copies are written: %1").arg(error));
 
             const LinkReport joined = readLinkedAnnotations(chainOut);
+            note(QStringLiteral("sec78 merged links notes=%1 popups=%2 replies=%3 shared=%4 "
+                                "wrongOwner=%5 strayOwner=%6 dangling=%7 reply texts=%8")
+                     .arg(joined.notes)
+                     .arg(joined.popups)
+                     .arg(joined.replies)
+                     .arg(joined.popupsSharedByTwoPages)
+                     .arg(joined.popupsNamingWrongOwner)
+                     .arg(joined.popupsNamingStrayOwner)
+                     .arg(joined.repliesOnNoPage)
+                     .arg(joined.texts.count(QStringLiteral("a reply to the note"))));
             // What the repair does guarantee, measured: each copy got its own annotation
             // objects, and each of those names the page that carries it.
-            check(joined.notes == 2 && joined.popups == 2 && joined.replies == 2,
-                  QStringLiteral("both copies came out with a note, a popup and a reply: %1 notes, "
+            check(joined.notes == 4 && joined.popups == 2 && joined.replies == 0,
+                  QStringLiteral("both copies came out with their own note, their own popup and "
+                                 "no thread that names something this file does not show: %1 notes, "
                                  "%2 popups, %3 replies")
                       .arg(joined.notes)
                       .arg(joined.popups)
                       .arg(joined.replies));
-            check(joined.popupsSharedByTwoPages == 1 && joined.popupsNamingWrongOwner == 2
-                      && joined.repliesNamingForeignTarget == 2,
-                  QStringLiteral("KNOWN GAP, pinned so a fix reddens this on purpose (docs "
-                                 "§47): the copies' popups are still one shared object and "
-                                 "neither popup names the note that owns it, and both replies "
-                                 "thread to an annotation outside their page -- %1 shared, %2 "
-                                 "wrong owner, %3 foreign target")
+            // §78: what §47 pinned as the gap, now asserted the other way. Each note's popup is
+            // its own and answers to it, and neither reply still threads to the donor's note.
+            // The counts alone would also be satisfied by *deleting* the popups and the replies
+            // (§50's lesson about a consistency check that absence satisfies), so the popup's own
+            // geometry and the reply text are read in the same breath below.
+            check(joined.popupsSharedByTwoPages == 0 && joined.popupsNamingWrongOwner == 0
+                      && joined.popupsNamingStrayOwner == 0 && joined.popupRects.size() == 2
+                      && joined.popupRects.at(0) == joined.popupRects.at(1),
+                  QStringLiteral("each copy's popup is a separate object that names the note "
+                                 "carrying it, and both carry the geometry the donor's had: %1 "
+                                 "shared, %2 wrong owner, %3 stray owner, rects %4")
                       .arg(joined.popupsSharedByTwoPages)
                       .arg(joined.popupsNamingWrongOwner)
-                      .arg(joined.repliesNamingForeignTarget));
+                      .arg(joined.popupsNamingStrayOwner)
+                      .arg(joined.popupRects.join(QStringLiteral(" | "))));
+            // The dropped half, stated as what it is: the *link* goes, the words stay. §47 left
+            // three exits open and this is the middle one -- take out what should not have
+            // travelled, and never edit content to make a reference look tidy.
+            check(joined.repliesOnNoPage == 0 && joined.repliesNamingForeignTarget == 0
+                      && joined.texts.count(QStringLiteral("a reply to the note")) == 2,
+                  QStringLiteral("no reply threads to an annotation no page shows, while both "
+                                 "reply texts are still in the file: %1 dangling, %2 foreign, %3 "
+                                 "copies of the reply text")
+                      .arg(joined.repliesOnNoPage)
+                      .arg(joined.repliesNamingForeignTarget)
+                      .arg(joined.texts.count(QStringLiteral("a reply to the note"))));
+
+            // A save with nothing broken must come out the same shape it went in: one note, one
+            // popup naming it, one reply naming the note, and the popup still carrying its own
+            // geometry.
+            //
+            // What this guard cannot see, stated rather than glossed: object ids are renumbered by
+            // every write, so "the same popup object came back" is not a fact the saved file can
+            // state, and a pass that rebuilt an already-correct popup would leave exactly this
+            // reading. The copy is therefore only ever *reachable* in the file through the shape
+            // above, and what this check really holds is that the repair neither loses a popup,
+            // loses a thread, nor moves a box -- the churn half stays inside the code's own
+            // condition (/Parent already naming the owner means nothing to do).
+            DocumentEditor retouched;
+            check(retouched.open(linked, QString(), &error),
+                  QStringLiteral("setup: the linked document opened again: %1").arg(error));
+            check(retouched.deletePages({2}, &error),
+                  QStringLiteral("and a page that carries none of this is dropped: %1").arg(error));
+            const QString retouchedOut = scratch.filePath(QStringLiteral("linked-untouched.pdf"));
+            error.clear();
+            check(retouched.saveAs(retouchedOut, &error),
+                  QStringLiteral("and it is written: %1").arg(error));
+            const LinkReport before = readLinkedAnnotations(linked);
+            const LinkReport intact = readLinkedAnnotations(retouchedOut);
+            check(intact.notes == before.notes && intact.popups == before.popups
+                      && intact.replies == before.replies && intact.popupRects == before.popupRects
+                      && intact.popupsNamingWrongOwner == 0 && intact.popupsNamingStrayOwner == 0
+                      && intact.repliesNamingForeignTarget == 0 && intact.repliesOnNoPage == 0,
+                  QStringLiteral("a save that had nothing to repair loses nothing and moves "
+                                 "nothing: was %1 notes / %2 popups / %3 replies at %4, now %5 "
+                                 "notes / %6 popups / %7 replies at %8")
+                      .arg(before.notes)
+                      .arg(before.popups)
+                      .arg(before.replies)
+                      .arg(before.popupRects.join(QStringLiteral(" | ")))
+                      .arg(intact.notes)
+                      .arg(intact.popups)
+                      .arg(intact.replies)
+                      .arg(intact.popupRects.join(QStringLiteral(" | "))));
+        }
+
+        // ---- a thread that crosses pages of the same document is not a defect ----
+        //
+        // §78's boundary, and the case the merged sample above cannot express: with the note and
+        // the reply on one page, "legal, inside this file" and "left behind by the copy" are the
+        // same reading. Two saves out of one cross-page thread, differing only in which page goes.
+        {
+            const QString threaded = scratch.filePath(QStringLiteral("threaded-donor.pdf"));
+            error.clear();
+            check(!writeCrossPageThreadCopy(donor, threaded, &error).isEmpty(),
+                  QStringLiteral("setup: a note on one page and a reply to it on the next: %1")
+                      .arg(error));
+            const LinkReport built = readLinkedAnnotations(threaded);
+            check(built.notes == 1 && built.popups == 1 && built.replies == 1
+                      && built.repliesOnAnotherPage == 1 && built.repliesOnNoPage == 0
+                      && built.popupsNamingStrayOwner == 0,
+                  QStringLiteral("setup: the thread crosses pages of the file itself, which is "
+                                 "legal: %1 replies across pages, %2 with nothing under them")
+                      .arg(built.repliesOnAnotherPage)
+                      .arg(built.repliesOnNoPage));
+
+            // Control: the page neither annotation is on goes, the thread stays where it was.
+            DocumentEditor keeper;
+            check(keeper.open(threaded, QString(), &error),
+                  QStringLiteral("setup: the threaded document opened: %1").arg(error));
+            check(keeper.deletePages({2}, &error),
+                  QStringLiteral("a third page, carrying neither note nor reply, is dropped: %1")
+                      .arg(error));
+            const QString keptOut = scratch.filePath(QStringLiteral("thread-kept.pdf"));
+            error.clear();
+            check(keeper.saveAs(keptOut, &error),
+                  QStringLiteral("and it is written: %1").arg(error));
+            const LinkReport kept = readLinkedAnnotations(keptOut);
+            check(kept.replies == 1 && kept.repliesOnAnotherPage == 1
+                      && kept.repliesOnNoPage == 0 && kept.popupsNamingWrongOwner == 0,
+                  QStringLiteral("the repair leaves a legal cross-page thread alone: %1 replies, "
+                                 "%2 across pages, %3 dangling")
+                      .arg(kept.replies)
+                      .arg(kept.repliesOnAnotherPage)
+                      .arg(kept.repliesOnNoPage));
+
+            // The fix case: the note's page goes, so the reply is left naming an annotation this
+            // file cannot show. Its /IRT comes off and the reply itself stays -- with its text.
+            DocumentEditor cutter;
+            check(cutter.open(threaded, QString(), &error),
+                  QStringLiteral("setup: the threaded document opened again: %1").arg(error));
+            check(cutter.deletePages({0}, &error),
+                  QStringLiteral("and the page holding the note is dropped: %1").arg(error));
+            const QString cutOut = scratch.filePath(QStringLiteral("thread-cut.pdf"));
+            error.clear();
+            check(cutter.saveAs(cutOut, &error),
+                  QStringLiteral("and it is written: %1").arg(error));
+            const LinkReport cut = readLinkedAnnotations(cutOut);
+            note(QStringLiteral("sec78 cross-page kept replies=%1 onAnotherPage=%2 popups=%3 | "
+                                "cut replies=%4 onNoPage=%5 notes=%6 text kept=%7")
+                     .arg(kept.replies)
+                     .arg(kept.repliesOnAnotherPage)
+                     .arg(kept.popups)
+                     .arg(cut.replies)
+                     .arg(cut.repliesOnNoPage)
+                     .arg(cut.notes)
+                     .arg(cut.texts.contains(QStringLiteral("a reply across the pages")) ? 1 : 0));
+            check(cut.replies == 0 && cut.repliesOnNoPage == 0
+                      && cut.texts.contains(QStringLiteral("a reply across the pages")),
+                  QStringLiteral("the dead thread comes off the reply while the reply stays: %1 "
+                                 "replies, %2 dangling, text still present: %3")
+                      .arg(cut.replies)
+                      .arg(cut.repliesOnNoPage)
+                      .arg(cut.texts.contains(QStringLiteral("a reply across the pages")) ? 1 : 0));
         }
 
         // ---- the same collision, one level up: names inside a hierarchy ----
@@ -4397,10 +4927,19 @@ int main(int argc, char **argv)
 
     // ---- a destination that cannot be replaced keeps its own bytes ----
     //
-    // The hazard is QPDFWriter having opened, and half-filled, a file the reader
-    // chose to replace. The staged write is what makes that survivable, so it is
-    // tested by occupying the destination: an open handle without FILE_SHARE_DELETE,
-    // which is how Qt opens files.
+    // The hazard is QPDFWriter having opened, and half-filled, a file the reader chose to replace.
+    // The staged write is what makes that survivable, so it is tested by making the destination
+    // unreplaceable in the one way §79's preflight cannot see: a read-only file. Asking that name
+    // for the DELETE right succeeds -- the attribute stops writes to the contents, not a
+    // delete-open -- while the move itself refuses it, so the finished document really is left
+    // where the message can name it.
+    //
+    // The other cause, a name some program is reading, is refused before anything is staged, in
+    // its own block near the end of this file. Two causes, two sentences, one assertion each --
+    // §70's rule that a contract with two halves cannot be pinned by a single check, and the
+    // reason this block used to occupy the destination with an open handle instead: that shape is
+    // the early refusal now, so leaving it here would have tested one message twice and the other
+    // one never.
     {
         const QString occupied = scratch.filePath(QStringLiteral("occupied.pdf"));
         {
@@ -4411,42 +4950,38 @@ int main(int argc, char **argv)
         }
         const QString heldHash = hashOfFile(occupied);
         check(!heldHash.isEmpty(), "and it can be hashed before anything touches it");
-        QFile holder(occupied);
-        check(holder.open(QIODevice::ReadWrite), "which is then held open by this process");
+        check(QFile::setPermissions(occupied, QFileDevice::ReadOwner),
+              "and it is marked read-only, the one refusal the preflight cannot see");
 
         DocumentEditor editor;
         QString error;
         check(editor.open(source, QString(), &error), "setup: the copy opens");
         check(editor.deletePages({0}, &error), "setup: one page is taken out");
         const bool saved = editor.saveAs(occupied, &error);
-        holder.close();
+        QFile::setPermissions(occupied, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
 
-        if (saved) {
-            // Not a failure, and not something to assert either way on a guess:
-            // whether Windows lets a file be replaced under an open handle depends
-            // on sharing modes this process does not control. Recorded so that the
-            // other branch is known to be the one being tested.
-            note(QStringLiteral("renaming over an open handle succeeded, so the recovery "
-                                "branch below did not run (a %1-byte file took its place)")
-                     .arg(QFileInfo(occupied).size()));
-            check(hashOfFile(occupied) != heldHash, "and the destination really was replaced");
-        } else {
-            check(!error.isEmpty(), "the failure says what happened");
-            check(hashOfFile(occupied) == heldHash,
-                  "the file that was there is byte for byte still there -- no half-written "
-                  "replacement, which is what the staged write exists to prevent");
-            const QStringList left =
-                QDir(scratch.path()).entryList(QStringList() << QStringLiteral("xyzpdf-save-*.pdf"),
-                                               QDir::Files);
-            check(left.size() == 1, "the finished copy is kept, where the message can name it");
-            if (left.size() == 1) {
-                const QString kept = scratch.filePath(left.first());
-                check(pagesAsReadByTheReader(kept) == pagesBefore - 1,
-                      "and the copy that was kept is a whole document with the page out of it");
-                check(error.contains(left.first()),
-                      QStringLiteral("the message names the file it left behind: %1").arg(error));
-                QFile::remove(kept);
-            }
+        check(!saved, "replacing a read-only destination is refused");
+        check(!error.isEmpty(), "the failure says what happened");
+        // The distinction the two blocks together make: this name got *past* the preflight, so the
+        // sentence must be the late one that names a staged file, not §79's early one. Without this
+        // the pair would be two checks on the same message and nothing on the other.
+        check(!error.contains(QStringLiteral("盖不掉")),
+              QStringLiteral("and it is the late message rather than the early refusal: the "
+                             "preflight let this name through -- %1").arg(error));
+        check(hashOfFile(occupied) == heldHash,
+              "the file that was there is byte for byte still there -- no half-written "
+              "replacement, which is what the staged write exists to prevent");
+        const QStringList left =
+            QDir(scratch.path()).entryList(QStringList() << QStringLiteral("xyzpdf-save-*.pdf"),
+                                           QDir::Files);
+        check(left.size() == 1, "the finished copy is kept, where the message can name it");
+        if (left.size() == 1) {
+            const QString kept = scratch.filePath(left.first());
+            check(pagesAsReadByTheReader(kept) == pagesBefore - 1,
+                  "and the copy that was kept is a whole document with the page out of it");
+            check(error.contains(left.first()),
+                  QStringLiteral("the message names the file it left behind: %1").arg(error));
+            QFile::remove(kept);
         }
     }
 
@@ -6826,6 +7361,29 @@ int main(int argc, char **argv)
                                  "/XYZ and the /FitH came out as /Fit, so a reader who renames one "
                                  "bookmark moves all the others to the top of their pages: %1")
                       .arg(after.destinations.join(QStringLiteral(", "))));
+
+            // §80 turns that same fact into the number 编辑书签 says before the press, and pins the
+            // number at both ends: two of the four carry a position as written, none carry one after
+            // a save through the box. The pair is what makes the check mean something -- a counter
+            // that answered 0 for every file would satisfy the second reading alone (§67's shape of a
+            // vacuous count), and the first reading is also what proves the count is not being taken
+            // from the flat list, which has already lost the difference.
+            DocumentEditor carrying;
+            error.clear();
+            check(carrying.open(positional, QString(), &error),
+                  QStringLiteral("setup: the file as written opens for the count: %1").arg(error));
+            check(carrying.sourcePositionalBookmarks() == 2,
+                  QStringLiteral("two of the four name a place inside a page -- /XYZ and /FitH, "
+                                 "not /Fit and not the heading: %1")
+                      .arg(carrying.sourcePositionalBookmarks()));
+            DocumentEditor flattened;
+            error.clear();
+            check(flattened.open(afterPath, QString(), &error),
+                  QStringLiteral("setup: the saved copy opens for the count: %1").arg(error));
+            check(flattened.sourcePositionalBookmarks() == 0,
+                  QStringLiteral("and after one save through the box none do, which is the whole of "
+                                 "what the sentence exists to say: %1")
+                      .arg(flattened.sourcePositionalBookmarks()));
         }
 
         // ---- under a split, where each piece is a separate document ----
@@ -6998,6 +7556,23 @@ int main(int argc, char **argv)
                 QFile::remove(directive);
                 if (QFile::copy(fixture, plain))
                     std::cout << "SAMPLE plain: " << plain.toStdString() << '\n';
+                // §81: the three annotation shapes go out beside them, on the same page `plain.pdf`
+                // is -- the screen reading is a difference between two pictures, and it is only
+                // evidence if the two pictures differ by one annotation and nothing else. The
+                // baseline is therefore plain.pdf itself, not a fourth file.
+                for (const QString &kind : {QStringLiteral("highlight"), QStringLiteral("square"),
+                                            QStringLiteral("note")}) {
+                    const QString out
+                        = QDir(dir).filePath(QStringLiteral("markup-%1.pdf").arg(kind));
+                    QFile::remove(out);
+                    e.clear();
+                    check(!writeMarkupSample(fixture, out, kind, &e).isEmpty(),
+                          QStringLiteral("sample: markup-%1 is written for the window to open: %2")
+                              .arg(kind)
+                              .arg(e));
+                    std::cout << "SAMPLE markup-" << kind.toStdString() << ": "
+                              << out.toStdString() << '\n';
+                }
                 if (!writeFieldCopy(fixture, flat, QStringLiteral("sampleField"),
                                     QStringLiteral("typed on page 1"), &e)
                          .isEmpty()) {
@@ -7086,6 +7661,447 @@ int main(int argc, char **argv)
                 }
             }
         }
+    }
+
+    // ---- does this reader draw the annotation layer at all? (§81, the file half) ----
+    //
+    // Three pages, each carrying exactly one annotation and none of them carrying an /AP appearance
+    // stream. PDF 2.0 §12.5.3 is explicit that a viewer has to generate the appearance of an
+    // annotation that has none -- a highlight paints its quad points, a square strokes its border,
+    // a note draws an icon -- so "no /AP" is not "nothing to draw". This block pins that premise;
+    // the pixel answer is read below, off `QtPdfBackend::render`.
+    //
+    // Not off the screen. The channel §54 and §57 used for the form-field question -- gui-probe's
+    // -Mode formpage, which grabs the screen with CopyFromScreen -- was tried first here and gave
+    // four runs *identical* band counts and *four different* PNG hashes: a topmost third-party
+    // window was sitting inside the crop, and what varied was that window's own clock. §66 recorded
+    // the same trap and answered it with PrintWindow; this question does not need the screen at all,
+    // and a measurement nobody else's window can cover is the better instrument for it.
+    //
+    // The three kinds are not redundancy: a renderer could paint markup rectangles and still ignore
+    // notes, or the other way round, and the question the roadmap cares about -- "can this program
+    // ever show a highlight the reader made elsewhere" -- is answered per kind.
+    {
+        const QStringList kinds = {QStringLiteral("highlight"), QStringLiteral("square"),
+                                   QStringLiteral("note")};
+        const QStringList expected = {QStringLiteral("/Highlight"), QStringLiteral("/Square"),
+                                      QStringLiteral("/Text")};
+        for (int index = 0; index < kinds.size(); ++index) {
+            const QString path
+                = scratch.filePath(QStringLiteral("markup-%1.pdf").arg(kinds.at(index)));
+            QString e;
+            check(!writeMarkupSample(fixture, path, kinds.at(index), &e).isEmpty(),
+                  QStringLiteral("setup: a page carrying one %1 annotation: %2")
+                      .arg(expected.at(index))
+                      .arg(e));
+            const MarkupReport read = readMarkupAnnotation(path);
+            check(read.subtype == expected.at(index),
+                  QStringLiteral("%1: the file really carries that one annotation, so a zero pixel "
+                                 "answer is about the renderer and not about an empty page (got %2)")
+                      .arg(expected.at(index))
+                      .arg(read.subtype.isEmpty() ? QStringLiteral("(none)") : read.subtype));
+            check(!read.hasAppearance,
+                  QStringLiteral("%1: and no /AP to blame -- a viewer that supports annotations has "
+                                 "to paint this from the dictionary alone")
+                      .arg(expected.at(index)));
+            if (kinds.at(index) == QStringLiteral("highlight")) {
+                check(read.hasQuadPoints,
+                      "the highlight names the area it should paint (quad points, two per line)");
+            }
+            if (kinds.at(index) == QStringLiteral("note")) {
+                check(read.hasContents, "the note carries the text an icon would open onto");
+            }
+            note(QStringLiteral("sec81 %1: subtype=%2 quadPoints=%3 contents=%4 appearance=%5")
+                     .arg(expected.at(index))
+                     .arg(read.subtype)
+                     .arg(read.hasQuadPoints ? 1 : 0)
+                     .arg(read.hasContents ? 1 : 0)
+                     .arg(read.hasAppearance ? 1 : 0));
+        }
+
+        // The pixel half, measured through the class the app actually renders with.
+        //
+        // The first version of this called `QPdfDocument::render` directly and reported 0 pixels for
+        // all three kinds -- and that was a measurement of the wrong thing. `RenderOptions::annotations`
+        // defaults to **on** in this program (document.h:52, with the reason spelled out: a document
+        // that shows its highlights everywhere else and not here reads as broken), while Qt's own
+        // default render options carry no annotation flag. So the bare call answered for a path the
+        // product never takes. §58's lesson again: an instrument that cannot see something produces
+        // findings that look exactly like the thing being missing -- here it took a red-free "0" to
+        // notice.
+        //
+        // Each kind is therefore read twice: against the same page with the flag on (what a reader
+        // sees), and the same file rendered with the flag off (what the flag is worth). The second
+        // column is the one that keeps the first from being read as "annotations are drawn" when the
+        // pixels actually come from something else in the page.
+        const auto renderFirstPage = [](const QString &path, bool withAnnotations) {
+            QtPdfBackend document;
+            if (document.load(path, QString()) != Document::Status::Ready)
+                return QImage();
+            RenderOptions options;
+            options.annotations = withAnnotations;
+            return document.render(0, QSize(595, 842), options);
+        };
+        const auto difference = [](const QImage &one, const QImage &other) {
+            struct Diff
+            {
+                int pixels = 0;
+                QRect box;
+            };
+            Diff out;
+            if (one.isNull() || other.isNull() || one.size() != other.size())
+                return out;
+            const QImage a = one.convertToFormat(QImage::Format_RGB32);
+            const QImage b = other.convertToFormat(QImage::Format_RGB32);
+            for (int y = 0; y < a.height(); ++y) {
+                const QRgb *rowA = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+                const QRgb *rowB = reinterpret_cast<const QRgb *>(b.constScanLine(y));
+                for (int x = 0; x < a.width(); ++x) {
+                    if (rowA[x] == rowB[x])
+                        continue;
+                    ++out.pixels;
+                    out.box = out.box.isNull() ? QRect(x, y, 1, 1) : out.box.united(QRect(x, y, 1, 1));
+                }
+            }
+            return out;
+        };
+
+        const QImage plainPage = renderFirstPage(source, true);
+        check(!plainPage.isNull(),
+              "the page without annotations renders, so a difference is measurable");
+        // Where each annotation sits, in the same top-left coordinates the rendered image uses: the
+        // file's y is measured from the bottom of an 842-point page.
+        const QRect highlightBox(70, 842 - 792, 230, 22);
+        const QRect squareBox(70, 842 - 760, 190, 60);
+        const QRect noteBox(320, 842 - 794, 24, 24);
+        const QList<QPair<QString, QRect>> boxes
+            = {{QStringLiteral("highlight"), highlightBox}, {QStringLiteral("square"), squareBox},
+               {QStringLiteral("note"), noteBox}};
+        for (const auto &one : boxes) {
+            const QString markedPath
+                = scratch.filePath(QStringLiteral("markup-%1.pdf").arg(one.first));
+            const QImage markedOn = renderFirstPage(markedPath, true);
+            const QImage markedOff = renderFirstPage(markedPath, false);
+            check(!markedOn.isNull() && !markedOff.isNull(),
+                  QStringLiteral("the page carrying %1 renders both ways").arg(one.first));
+            const auto drawn = difference(plainPage, markedOn);
+            const auto flag = difference(markedOff, markedOn);
+            const auto box = [](const QRect &area) {
+                return area.isNull()
+                     ? QStringLiteral("(none)")
+                     : QStringLiteral("%1,%2 %3x%4")
+                           .arg(area.x())
+                           .arg(area.y())
+                           .arg(area.width())
+                           .arg(area.height());
+            };
+            note(QStringLiteral("sec81 %1: %2 pixels differ from the same page without the "
+                                "annotation, inside %3 (its own rect is %4); turning the flag off "
+                                "moves %5 pixels")
+                     .arg(one.first)
+                     .arg(drawn.pixels)
+                     .arg(box(drawn.box))
+                     .arg(box(one.second))
+                     .arg(flag.pixels));
+            // The promise this slice exists to test: a reader who highlighted a passage in another
+            // program has to see it here. `RenderOptions::annotations` defaults to on for exactly
+            // that reason, so a 0 in this column means the promise is not kept for that subtype --
+            // and the flag column says whether the flag is what carries it.
+            check(drawn.pixels > 0,
+                  QStringLiteral("%1: the annotation layer reaches the page image -- %2 pixels "
+                                 "differ inside %3")
+                      .arg(one.first)
+                      .arg(drawn.pixels)
+                      .arg(box(drawn.box)));
+            check(!drawn.box.isNull() && one.second.adjusted(-4, -4, 4, 4).contains(drawn.box),
+                  QStringLiteral("%1: and the difference stays inside the area that annotation "
+                                 "names, so it is the annotation and not the page reflowing: %2")
+                      .arg(one.first)
+                      .arg(box(drawn.box)));
+        }
+        // The positive control the three zeros above need: the same rectangle, painted by the page's
+        // own content stream rather than by an annotation. If this also read 0, the instrument -- not
+        // the renderer -- would be the thing not looking.
+        const QString paintedPath = scratch.filePath(QStringLiteral("painted-rect.pdf"));
+        QString paintedError;
+        check(!writePaintedRectSample(source, paintedPath, &paintedError).isEmpty(),
+              QStringLiteral("setup: the same page with a box painted into its own contents: %1")
+                  .arg(paintedError));
+        const auto painted = difference(plainPage, renderFirstPage(paintedPath, true));
+        note(QStringLiteral("sec81 painted-rect vs plain: %1 pixels differ, box %2")
+                 .arg(painted.pixels)
+                 .arg(painted.box.isNull() ? QStringLiteral("(none)")
+                                           : QStringLiteral("%1,%2 %3x%4")
+                                                 .arg(painted.box.x())
+                                                 .arg(painted.box.y())
+                                                 .arg(painted.box.width())
+                                                 .arg(painted.box.height())));
+        // What the painted rectangle adds is not "the instrument can see something" -- the three
+        // readings above already do that -- but that a mark at *this* area is reported at *this*
+        // area: the difference box comes back exactly the rect that was filled, so the boxes the
+        // annotations produced can be read as geometry rather than as unexplained ink.
+        check(painted.pixels > 0,
+              QStringLiteral("the instrument sees a mark at that spot when the page itself carries "
+                             "one: %1 pixels")
+                  .arg(painted.pixels));
+        check(!painted.box.isNull() && highlightBox.adjusted(-3, -3, 3, 3).contains(painted.box),
+              QStringLiteral("and the difference it sees is inside the area that was painted (%1)")
+                  .arg(painted.box.isNull()
+                           ? QStringLiteral("(none)")
+                           : QStringLiteral("%1,%2 %3x%4")
+                                 .arg(painted.box.x())
+                                 .arg(painted.box.y())
+                                 .arg(painted.box.width())
+                                 .arg(painted.box.height())));
+
+        // And the claim §54/§57 reached on the screen -- that a form field draws nothing -- asked of
+        // this instrument instead. It matters which way it goes: §57's zero was read off a screen
+        // crop, and the same crop in §81 turned out to be able to show a third-party window instead
+        // of the page. A zero here keeps the earlier round standing (on a channel that has since
+        // been shown to be fallible); a non-zero would mean the "表单层不可见" sentence had to be
+        // retracted rather than cited.
+        {
+            const QString fieldPath = scratch.filePath(QStringLiteral("field-flat-copy.pdf"));
+            QString fieldError;
+            check(!writeFieldCopy(source, fieldPath, QStringLiteral("probeField"),
+                                  QStringLiteral("a value in a box"), &fieldError)
+                       .isEmpty(),
+                  QStringLiteral("setup: a page carrying one text field: %1").arg(fieldError));
+            const auto field = difference(plainPage, renderFirstPage(fieldPath, true));
+            note(QStringLiteral("sec81 form field vs plain: %1 pixels differ, box %2")
+                     .arg(field.pixels)
+                     .arg(field.box.isNull()
+                              ? QStringLiteral("(none)")
+                              : QStringLiteral("%1,%2 %3x%4")
+                                    .arg(field.box.x())
+                                    .arg(field.box.y())
+                                    .arg(field.box.width())
+                                    .arg(field.box.height())));
+            // This field carries no /AP, which is the shape §54 used (not §57's, which brought its
+            // own drawing). So a difference here would be the renderer inventing a box for a widget
+            // that brought nothing to draw with.
+            check(field.pixels == 0,
+                  QStringLiteral("a /Widget with no /AP draws nothing -- the §54 sentence, now "
+                                 "measured off the render path rather than off a screen crop: %1 "
+                                 "pixels differ")
+                      .arg(field.pixels));
+        }
+
+        // ---- §82: and a widget that BRINGS its own drawing? ----
+        //
+        // §57 built exactly this file, looked at it through -Mode formpage, and recorded "0 像素差,
+        // 两张 PNG 同一个 SHA". That channel has since been shown (in §81, two lines above) to be able
+        // to show a third-party window instead of the page, so the conclusion has been re-read here
+        // off the render path the app actually uses. The four variants are not four chances to be
+        // right: each isolates one of the explanations the sentence could have, and they are only
+        // separable because everything but one key changes between them.
+        {
+            const QString painted = QStringLiteral("APPEARS-HERE");
+            // Each row's expectation is written down next to its shape rather than derived from it:
+            // the point of the table is that the subtype name is the only thing separating the two
+            // groups, and that claim only exists if the rows say which group they were measured in.
+            struct Shape
+            {
+                QString name;
+                AppearanceProbe probe;
+                bool draws;
+            };
+            const QList<Shape> shapes
+                = {{QStringLiteral("square-carries-the-painting"),
+                    AppearanceProbe{"/Square", false, false, false},
+                    true},
+                   {QStringLiteral("square-with-field-keys"),
+                    AppearanceProbe{"/Square", false, false, true},
+                    true},
+                   {QStringLiteral("widget-unregistered"),
+                    AppearanceProbe{"/Widget", false, false, false},
+                    false},
+                   {QStringLiteral("widget-in-acroform"),
+                    AppearanceProbe{"/Widget", true, false, true},
+                    false},
+                   {QStringLiteral("widget-need-appearance"),
+                    AppearanceProbe{"/Widget", true, true, true},
+                    false}};
+            const QRect paintBox(60, 842 - 630, 200, 30);
+            const auto describe = [](const QRect &area) {
+                return area.isNull()
+                     ? QStringLiteral("(none)")
+                     : QStringLiteral("%1,%2 %3x%4")
+                           .arg(area.x())
+                           .arg(area.y())
+                           .arg(area.width())
+                           .arg(area.height());
+            };
+            for (const Shape &shape : shapes) {
+                const QString path
+                    = scratch.filePath(QStringLiteral("appearance-%1.pdf").arg(shape.name));
+                QString e;
+                check(!writeAppearanceProbeCopy(source, path, shape.probe, &e).isEmpty(),
+                      QStringLiteral("setup: the page with one %1: %2").arg(shape.name).arg(e));
+                // File-level half first: the drawing has to be on this page and still decodable, or a
+                // 0 below would be measuring a page that lost the stream, not a renderer that
+                // ignored it.
+                const int carried = pageAnnotationPaints(path, painted);
+                check(carried == 1,
+                      QStringLiteral("%1: the file carries the appearance on page one, decoded, so "
+                                     "the pixel reading below is about drawing and not about "
+                                     "carrying (found %2)")
+                          .arg(shape.name)
+                          .arg(carried));
+                const auto drawn = difference(plainPage, renderFirstPage(path, true));
+                const auto flag = difference(renderFirstPage(path, false),
+                                             renderFirstPage(path, true));
+                note(QStringLiteral("sec82 %1: subtype=%2 registered=%3 fieldKeys=%4 "
+                                    "needAppearances=%5 carried=%6 -> %7 pixels differ inside %8 "
+                                    "(its rect is %9); the flag alone moves %10")
+                         .arg(shape.name)
+                         .arg(QString::fromUtf8(shape.probe.subtype))
+                         .arg(shape.probe.registeredField ? 1 : 0)
+                         .arg(shape.probe.fieldKeys ? 1 : 0)
+                         .arg(shape.probe.needAppearances ? 1 : 0)
+                         .arg(carried)
+                         .arg(drawn.pixels)
+                         .arg(describe(drawn.box))
+                         .arg(describe(paintBox))
+                         .arg(flag.pixels));
+                if (shape.draws) {
+                    check(drawn.pixels > 0,
+                          QStringLiteral("%1: an appearance stream this page carries reaches the "
+                                         "image -- %2 pixels -- so the blank rows below are not a "
+                                         "renderer that ignores /AP")
+                              .arg(shape.name)
+                              .arg(drawn.pixels));
+                    check(!drawn.box.isNull()
+                              && paintBox.adjusted(-3, -3, 3, 3).contains(drawn.box),
+                          QStringLiteral("%1: and it lands on the area the annotation names (%2)")
+                              .arg(shape.name)
+                              .arg(describe(drawn.box)));
+                    check(flag.pixels > 0,
+                          QStringLiteral("%1: the Annotations flag is the lever that put it there, "
+                                         "so this is the layer the reader asks for -- %2 pixels move "
+                                         "with it")
+                              .arg(shape.name)
+                              .arg(flag.pixels));
+                } else {
+                    check(drawn.pixels == 0,
+                          QStringLiteral("%1: the same stream on a /Widget draws nothing -- %2 "
+                                         "pixels differ")
+                              .arg(shape.name)
+                              .arg(drawn.pixels));
+                    // Not "and the flag was never on": pulling the one lever this API has moves
+                    // nothing here either, which is what turns the row from an observation into the
+                    // statement that there is no lever we are failing to pull.
+                    check(flag.pixels == 0,
+                          QStringLiteral("%1: and the Annotations flag moves nothing for it either "
+                                         "-- %2 pixels")
+                              .arg(shape.name)
+                              .arg(flag.pixels));
+                }
+            }
+            // The fifth reading is not a variant of the probe but §57's own generator, so the number
+            // here replaces the one that record printed rather than merely resembling it.
+            {
+                const QString sec57 = scratch.filePath(QStringLiteral("appearance-sec57.pdf"));
+                QString e;
+                check(!writeFieldWithAppearanceCopy(source, sec57, QStringLiteral("drawnField"),
+                                                    QStringLiteral("typed on page 1"), 0, &e)
+                           .isEmpty(),
+                      QStringLiteral("setup: §57's own appearance sample: %1").arg(e));
+                const int registered = appearancesWithPaint(sec57, painted);
+                const int onThePage = pageAnnotationPaints(sec57, painted);
+                const auto drawn = difference(plainPage, renderFirstPage(sec57, true));
+                note(QStringLiteral("sec82 sec57-generator: appearancesWithPaint=%1 "
+                                    "pageAnnotationPaints=%2 -> %3 pixels differ inside %4")
+                         .arg(registered)
+                         .arg(onThePage)
+                         .arg(drawn.pixels)
+                         .arg(describe(drawn.box)));
+                check(registered == 1 && onThePage == 1,
+                      QStringLiteral("§57's file still carries its drawing registered and on the "
+                                     "page (%1 / %2), so the number below is the renderer's")
+                          .arg(registered)
+                          .arg(onThePage));
+                // §57's conclusion was reached off a screen crop that §81 later showed can show
+                // something else entirely -- and §58 escalated it to "表单层整层不可见". This says the
+                // first part was right after all, and the second part was too wide: what is
+                // invisible is the widget subtype, not the annotation layer.
+                check(drawn.pixels == 0,
+                      QStringLiteral("§57's 0 pixels reproduces off the render path, not only off "
+                                     "a screen: %1 differ").arg(drawn.pixels));
+            }
+        }
+    }
+
+    // ---- a name that is readable but not replaceable ----
+    //
+    // §79. The last step of a save is one MoveFileExW per file with MOVEFILE_REPLACE_EXISTING, and
+    // while a program holds a PDF open -- including this one, in another tab or another window --
+    // Windows withholds the delete right that step needs. Measured first in
+    // tests/documenttab_smoke.cpp, on a name a tab of this program was reading: error 5, arriving
+    // *after* the whole document had been rebuilt and written under a staged name, with the reader
+    // told a name this program itself was holding might be "locked by another program". So the save
+    // now asks the same question before it stages anything.
+    //
+    // Both halves are pinned because §70's rule is that a contract with two halves needs one
+    // assertion each: a block that only exercises the locked name would keep passing if the probe
+    // turned into a blanket refusal -- and a save that never lets an existing name through is every
+    // overwrite the program used to do correctly.
+    {
+        const QString victim = scratch.filePath(QStringLiteral("held-by-a-reader.pdf"));
+        QString error;
+        check(QFile::copy(source, victim),
+              "setup: the name a save will aim at already exists, as a copy of the document");
+        const QString victimHash = hashOfFile(victim);
+        const int victimPages = pagesAsReadByTheReader(victim);
+
+        {
+            QPdfDocument reader;
+            check(reader.load(victim) == QPdfDocument::Error::None,
+                  QStringLiteral("setup: and a reader has it open the way another tab does (%1)")
+                      .arg(int(reader.error())));
+
+            DocumentEditor guarded;
+            check(guarded.open(source, QString(), &error),
+                  QStringLiteral("setup: the document to save: %1").arg(error));
+            check(guarded.deletePages({0}, &error),
+                  QStringLiteral("setup: one page is taken out: %1").arg(error));
+            error.clear();
+            check(!guarded.saveAs(victim, &error),
+                  QStringLiteral("a save aimed at a name this program is reading refuses instead "
+                                 "of pretending it wrote: %1")
+                      .arg(error));
+            check(error.contains(QStringLiteral("盖不掉")),
+                  QStringLiteral("and the reason names a name that cannot be replaced, not a write "
+                                 "that failed: %1").arg(error));
+            check(hashOfFile(victim) == victimHash,
+                  "the file under that name is byte for byte the one the reader was holding");
+
+            // Nothing may be staged either -- that is the half the late failure used to leave
+            // behind: a finished new document sitting in the temporary folder, which the reader has
+            // no reason to look for and every reason to believe was thrown away.
+            const QStringList leftBehind = QDir(scratch.path())
+                                               .entryList({QStringLiteral("xyzpdf-save-*.pdf")},
+                                                          QDir::Files);
+            check(leftBehind.isEmpty(),
+                  QStringLiteral("and no staged file was left in the folder: %1 -- %2")
+                      .arg(leftBehind.size())
+                      .arg(leftBehind.join(QStringLiteral(", "))));
+        }
+
+        // The other half: with the name free again, the same save goes through, and the file at
+        // that name becomes the edited document rather than staying the old one.
+        DocumentEditor freed;
+        check(freed.open(source, QString(), &error),
+              QStringLiteral("setup: the same document opened again: %1").arg(error));
+        check(freed.deletePages({0}, &error),
+              QStringLiteral("setup: and the same page taken out: %1").arg(error));
+        error.clear();
+        check(freed.saveAs(victim, &error),
+              QStringLiteral("the same name, no longer read by anyone, saves: %1").arg(error));
+        check(pagesAsReadByTheReader(victim) == victimPages - 1,
+              QStringLiteral("and what is at that name is the edited document: %1 pages were %2")
+                  .arg(pagesAsReadByTheReader(victim))
+                  .arg(victimPages));
     }
 
     if (failures == 0) {

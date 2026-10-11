@@ -1329,6 +1329,169 @@ widget **没修也修不到**（要看得见只能自己把 `/AP /N` 画到页�
 那句推论没测；**要不要加 `/Brepro`**（让哈希成为内容指纹）等他定；`-Mode formpage` 还没换 PrintWindow；
 §80/§79/§78 那三串、§55 XFA、§49 那 28 个括号、§74 的单复数照旧。
 
+§83 是他那一句"重打包并重装"：记账的一片，产品代码一个字没动，把 §74–§82 送进装上的那一份。
+门禁先跑（**26/0**，目录 578 / numerus 47），然后 `build-package.ps1 -Sign -Cert 221C6B38…0A83
+-Install` → `verify-package.ps1` → 三处逐字节比。**§16 平了**：`xyzpdf.exe`
+**`0f744cd07d73…` / 1,341,952** 在构建树、包内、`WindowsApps\…\bin` 三处全等，四颗壳/运行时一起对
+（`xyzpdfpreview f8e17a004f76` / 133,632 —— §66 那条预览修复住在这里；`xyzpdfshell 5bdb230257a7`；
+`xyzpdfthumbnail 727b03acec88`；`qpdf30 5ce2fc864988`；另 `jpeg62`/`z` 也对；`turbojpeg` 只在构建树、
+不带走，§39 那条照旧）。**这正是 §82 那条新规矩的第一次实操**：对上靠的是"打包复制同一份字节"，
+重建再比是**不可能**对上的（一次重链换 4 个字节）。第一版比对我自己读出一条假绿并钉住：壳 DLL 名字记错
+（写成 `xyzpdfcontextmenu` / `xyzpdfthumbprovider`）之后那一行仍印 `same=True`，因为 `Get-FileHash`
+对不存在的路径返回 null、而 PowerShell 的循环变量留着上一轮的值 —— **三个路径都不存在的比字节行照样能
+说"相同"**；改成先问"在不在"、并把字节数写进同一行才看见那两行其实是 `pkg=None`。规矩：**比字节的每一行
+要带上大小与"存在"**（§67 那条的孪生：相等断言不能比两个不存在的东西）。**包长胖了没人叫**：
+msix **28.1 MB**（§73 是 17.5），解包 **66.5 MB / 69 文件**（§73：40.5 / 67），payload 对照写着
+`gained 2 file(s), lost 0` —— `dxcompiler.dll` + `dxil.dll` **25.9 MB**，`verify-package` 自己报
+"may not be needed … paints with the raster engine"，而**同名两颗还不是同一个东西**（构建树 14,317,000
+vs 包里 25,684,592），谁供的**没查到**（Qt 的 bin、`vcpkg_installed`、`Windows Kits\10\bin` 三处都没有
+这个文件名），没替它编。装上的那份现在是**中文**：`-Install` 自己先卸，**设置容器跟着走**（§73 立的
+那条第二次显形）—— `-Mode inventory -Installed` 起得来、26 个非空 Name、菜单是 `文档(D)/转换(G)/…`，
+所以 §49/§61 的英文读数对这一份不再成立。仍欠：**装上的那份没读 §80 那句位置书签话**（harness 递给包里
+的实例只有不带文档的启动，没有 AppExecutionAlias；要读得先让 `openpicker` 那一支把书选进去 —— 一件新
+仪器；正负两条断言已在 `documenttab_smoke` 钉住）；`dxcompiler`/`dxil` 剥不剥；`-Mode formpage`
+换 PrintWindow；§80 的中文那一遍与英文单数形；widget 要不要自己画 `/AP`；`/Brepro`；§75 路 (a)；
+§55 XFA；§47 那句读者可见的话；§49 那 28 个括号；§74 的单复数；§79 的锁本身与就地保存。
+
+§84 是他那一句"可以"批下的两条便宜事：包里 25.9 MB 的死重，与 §80 那句话在**装着的字节**上读一遍。
+第一条先量再动手：从解包目录、`PATH` 只有 Windows 起那颗 exe 读模块表两遍（空启动 110 个、开 184 条
+书签的书并渲一页 105 个），**`dxcompiler.dll` 与 `dxil.dll` 都不在其中**，而它们服务的 `d3d11.dll` 在 ——
+所以剥得起，理由同 §39 让 `D3Dcompiler_47.dll` 走人。**然后控制把我将记的功劳收回去了**：在
+`build-package.ps1` 第 2b 步的清单里加上那两个名字之后重打，脚本照旧印 `threw away 34 file(s), 29.3 MB`
+一字不差；把两行拿掉再打一遍 —— **同样 67 文件、同样 17.5 MB**。所以 28.1 → 17.5 MB 不是这两行做的，
+是部署那一步下一趟自己没带，**为什么变没查**（构建树里那两颗还躺着，包里一颗都没有；而 §83 包里那颗
+25,684,592 字节与构建树那颗 14,317,000 字节本来就不是同一个文件）。留着的两行是**常设规矩**（§60：那个
+清单每次自己决定；§83 就是它变胖的那次），记录里不写成原因。`verify-package` 两次 exit 0（`lost 2` →
+`payload is the same 67 file(s)`），msix 回到 17.5 MB / 解包 40.5 MB / 67 文件，三处字节仍全等
+（exe `0f744cd07d73…`/1,341,952 + 三颗壳 DLL + `qpdf30`），比字节的每一行都带着大小与"在不在"
+（§83 那条规矩第一次实操）。第二条差点被我判成"这条路在装的那份上不通"：三轮里 UIA 都报
+`打开(O)…` `enabled=True` 在真实坐标、点击发出去了、`#32770` 就是不来；补一句 `SwitchToThisWindow`
+（§66 那支早就记过它是 Alt+Tab 那一叫，不跟壳抢前台所有权）之后日志自己说了原因 —— `foreground before
+the raise [build-pro — 文件资源管理器 [ main ▸ … ]]` → 之后 `[XYZPDF]`，picker 第一次就起来，且落在
+`real-book.pdf` 那一行（壳的 per-exe 记忆与开发版共享，§62），点行 + BM_CLICK id=1 → 文档开在包里那份。
+整条链在**装着的字节 + 中文界面**上跑完：`rows=184`、未动的框 `写这 184 条书签` `enabled=False`、加一条
+→ `rows=185` 且 accept 亮、小结里那句 §80 的话在（184 那条）、层级格写 0 → accept 灭并换成层级那句、
+写回 1 → 亮。**而这一片最值钱的一条是 harness 自己**：它报 `sentence=False`，因为 needle 写成
+`页的某个位置` 而产品原话是 `页面内的某个位置` —— **多一个字就不是子串，这一支永远不会红也不会绿**；
+§80 记的"中英两种 needle 都认"当时只从英文那一支走过去（harness 自带 `Language=en`），所以那是 §42
+那条规矩第一次真兑现：**写在两支语言里的断言只跑过一支，等于没写**。修成 `的某个位置` 重跑 →
+`sentence=True`。`.ps1` 的 ASCII 坑这一片又踩两次（第二次是注释里写了屏幕原文），区别在于这次改完
+立刻查字节数（`sum(1 for b in bytes if b>127)`）而不是跑一轮再猜；AGENTS.md 添了两条（那条查询，
+和 `-OpenViaPicker` 这条新路由含"不加 `SwitchToThisWindow` 会白跑三轮"）。数字：**产品代码 +0/−0**
+（C++ 一字未动，所以没重编、门禁没重跑），`build-package.ps1` +14/−1、`gui-probe.ps1` +78/−1（两份都
+ASCII 0、解析 0 错），目录 578 / numerus 47 一字未动。**没再重装**（装的这一份就是 §83 那趟之后
+`-Install` 装的、与包内字节全等的那颗）。仍欠：**那两颗为什么在这两趟之间自己没了**（没查；上传前
+该有人再读一次 payload 对照）；开发版那一遍的中文仍没单独跑（所以 §80 的中文债还欠半条 —— 英文
+单数那一形也照旧没见过）；`-Mode formpage` 换 PrintWindow；其余模式早退不杀进程；`/Brepro`；
+§75 路 (a)；widget 要不要自己画 `/AP`；§55 XFA；§47 那句读者可见的话；§79 的锁本身与就地保存；
+§49 那 28 个括号；§74 的单复数；§84 那句打印/导出的推论没测。
+
+§85 挑的是"只欠一次眼睛"里最便宜的两条：§77 留在**删除页面**小结里的那句（正负两条早在
+`documenttab_smoke` 钉住，屏幕上从没读过），和 §80 那句在**开发版**上的中文一遍（§84 只在装的那份读过
+中文，所以那条债还欠半条）。产品代码一字未动。新通道 `-Mode deletesummary -Doc <文件> -ExpectForm
+present|absent`：按**类**认 `DeletePagesDialog`（§45 的规矩 —— 标题是我们的可翻译串，类名不是），先
+`SwitchToThisWindow`（§84 那条前台账），读框里最长那格 `Text`，needle 中英各一条（`表单字段` /
+`form fields`）。三半全跑在最后一版脚本上：带字段的 `field-flat.pdf` + `present` → exit 0，屏幕上就是
+那句（`An answer belongs to the page its field is drawn on … the field itself stays listed`）；不带字段的
+`doc40.pdf` + `absent` → exit 0 `sentence=False`；**控制** —— 同一份不带字段的 + `present` → **exit 1**
+并 Bail 那句"该有却没有"。**这一条才是这片的地基**：屏幕上"没读到那句话"有两种原因（产品在无表单文件上
+闭嘴 = 对，我这支 needle 根本不成立 = §84 刚在书签框上栽过一次），只有让它在指定"该有"时必须红，那句
+`False` 才说的是产品（§71 那条"改不了退出码的 FAIL 只是装饰"落到屏幕上）。顺带读到未点名时
+`Delete these pages` `enabled=False`（§14），模式全程不按按钮。
+**一处 flake 写清楚免得下片误判**：负向第一次报的是 `[Document(D)] found, but neither Expand nor a click
+produced rows` → `no delete-pages row in either language`（exit 1），重试两轮都过 —— 合成输入按轮成败
+（§41/§74），而能把它和产品分开的只有**消息不同**：菜单没起来说"没有那一行"，产品没那句话说"框里没那句"。
+**一个差点含糊过去的机制问题用一行读数买断**：初版在 `ClickAt` 后只等 1.5 秒找一次，报"框没开"；我修的时候
+**同时**改了两件事（改成轮询 + 把范围从主窗口子树扩到进程顶层窗口），于是"哪个才是原因"说不清，而说不清
+就是给下一个模式留坑（要么白加一层范围，要么把 1.5 秒当够用）。加一句"第几轮/在哪一层"再跑：**round 1、
+2 个候选、在主窗口子树里** —— 所以先前纯粹是等少了，扩范围是没必要的保险（留着，因为它同时是答案的来源）。
+§80 的开发版中文那一遍（`-Mode bookdialog -Doc 真书 -Language zh_CN`）：`rows=184`、
+`cells: 33 DataItem, 0 with an empty Name, 22 whose Name is just a number`（§74 那一格在中文下也不再对
+读屏沉默）、未动的框 `写这 184 条书签` 灰着、加一条 → `rows=185` 且亮、小结里那句中文位置话在、
+`sentence=**True**`（§84 修的 needle 现在在**两个**实例上都成立），层级格写 `0` → 灰 +
+`level column=True`，写回 `1` → 亮。数字：产品 **+0/−0**、C++ 一字未动所以**没重编、门禁没重跑**；
+`gui-probe.ps1` **+104/−1**（新模式 + 新参数 + 那行答案），**这片又踩了一次 `§` 写进 `.ps1` 的坑**
+（6 个非 ASCII 字节，靠"改完立刻查字节数"当场清掉 —— §72/§73/§74/§84/§85 累计六次），AGENTS.md 的模式
+清单到**十四种**并写进"`deletesummary` 的判定必须能红 + 失败消息要分清没框还是没话 + 重试是常规"。
+仍欠：`deletesummary` 的**中文**那一遍（needle 已写好，缺一次 `-Language zh_CN` 的执行）；§74 那句 `%1`
+的英文**单数形**（要一份"恰好 1 条"的文档）；`-Mode formpage` 换 PrintWindow；其余模式早退不杀进程；
+§75 路 (a)；widget 自己画 `/AP`；§55 XFA；§47 那句读者可见的话；§79 的锁本身与就地保存；§49 那 28 个括号；
+`/Brepro`；§82 那句推论；§83 那条"两颗 DLL 为什么自己没了"。
+
+§86 收的是两条仪器老账，产品代码一字未动。第一条：§74 立过"模式早退必须走 `Bail`（说一句 + kill + exit 1），
+裸 `exit` 会跳过文件末尾那句 kill"，但当时只改了踩坑那一处，脚本里还留着 **40 条**裸 `exit 1`。这次先量前提
+再改：拿转换前的副本跑 `-Mode mergedonor`（不带 `-LastDir`，那条检查发生在应用起来之后）→ `exit=1` 且
+`tasklist` 里 **1 个 xyzpdf.exe 还活着**；然后把 31 条 `Say '…'; exit 1` 收成 `Bail '…'`（消息一字不动，
+诊断不降级）、7 条本来没消息的（`if (-not (PickFolder …)) { exit 1 }` 这种）各补一句是谁没成、3 条多行块
+（打印完子树再退 / 语言恢复失败 / 侧栏没起来把整屏名字倒出来再退）。文件 2000 → 1999 行，剩下唯一的裸
+`exit 1` 是 `Bail` 自己函数体里那句；纯 ASCII、解析 0 错，对着备份逐行比过确认没有整文件重写（§56 那条规矩）。
+**再量结论**：同一句命令在新脚本上 `exit=1`、**残留 0 个进程**、那句话照旧印 —— 所以这次买到的不是退出码
+（没变），是"下一轮不被上一轮的实例喂"。**差点读出一条假绿，值得单记**：第一次跑"旧脚本"那半时，上一条命令
+因为一个被 bash 吃掉的反引号整段没执行，`cp` 没发生，PowerShell 报的是 `-File 参数…不存在`、退出码 **127**，
+而那句"残留 0 个进程"量的是一根**根本没启动的脚本** —— 看见 exit 不等于 1 才回头查。规矩：**控制跑要先证明
+它自己跑了**（§67"计数断言不能数自己放的东西"的又一支：读数为 0 之前先看产生它的那条命令是否真执行过）。
+第二条：`deletesummary` 的**中文那一遍**（§85 自己新欠的半条 —— 双语 needle 写在脚本里，执行过的一直只有
+英文那一支，正是 §84 教的事）。`-Language zh_CN` 正负各跑一次，都 exit 0：带字段那份屏幕上是
+`这份文档有表单字段：字段填的答案属于它画在哪一页上，删掉的那一页上填的答案不会出现在保存出来的文件里
+（字段本身还登记着）。` → `sentence=True`；不带字段那份只剩"还没有说出要删哪几页"+"原来那份文件不会改动…"
+→ `sentence=False`；两遍都 `DeletePagesDialog found on round 1 (2 candidates; it was in the main window
+subtree)`、`删除这些页` 未点名时灰着。数字：`tools/gui-probe.ps1` **+40/−41**，产品代码 **+0/−0**，目录一字
+未动，没重编也没重跑门禁（C++ 未动，屏幕上跑的还是 §83 之后那颗 `0f744cd07d73…`）。仍欠：§74 那句 `%1` 的
+英文**单数那一形**（要一份"恰好 1 条"的文档）；`splitsagain`/`mergedonor`/`saverename` 那几支的**中文**屏幕
+一遍（与 `deletesummary` 同一族毛病）；`-Mode formpage` 换 PrintWindow；§84 那条"两颗 DLL 为什么自己没了"；
+§75 路 (a)；widget 自己画 `/AP`；§55 XFA；§47 那句读者可见的话；§79 的锁本身与就地保存；§49 那 28 个括号；
+`/Brepro`；§82 那句推论没测。
+
+§87 是他点的三支中文屏幕一遍（`splitsagain`/`mergedonor`/`saverename`），与 §85 刚给 `deletesummary` 补的
+那半条同一族毛病：needle 双语写着、执行过的只有英文那一支（§84 立的规矩）。三遍都读到了，而这一片的产出
+其实是**"跑之前先发现有两处根本跑不了"**。第一处：`mergedonor` 三处查找全是英文单支（`MenuRow 'Merge Files
+In'`、`Dialog 'Merge Files In'` 两次、撤销行 `-like 'Undo*'`），中文界面下它必然 Bail 在"没有那一行"——
+**那句话说的是 harness 不是产品**（菜单标签本身核对过是 `合并文件进来(&F)…`，`mainwindow.cpp:877`）。
+第二处更有意思：加了中文 needle 之后**还是找不到框**，而且那次 `FindType (Window) $CT::Window` 一个候选都没
+返回；给新加的 `DialogAny` 补上第二层（进程自己的顶层窗口）并把匹配到的那格印出来，读数立刻变成
+`matched [合并文件进来] class=MergePagesDialog`。对照 §85 的 `DeletePagesDialog found … in the main window
+subtree` —— **删页框在主窗口子树里，合并框不在**，所以 §45 那条"我们的框按类认"得补一半：**还得按两层找**，
+找不到就把两层的候选名字/类名倒出来，让"没找到"从死路变成读数。另有一次按轮 flake（菜单第二轮不出行），
+加 §45 那条三次重试后自愈，日志留着 `try 1: no merge row yet`。读到的东西：`splitsagain` 两轮给出
+`会写成 6 份…这会把前面记下的「每 1 页一份」换掉；撤销一次回到那一个。` 与 `会写成 14 份…「每 7 页一份」…`
+（**§40 那条 aside 的两个 numerus 分支在中文里都在**）+ `撤销 拆成每 3 页一份(U)`；`mergedonor` 两个供体
+`1 个文件一共取 1 页…排在第 41 页。` 与 `…一共取 2 页…排在第 42-43 页。 / 这份文档里已经有 1 页是合并进来的
+了。` + `撤销 合入 N 页（donorN.pdf）(U)`，收尾状态行读回**空**（只记不判，§29）；`saverename` 整条跑通
+`wrote renamed-112325.pdf`、12,666 字节、`source hash unchanged: True`、两个标签、状态行
+`已写成一个新文件（40 页）：向右转 90°（1 页）` —— 跑出来的那份删掉了。`.ps1` 的 ASCII 坑这一片又咬两次
+（我在注释里直接写了菜单中文字，21 字节），两次都是"改完立刻查字节数"抓的。数字：产品 **+0/−0**，
+`gui-probe.ps1` 从 §86 前的备份算起 2000→2043 行（+90/−47；§86 是 +40/−41，**§87 ≈ +50/−6**），ASCII 0、
+解析 0 错，没重编也没重跑门禁。仍欠：`exportstatus`/`uacache`/`outlinetree`/`tabstrip`/`menudump`/
+`inventory` 从没 `-Language zh_CN` 跑过（同一族病逐支补）；`formpage` 换 PrintWindow；`mergedonor` 那个空
+状态行**为什么是空**没查；§74 的英文单数形；§84 那两颗 DLL；§75 路 (a)；widget 自己画 `/AP`；§55 XFA；
+§47 那句读者可见的话；§79 的锁与就地保存；§49 那 28 个括号；`/Brepro`；§82 那句推论。
+
+§88 把 §87 点名的六支中文一遍跑完，收获不是那六份读数，是**两根假绿被关掉**（产品代码 +0/−0，
+`gui-probe.ps1` 2043→2090）。第一根在查找里：`exportstatus` 三处查找是英文单支（`MenuRow 'Export as Images'`、
+`Dialog 'Export as Images'` ×3），与 §87 的 `mergedonor` 同病，中文下根本进不去 —— 现在 `$exportNeedles`
+两支都给（`导出为图片`：`mainwindow.cpp:562` / `imageexportdialog.cpp:25`）、`DialogAny`、接受按钮
+`MatchOne @('Export', 导出)`。第二根更要紧：**这支模式连跑两遍中文都是 `files=0` 采 14 次然后 DONE、
+exit 0**。给它加"按下接受之后进程有哪些窗口"，答案当场露出来：`[Choose a folder to save into]
+class=#32770` **还在**、自己写着 `H:/tmp/num34/export / 文件夹无效` —— 壳的文件夹框拒了我给的斜杠路径，
+而 `PickFolder` 只要把 `BM_CLICK` 投递出去就 `return $true`，于是"按下导出"打在还被模态框挡住的身上，
+什么都没发生而模式一路绿。三处都修：`PickFolder` 轮询那个框是否消失、不消失就把它说的话印出来并返回
+`$false`；按下接受后把进程所有窗口倒出来一次；收尾两条硬 Bail（`-OutDir` 里一张 PNG 都没出来 /
+判定用的状态条裁图根本没生成）。**控制**：斜杠 + 新脚本 → exit 1 且 `picker is STILL open`；反斜杠 →
+`files=1`、状态行读到 `已导出 1 张图片到 H:/tmp/num34/export`（5.6 秒后落回空条，§37/§56 那条 6000ms
+第三次对上）。**这条也说明 §37/§61 当年那两遍的 exit 码不可信**（它们各自有 `name=[…]` 行撑着，不是装饰，
+但"跑通过"这件事当时没人对账）。另外同一个斜杠形式喂给我们自己的 Qt 目录框（`-LastDir`，§87）一直好用 ——
+拒它的是壳那个 `#32770`，**为什么拒没查**。顺带 §74 钉的文案缺陷第一次拿到屏幕原句：英文加一条之后
+`1 of them point at no page.`（`bookmarkdialog.cpp:392` 是 `%1`、目录里 `%1 of them point at no page.`，
+1 后面跟复数动词；改成 `%n` 两形是 §33 那一族的熟路，**等他一词**）。其余四支一次通过：
+`outlinetree` `GridPattern rows=103`、`digit-starting=21/26`（§64/§65 的修复在中文下读数一样）；
+`tabstrip` `foreground before the click [Claude]` → 抬起后是我们、`PrintWindow returned True`（§84 那笔账
+在这支上第一次露出"盖在前面的到底是谁"）；`menudump` 中文 `文档(D)` 菜单 19 项；`uacache` 44 个采样三路
+一致、21.9 秒一起变空。ASCII 坑第 9 次差点进来（注释里写中文标签），改完就查当场清掉。清场：跑出的 PNG
+删了、`export/` 里 §37 那张旧图也删了（本来就在 `H:\tmp`、不在版本库），无残留进程。仍欠：`%1` 要不要改
+numerus（等他）；壳框为什么拒斜杠；`mergedonor` 末尾空状态行为什么空；`formpage` 换 PrintWindow；
+装的那份上各模式的语种组合还有没配齐的；§55 XFA；§47 那句；§75 路 (a)；widget 自己画 `/AP`；§79 的锁与
+就地保存；§49 那 28 个括号；`/Brepro`；§84 那两颗 DLL；§82 那句推论。
+
 **「增量保存」在 M5 动手时划掉了**，两个理由，都是量出来的不是猜的：
 ① QPDF 的写入端 `QPDFWriter` 只有"整份重写"这一种输出，没有在原文件末尾追加修订段的接口，
 要做增量得自己拼 xref 与对象流 —— 那是造一个 writer，不是用 QPDF；

@@ -154,6 +154,17 @@ if ($LASTEXITCODE -ne 0) { throw "cmake --install failed ($LASTEXITCODE)" }
 # has) -- 29.3 MB of the 65 MB unpacked package, and the program never opens any
 # of it: its own catalogues are compiled into the binary by qt_add_translations
 # with RESOURCE_PREFIX, and src/core/languages.cpp loads only those.
+# This step also drops bin\dxcompiler.dll and bin\dxil.dll (25.9 MB together), which that
+# script shipped on its own into the sec.83 package. Measured on the unpacked package with
+# nothing but Windows on PATH -- once at startup with no document, once with a
+# 184-bookmark book open and its page rendered -- neither appears among the loaded
+# modules, while d3d11.dll, the API they compile shaders for, does. Same reasoning that
+# let D3Dcompiler_47.dll go in sec.39. What the two entries have NOT been seen doing: the
+# very next pack shipped 67 files without them, and a control with the two names removed
+# from this list still shipped 67 -- so these lines are a standing rule against a payload
+# that was measured once, not the thing that shrank this package. That is also why the
+# rule lives here rather than in CMakeLists.txt: sec.60 measured that windeployqt's answer
+# is per-run, so the payload has to be re-read whenever a package changes size.
 #
 # CMakeLists.txt already refuses all three on the POST_BUILD windeployqt line,
 # with the reasons written out there. Only this install-time path did not listen,
@@ -169,6 +180,14 @@ if ($LASTEXITCODE -ne 0) { throw "cmake --install failed ($LASTEXITCODE)" }
 
 $thrown = @()
 $named = @('bin\opengl32sw.dll', 'bin\D3Dcompiler_47.dll')
+# The two names windeployqt added on its own when the sec.83 package was built (the payload diff
+# called them: 25.9 MB in a 66.5 MB unpacked payload, against sec.73's 40.5). Not loaded by the
+# running program -- measured on the unpacked package with nothing but Windows on PATH, once at
+# startup with no document and once with a 184-bookmark book open and its page rendered -- while
+# d3d11.dll, the API they compile shaders for, is. Read the note above this list before crediting
+# these two lines with shrinking a package: the next pack shipped 67 files without them, and a
+# control with the names removed shipped 67 too.
+$named += @('bin\dxcompiler.dll', 'bin\dxil.dll')
 $named += @(Get-ChildItem -LiteralPath (Join-Path $Stage 'translations') -Filter *.qm -ErrorAction SilentlyContinue |
             ForEach-Object { 'translations\' + $_.Name })
 foreach ($relative in $named) {

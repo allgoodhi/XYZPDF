@@ -30,6 +30,11 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
 - 版本号只写在 `project(... VERSION ...)`，其余三处（About / VERSIONINFO / 包 manifest）生成
 - 所有用户可见字符串走 `tr()`
 - 所有对话框走 `WindowDialogs`（窗口级模态）
+- **在屏幕上找我们的框：按类名 + 两层找。** 类名不受翻译影响（`gui-probe.ps1` 的 `Dialog`/`DialogAny`），
+  但**同一层不保证都有**：§85 量到 `DeletePagesDialog` 在主窗口子树里，§87 量到 `MergePagesDialog` **不在**
+  （子树一个候选都不返回，只在进程自己的顶层窗口里）。找不到就把两层的名字/类名倒出来，别只印"没找到"。
+  同一族还有另一课：`mergedonor` 三处查找只写英文那一支，中文界面下必然 Bail 在"没有那一行"—— **那句话说的是
+  harness，不是产品**。
 - 临时文件走 `TempManager`；**永不写用户的 PDF 文件**（v1 只读）
 - 测试：`python tools/build_all_tests.py`（配置+构建+运行，缺一不可；它还会跑 `tools/check_translations.py`
   对一遍目录——代码里改了用户可见的话，就靠这一步发现目录没跟上）
@@ -42,8 +47,10 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   （集合对不上、numerus 掉形、两形相同、单数写成多数、段落换行丢）—— 这些都看不出在 (context, source) 上
   是"完全匹配"的
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog`（十三种模式
-  都当场跑通过；脚本注释里就是踩过的坑）。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary`（十四种模式
+  都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
+  判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
+  的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
   它的总数来自 GridPattern 的 rows（UIA 只交出现在视口的行，而 Qt 在这棵树上不供 ScrollPattern）。
   `QTableWidget` 同理：`-Mode bookdialog` 开"编辑书签"框，总数读 GridPattern 的 rows，格子是 DataItem
   （只有视口里那几十格存在），**而格子里放控件（QSpinBox）那个控件根本不进 UIA 树** —— 所以层级那一列
@@ -57,10 +64,23 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   `PrintWindow` 画的是**整个窗口**（含标题栏与边框）—— 按客户区尺寸开图必然切掉最底一行（§74 差点把
   这个当成"按钮被挤出窗口"的产品缺陷），所以开图按 `GetWindowRect` 的外框尺寸，判"在不在窗口里"用
   两个矩形比。**模式早退必须走 `Bail`**（说一句 + kill 掉 xyzpdf + exit 1）：裸 `exit` 会跳过文件末尾
-  那句 kill，残留实例会喂给下一轮，看着像"框没起来"（§74 真丢了一轮才抓到）。
+  那句 kill，残留实例会喂给下一轮，看着像"框没起来"（§74 真丢了一轮才抓到）。§86 把脚本里剩下的 **40 条裸
+  `exit 1` 全收了**，并量了一对前后读数：同一条不带 `-LastDir` 的 `mergedonor`，旧脚本 exit 1 后残留 **1 个
+  活实例**、新脚本残留 **0** —— 退出码没变，变的是下一轮。**控制跑要先证明它自己跑了**：§86 第一次跑那半条
+  "旧脚本"时 `cp` 因为一个被 bash 吃掉的反引号没执行，PowerShell 报 `-File 参数不存在`（exit **127**），
+  而那条"残留 0 个进程"量的是一根根本没启动的脚本。
   装的那份要英文界面走 `-Mode langswitch -Installed`（它的偏好没有
-  外面的读路，读数在应用自己的设置框里）。`build-local-release/gui-verify/` 下那些是历次草稿，在
-  gitignore 的构建树里、丢了找不回来 —— 量出可用的新路由就收进 `tools/gui-probe.ps1`
+  外面的读路，读数在应用自己的设置框里）。**装上的那份现在也能带文档跑任何模式**：
+  `-Mode <anything> -Installed -OpenViaPicker <文件名>` —— 包里那份不能由 exe 路径起、也不收文件参数
+  （没有 AppExecutionAlias），所以这条走它自己的"文件→打开"：先 `SwitchToThisWindow`（**不加这一句时
+  前台是别人的资源管理器窗口，合成点击全打在它身上**：菜单行报 enabled=True、坐标真实、点了没框起来，
+  看着像"这条链在装的那份上不通"，§84 就是这样白跑三轮），再点行、再 BM_CLICK 控件 id 1；
+  picker 落在哪个目录由壳的 per-exe 记忆决定（与开发版同名，§62 那条），所以样本要先在那儿。
+  `build-local-release/gui-verify/` 下那些是历次草稿，在 gitignore 的构建树里、丢了找不回来 ——
+  量出可用的新路由就收进 `tools/gui-probe.ps1`
+- **`.ps1` 必须纯 ASCII，而且改完就查**：`python -c "d=open(p,'rb').read(); print(sum(1 for b in d if b>127))"`
+  要 0 —— 中文字（含注释里的）在 GBK 控制台下是双字节前导码，会把解析器炸掉、退出码 1 而不说一句为什么
+  （§72/§73/§74 各一次，§84 又两次，其中一次是注释里写了一句屏幕原文）。中文匹配串用 `CjStr 0x…` 现拼。
 - 带表单字段的样本不用等真文件：`XYZPDF_FORM_SAMPLE_DIR=<目录> build-local-release/tests/xyzpdf_documenteditor_smoke.exe`
   现造 plain / field-flat / field-spread / field-dangling / field-xfa / field-appearance / field-directive，
   外加注释层的三种 markup-highlight / markup-square / markup-note（§81，都是**不带 /AP** 的形状）
@@ -78,4 +98,7 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   重链只差 4 个字节 —— COFF 头与 debug directory 里各一份链接时间戳。所以**哈希变了不说明代码变了**
   （只 `touch` 一下也换），哈希相同也不说明源码相同；别拿重建后的哈希互相比，要问"装上的那份是不是
   这次构建的字节"就查打包复制那条链（§16 的"三处相同"因此仍然有效）。
+- **比字节的每一行要带上大小与"文件在不在"**（§83 实测）：`Get-FileHash` 对不存在的路径返回 null，而
+  PowerShell 的循环变量留着上一轮的值，于是名字记错的两颗 DLL 照样印出 `same=True size=0`。三处比对
+  先各自 `isfile` / `Test-Path`，再把字节数印进同一行；`same=True` 单独一句不算比过。
 - 编不过就明说"未编译验证"，不要报告成完成

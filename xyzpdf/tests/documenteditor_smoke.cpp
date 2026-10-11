@@ -7573,6 +7573,21 @@ int main(int argc, char **argv)
                     std::cout << "SAMPLE markup-" << kind.toStdString() << ": "
                               << out.toStdString() << '\n';
                 }
+                // §89: the same generator writes the one control the screen route had never had. A
+                // widget that paints nothing is a claim about the annotation layer, and it is only
+                // worth stating if this window would have noticed a mark on that page at all. The
+                // rect goes into the page's own content stream, at the area markup-highlight.pdf
+                // claims -- so the screen table has a row that must differ, next to the row that
+                // must not, in the same crop geometry (sec.82's rule about a row that reads 0).
+                {
+                    const QString painted = QDir(dir).filePath(QStringLiteral("painted-rect.pdf"));
+                    QFile::remove(painted);
+                    e.clear();
+                    check(!writePaintedRectSample(fixture, painted, &e).isEmpty(),
+                          QStringLiteral("sample: painted-rect is written for the window to open: %1")
+                              .arg(e));
+                    std::cout << "SAMPLE painted-rect: " << painted.toStdString() << '\n';
+                }
                 if (!writeFieldCopy(fixture, flat, QStringLiteral("sampleField"),
                                     QStringLiteral("typed on page 1"), &e)
                          .isEmpty()) {

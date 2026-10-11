@@ -148,6 +148,12 @@ public static class W32 {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
   public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
+  // The client area's own top-left in screen pixels -- what a window-sized picture has to be offset
+  // by before a UIA rectangle means anything inside it (sec.89).
+  public static POINT ClientOrigin(IntPtr h) { POINT p = new POINT(); p.x = 0; p.y = 0; ClientToScreen(h, ref p); return p; }
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
@@ -491,21 +497,27 @@ function PickFile($procId, [string]$fileName) {
     if ($k -eq 4) { foreach ($n in ($names | Select-Object -Unique)) { Say ('  window candidate ' + $n) } }
   }
   if (-not $pk) { Say '  no native dialog within 8s'; return $false }
-  # NOT a route: writing a full path into this dialog's field and pressing id=1 leaves the dialog
-  # open (measured 2026-09-28). The save dialog's name field is control id 1001 and WM_SETTEXT
-  # there works; in the open dialog the Edit under ComboBoxEx32 is 1148 and 1001 is the address
-  # toolbar, so "the name box" is not one id across dialogs. The row click below is the proven way.
+  # Two routes, in this order, because which one is available depends on where the box opened.
+  #   row click -- proven since sec.29: click the ListItem naming the file, then BM_CLICK to the
+  #                button with control id 1. Needs the folder to already hold that file.
+  #   typed path -- WM_SETTEXT of the full path into the File name box (id 1148), same accept
+  #                button. Re-measured 2026-10-11: a note here used to say a typed path "leaves the
+  #                dialog open" (2026-09-28), but that test wrote id 1001, which in THIS dialog is
+  #                the address toolbar, not the name box. Given a bare name this route is not tried.
   $row = $null
   foreach ($e in @(FindType $pk $CT::ListItem)) {
-    if ($e.Current.Name -like ('*' + $fileName + '*')) { $row = $e }
+    if ($e.Current.Name -like ('*' + [System.IO.Path]::GetFileName($fileName) + '*')) { $row = $e }
   }
   if (-not $row) {
     Say ('  no ListItem named [' + $fileName + '] in the picker; rows seen:')
     foreach ($e in @(FindType $pk $CT::ListItem)) { Say ('    row |' + $e.Current.Name + '|') }
-    return $false
+    if ($fileName -notmatch '[\\:]') { Say '  (a bare name was given, so no path to type)'; return $false }
+    Say '  no row, so trying the typed-path route (File name box id 1148)'
+    if (-not (TypePathIntoPicker $pk $fileName)) { return $false }
+  } else {
+    ClickAt $row
+    Start-Sleep -Milliseconds 500
   }
-  ClickAt $row
-  Start-Sleep -Milliseconds 500
   $kids = New-Object System.Collections.Generic.List[IntPtr]
   $cb = [W32+EnumProc] { param($h, $l) $kids.Add($h); return $true }
   [W32]::EnumChildWindows([IntPtr]$pk.Current.NativeWindowHandle, $cb, [IntPtr]::Zero) | Out-Null
@@ -607,6 +619,19 @@ function LanguageRows($procId, [string]$tag) {
   }
   return $rows
 }
+function LanguageNeedles([string]$s) {
+  # The language rows read the same in either interface ("English", the Chinese name in its own
+  # characters), but the FIRST row names a behaviour and is translated: "Follow the system" in an
+  # English interface, its source form in a Chinese one. So a caller who asks for either spelling
+  # gets both to match against -- sec.92 measured exactly this failing: asking for the Chinese
+  # spelling of that row (as code points) found nothing while the installed copy was still in
+  # English, and the restore bailed and left the reader's copy switched.
+  if ($s -eq (CjStr 0x8DDF,0x968F,0x7CFB,0x7EDF) -or $s -eq 'Follow the system') {
+    return @('Follow the system', (CjStr 0x8DDF,0x968F,0x7CFB,0x7EDF))
+  }
+  return @($s)
+}
+
 function ClickLanguageRow($rows, [string[]]$names, [string]$tag) {
   # Rows are matched by EXACT name against a list: the language rows are written in their own
   # language and so read the same in either interface, but the first one names a behaviour rather
@@ -666,6 +691,50 @@ function Restart-ProbeApp([string]$language) {
   return (Start-ProbeApp $language)
 }
 
+function PickerChildren($pk) {
+  # Every HWND inside a native picker, in window order. Printed because a picker field has been
+  # guessed wrong more than once in this suite: the File name box is control id 1148 (a
+  # ComboBoxEx32/ComboBox/Edit chain that all report that id), while id 1001 -- the one that IS the
+  # name box in the SAVE dialog (sec.44) -- is the address TOOLBAR here. WM_GETTEXT on that Edit
+  # answers empty while the box shows text, so nothing about these fields can be read back.
+  $kids = New-Object System.Collections.Generic.List[IntPtr]
+  $cb = [W32+EnumProc] { param($h, $l) $kids.Add($h); return $true }
+  [W32]::EnumChildWindows([IntPtr]$pk.Current.NativeWindowHandle, $cb, [IntPtr]::Zero) | Out-Null
+  return $kids
+}
+
+function TypePathIntoPicker($pk, [string]$path) {
+  # WM_SETTEXT of a full path into the open dialog's File name box. An older note here said a typed
+  # path "leaves the dialog open" (measured 2026-09-28); that test wrote id 1001, which is the
+  # address toolbar, so the sentence was about the wrong control. Re-measured 2026-10-11 against
+  # 1148: the dialog accepts it and the document opens. Whether it worked is never decided here --
+  # the caller reads its own receipt (our window title / our dialog), because this box cannot be
+  # read back and a posted click is not an accepted dialog (sec.88).
+  $kids = PickerChildren $pk
+  foreach ($h in $kids) {
+    Say ('    id=' + [W32]::GetDlgCtrlID($h) + ' class=' + [W32]::Cls($h) + ' text=[' + [W32]::Text($h) + ']')
+  }
+  # Backslashes, always. Measured as a triple on 2026-10-11 in the SAME box on the packaged copy:
+  # the slash form of the same path left the dialog open and the round exited 1; the backslash form
+  # opened it; and with the normalisation below the slash form opens it too. This is sec.88's finding
+  # about the shell's FOLDER box (it refused a slash path with its own localised "invalid folder"
+  # line, while our Qt directory box has accepted that spelling for slices) showing up a second time,
+  # here in the file-name field. bash hands most of these paths over with slashes, so normalising here
+  # is what keeps a caller's spelling from deciding whether a round can work.
+  $fixed = $path.Replace('/', '\')
+  if ($fixed -ne $path) { Say ('  slashes normalised for the shell: [' + $fixed + ']') }
+  $edits = @($kids | Where-Object { [W32]::GetDlgCtrlID($_) -eq 1148 })
+  if (-not $edits) {
+    $edits = @($kids | Where-Object { $c = [W32]::Cls($_); ($c -eq 'Edit') -or ($c -eq 'ComboBox') })
+  }
+  if (-not $edits) { Say '  no Edit or ComboBox child to write the path into'; return $false }
+  foreach ($h in $edits) {
+    Say ('  WM_SETTEXT of the full path into id=' + [W32]::GetDlgCtrlID($h) + ' class=' + [W32]::Cls($h))
+    [W32]::SendMessageW($h, 0x000C, [IntPtr]::Zero, $fixed) | Out-Null
+  }
+  return $true
+}
+
 function Open-PackagedDocument($theApp, [string]$rowName) {
   # Gets a document into an instance launched from AppsFolder, the only way a packaged copy can be
   # started from here. Each step prints because a round that fails quietly looks exactly like a menu
@@ -711,21 +780,26 @@ function Open-PackagedDocument($theApp, [string]$rowName) {
   }
   if (-not $pk) { Say '  the open dialog never came up in three tries'; return $false }
 
+  $base = [System.IO.Path]::GetFileName($rowName)
   $target = $null
   foreach ($e in @(FindType $pk $CT::ListItem)) {
     Say ('  picker row |' + $e.Current.Name + '|')
-    if ($e.Current.Name -like ('*' + $rowName + '*') -and -not $target) { $target = $e }
+    if ($e.Current.Name -like ('*' + $base + '*') -and -not $target) { $target = $e }
   }
-  if (-not $target) {
-    Say ('  no row naming [' + $rowName + '] in the folder the picker opened at')
-    return $false
-  }
-  ClickAt $target
-  Start-Sleep -Milliseconds 600
 
-  $kids = New-Object System.Collections.Generic.List[IntPtr]
-  $cb = [W32+EnumProc] { param($h, $l) $kids.Add($h); return $true }
-  [W32]::EnumChildWindows([IntPtr]$pk.Current.NativeWindowHandle, $cb, [IntPtr]::Zero) | Out-Null
+  $kids = PickerChildren $pk
+
+  if (-not $target) {
+    Say ('  no row naming [' + $base + '] in the folder the picker opened at; controls in the box:')
+    if ($rowName -notmatch '[\\:]') {
+      Say '  -OpenViaPicker gave a bare name, so the row click is the only route'
+      return $false
+    }
+    if (-not (TypePathIntoPicker $pk $rowName)) { return $false }
+  } else {
+    ClickAt $target
+    Start-Sleep -Milliseconds 600
+  }
   $go = $null
   foreach ($h in $kids) {
     if ([W32]::Cls($h) -eq 'Button' -and [W32]::GetDlgCtrlID($h) -eq 1) { $go = $h }
@@ -736,7 +810,7 @@ function Open-PackagedDocument($theApp, [string]$rowName) {
   for ($k = 1; $k -le 30; $k++) {
     Start-Sleep -Milliseconds 500
     $w2 = Window $theApp.Id
-    if ($w2 -and $w2.Current.Name -like ('*' + $rowName + '*')) {
+    if ($w2 -and $w2.Current.Name -like ('*' + $base + '*')) {
       Say ('  document open in the packaged instance [' + $w2.Current.Name + ']')
       return $true
     }
@@ -878,17 +952,36 @@ switch ($Mode) {
     # saying "no Merge Files In row", a sentence about the harness, not about the product.
     $mergeNeedles = @('Merge Files In', (CjStr 0x5408, 0x5E76, 0x6587, 0x4EF6, 0x8FDB, 0x6765))
     $undo = {
-      param([string]$tag)
-      TopMenu $app.Id @('Document', (CjStr 0x6587, 0x6863)) | Out-Null
-      foreach ($e in @($AE::RootElement.FindAll($TS::Descendants, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
-        if ($e.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' `
-            -and ($e.Current.Name -like 'Undo*' -or $e.Current.Name -like ((CjStr 0x64A4, 0x9500) + '*'))) {
-          Say ('  ' + $tag + 'row |' + $e.Current.Name + '|')
+      param([string]$tag, [bool]$expect = $false)
+      # Up to three tries, because whether the popup renders at all is per-round (sec.41, sec.87) --
+      # and when the caller expects a row, say so: an English installed run of this mode printed
+      # NOTHING for the second donor's undo row and still exited 0, which is sec.88's shape exactly.
+      $found = 0
+      for ($try = 1; $try -le 3 -and -not $found; $try++) {
+        TopMenu $app.Id @('Document', (CjStr 0x6587, 0x6863)) | Out-Null
+        foreach ($e in @($AE::RootElement.FindAll($TS::Descendants, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
+          if ($e.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' `
+              -and ($e.Current.Name -like 'Undo*' -or $e.Current.Name -like ((CjStr 0x64A4, 0x9500) + '*'))) {
+            $found++
+            Say ('  ' + $tag + 'row |' + $e.Current.Name + '|')
+          }
         }
+        if (-not $found) { Say ('  ' + $tag + 'try ' + $try + ': no Undo row yet'); Start-Sleep -Milliseconds 700 }
+      }
+      if ($expect -and -not $found) {
+        Bail ('  ' + $tag + 'no Undo row after three tries -- a merge that left nothing to undo, or a ' +
+              'menu this harness failed to open; either way a blank is not a verdict')
       }
     }
     & $undo 'before: '
-    foreach ($donor in @($Donor, 'donor2.pdf')) {
+    # The second donor is a name, not a path, so a caller who handed -Donor a path has to get the same
+    # directory for it: otherwise the first merge runs by typed path (sec.90) and the second dies on a
+    # bare name that only happens to be where the picker opened.
+    $secondDonor = 'donor2.pdf'
+    if ($Donor -match '[\\:]') {
+      $secondDonor = Join-Path ([System.IO.Path]::GetDirectoryName($Donor)) 'donor2.pdf'
+    }
+    foreach ($donor in @($Donor, $secondDonor)) {
       # Three tries, because whether synthesised input lands at all is per-round (sec.41, and sec.87
       # watched exactly this on a Chinese run: the first TopMenu produced rows, the next one did not,
       # and the mode bailed saying there was no merge row -- a sentence about the harness). The label
@@ -922,7 +1015,7 @@ switch ($Mode) {
       if (-not ($go -and $go.Current.IsEnabled)) { Bail '  accept still greyed' }
       ClickAt $go
       Start-Sleep -Milliseconds 1200
-      & $undo ($donor + ': ')
+      & $undo ($donor + ': ') $true
     }
     Say ('  status: [' + (StatusName $app.Id) + ']')
   }
@@ -1039,7 +1132,11 @@ switch ($Mode) {
         }
       }
       if (-not $picked) { Bail '  the open dialog never came up in three tries' }
-      if (-not (PickFile $app.Id ([System.IO.Path]::GetFileName($Doc)))) { Bail 'the document was not picked in the open dialog' }
+      # The full path, not the bare name: the row click still wins when the folder happens to hold the
+      # file (that is how this mode ran since sec.45), and when it does not -- which is the normal case
+      # for a packaged instance, whose start directory is whatever its last open left behind -- the
+      # typed-path fallback in PickFile is what reaches for it.
+      if (-not (PickFile $app.Id $Doc)) { Bail 'the document was not picked in the open dialog' }
       Start-Sleep -Seconds 2
       Say ('  document window [' + (Window $app.Id).Current.Name + ']')
     }
@@ -1143,7 +1240,7 @@ switch ($Mode) {
     Say ('  at start the app reports [' + $before + ']')
     Say ('  menu bar: |' + ((MenuBarNames $app.Id) -join '| |') + '|')
     $rows = @(LanguageRows $app.Id 'at start')
-    if (-not (ClickLanguageRow $rows @($want) 'switch')) { Bail 'the Language menu has no row for the requested language' }
+    if (-not (ClickLanguageRow $rows @(LanguageNeedles $want) 'switch')) { Bail 'the Language menu has no row for the requested language' }
     if (-not (DismissNotice $app.Id 'switch')) { Bail 'the restart notice after the language switch was not dismissed' }
 
     $mid = LanguageLabel $app.Id 'without a restart'
@@ -1164,11 +1261,8 @@ switch ($Mode) {
     # work would be a finding of its own -- a one-way switch is the last thing a user of either
     # language wants -- and the reopen is also what shows the checkmark MOVES rather than sitting on
     # whichever row the menu was built from.
-    $back = @($before)
-    if ($before -eq (CjStr 0x8DDF,0x968F,0x7CFB,0x7EDF) -or $before -eq 'Follow the system') {
-      # Whichever interface the restore is clicked in, the row may be spelled either way.
-      $back = @('Follow the system', (CjStr 0x8DDF,0x968F,0x7CFB,0x7EDF))
-    }
+    # Whichever interface the restore is clicked in, the behaviour row may be spelled either way.
+    $back = @(LanguageNeedles $before)
     if (-not (ClickLanguageRow $rows2 $back 'restore')) {
       Bail 'RESTORE FAILED: the installed copy is left in the language it reported above'
     }
@@ -1292,7 +1386,26 @@ switch ($Mode) {
     [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))   # raise it by its own title bar
     Start-Sleep -Milliseconds 800
     $win = Window $app.Id
-    $scale = [W32]::GetDpiForWindow([IntPtr]$win.Current.NativeWindowHandle) / 96.0
+    $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+    $scale = [W32]::GetDpiForWindow($hwnd) / 96.0
+    # UIA's top-level rectangle is the CLIENT area; the picture PrintWindow fills is the WHOLE
+    # window, whose top-left is the frame (sec.74 said the bitmap has to be the outer size, and this
+    # mode's first PrintWindow version still cropped it with client-relative arithmetic -- the same
+    # lesson, applied to the origin instead of the size). Both are screen pixels, so the two sources
+    # have to agree here; if they do not, one of them is speaking logical pixels and every number
+    # below is off by the DPI factor. This machine's window has read scale 1 in every round, so the
+    # check is what would surface that, not a claim that it was measured.
+    $gr = [W32]::Rect($hwnd)
+    $co = [W32]::ClientOrigin($hwnd)
+    $dx = [int]$wr.X - $co.x
+    $dy = [int]$wr.Y - $co.y
+    Say ('  window rect ' + ($gr.right - $gr.left) + 'x' + ($gr.bottom - $gr.top) + ' at ' +
+         $gr.left + ',' + $gr.top + '; client origin ' + $co.x + ',' + $co.y + '; UIA says ' +
+         [int]$wr.X + ',' + [int]$wr.Y + ' (deltas ' + $dx + ',' + $dy + '), scale ' + $scale)
+    if ([math]::Abs($dx) -gt 2 -or [math]::Abs($dy) -gt 2) {
+      Bail ('  the top-level UIA rectangle disagrees with the Win32 client origin by ' + $dx + ',' +
+            $dy + ' px -- the crop and the picture are not in the same units')
+    }
     # Print the candidates before picking one: which element is the page has been guessed wrong
     # twice in this suite, and a guess that fails quietly reads as "nothing was drawn".
     $best = $null; $bestTop = -1; $maxArea = 0
@@ -1322,15 +1435,74 @@ switch ($Mode) {
     }
     if (-not $best) { Bail '  no element big enough to be the page' }
     $r = $best.Current.BoundingRectangle
-    $left = [int][math]::Round($r.X * $scale)
-    $top = [int][math]::Round($r.Y * $scale)
-    $width = [int][math]::Round($r.Width * $scale)
-    $height = [int][math]::Round($r.Height * $scale)
-    Say ('  page element ' + $best.Current.ControlType.ProgrammaticName + ' at ' + $left + ',' + $top +
-         ' ' + $width + 'x' + $height + ' (scale ' + $scale + ')')
-    $bmp = New-Object System.Drawing.Bitmap($width, $height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($left, $top, 0, 0, (New-Object System.Drawing.Size($width, $height)))
+    # PrintWindow, not CopyFromScreen. sec.81 measured what the screen route does on this machine:
+    # four different documents produced *identical* band counts and *four different* PNG hashes,
+    # because a topmost third-party window was sitting inside the crop and what varied was that
+    # window's own clock. Asking the window to paint itself cannot be covered up. The framing is
+    # the outer window rect (sec.74's lesson: the bitmap has to be the size PrintWindow fills, and a
+    # crop that disagrees with it silently cuts a row off); the geometry is printed so a wrong crop
+    # says so.
+    $fw = [int]($gr.right - $gr.left)
+    $fh = [int]($gr.bottom - $gr.top)
+    $winBmp = New-Object System.Drawing.Bitmap($fw, $fh)
+    $wg = [System.Drawing.Graphics]::FromImage($winBmp)
+    $hdc = $wg.GetHdc()
+    # 2 = PW_RENDERFULLCONTENT, the flag a DirectComposition-backed window needs.
+    $painted = [W32]::PrintWindow($hwnd, $hdc, 2)
+    $wg.ReleaseHdc($hdc)
+    $winShot = Join-Path $scratch ('formpage-win-' +
+                                   [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')
+    $winBmp.Save($winShot, [System.Drawing.Imaging.ImageFormat]::Png)
+    $wg.Dispose()
+    Say ('  PrintWindow returned ' + $painted + ', window ' + $fw + 'x' + $fh + ' kept at ' + $winShot)
+    # Window-local, not client-local: bitmap row 0 is the frame's top edge.
+    $left = [int][math]::Floor($r.X - $gr.left)
+    $top = [int][math]::Floor($r.Y - $gr.top)
+    $width = [int][math]::Ceiling($r.Width)
+    $height = [int][math]::Ceiling($r.Height)
+    Say ('  page element ' + $best.Current.ControlType.ProgrammaticName + ' cropped at ' + $left +
+         ',' + $top + ' ' + $width + 'x' + $height + ' (frame ' + ($co.x - $gr.left) + ',' +
+         ($co.y - $gr.top) + ')')
+    if ($left -lt 0) { $width += $left; $left = 0 }
+    if ($top -lt 0) { $height += $top; $top = 0 }
+    if ($left + $width -gt $fw) { $width = $fw - $left }
+    if ($top + $height -gt $fh) { $height = $fh - $top }
+    if ($width -lt 100 -or $height -lt 100) {
+        $winBmp.Dispose()
+        Bail ('  the page crop is ' + $width + 'x' + $height + ' inside a ' + $fw + 'x' + $fh +
+              ' window picture -- the geometry disagrees, so no band number from it means anything')
+    }
+    $bmp = $winBmp.Clone((New-Object System.Drawing.Rectangle($left, $top, $width, $height)),
+                         $winBmp.PixelFormat)
+    $winBmp.Dispose()
+    # Two guards, because this mode's whole job is to say "nothing was drawn" and both of its known
+    # ways to lie are silent. (1) The crop must begin INSIDE the client area: the picture is anchored
+    # to the window frame, so a crop computed from the client rectangle begins on 8 px of unpainted
+    # border and 31 rows above the element it names (sec.89). Said geometrically, not by colour --
+    # sec.91 first wrote "a column of near-black is the frame" and that refused a legitimately dark
+    # sidebar, which is a colour assumption about the user's theme, not a fact about the window.
+    # (2) The tab strip carries the document name, and that name differs between the two pictures
+    # this mode subtracts -- sec.81's 681 false pixels. So the crop must
+    # start below the bottom of every tab, and the check is done with the tabs' own rectangles.
+    if ($left -lt ($co.x - $gr.left) -or $top -lt ($co.y - $gr.top)) {
+        $bmp.Dispose()
+        Bail ('  the crop starts at bitmap ' + $left + ',' + $top + ' but the client area only begins ' +
+              'at ' + ($co.x - $gr.left) + ',' + ($co.y - $gr.top) + ' -- that picture is anchored to ' +
+              'the window frame, so these bands are not the page')
+    }
+    $tabBottom = -1
+    foreach ($t in @(FindType $win $CT::TabItem)) {
+      $tr = $t.Current.BoundingRectangle
+      if ([int]$tr.Bottom -gt $tabBottom) { $tabBottom = [int]$tr.Bottom }
+    }
+    if ($tabBottom -ge 0 -and $top -lt ($tabBottom - $gr.top)) {
+        $bmp.Dispose()
+        Bail ('  the crop starts at window row ' + $top + ', above the bottom of the tab strip (' +
+              ($tabBottom - $gr.top) + ') -- a difference between two documents there is their file ' +
+              'names, not the page')
+    }
+    Say ('  tab strip bottom at window row ' + $(if ($tabBottom -ge 0) { $tabBottom - $gr.top } else { '(no tabs)' }) +
+         ', crop starts at ' + $top)
     # Named after the document, not a fixed file: an A/B of two runs is only evidence if both
     # pictures survive, and a shared name means the second run quietly ate the first one's.
     $shot = Join-Path $scratch ('formpage-' + [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')
@@ -1348,7 +1520,7 @@ switch ($Mode) {
       }
       Say ('  band ' + $b + ' rows ' + $y0 + '-' + $y1 + ' ink=' + $ink)
     }
-    $g.Dispose(); $bmp.Dispose()
+    $bmp.Dispose()
     Say ('  shot kept at ' + $shot)
   }
   'uacache' {
@@ -1692,31 +1864,65 @@ switch ($Mode) {
     # z-order is not a fight this harness wins: the round before this one captured the tab strip and
     # got a third-party trial dialog that sits above every window on the desktop, and the foreground
     # title said our window was up while its pixels were not. PrintWindow asks the window itself.
-    $fw = [int][math]::Ceiling($wr.Width * $scale)
-    $fh = [int][math]::Ceiling($wr.Height * $scale)
+    #
+    # Sized AND cropped by the OUTER window rect. This mode had the same wrong anchor sec.89 found in
+    # formpage: the picture is anchored to the frame while the arithmetic subtracted UIA's client
+    # rectangle, so the crop started 8 px left (on the frame) and 31 rows too high -- which for a
+    # 41-row crop of a 35-row tab meant most of what it printed was the toolbar above the strip.
+    $gr = [W32]::Rect($hwnd)
+    $co = [W32]::ClientOrigin($hwnd)
+    $fw = [int]($gr.right - $gr.left)
+    $fh = [int]($gr.bottom - $gr.top)
     $winBmp = New-Object System.Drawing.Bitmap($fw, $fh)
     $wg = [System.Drawing.Graphics]::FromImage($winBmp)
     $hdc = $wg.GetHdc()
     # 2 = PW_RENDERFULLCONTENT, which is the flag a DirectComposition-backed window needs.
-    $painted = [W32]::PrintWindow([IntPtr]$win.Current.NativeWindowHandle, $hdc, 2)
+    $painted = [W32]::PrintWindow($hwnd, $hdc, 2)
     $wg.ReleaseHdc($hdc)
     $winShot = Join-Path $scratch ('tabstrip-win-' +
                                    [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')
     $winBmp.Save($winShot, [System.Drawing.Imaging.ImageFormat]::Png)
     $wg.Dispose()
-    Say ('  PrintWindow returned ' + $painted + ', window ' + $fw + 'x' + $fh + ' kept at ' + $winShot)
+    Say ('  PrintWindow returned ' + $painted + ', window ' + $fw + 'x' + $fh +
+         ' (client ' + [int]$wr.Width + 'x' + [int]$wr.Height + ', frame ' + ($co.x - $gr.left) + ',' +
+         ($co.y - $gr.top) + ', scale ' + $scale + ') kept at ' + $winShot)
 
     # The tab strip cropped out of that picture, in window-local coordinates. A few pixels of slack on
     # every side and room past the name: the button sits at the tab's trailing edge, and a crop of the
     # text alone would cut it off and read as "no button".
-    $left = [int][math]::Floor(($r.X - $wr.X - 4) * $scale)
-    $top = [int][math]::Floor(($r.Y - $wr.Y - 3) * $scale)
-    $width = [int][math]::Ceiling(($r.Width + 14) * $scale)
-    $height = [int][math]::Ceiling(($r.Height + 6) * $scale)
+    $left = [int][math]::Floor($r.X - $gr.left - 4)
+    $top = [int][math]::Floor($r.Y - $gr.top - 3)
+    $width = [int][math]::Ceiling($r.Width + 14)
+    $height = [int][math]::Ceiling($r.Height + 6)
     if ($left -lt 0) { $left = 0 }
     if ($top -lt 0) { $top = 0 }
     if ($left + $width -gt $fw) { $width = $fw - $left }
     if ($top + $height -gt $fh) { $height = $fh - $top }
+    # The slack must not buy a ticket onto the frame, so clamp the crop into the client area first and
+    # then refuse if the tab no longer fits inside it. This is asserted geometrically rather than by
+    # colour on purpose: sec.91 first tried "a column of near-black means the frame" and it refused a
+    # legitimately dark sidebar -- a claim about the user's theme, not about the window. And the
+    # pre-fix crop is the case this catches: it covered bitmap rows 81-121 while the tab itself sits
+    # at 115-150, so most of what it printed was the toolbar above the strip.
+    $cl = $co.x - $gr.left
+    $ct = $co.y - $gr.top
+    if ($left -lt $cl) { $left = $cl }
+    if ($top -lt $ct) { $top = $ct }
+    if ($left + $width -gt $fw) { $width = $fw - $left }
+    if ($top + $height -gt $fh) { $height = $fh - $top }
+    $tabX = [int]($r.X - $gr.left)
+    $tabY = [int]($r.Y - $gr.top)
+    if ($tabX -lt $left -or $tabY -lt $top -or
+        ($tabX + [int]$r.Width) -gt ($left + $width) -or
+        ($tabY + [int]$r.Height) -gt ($top + $height)) {
+      $winBmp.Dispose()
+      Bail ('  the tab rect maps to bitmap ' + $tabX + ',' + $tabY + ' ' + [int]$r.Width + 'x' +
+            [int]$r.Height + ' but the crop is ' + $left + ',' + $top + ' ' + $width + 'x' + $height +
+            ' -- the tab is not inside this picture, so the column numbers would be about something ' +
+            'else')
+    }
+    Say ('  tab maps to bitmap ' + $tabX + ',' + $tabY + ' ' + [int]$r.Width + 'x' + [int]$r.Height +
+         '; crop ' + $left + ',' + $top + ' ' + $width + 'x' + $height)
     $cropRect = New-Object System.Drawing.Rectangle($left, $top, $width, $height)
     $bmp = $winBmp.Clone($cropRect, $winBmp.PixelFormat)
     $shot = Join-Path $scratch ('tabstrip-' + [System.IO.Path]::GetFileNameWithoutExtension($Doc) + '.png')

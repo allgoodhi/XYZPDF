@@ -1492,6 +1492,128 @@ numerus（等他）；壳框为什么拒斜杠；`mergedonor` 末尾空状态行
 装的那份上各模式的语种组合还有没配齐的；§55 XFA；§47 那句；§75 路 (a)；widget 自己画 `/AP`；§79 的锁与
 就地保存；§49 那 28 个括号；`/Brepro`；§84 那两颗 DLL；§82 那句推论。
 
+§89 是"按推荐顺序执行"里的第 10 项：把 `formpage` 那支从 `CopyFromScreen` 换成窗口自己画（产品代码
++0/−0，动的全是仪器）。换完第一遍的两条差异带**都从裁条第 0 行开始**，按 §82 那条"解释一次差别之前
+先把差的字节/差的行找出来"去定位，三条各自独立的读数把病因钉死：每份裁条**最左 8 列是纯黑**（那是
+窗框）；`field-appearance` 只有 `rows 0-29` 一条带而 `markup-square` 除它之外另有 `rows 208-330`
+（**那条 0-29 与文件内容无关、与文件名有关** —— §54 那 681 个假像素的病换了个来源回来）；一起量三个
+来源：`GetWindowRect` **1256x899 在 652,235**、`ClientToScreen` **660,266**、UIA 顶层矩形也说 **660,266**
+（deltas 0,0）、scale 1 ⇒ frame=**8,31**。**PrintWindow 那张图的原点是外框左上角，旧算法按客户区减**，
+于是裁条左偏一个边框宽、上偏一个标题栏高；而图开的是客户区尺寸（1240x860）比 PrintWindow 要画的还小
+16x39 —— 底下 31 行同时被切掉。§74 那条"开图按外框尺寸"因此补成**同一个矩形在尺寸和原点两处都要用**。
+修后五轮同一几何（裁条 `8,151 1240x720`，标签条底边在窗口行 150）：`plain.pdf` 与**同一份字节的另一个
+名字** `plain-renamed.pdf` **SHA-256 逐字节相同** `473abc153a29…` —— **而这就是 §54/§57/§58 那三次
+`CopyFromScreen` 记下的同一个值**，所以新路由与旧路由落在同一处几何上、那三次读数没被推翻。页面在图里
+的位置改成**量的**：由两个标记自己的 /Rect 反推（页面原点 ≈ (11,11)，**2.026 px/pt**，两条独立 x 读数各给
+2.0261/2.0263），`field-appearance` 的框落在 x 133..538、rows 441..502（§54 那组从 fit-width 算出来的
+125–542/442–504 与量的差 2~8 px，那句"不是没滚到"照旧）。**§82 那句"widget 这一类 0 像素"第一次在屏幕
+上读出来，而且带着它要求的伴行证据**：`field-appearance` 对 plain **0 个像素**（同哈希），同一张图里
+`painted-rect.pdf`（同一片矩形画进页面内容流）**20970**、`markup-square.pdf`（注释层 `/Square`、不带 /AP）
+**3012**，两者各自落在自己 /Rect 的 ±2 px 内；12 条带 plain/field-appearance 逐条相同
+（`4740,480,1602,509,480×7,484`），markup-square 带 2/3/4 各 +183/+60/+250，painted-rect 带 1/2 各
++699/+3901，**带 0 五份都是 4740**。新那行 `painted-rect.pdf` 进的是样本生成器（`check(` 884→**885**），
+"必须有差异"那一行不该靠手造文件。两条 guard 各自能红：只把 left 退回客户区算法 → exit 1
+`240 near-black pixels down its left edge`；只把 top 退回 → exit 1 `crop starts at window row 120,
+above the bottom of the tab strip (150)`；两份拷贝各自先印 `CONTROL A/B` 才动手 —— 第一次写控制时 python
+往 `/h/tmp/…` 这种 MSYS 路径写文件失败，PowerShell 报 exit **127**，与"控制红了"长得一模一样（§86 那条
+规矩的孪生版本）。另加一条单位 guard：`ClientToScreen` 与 UIA 顶层矩形差过 2 px 就 Bail —— 这台机器每轮
+都读 scale 1，所以"UIA 是物理像素"在这一片是**对上的**、不是**在不同 DPI 下量过的**，125% 那一轮该听那条
+guard 的。还钉准一句：门禁重跑后 dev exe 仍是 §82/§83 那颗 `0f744cd07d73…`/1,341,952，**增量构建根本没
+重链它** —— §82 那条哈希账补反向半句：**哈希相同也不说明重链过**。ASCII 族第 10 次进来，这次不是中文字：
+两条 Bail 里写了 `UIA\'s`，**PowerShell 单引号串里反斜杠不是转义**，解析器吐 14 条错而退出码只给 1。
+数字：`gui-probe.ps1` +96/−11（W32 补 `GetClientRect`/`ClientToScreen`/`ClientOrigin`），
+`documenteditor_smoke.cpp` +15/−0，门禁 **26/0**，目录 578 条一字未动。**没重打包**（§16 那"三处相同"
+自 §83 起欠 §84–§89 六片）。仍欠：**`tabstrip` 那支的裁条用的是同一套客户区减法，这一片没修它也没重跑
+它** —— 那条 column-ink 数的行区间不是它以为的那 36 行，这是这一片唯一一处"知道有同一处偏移却没量后果"
+的账；装的那份上 `deletesummary`/`splitsagain`/`mergedonor`/`saverename` 四支（推荐顺序第 9 项）；
+`%1` 要不要换 numerus；壳框为什么拒斜杠；`mergedonor` 末尾空状态行；§55 XFA；§47 那句；§75 路 (a)；
+widget 自己画 `/AP`；§79 的锁与就地保存；§49 那 28 个括号；`/Brepro`；§84 那两颗 DLL；§82 那句推论。
+
+§90 是推荐顺序里的第 9 项：`deletesummary`/`splitsagain`/`mergedonor`/`saverename` 在**装着的字节**上从没跑过
+（§84 只给 `bookdialog` 开过那条路）。四支都读到了，值钱的是半路那处仪器事实：§84 那条 `-OpenViaPicker`
+只认"点行"，而这一轮装的那份的 picker 落在 `Desktop\11`，样本不在那儿 → `no document reached the packaged
+instance`。**不去猜它为什么落在那儿，而是让框自己把控件倒出来**（`PickerChildren`：每个子窗口的 id / 类名 /
+文本），倒出来才看见 `id=1001` 是 `ToolbarWindow32 text=[地址: …]`（**地址栏**），而 `文件名(&N):` 旁边那三条
+ComboBoxEx32/ComboBox/Edit 都报 **id 1148**。于是 `PickFile` 里挂着的那条 2026-09-28 的负结论"输入完整路径
+不生效"被推翻 —— 那次写的是 1001，也就是写给了错的控件；往 1148 `WM_SETTEXT` 完整路径 + `BM_CLICK` id 1，
+标题当场变成 `field-flat.pdf — XYZPDF`。**这条负结论从没做过正对照**，是 §82 那条规矩又一次命中。抽成
+`TypePathIntoPicker`，`Open-PackagedDocument` 与 `PickFile` 共用，只在**找不到行**且给的是完整路径时走，
+成不成只由我们自己的窗口标题判（§88）。顺带两条：一次成功的 open 会把应用自己的 `lastOpenDirectory` 换成
+那个目录（后面几轮 picker 就落在 `H:\tmp\forms`，裸文件名也能点到行）；装的那份界面是**中文**（§83 的重装
+带走设置容器，§49 的英文切换随之没了）—— 所以这四支补的是中文那一半。读数：删页框正负两条（`form sentence
+on screen=True/False`，§77 那句"字段填的答案属于它画在哪一页上…"在，无表单那份没有）；拆分框 `拆成 40 份` /
+`拆成 6 份` 与 §77 那句拆分值话、撤销行 `撤销 拆成每 3 页一份(U)`；合并框两支（排在第 41 页 / 连着排在
+第 42-43 页 + `这份文档里已经有 1 页是合并进来的了`）与两条撤销行，**`MergePagesDialog` 也是靠 `DialogAny`
+第二层找到的 —— §87 那处"两个框不在同一层"在装的那份上同样成立**；改名那支写出 `renamed-114835.pdf`、
+`source hash unchanged: True`、状态行 `已写成一个新文件（40 页）：向右转 90°（1 页）`。一处先怀疑后量掉：
+拆分数字说 40 页而刚开的是 field-flat，我先想过会话恢复留着别的标签 —— 量了字节才放下，
+`many-pages.pdf` / `doc40.pdf` / `plain.pdf` **同一份字节**（12,539 / `6eaed30273f5`）。还有一条把旧账改了
+性质：**`mergedonor` 末尾那句 `status: []` 在装的那份上也是空的** —— §88 记的"dev 的一处怪"其实是两份构建
+一样，**为什么空仍未查**。为了不让 `PickFile` 那条 typed-path 分支停在"没人会传路径给它"的空写上（**没走过
+的分支不算证据**），把 `saverename` 装那份的 open 改成传完整路径并指到一个 picker 落点里没有的名字，逼出三条
+对照：斜杠 → exit 1（写进去了、框没交文档），反斜杠 → exit 0（`typed-only.pdf — XYZPDF`、写出
+`renamed-115245.pdf`），在 `TypePathIntoPicker` 里把 `/` 归一成 `\` 之后斜杠也 exit 0 —— **§88 那句"壳的
+文件夹框拒斜杠"其实是壳的输入框一族**，而我们自己的 Qt 目录框一直收斜杠（为什么拒仍未查）。同一轮还量出一处
+产品行为：picker 的落点是 `H:\tmp\inst-out`、里面只有上一轮"保存修改为"产出的那份 —— **应用的"最近目录"是
+打开与保存共用的一格**，一次另存也会把它带走（§62 那条问的是"显式目录 vs 壳的记忆"，这是第三个来源）。
+`.ps1` 的 ASCII 坑第 11 次，这次是注释里写了屏幕原文 + 一个 `§`（`nonascii=17` 当场抓到；**能过解析不等于
+没中**，GBK 控制台下才炸）。数字：产品代码 +0/−0，工作树里 `gui-probe.ps1` 两片合计 +174/−30（§89 那遍
+96/11），ASCII 0、解析 0 错，
+没重编、门禁没重跑；无残留进程。**没重打包**（§16 那"三处相同"自 §83 起欠 §84–§90 七片，而这一片读的正是
+"装着的那份"，这个欠因此成了读数的一部分）。仍欠：**这四支在装的那份上的英文那一遍**；`status` 为什么空；
+`tabstrip` 那处未量的裁条原点（§89）；壳框为什么拒斜杠（§88）；`%1` 要不要换 numerus；§55 XFA；§47 那句；
+§75 路 (a)；widget 自己画 `/AP`；§79 的锁与就地保存；§49 那 28 个括号；`/Brepro`；§84 那两颗 DLL；§82 那句推论。
+
+§91 去还 §89 末尾自己点名的那条债：**`tabstrip` 的裁条用的是同一套客户区减法，那片没修也没重跑**，
+所以它的 column-ink 数的行区间不是它以为的那 36 行（产品代码 +0/−0）。**先跑"改之前"那一遍、把图留住
+再动手**：`window 1240x860`（客户区尺寸）、`crop 124x41 at window-local 0,81`、九条 column-ink。
+修完（图与裁条都按 `GetWindowRect`，`frame 8,31` 印在行里）是 `tab maps to bitmap 8,115 110x35;
+crop 8,112 124x41`、五条 ink（`2,2,8,6,5`，峰值在标签右端那颗按钮），两张裁条哈希不同
+（`07a3a31e…`→`2a8b874f…`）。**而两张图把后果说完了**：before 那张是**工具栏**——画面里是 `View Only`
+那颗按钮加左边一条黑窗框，标签条只在最底下露出一点圆角；**所以 §74/§88 那两遍 `tabstrip` 的 ink 数的是
+工具栏，不是标签条**。after 那张是标签本体：圆角上边、`doc40.pdf`、右端一个 **X** —— §66 那颗关闭按钮的
+修复第一次被一张确实含著标签的图读到。同一句里分清两件事：§66 当年"画成下拉箭头"的结论出自 `gui-verify/`
+里的一份草稿图，那目录在 gitignore 的构建树里早就不在了，**这一片无法回头量它**；能说的只有"现在这份画的
+是 X"。**这一片真正改了一条仪器规矩**：第一版 guard 写的是"左列一串近黑＝窗框"（§89 就是这么抓到病的），
+它**当场把深色侧栏判成窗框**而 exit 1 —— 那是一句关于用户主题的话，不是关于窗口；**颜色断言在主题面前会
+说谎，窗框是几何定义的**。于是两处 guard 都改成几何（`formpage`：裁条不得越过客户区原点；`tabstrip`：
+标签自己的矩形必须落在裁条之内），而 §89 那两条控制在新写法下各自照旧红且各自指名差在哪一轴 ——
+CONTROL C（tabstrip 退回客户区算法）→ exit 1 `the tab rect maps to bitmap 8,115 110x35 but the crop is
+8,81 124x41`；CONTROL D（formpage 左沿退回旧算法）→ exit 1 `the crop starts at bitmap 0,151 but the
+client area only begins at 8,31`（两份拷贝各先印 `CONTROL C/D` 再动手，跑完删掉）。还有一处冲突写下来：
+`tabstrip` 那 4/3 px 的余量与"不踩窗框"不能并存，因为**标签自己就贴着客户区左沿**，现在余量被夹回客户区
+之内、夹完仍要求标签完整在内。数字：`gui-probe.ps1` 本片 **+41/−8**（§89–§91 三片在工作树里合计
+215/38，文件 2268 行），`FrameInkCount` 那根颜色探针删了不留死函数，ASCII 0、解析 0 错，没重编、
+门禁没重跑，无残留进程。仍欠：**§90 那四支在装的那份上的英文那一遍**；`status: []` 为什么空；§66 那颗
+箭头无法回头量；壳框为什么拒斜杠；`%1` 要不要换 numerus；§55 XFA；§47 那句；§75 路 (a)；widget 自己画
+`/AP`；§79 的锁与就地保存；§49 那 28 个括号；`/Brepro`；§84 那两颗 DLL；§82 那句推论。**没重打包**
+（§16 那"三处相同"自 §83 起欠 §84–§91 八片）。
+
+§92 补 §90 剩下的那一半：**那四支在装的那份上的英文读数**（先 `langswitch -Installed -To English -Keep`，
+跑完翻回"跟随系统"；产品代码 +0/−0）。四支都在 §83 那颗字节上读到：删页框正负两支的英文形（§77 那句
+`This document has form fields. An answer belongs to the page its field is drawn on, …` 在，plain 那份没有）、
+拆分框 `Split into 40 files`/`Split into 6 files` + 拆分值话英文形 + `Undo Split into pieces of 3 pages(U)`、
+合并框两支（`… ends up at page 41.` / `… together at pages 42-43.` + `This document already has 1 page merged
+in from another file.`）与两条撤销行、改名那支 `Wrote a new file (40 pages): Turn right 90° (1 page)` 且
+`source hash unchanged: True`。而这一片的账在**逮住的两处"印不出来却 exit 0"**。第一处：`mergedonor`
+的撤销行读取既没期望也没重试 —— 英文第一遍第二支 donor 那一行什么都没印而模式照样 DONE；现在三次重试 +
+调用方要求一行时没有就 Bail，**控制**（把匹配串换成不可能匹配的）→ exit 1
+`no Undo row after three tries … a blank is not a verdict`，重跑同一支两条撤销行都读到，说明上一遍只是菜单
+没起来的 flake —— **没有断言时它长得跟成功一模一样**。第二处更要紧：`langswitch -To` 只认一种拼法，
+翻回中文时给的"跟随系统"代码点在**英文界面**里对应的那行写的是 `Follow the system` → `switch: nothing among
+the 3 rows is named [跟随系统]`、Bail，**装的那份被留在英文**；这个模式自己的注释早就写着"第一行是一个行为
+而不是语言，所以会被翻译"，但 `-To` 那一支没用上（只有 restore 有配对）。抽出 `LanguageNeedles` 让两种拼法
+一起给、switch 与 restore 共用，**并且用同一条命令的 before/after 证明**：修复前 exit 1，修复后同一台英文
+界面的包上 exit 0 并 `clicking |Follow the system|`，最后一轮 `deletesummary` 复核那份确实回到中文。
+**规矩**：一个会改用户设置的探针，"改回去"那条路必须和"改过去"同一次验收。另外 `status: []` 在英文下也空
+（dev 中文 / 装中文 / 装英文三次复现，为什么仍未查）；`mergedonor` 现在让第二个供体继承 `-Donor` 的目录，
+不再靠"名字碰巧在 picker 落点里"。`.ps1` ASCII 第 12 次（注释里写屏幕原文，12 字节，解析器全程 0 错 ——
+**能过解析不等于没中**）。数字：`gui-probe.ps1` 本片 +43/−14（§89–§92 四片在工作树里合计 258/52，2297 行），
+ASCII 0、解析 0 错，没重编、门禁没重跑，无残留进程。**没重打包**（§16 那"三处相同"自 §83 起欠 §84–§92
+九片）。仍欠：空状态行为什么空；壳框为什么拒斜杠；§66 那颗箭头无法回头量；`%1` 要不要换 numerus；§55 XFA；
+§47 那句；§75 路 (a)；widget 自己画 `/AP`；§79 的锁与就地保存；§49 那 28 个括号；`/Brepro`；§84 那两颗
+DLL；§82 那句推论。
+
 **「增量保存」在 M5 动手时划掉了**，两个理由，都是量出来的不是猜的：
 ① QPDF 的写入端 `QPDFWriter` 只有"整份重写"这一种输出，没有在原文件末尾追加修订段的接口，
 要做增量得自己拼 xref 与对象流 —— 那是造一个 writer，不是用 QPDF；

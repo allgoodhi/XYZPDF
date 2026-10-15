@@ -21,6 +21,18 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
 
 **不要删构建树的 CMakeCache.txt** —— 项目不带 CMakePresets，Qt 的位置只存在于缓存里。
 
+**windeployqt 的那两颗 `dxcompiler.dll` / `dxil.dll` 是按**名字**捞的，连是不是 DLL 都不问**（§96 发现环境
+决定清单，§97 把机制量到底，每趟只换一个变量，整棵树计数）：干净 shell → 25 颗、那两颗 ABSENT，而它自己印
+`Cannot find any version of the dxcompiler.dll and dxil.dll.`；只设 `WindowsSdkDir` → 27 颗，落的是
+`<sdk>\Redist\D3D\x64` 那两份；只把 `<sdk>\bin\<ver>\x64` 放进 PATH → 27 颗，落的是 `bin` 那两份 —— **两个变量各自都够，
+而且给的是不同物理文件**（`bin` 的 dxcompiler = `97ABD3B3…`，`Redist` = `A5AA1D9A…`，**同尺寸 14,317,000 不同字节**；
+构建树里那颗等于 **Redist**）。最后一脚：把一个临时目录（里面是**改名的 `dxc.exe`**，名叫 `dxcompiler.dll`）放进
+PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的假 `dxil.dll` 从 x86 换成 x64，x86 被拒、x64 被收。
+**所以 `dxcompiler.dll` 那一支只看名字，`dxil.dll` 那一支看架构。推论：打包 shell 的 PATH 里任何一个目录只要有个叫
+`dxcompiler.dll` 的文件，那个文件就进包** —— `build-package.ps1` 的 strip 清单因此是跨环境稳定的那一半，不是装饰；
+而"事后这包是从哪条路来的"只有比哈希答得出。**认出处/认相同一律比哈希**：大小相同不是身份（§83 那条规矩的反面，
+§96 就在这一处写错过），哈希相同也不说明源码相同（§82）。两次量之前先确认自己是不是从开发者提示符里跑起来的。
+
 ## 约定
 
 - 源码含中文字面量，MSVC 全目标加 `/utf-8`
@@ -46,8 +58,15 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   少了那两个换行，屏幕上就是两句话焊在一起。目录里这类形状由 `check_translations.py` 的形状规则管着
   （集合对不上、numerus 掉形、两形相同、单数写成多数、段落换行丢）—— 这些都看不出在 (context, source) 上
   是"完全匹配"的
+- **带计数的句子一律走 `%n` + `tr(单数, 复数, n)`，不要 `%1` + `.arg(n)`**：后者在 `check_translations.py`
+  的 numerus 规则眼里是**合法**的（`%n` 压根没出现，掉形/两形相同/单数写成多数一条都看不见），所以
+  §74 那条"`1 of them point at no page.`"在目录里安静地活了很久。能发现的只有 `i18n_smoke` 的探针表
+  —— 它按 n=1 与 n=40 各问一次再**掩掉数字比较**，所以改一句带计数的话就同时加一行探针（也是
+  `-no-obsolete` 的保命符）。两个细节：`.qm` 是构建时嵌进测试的，**控制跑必须重编**（`--run-only` 跑的是
+  上一版二进制）；红下来的是"两形必须不同"那条，**不是**"单数得像单数"的正则 ——
+  `1 of them point` 里数字后紧跟 `of`，那条正则看不见错（§93 实测）
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary`（十四种模式
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms`（十五种模式
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -94,6 +113,13 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   投递一个点击不等于框被接受）。**写进去必须反斜杠形式** —— 同一个框同一个文件，`H:/tmp/...` 不交文档
   而 `H:\tmp\...` 交（§90 三条对照：斜杠红、反斜杠绿、归一后绿），`TypePathIntoPicker` 现在自己归一；
   **拒斜杠是壳的输入框那一族**（§88 那个文件夹框也一样），而我们自己的 Qt 目录框一直收斜杠。
+  **这一族拒的是"任何一个 `/`"**（§97 用新 `-Mode pathforms -Target <pdf>` 六行表量出来的，同一份真文件六种拼法
+  原样写进 1148、每行只看"我们的标题变没变 + 框关没关"两个收据）：目录段全反斜杠、只在文件名前那一个 `/` → 拒；
+  只写斜杠拼法的目录、不写文件名 → 拒且没导航；而 id 1001 那格的类名是 **`ToolbarWindow32`** —— `WM_SETTEXT`
+  对它根本不是"往输入框写字"，这就是 2026-09-28 那条笔记一直是错的完整解释（§90 只说到"写错控件"）。
+  pathforms 自带两根硬 Bail：R1 反斜杠**必须**打进我们的标题、R5 一个不存在的文件**必须**打不进（R5 那行
+  `folderShowsTarget=True`：框正显示目标所在目录却什么都没开 —— **"看得见"不是"接受了"**）；`-Doc` 与 `-Target`
+  同名就直接拒跑，因为启动实例的标题里本来就有那个文件名，"标题变了没"在碰框之前就已经是 True。
   还有一条量出来的产品行为：应用那一格"最近目录"是**打开与保存共用的**，一次 `保存修改为` 也会改写它，
   所以下一轮 picker 可能落在你上次存出去的那个目录里（§62 那问的是第三个来源）。
   `build-local-release/gui-verify/` 下那些是历次草稿，在 gitignore 的构建树里、丢了找不回来 ——

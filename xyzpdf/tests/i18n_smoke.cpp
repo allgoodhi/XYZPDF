@@ -389,6 +389,14 @@ int main(int argc, char **argv)
                                    "这里删不到它们。", 1 },
             { "WatermarkDialog", "\n\n前面合并进来的那 %n 页屏幕上没有页号，所以不在这 %1 页里，"
                                  "也不会带上水印。", 1 },
+            // The row §74 pinned and §93 fixed: the bookmark box counted heading-only bookmarks
+            // with `%1` + .arg(), which is not a numerus message at all, so the English catalogue
+            // had one form and a reader with exactly one such bookmark was told
+            // "1 of them point at no page." -- read off the screen in §88. It is listed here
+            // because a `%1`-style row cannot be caught by any catalogue shape rule: `%n` never
+            // appears in it, so every numerus check looks past it. Only this probe asks for n=1
+            // and n=40 and compares what the reader would actually hear.
+            { "BookmarkDialog", "\n\n其中 %n 条不指向任何一页。", 1 },
         };
 
         for (const Probe &probe : probes) {

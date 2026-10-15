@@ -389,7 +389,7 @@ void BookmarkDialog::updateSummary()
                 ++gone;
         }
         if (headings > 0)
-            line += tr("\n\n其中 %1 条不指向任何一页。").arg(headings);
+            line += tr("\n\n其中 %n 条不指向任何一页。", nullptr, headings);
 
         // §70's owed sentence. A page an earlier 删页 took out is not an error, and the model's answer
         // (it stays in the tree, without a target) is the same one it gives for a page lost after the

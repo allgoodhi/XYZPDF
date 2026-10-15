@@ -8045,6 +8045,128 @@ int main(int argc, char **argv)
                                      "a screen: %1 differ").arg(drawn.pixels));
             }
         }
+
+        // ---- §94: does that 0 reach the four paths that are not the page view? ----
+        //
+        // §82 closed with an inference -- print, image export, the thumbnail strip and the preview
+        // pane all ask for the same drawing, so they must lose the same thing. §58's lesson is that an
+        // inference is exactly what reads like a finding, so this measures it instead, at the size and
+        // with the option set each call site builds today:
+        //   src/ui/thumbnailpanel.cpp:80          RenderOptions options;  (annotations defaults true)
+        //   src/windows/thumbnailprovider.cpp:111 RenderOptions{}         shell thumbnail
+        //   src/windows/previewhandler.cpp:846    RenderOptions{}         preview pane
+        //   src/export/imageexport.cpp:82         annotations=true, optimizedForLcd=false, by DPI
+        //   src/print/printjob.cpp:190            annotations=true, optimizedForLcd=false, by sheet
+        // What these rows do NOT measure: the printer driver, the file the exporter writes, and the
+        // shell's compositing. They measure the one place the /Subtype decision can be made --
+        // QtPdfBackend::render() -- with each path's own options and size. If a call site's option set
+        // changes later, this table will not notice, which is why every row names the file and line it
+        // copies and why the default itself is asserted once below rather than assumed four times.
+        {
+            struct RenderPath
+            {
+                const char *name;
+                QSize pixels;
+                bool lcd;
+            };
+            const QList<RenderPath> paths
+                = {{"page-view-fit-width", QSize(1240, 1753), true},
+                   {"thumbnail-strip", QSize(150, 212), false},
+                   {"shell-thumbnail", QSize(260, 368), false},
+                   {"preview-pane", QSize(400, 566), false},
+                   {"image-export-150dpi", QSize(1240, 1754), false},
+                   {"print-a4-300dpi", QSize(2480, 3508), false}};
+
+            const auto renderAt = [](const QString &path, const QSize &pixels, bool lcd) {
+                QtPdfBackend document;
+                if (document.load(path, QString()) != Document::Status::Ready)
+                    return QImage();
+                RenderOptions options;
+                options.optimizedForLcd = lcd;
+                return document.render(0, pixels, options);
+            };
+            // Counting inside the box rather than over the whole page: at 150 px wide a 200x30-point
+            // mark is a handful of pixels, and a page-wide difference would let unrelated resampling
+            // noise answer the question.
+            const auto differingWithin = [](const QImage &one, const QImage &other,
+                                            const QRect &area) {
+                if (one.isNull() || other.isNull() || one.size() != other.size())
+                    return -1;
+                const QImage a = one.convertToFormat(QImage::Format_RGB32);
+                const QImage b = other.convertToFormat(QImage::Format_RGB32);
+                int count = 0;
+                for (int y = area.top(); y <= area.bottom() && y < a.height(); ++y) {
+                    const QRgb *rowA = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+                    const QRgb *rowB = reinterpret_cast<const QRgb *>(b.constScanLine(y));
+                    for (int x = area.left(); x <= area.right() && x < a.width(); ++x) {
+                        if (rowA[x] != rowB[x])
+                            ++count;
+                    }
+                }
+                return count;
+            };
+
+            // The two shell paths pass RenderOptions{}, so everything below rests on this default.
+            // Said as a check because a flipped default would silently move four rows.
+            check(RenderOptions{}.annotations,
+                  QStringLiteral("RenderOptions{} asks for the annotation layer by default -- the "
+                                 "thumbnail and preview paths pass nothing else, so if this ever "
+                                 "reads false their 0s mean something different"));
+
+            const QString widgetPath = scratch.filePath(QStringLiteral("sec94-widget.pdf"));
+            const QString squarePath = scratch.filePath(QStringLiteral("sec94-square.pdf"));
+            QString e;
+            check(!writeAppearanceProbeCopy(source, widgetPath,
+                                            AppearanceProbe{"/Widget", true, false, true}, &e)
+                       .isEmpty(),
+                  QStringLiteral("setup: §94's widget probe: %1").arg(e));
+            check(!writeAppearanceProbeCopy(source, squarePath,
+                                            AppearanceProbe{"/Square", false, false, false}, &e)
+                       .isEmpty(),
+                  QStringLiteral("setup: §94's square probe: %1").arg(e));
+            // Both files must carry the same stream, or a 0 below could be a lost stream again (§82).
+            check(pageAnnotationPaints(widgetPath, QStringLiteral("APPEARS-HERE")) == 1
+                      && pageAnnotationPaints(squarePath, QStringLiteral("APPEARS-HERE")) == 1,
+                  "both §94 probes carry their appearance on page one, decoded");
+
+            const QRect paintPoints(60, 842 - 630, 200, 30);
+            for (const RenderPath &p : paths) {
+                const double sx = double(p.pixels.width()) / 595.0;
+                const double sy = double(p.pixels.height()) / 842.0;
+                const QRect box(int(paintPoints.x() * sx), int(paintPoints.y() * sy),
+                                int(std::ceil(paintPoints.width() * sx)),
+                                int(std::ceil(paintPoints.height() * sy)));
+                const QImage plain = renderAt(source, p.pixels, p.lcd);
+                const int widget = differingWithin(plain, renderAt(widgetPath, p.pixels, p.lcd), box);
+                const int square = differingWithin(plain, renderAt(squarePath, p.pixels, p.lcd), box);
+                note(QStringLiteral("sec94 %1 at %2x%3 (lcd=%4) inside %5,%6 %7x%8: widget=%9 "
+                                    "square=%10")
+                         .arg(QString::fromLatin1(p.name))
+                         .arg(p.pixels.width())
+                         .arg(p.pixels.height())
+                         .arg(p.lcd ? 1 : 0)
+                         .arg(box.x())
+                         .arg(box.y())
+                         .arg(box.width())
+                         .arg(box.height())
+                         .arg(widget)
+                         .arg(square));
+                check(!plain.isNull(), QStringLiteral("%1: the plain page renders at this size")
+                                            .arg(QString::fromLatin1(p.name)));
+                check(square > 0,
+                      QStringLiteral("%1: an annotation-layer mark reaches %2 pixels at this size, "
+                                     "so the widget row below is not a channel that cannot see the "
+                                     "layer at all")
+                          .arg(QString::fromLatin1(p.name))
+                          .arg(square));
+                check(widget == 0,
+                      QStringLiteral("%1: the same mark on a /Widget contributes %2 pixels at this "
+                                     "size -- the print/export/thumbnail/preview paths lose the "
+                                     "field's answer the same way the page view does")
+                          .arg(QString::fromLatin1(p.name))
+                          .arg(widget));
+            }
+        }
     }
 
     // ---- a name that is readable but not replaceable ----

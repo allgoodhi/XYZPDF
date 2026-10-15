@@ -114,14 +114,19 @@
             <numerusform>Pressing leaves this document with %n bookmarks.</numerusform>
         </translation>
     </message>
-    <message>
+    <message numerus="yes">
         <location filename="../../src/ui/bookmarkdialog.cpp" line="392"/>
         <source>
 
-其中 %1 条不指向任何一页。</source>
+其中 %n 条不指向任何一页。</source>
         <translation>
+            <numerusform>
 
-%1 of them point at no page.</translation>
+%n of them points at no page.</numerusform>
+            <numerusform>
+
+%n of them point at no page.</numerusform>
+        </translation>
     </message>
     <message numerus="yes">
         <location filename="../../src/ui/bookmarkdialog.cpp" line="405"/>

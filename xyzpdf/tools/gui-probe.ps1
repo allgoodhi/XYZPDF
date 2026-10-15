@@ -84,7 +84,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -98,6 +98,11 @@ param(
   # and the row to click is not in view.
   [string]$LastDir = '',
   [string]$Donor = 'donor1.pdf',
+  # pathforms: the file the picker is aimed at. The launched instance keeps opening -Doc, so the two
+  # names MUST differ -- if they were the same, "did our title change to the leaf?" would already be
+  # true before the dialog is touched, which is the vacuous-check shape this suite keeps tripping on
+  # (sec.77, sec.95). The mode refuses to run rather than print a table of tautologies.
+  [string]$Target = '',
   # -Installed only: a packaged instance cannot be handed a file (no AppExecutionAlias, and
   # Start-Process cannot run the exe under WindowsApps), so a mode that needs a document has to
   # open one through the program's own picker. This is the name of the row to click in that
@@ -735,6 +740,97 @@ function TypePathIntoPicker($pk, [string]$path) {
   return $true
 }
 
+function FindPicker([int]$procId) {
+  # The shell dialog belonging to this process, matched by CLASS (#32770), not by caption -- the
+  # caption is our own translatable string, so a needle like "Open" is wrong in one of the two
+  # languages here (sec.45/sec.87). Returns $null when no such window exists, which is what tells a
+  # caller the dialog actually closed.
+  foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $procId))))) {
+    foreach ($e in (@($w) + @(FindType $w $CT::Window))) {
+      if ($e.Current.ClassName -eq '#32770') { return $e }
+    }
+  }
+  return $null
+}
+
+function ShowOpenDialog([int]$procId) {
+  # Bring up our own File / Open dialog and hand back the shell window, or $null. Extracted from
+  # -Mode openpicker on 2026-10-15 so -Mode pathforms drives the SAME route rather than a second copy
+  # of it that can drift into working in only one language (sec.87's lesson about lookups).
+  # The window is raised by its own title bar first because a launch from AppsFolder does not take
+  # the foreground by itself: sec.84 watched three rounds where UIA reported the Open row enabled at a
+  # real rectangle, a click went there and no #32770 ever appeared. SwitchToThisWindow is the Alt+Tab
+  # call; it crosses processes without SetForegroundWindow's ownership fight (sec.66). The foreground
+  # title is printed before and after so a round that aimed at somebody else's window says so in the
+  # log instead of reading as "this row does nothing". The raise is what the pixel modes do
+  # (sec.28/sec.54); it is NOT what fixes the rounds where nothing lands -- sec.62 watched -Mode
+  # openpicker succeed with the raise in place and then fail all three tries with it still in place.
+  # Whether synthesised input lands at all is per-round (sec.41), which is why every attempt prints the
+  # row it aimed at and why a caller retries instead of trusting one pass.
+  $win = $null
+  for ($k = 1; $k -le 10 -and -not $win; $k++) { Start-Sleep -Milliseconds 500; $win = Window $procId }
+  if (-not $win) { Say '  no window for this pid'; return $null }
+  $wr = $win.Current.BoundingRectangle
+  [W32]::SwitchToThisWindow([IntPtr]$win.Current.NativeWindowHandle, $true)
+  Start-Sleep -Milliseconds 500
+  Say ('  foreground before the raise [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
+  [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))
+  Start-Sleep -Milliseconds 800
+  Say ('  foreground after the raise  [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
+  $pk = $null
+  for ($try = 1; $try -le 3 -and -not $pk; $try++) {
+    TopMenu $procId @('File', (CjStr 0x6587,0x4EF6)) | Out-Null
+    $row = RowAny $procId @('Open', (CjStr 0x6253,0x5F00))
+    if (-not $row) { Say ('  try ' + $try + ': no Open row under File'); Start-Sleep -Milliseconds 600; continue }
+    $rr = $row.Current.BoundingRectangle
+    Say ('  try ' + $try + ': menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled +
+         ' at ' + [int]$rr.X + ',' + [int]$rr.Y + ' ' + [int]$rr.Width + 'x' + [int]$rr.Height)
+    ClickAt $row
+    for ($k = 1; $k -le 8 -and -not $pk; $k++) {
+      Start-Sleep -Milliseconds 500
+      $pk = FindPicker $procId
+    }
+    if ($pk) { Say ('  native dialog up after try ' + $try + ' [' + $pk.Current.Name + ']') }
+  }
+  return $pk
+}
+
+function SetPickerFieldRaw($pk, [int]$wantId, [string]$text) {
+  # WM_SETTEXT of this exact string into the picker child with control id $wantId, with the spelling
+  # left ALONE. TypePathIntoPicker normalises slashes on purpose, because a caller's bash-shaped path
+  # should not decide whether a round can work; this is the opposite case -- the spelling is the thing
+  # under test. Nothing can be read back (these fields answer empty to WM_GETTEXT, sec.44), so the
+  # caller has to judge from its own receipt, and every child is dumped first because these ids have
+  # been guessed wrong here more than once (sec.90: 1148 is the File name box, 1001 is the address bar).
+  $kids = PickerChildren $pk
+  foreach ($h in $kids) {
+    Say ('    id=' + [W32]::GetDlgCtrlID($h) + ' class=' + [W32]::Cls($h) + ' text=[' + [W32]::Text($h) + ']')
+  }
+  $targets = @($kids | Where-Object { [W32]::GetDlgCtrlID($_) -eq $wantId })
+  if ($targets.Count -eq 0) { Say ('  no child with control id ' + $wantId); return $false }
+  foreach ($h in $targets) {
+    Say ('  WM_SETTEXT raw [' + $text + '] (' + $text.Length + ' chars) into id=' + $wantId + ' class=' + [W32]::Cls($h))
+    [W32]::SendMessageW($h, 0x000C, [IntPtr]::Zero, $text) | Out-Null
+  }
+  return $true
+}
+
+function PressPickerAccept($pk) {
+  # BM_CLICK to the button whose control id is 1. Posting the click is not acceptance (sec.88 made
+  # that a rule after PickFolder returned true on a box that was still open and complaining); this
+  # only reports whether the button exists.
+  $kids = New-Object System.Collections.Generic.List[IntPtr]
+  $cb = [W32+EnumProc] { param($h, $l) $kids.Add($h); return $true }
+  [W32]::EnumChildWindows([IntPtr]$pk.Current.NativeWindowHandle, $cb, [IntPtr]::Zero) | Out-Null
+  $ok = $null
+  foreach ($h in $kids) {
+    if ([W32]::Cls($h) -eq 'Button' -and [W32]::GetDlgCtrlID($h) -eq 1) { $ok = $h }
+  }
+  if (-not $ok) { Say '  the picker has no button with control id 1'; return $false }
+  [W32]::PostMessageW($ok, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+  return $true
+}
+
 function Open-PackagedDocument($theApp, [string]$rowName) {
   # Gets a document into an instance launched from AppsFolder, the only way a packaged copy can be
   # started from here. Each step prints because a round that fails quietly looks exactly like a menu
@@ -1017,7 +1113,24 @@ switch ($Mode) {
       Start-Sleep -Milliseconds 1200
       & $undo ($donor + ': ') $true
     }
-    Say ('  status: [' + (StatusName $app.Id) + ']')
+    # What the status bar says after two merges is *nothing*, and that is the product's rule rather
+    # than a message that failed to appear: the file owning every pending edit (documenttab.cpp) has
+    # no status-message call in it at all, while the announcements all live in mainwindow.cpp and are
+    # for things that finished somewhere -- images exported (:1414), a new file written (:1440), Word
+    # (:1761), windows merged (:2007). A merge only records a change, so its receipts are the dirty
+    # tab and the undo row, both read above. Printed as an expectation with a check behind it,
+    # because a bare "status: []" next to a line that looks like a measurement reads like a failure
+    # (it is what made sec.87 ask why this was empty, three rounds and two builds ago).
+    $status = StatusName $app.Id
+    $announces = @('merge', 'Merge', (CjStr 0x5408, 0x5E76))   # the merge wording in either interface
+    $said = @($announces | Where-Object { $status -like ('*' + $_ + '*') })
+    Say ('  status: [' + $status + ']  expected: no announcement -- a pending edit is not a completed ' +
+         'write, and documenttab.cpp never calls setStatusMessage')
+    if ($said.Count -gt 0) {
+      Bail ('  the status bar now announces a merge ("' + $status + '"). Either pending edits started ' +
+            'speaking or a merge began writing something when it was accepted -- both are product ' +
+            'changes this line exists to notice')
+    }
   }
   'splitsagain' {
     # The re-split aside is the other row whose English had lost its paragraph break, and it
@@ -1290,52 +1403,7 @@ switch ($Mode) {
     # (then the ini has no [files] section at all, our key reads empty, and the code says
     # "homePath"), and see which folder the dialog shows. Home means our explicit directory wins;
     # the folder this app last saved into means the shell's memory does.
-    #
-    # The window is raised by its own title bar first because that is what the pixel modes do
-    # (sec.28/sec.54) -- NOT because it fixes the rounds where nothing lands: sec.62 watched this same
-    # mode succeed with the raise and then fail all three tries with the raise still in place. Whether
-    # synthesised input lands at all is per-round (sec.41), which is why every attempt prints the row it
-    # aimed at below.
-    $win = $null
-    for ($k = 1; $k -le 10 -and -not $win; $k++) {
-      Start-Sleep -Milliseconds 500
-      $win = Window $app.Id
-    }
-    if (-not $win) { Bail '  no window' }
-    $wr = $win.Current.BoundingRectangle
-    # The same z-order route sec.66's tabstrip mode records: SwitchToThisWindow is the Alt+Tab call
-    # and crosses processes without the foreground-ownership fight SetForegroundWindow has, and the
-    # foreground title is printed before and after so a menu row clicked while somebody else owned
-    # the screen says so in the log instead of reading as "the row does nothing". The packaged
-    # instance needs this: sec.84 watched three rounds where UIA reported the Open row enabled at a
-    # real rectangle, a click was sent there, and no #32770 ever appeared -- a launch from
-    # AppsFolder does not take the foreground by itself.
-    [W32]::SwitchToThisWindow([IntPtr]$win.Current.NativeWindowHandle, $true)
-    Start-Sleep -Milliseconds 500
-    Say ('  foreground before the raise [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
-    [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))
-    Start-Sleep -Milliseconds 800
-    Say ('  foreground after the raise  [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
-    $pk = $null
-    for ($try = 1; $try -le 3 -and -not $pk; $try++) {
-      TopMenu $app.Id @('File', (CjStr 0x6587,0x4EF6)) | Out-Null
-      $row = RowAny $app.Id @('Open', (CjStr 0x6253,0x5F00))
-      if (-not $row) { Say ('  try ' + $try + ': no Open row under File'); Start-Sleep -Milliseconds 600; continue }
-      $rr = $row.Current.BoundingRectangle
-      Say ('  try ' + $try + ': menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled +
-           ' at ' + [int]$rr.X + ',' + [int]$rr.Y + ' ' + [int]$rr.Width + 'x' + [int]$rr.Height)
-      ClickAt $row
-      for ($k = 1; $k -le 8 -and -not $pk; $k++) {
-        Start-Sleep -Milliseconds 500
-        foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
-          foreach ($e in (@($w) + @(FindType $w $CT::Window))) {
-            if ($e.Current.ClassName -eq '#32770') { $pk = $e; break }
-          }
-          if ($pk) { break }
-        }
-      }
-      if ($pk) { Say ('  native dialog up after try ' + $try + ' [' + $pk.Current.Name + ']') }
-    }
+    $pk = ShowOpenDialog $app.Id
     if (-not $pk) { Bail '  the open dialog never came up in three tries' }
     # The dialog's own folder is not exposed as a readable Name anywhere (sec.29: the picker gives
     # no patterns; sec.44: its text fields answer empty to WM_GETTEXT), so the FOLDER is read from
@@ -1366,6 +1434,80 @@ switch ($Mode) {
     } else {
       Say '  no Cancel button with control id 2; leaving the dialog open and saying so'
     }
+  }
+  'pathforms' {
+    # sec.88 and sec.90 established a family: a SHELL input box refuses a path spelled with forward
+    # slashes, while our own Qt directory box has accepted that spelling for slices. Both rounds
+    # recorded the refusal; neither asked WHICH PART of the string the parser chokes on, because the
+    # shell's source is not readable from here and inventing a reason is what this suite keeps
+    # catching itself doing. What CAN be measured is the boundary. One existing file is spelled six
+    # ways, each written raw (no normalisation -- the spelling is the variable) into a named control of
+    # the open dialog on a fresh instance, and every row prints the two receipts that are not the click:
+    # did OUR window title take the target's file name, and did the dialog close. Rows that must refuse
+    # are asserted, so this table can go red in both directions:
+    #   R1 must land      -- if it does not, this harness cannot open anything through its own picker
+    #                         and every other row here measures nothing
+    #   R2 must not land  -- if it does, sec.90's reading about the File name box is what is wrong
+    #   R5 must not land  -- a path to a file that does not exist; if THIS lands, the "landed" test is
+    #                         not watching a real open (sec.90's rule: a posted click is not acceptance)
+    # R3/R4/R6 carry no expectation: they are the boundary itself -- one slash among backslashes, a
+    # folder spelled with slashes and nothing else, and the address band (id 1001) given the same
+    # string the name box (1148) refused.
+    if (-not $Target) { Bail '  pathforms needs -Target <a pdf that exists>; -Doc stays the decoy' }
+    if (-not (Test-Path -LiteralPath $Target)) { Bail ('  no file at the -Target path: ' + $Target) }
+    $tLeaf = [System.IO.Path]::GetFileName($Target)
+    $dLeaf = [System.IO.Path]::GetFileName($Doc)
+    if ($tLeaf -eq $dLeaf) {
+      Bail ('  -Doc and -Target name the same file (' + $tLeaf + '): the instance already shows that ' +
+            'name in its title bar, so the landed-check would be true before the dialog is touched')
+    }
+    $tDir = [System.IO.Path]::GetDirectoryName($Target)
+    $rows = @(
+      [pscustomobject]@{ tag = 'R1-backslash-full'; id = 1148; text = $Target;                              expect = 'land'   },
+      [pscustomobject]@{ tag = 'R2-all-slash';      id = 1148; text = $Target.Replace('\', '/');             expect = 'refuse' },
+      [pscustomobject]@{ tag = 'R3-slash-before-leaf'; id = 1148; text = ($tDir + '/' + $tLeaf);             expect = 'none'   },
+      [pscustomobject]@{ tag = 'R4-slash-folder';   id = 1148; text = ($tDir.Replace('\', '/') + '/');       expect = 'none'   },
+      [pscustomobject]@{ tag = 'R5-file-missing';   id = 1148; text = ($tDir + '\sec97-no-such-file.pdf');   expect = 'refuse' },
+      [pscustomobject]@{ tag = 'R6-address-band';   id = 1001; text = $Target.Replace('\', '/');             expect = 'none'   }
+    )
+    foreach ($r in $rows) {
+      $app = Restart-ProbeApp $Language
+      if (-not $app) { Bail ('  ' + $r.tag + ': the relaunch produced no window, so this row was not measured') }
+      Say ('-- ' + $r.tag + '  writing into control id ' + $r.id + '  expect=' + $r.expect)
+      $pk = ShowOpenDialog $app.Id
+      if (-not $pk) { Bail ('  ' + $r.tag + ': the open dialog never came up in three tries') }
+      if (-not (SetPickerFieldRaw $pk $r.id $r.text)) { Bail ('  ' + $r.tag + ': control id ' + $r.id + ' is not there to write into') }
+      if (-not (PressPickerAccept $pk)) { Bail ('  ' + $r.tag + ': the dialog has no accept button to press') }
+      $landed = $false
+      $closed = $false
+      $title = ''
+      for ($k = 1; $k -le 6; $k++) {
+        Start-Sleep -Milliseconds 500
+        $w = Window $app.Id
+        if ($w) { $title = $w.Current.Name; if ($title -like ('*' + $tLeaf + '*')) { $landed = $true } }
+        if (-not (FindPicker $app.Id)) { $closed = $true }
+        if ($landed -and $closed) { break }
+      }
+      $navigated = $false
+      $still = FindPicker $app.Id
+      if ($still) {
+        foreach ($e in @(FindType $still $CT::ListItem)) {
+          if ($e.Current.Name -like ('*' + $tLeaf + '*')) { $navigated = $true }
+        }
+      }
+      Say ('   text [' + $r.text + ']')
+      Say ('   landed=' + $landed + ' pickerClosed=' + $closed + ' folderShowsTarget=' + $navigated +
+           '  title [' + $title + ']')
+      if ($r.expect -eq 'land' -and -not $landed) {
+        Bail ('  ' + $r.tag + ': the backslash form did NOT reach our window, so this harness cannot open a ' +
+              'document through its own picker and no other row in this table is evidence of anything')
+      }
+      if ($r.expect -eq 'refuse' -and $landed) {
+        Bail ('  ' + $r.tag + ': this form OPENED a document [' + $title + ']. Either the slash-path reading ' +
+              '(sec.90) or the missing-file control is wrong, and they cannot both stand')
+      }
+    }
+    Say ('  table done: ' + $rows.Count + ' spellings of [' + $tLeaf + '] through control ids 1148/1001')
   }
   'formpage' {
     # Does this reader DRAW a form field at all? Everything sec.46 to sec.53 measured lives inside the

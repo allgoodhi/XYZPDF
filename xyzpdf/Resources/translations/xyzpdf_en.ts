@@ -1114,7 +1114,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="547"/>
         <source>导出为 Word(&amp;E)…</source>
-        <translation>Export to Word(&amp;E)…</translation>
+        <translation>&amp;Export to Word…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="549"/>
@@ -1124,7 +1124,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="553"/>
         <source>打印(&amp;P)…</source>
-        <translation>Print(&amp;P)…</translation>
+        <translation>&amp;Print…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="555"/>
@@ -1134,7 +1134,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="562"/>
         <source>导出为图片(&amp;G)…</source>
-        <translation>Export as Images(&amp;G)…</translation>
+        <translation>Export as &amp;Images…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="564"/>
@@ -1154,27 +1154,27 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="589"/>
         <source>编辑(&amp;E)</source>
-        <translation>Edit(&amp;E)</translation>
+        <translation>&amp;Edit</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="591"/>
         <source>复制(&amp;C)</source>
-        <translation>Copy(&amp;C)</translation>
+        <translation>&amp;Copy</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="599"/>
         <source>翻译(&amp;T)</source>
-        <translation>Translate(&amp;T)</translation>
+        <translation>&amp;Translate</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="607"/>
         <source>全选(&amp;A)</source>
-        <translation>Select All(&amp;A)</translation>
+        <translation>Select &amp;All</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="622"/>
         <source>查找(&amp;F)…</source>
-        <translation>Find(&amp;F)…</translation>
+        <translation>&amp;Find…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="630"/>
@@ -1298,7 +1298,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="791"/>
         <source>夜间阅读(&amp;G)</source>
-        <translation>Night Reading(&amp;G)</translation>
+        <translation>&amp;Night Reading</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="795"/>
@@ -1308,7 +1308,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="809"/>
         <source>全屏(&amp;L)</source>
-        <translation>Full Screen(&amp;L)</translation>
+        <translation>&amp;Full Screen</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="812"/>
@@ -1318,7 +1318,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="816"/>
         <source>演示(&amp;P)</source>
-        <translation>Present(&amp;P)</translation>
+        <translation>&amp;Present</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="819"/>
@@ -1328,17 +1328,17 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="838"/>
         <source>文档(&amp;D)</source>
-        <translation>Document(&amp;D)</translation>
+        <translation>&amp;Document</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="840"/>
         <source>删除页面(&amp;E)…</source>
-        <translation>Delete Pages(&amp;E)…</translation>
+        <translation>De&amp;lete Pages…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="948"/>
         <source>编辑书签(&amp;B)…</source>
-        <translation>Edit Bookmarks(&amp;B)…</translation>
+        <translation>&amp;Edit Bookmarks…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="954"/>
@@ -1378,12 +1378,12 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="1032"/>
         <source>窗口(&amp;N)</source>
-        <translation>Window(&amp;N)</translation>
+        <translation>&amp;Window</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="1034"/>
         <source>合并所有窗口(&amp;G)</source>
-        <translation>Merge All Windows(&amp;G)</translation>
+        <translation>&amp;Merge All Windows</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="1036"/>
@@ -1484,7 +1484,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="849"/>
         <source>旋转页面(&amp;R)…</source>
-        <translation>Rotate Pages(&amp;R)…</translation>
+        <translation>Ro&amp;tate Pages…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="855"/>
@@ -1494,7 +1494,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="865"/>
         <source>移动页面(&amp;M)…</source>
-        <translation>Move Pages(&amp;M)…</translation>
+        <translation>&amp;Move Pages…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="867"/>
@@ -1504,7 +1504,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="877"/>
         <source>合并文件进来(&amp;F)…</source>
-        <translation>Merge Files In(&amp;F)…</translation>
+        <translation>Merge Files &amp;In…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="883"/>
@@ -1514,7 +1514,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="895"/>
         <source>拆分文件(&amp;C)…</source>
-        <translation>Split Files(&amp;C)…</translation>
+        <translation>&amp;Split Files…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="902"/>
@@ -1524,7 +1524,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="912"/>
         <source>加密 / 去掉口令(&amp;J)…</source>
-        <translation>Encrypt / Remove Password(&amp;P)…</translation>
+        <translation>Encrypt / Remove &amp;Password…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="920"/>
@@ -1534,7 +1534,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="931"/>
         <source>加水印(&amp;W)…</source>
-        <translation>Add Watermark(&amp;W)…</translation>
+        <translation>Add &amp;Watermark…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="938"/>
@@ -1554,7 +1554,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     <message>
         <location filename="../../mainwindow.cpp" line="987"/>
         <source>保存修改为(&amp;S)…</source>
-        <translation>Save Changes As(&amp;S)…</translation>
+        <translation>Save Changes &amp;As…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="992"/>
@@ -1738,22 +1738,22 @@ Closing this tab throws those changes away. Close it anyway?</translation>
     <message>
         <location filename="../../mainwindow.cpp" line="2169"/>
         <source>撤销(&amp;U)</source>
-        <translation>Undo(&amp;U)</translation>
+        <translation>&amp;Undo</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="2169"/>
         <source>撤销 %1(&amp;U)</source>
-        <translation>Undo %1(&amp;U)</translation>
+        <translation>&amp;Undo %1</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="2175"/>
         <source>重做(&amp;O)</source>
-        <translation>Redo(&amp;O)</translation>
+        <translation>&amp;Redo</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="2175"/>
         <source>重做 %1(&amp;O)</source>
-        <translation>Redo %1(&amp;O)</translation>
+        <translation>&amp;Redo %1</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="2262"/>
@@ -2277,12 +2277,12 @@ The original file is not touched. This step only records the change; a save is s
     <message>
         <location filename="../../src/view/pageview.cpp" line="986"/>
         <source>复制(&amp;C)</source>
-        <translation>Copy(&amp;C)</translation>
+        <translation>&amp;Copy</translation>
     </message>
     <message>
         <location filename="../../src/view/pageview.cpp" line="987"/>
         <source>翻译(&amp;T)</source>
-        <translation>Translate(&amp;T)</translation>
+        <translation>&amp;Translate</translation>
     </message>
 </context>
 <context>

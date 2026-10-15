@@ -6547,3 +6547,73 @@ widget 自己画 `/AP`；§79 的锁与就地保存；§49 那 28 个括号；`/
 是英文菜单行 + `CjStr`，两支都在，但没在中文界面重跑）；剩下那些等他定：§49 那 29 条、§75 路 (a)、widget 自画
 `/AP`（§94 已抬成"打印会出白纸"）、`/Brepro`、§55 XFA、§47 那句、§79 的锁与就地保存。重打包/重装、提交、
 push 各要一词 —— §16 那"三处相同"欠 §84–§97 **十三片**。
+
+
+## 98. §49 那 29 条英文助记符改成词内的 `&` 了 —— 而"要不要改"其实早被目录里那 8 条答过（2026-10-15）
+
+他一句"继续做下一个欠账的 §49 那 29 条"。这一片动的是**目录里的英文形**（`Resources/translations/xyzpdf_en.ts` 29 行）
+和**一根新的目录规则**（`tools/check_translations.py` +56/−0）；产品 `.cpp`/`.h` 一字未改，中文形一字未改。
+
+1. **先说这条欠账为什么挂了 67 片**。§49 在屏幕上把英文菜单栏读出来那天就看见了：
+   `|File| |Edit(E)| |View| |Document(D)| |Go| |Window(N)| |Language| |Help|` —— 同一排里 `File`、`View`、`Go`、`Help`
+   干净，`Edit(E)`、`Document(D)`、`Window(N)` 带着括号。此后 §88/§90/§92 三支模式都**在英文界面里读过行**，
+   每次都把这排名字原样印进日志，没有人把"括号"当成一件事。理由不是没看见，是**没有任何一道检查能看见它**：
+   (context, source) 完全匹配、行不 obsolete、numerus 对、段落换行对 —— 四条形状规则管的是别的形状。
+   **屏幕上一眼就有的东西，在仪器里是隐形的。**
+2. **"要不要这样改"不是没答过，是答过 8 次**：目录里早就有 `&File` `&Open…` `Close &Tab` `E&xit` `&View` `&Go`
+   `&Help` `&Settings…` 八条词内 `&` 的英文形 —— 也就是说英文那一侧的自家风格一直写在同一个文件里，
+   剩下 29 条是抄了源文形状的漏网之鱼。**这一条把我自己上周的分类推翻了**：§96 我把这 29 条记成"等他定风格"，
+   其实风格早已定，只是没人去数"已改的有几条、没改的有几条"。**"这需要一个决定"要去查有没有已经做过八次的决定。**
+3. **改了什么**（29 条英文形，源文一个字不碰）：菜单条 `&Edit` `&Document` `&Window`；文件菜单
+   `&Export to Word…` `&Print…` `Export as &Images…`；编辑菜单 `&Copy` `&Translate` `Select &All` `&Find…`；
+   查看菜单 `&Night Reading` `&Full Screen` `&Present`；文档菜单 `De&lete Pages…` `Ro&tate Pages…`
+   `&Move Pages…` `Merge Files &In…` `&Split Files…` `Encrypt / Remove &Password…` `Add &Watermark…`
+   `&Edit Bookmarks…` `&Undo` `&Undo %1` `&Redo` `&Redo %1` `Save Changes &As…`；窗口菜单 `&Merge All Windows`；
+   PageView 右键 `&Copy` `&Translate`。**同一个菜单里的助记字母互不重复**（文档菜单：L T M I S P W E U R A，
+   与菜单条自己的 `&Document`(D) 不撞），`…` 的位置照旧跟着词干，不是钉在末尾。
+   **一处源文字母与英文无关**：`加密 / 去掉口令(&J)` 原本英文抄成 `(&P)` —— 英文形本来就在自选字母，
+   这条恰好说明括号那一格从来不是"翻译"，是格式。
+4. **屏幕上这一遍是**先跑再改的（§91 那条规矩：仪器在修之前先跑一遍，并把输出留着）：改之前五支菜单
+   `File`/`Edit`/`View`/`Document`/`Window` 全读完存进 `H:\tmp\sec98-before-*.txt`；门禁重编之后再读一遍：
+   **37 行的 UIA Name 变了**（去重后 25 个不同标签，其余是菜单条在同一次读取里重复出现），
+   而**每支菜单的行数一字未动**（15 / 14 / 27 / 19 / 9）—— 改的是名字不是结构：
+   `Print(P)…`→`Print…`、`Delete Pages(E)…`→`Delete Pages…`、`Undo(U)`→`Undo`、`Merge All Windows(G)`→`Merge All Windows`。
+   两支带 `%1` 的撤销行（`撤销 %1(&U)` / `重做 %1(&O)`）**只在有未完成编辑时才在屏幕上出现**，而 §39 那一次
+   只读到不带 `%1` 的那支 —— 这一片顺带补上：`row |Undo Merge in 1 page (donor1.pdf)|`、
+   `row |Undo Merge in 2 pages (donor2.pdf)|`、`row |Undo Split into pieces of 3 pages|`。
+   25 个屏幕标签 + 2 条 PageView 右键（这一片没读右键）+ 2 条 `%1` 孪生 = 29 ✓ 数目闭合。
+   中文那一侧当场也读了两支菜单确认没动（`删除页面(E)…` / `撤销(U)` 照旧 —— 那是正确的 Windows 中文习惯）。
+5. **harness 要不要跟着改：读数说不要**。`MenuRow` 一直是 `-like ('*' + $needle + '*')`（子串），
+   所以 `Split Files`、`Merge Files In`、`Open`、`Settings` 这些 needle 在名字丢掉 `(C)`/`(F)` 之后照样命中 ——
+   但这不能靠推理，所以改完跑了三支英文回归：`mergedonor` / `splitsagain` / `deletesummary` 全部 exit 0，
+   日志里 `matched [Merge Files In] class=MergePagesDialog`、`menu row |Delete Pages…|`、
+   `DeletePagesDialog found on round 1 (… it was in the main window subtree)`、拆框两句小结、删页框那句
+   `No pages have been named yet. …`、还有 §95 那条 `status: []  expected: no announcement …` 都在。
+   **§97 那句"改产品表面之前先问仪器会不会跟着坏"这一片有答案了：不会，而且有三支跑过的账。**
+6. **新的那道规则**（`check_translations.py` 第四条，`mnemonic_rules_of`）：任何英文 `<translation>` /
+   `<numerusform>` 里出现 `(&X)` 就失败，理由写在函数 docstring 里 —— 这不是"审美检查"，是把一类**只有眼睛
+   看得见**的缺陷搬进机器。控制：把 `&Print…` 一行改回 `Print(&P)…` → 门禁那条 checker **exit 1**，印
+   `MainWindow：打印(&P)… —— 英文形把源文的括号助记符抄过来了，应写成词内的 &：Print(&P)…`，
+   然后按 sha256 **逐字节还原**（`cb04762275ab…` 前后相同）再跑一遍 → exit 0。
+   **两条自己撞上的错要说**：控制脚本第一遍在"打印捕获到的输出"时崩在 GBK 编码上，而崩溃点**在还原那行之前** ——
+   目录就那么留在控制状态里，是下一遍先读了一次"控制状态还在不在"才发现（`control state present: 1`）并还原；
+   从此这类控制写成 try/finally + 哈希相等，而不是"跑完再手动恢复"。第二条：新加函数时一次 Edit 把函数体
+   **复制成两段**，`python -m py_compile` 照样过（Python 允许 for 之后 dedent 到 def）—— **编译通过不结构就没坏**，
+   这一族在 `.ps1` 那边记过（"能过解析不等于没中"），这次发生在 Python 上。
+7. **没验的一层要说**：`&Print…` 现在把助记符注册到 Alt+P 是 Qt 的定义，不是这一片的读数 —— **没有任何一轮真按下
+   Alt+字母**。屏幕上读到的是名字里没有括号了；键盘那一层留给下一次（或留给 WACK 之外的一次人工点击）。
+8. **数字**：`Resources/translations/xyzpdf_en.ts` **+29/−29**（每条一行，行数没动，所以 `.ts` 里那些
+   `<location line="…"/>` 全部照旧对得上）；`tools/check_translations.py` **+56/−0**；产品代码 +0/−0；
+   目录 **578 条 / numerus 48 / 0 unfinished**（这条改动不新增任何一条源文，`(&X)` 只在源文里）；
+   门禁一遍 **26 passed / 0 failed**、控制那遍 checker **exit 1**、还原后 **exit 0**；
+   dev exe **`9793eae30a0e…` / 1,341,440** —— 比 §93 那颗少 **512 字节**，这是"英文形变短"应有的方向
+   （§82 那句照旧：这颗哈希记的是这次链接，不是这份代码；不过这一片源码真的变了，所以少 512 字节是有意义的读数）。
+   屏幕：BEFORE 5 支 + AFTER 5 支 + 英文回归 3 支 + 中文确认 2 支，全部 exit 0。
+   `gui-probe.ps1` 这一片 +0/−0（只跑不改）。
+
+**仍然欠的**：Alt+字母那一层没按过；PageView 右键那 2 条没在屏幕上读（改动已在目录与规则里）；`(&X)` 在**其它语言**
+目录里会不会出现 —— 本项目的目录只有 en 一支（`CATALOGUE_LANGS = ['en']`），别的语言将来由谁管仍没定；
+25,684,592 那一份是谁（§97 欠）；地址栏解不解斜杠（§97 欠）；`pathforms` 的中文那一支；
+`deletesummary`/`splitsagain`/`mergedonor`/`saverename` 在**装的那份**上仍没跑（**这一片改的是英文目录，
+装的那份里还是旧的括号形** —— §16 那"三处相同"欠 §84–§98 十四片）；等他定：§75 路 (a)、widget 自画 `/AP`、
+`/Brepro`、§55 XFA、§47 那句、§79 的锁与就地保存。

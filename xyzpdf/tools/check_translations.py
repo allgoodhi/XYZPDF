@@ -29,6 +29,15 @@ that shape, which is the part no named probe can be trusted to cover -- a probe
 has to be added by whoever writes the row, and the whole point is the row nobody
 thought about.
 
+which is the part no named probe can be trusted to cover -- a probe has to be added by whoever writes the row, and the whole point is the row nobody
+thought about.
+
+A fourth shape is the English menu label copying the source's parenthesised mnemonic letter,
+`Print(&P)…`, next to rows already written the English way, `&File`. (context, source) matches, the
+row is not obsolete, numerus and paragraph breaks are both fine -- the defect only shows on screen,
+and it did survive being read out in English by three modes because nobody was looking for the
+brackets. mnemonic_rules_of() checks it so the 29 rows fixed in sec.98 cannot come back one at a time.
+
 Compares (context, source) pairs: what lupdate extracts from the sources against
 what the .ts files define. Exits non-zero on any difference, and prints both
 sides of it. Line endings are normalised first: the repository stores these files
@@ -163,6 +172,52 @@ def paragraph_break_rules_of(text):
     return problems
 
 
+PAREN_MNEMONIC = re.compile(r'\(&amp;[A-Za-z]\)')
+
+
+def mnemonic_rules_of(text):
+    """No English form may carry the source's parenthesised mnemonic letter.
+
+    The Chinese literals ask for a mnemonic in the Windows-Chinese habit, `打印(&P)`, which the
+    interface renders as `打印(P)` with the P underlined. English menus do not write it that way:
+    the ampersand goes inside the word, `&Print`, and the letter is not repeated in brackets after
+    it. The catalogue had already been written that way in eight rows (`&File`, `&Open…`,
+    `Close &Tab`, `E&xit`, `&View`, `&Go`, `&Help`, `&Settings…`) while 29 others copied the
+    source's shape -- so the English bar read `Edit(E)` next to `File`, and the Document menu read
+    `Delete Pages(E)… Undo(U) Save Changes As(S)…`. Nothing could see it: (context, source) matches,
+    the row is not obsolete, and the numerus and paragraph rules are about other shapes. On screen
+    it is one look, which is why it stayed alive from sec.31 to sec.98 while being read out in
+    English by three different modes.
+
+    The rule is unconditional on the target -- a parenthesised letter never belongs in an English
+    menu label, and 29 of 37 source rows already had a letter that exists inside their own English
+    word, so "sometimes it is unavoidable" was not the reason for the leftovers.
+    """
+    def shown(value):
+        # The message must read like the label on the screen, not like the XML: printing the raw
+        # node text quotes `&amp;`, and the reader then has to undo the very escaping this project
+        # already got caught by once (sec.96).
+        for a, b in (('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'), ('&quot;', '"'), ('&apos;', "'")):
+            value = value.replace(a, b)
+        return value
+
+    problems = []
+    for context in re.finditer(r'<context>\s*<name>([^<]*)</name>(.*?)</context>', text, re.S):
+        name = context.group(1).strip()
+        for message in re.finditer(r'<message([^>]*)>(.*?)</message>', context.group(2), re.S):
+            attrs, body = message.group(1), message.group(2)
+            source = re.search(r'<source>(.*?)</source>', body, re.S)
+            forms = (re.findall(r'<numerusform>(.*?)</numerusform>', body, re.S)
+                     if 'numerus' in attrs else
+                     re.findall(r'<translation[^>]*>(.*?)</translation>', body, re.S))
+            for form in forms:
+                if PAREN_MNEMONIC.search(form):
+                    problems.append('%s：%s —— 英文形把源文的括号助记符抄过来了，应写成词内的 &：%s'
+                                    % (name, shown(source.group(1).strip()) if source else '?',
+                                       shown(form.strip()[:70])))
+    return problems
+
+
 def main():
     lupdate = find_lupdate()
     if not lupdate:
@@ -198,6 +253,7 @@ def main():
             out.append('%s: 目录里有，代码已经不问了：%s' % (context, source.replace('\n', '\\n')))
         out += plural_rules_of(catalogue_text, lang)
         out += paragraph_break_rules_of(catalogue_text)
+        out += mnemonic_rules_of(catalogue_text)
         plural = len([1 for line in catalogue_text.splitlines() if '<message numerus' in line])
         print('%s.ts：代码 %d 条，目录 %d 条，其中 numerus %d 条' % (lang, len(asked), len(listed),
                                                             plural))

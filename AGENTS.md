@@ -65,6 +65,15 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   `-no-obsolete` 的保命符）。两个细节：`.qm` 是构建时嵌进测试的，**控制跑必须重编**（`--run-only` 跑的是
   上一版二进制）；红下来的是"两形必须不同"那条，**不是**"单数得像单数"的正则 ——
   `1 of them point` 里数字后紧跟 `of`，那条正则看不见错（§93 实测）
+- **英文形里的助记符写在词内**（`&Print…`、`Select &All`、`Ro&tate Pages…`），**不要把源文的括号抄过去**
+  （`Print(&P)…` 是中文界面的习惯，英文菜单不这么写）。`check_translations.py` 的第四条规则
+  （`mnemonic_rules_of`，§98）现在会为此 exit 1 —— 这一类缺陷 (context, source) 全匹配、numerus 与段落也都对，
+  **只有眼睛看得见**，所以它挂在 §49→§98 六十七片：§88/§90/§92 三支模式都在英文界面里把这排名字读进过日志，
+  没有人把括号当一件事。**同一族还有一句方法账**：我以为这 29 条"等他定风格"，其实风格早在同一份目录里
+  写过八次（`&File` `&Open…` `Close &Tab` `E&xit` `&View` `&Go` `&Help` `&Settings…`）——
+  **把一件事归成"需要他决定"之前，先查这个项目有没有已经这么决定过多次**。改英文形时：同一个菜单内助记字母
+  互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
+  **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
   -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms`（十五种模式
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条

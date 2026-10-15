@@ -340,11 +340,22 @@ public:
         // `page.page` of -1 is a heading: a bookmark that names no page, which PDF allows and
         // the sidebar shows greyed rather than hiding.
         PageRef page;
+        // What the file said about where to look, attached by setOutline() from the tree read at
+        // open, and put back verbatim by writeOutlineItem(). A row this program created, or one the
+        // reader moved or renamed, carries None and the writer answers it with /Fit (§75's
+        // flattening, closed by §99).
+        BookmarkDest dest;
 
         // Same tree entry: same wording, same place in the hierarchy, same page. setOutline()
         // goes through this to refuse a request that would write what is already pending, and
         // a "nothing changed here" check that ignored `depth` would pass on a tree the reader
         // deliberately re-nested.
+        //
+        // `dest` is deliberately NOT in here, and §71's reason for that still holds even though the
+        // program can now read positions: the destination is not something the reader can ask for --
+        // the box has no column for it, so the only source of a value is the file. Two requests
+        // that differ only in `dest` are the same request from the reader's side, and letting a
+        // file-side field decide "you changed something" would report a change nobody made.
         bool operator==(const OutlineEdit &other) const
         {
             return title == other.title && depth == other.depth && page == other.page;
@@ -885,6 +896,18 @@ public:
     // own reading of the tree carried -- and that reading keeps a title and a page number and
     // nothing else (§75), which is exactly the information at risk.
     int sourcePositionalBookmarks() const { return sourcePositionalBookmarkCount; }
+    // How many of this request's bookmarks lose the position the file had in their slot: the
+    // destination is carried only for a row that is still the row it started as (§99), so a rename
+    // or an insert at an earlier place shifts the join. This, not the count above, is what the
+    // bookmark box says before the press -- a number that warned about a loss that just stopped
+    // being true is the same kind of lie as the sentence §80 replaced.
+    int positionalBookmarksAtRisk() const { return positionalAtRiskCount; }
+
+    // The same question asked of a request that has not been made yet -- which is the question the
+    // bookmark box has to answer *while the reader is typing* (§80's rule: the cost is said before
+    // the press). Reading only the recorded number would show the reader the cost of somebody
+    // else's request, and in the box's own test it showed 0 while the sentence was being written.
+    int positionalAtRiskFor(const QVector<OutlineRow> &rows) const;
 
     // ---- the list, and moving through it ----
     //
@@ -993,7 +1016,17 @@ private:
     bool sourceHasFormFields = false;
     // How many /Dest entries in the file on disk name a place inside a page. §75: our writer emits
     // /Fit for every bookmark it is given, so each one of these is information a save takes away.
+    // Since §99 that sentence is only true of rows the reader moved -- the count is still what the
+    // bookmark box says out loud (§80), and it is now answered off `sourceOutline` below rather than
+    // off a second walk, so the two cannot disagree about what the file had.
     int sourcePositionalBookmarkCount = 0;
+    // The file's own bookmark tree, read by qpdf at open: title, level, page (as a position in the
+    // opened document) and the destination exactly as the file wrote it. It is what setOutline()
+    // attaches destinations from, and it is deliberately *not* what the box shows -- the box shows
+    // Qt's reading, which has no position for /FitH (§75). Empty when the file has no outlines.
+    QVector<OutlineRow> sourceOutline;
+    // What the last accepted request cost; see positionalAtRiskFor().
+    int positionalAtRiskCount = 0;
     Protection sourceProtect;
     int originalPages = 0;
     // Which pages are still present, in the order they would be written. An identity

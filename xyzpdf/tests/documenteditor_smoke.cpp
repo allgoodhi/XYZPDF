@@ -2022,10 +2022,29 @@ bool writePositionalOutlineSample(const QString &source, const QString &destinat
             handle.replaceKey("/Dest", dest);
         };
 
-        const QPDFObjectHandle xyz = item("Xyz spot", root);
+        // The zoom slot is a null, not a 0. The promise §99 makes is that a destination comes back
+        // exactly as it was read, and "keep whatever zoom this reader is at" is a different
+        // instruction from "zoom 0", so the sample has to carry the null for the round trip to test
+        // the thing that would otherwise be quietly rewritten.
+        // Not const: the nested child below is wired through this item's own keys, and
+        // replaceKey() is a non-const method -- the same reason §75's generator copies by value.
+        QPDFObjectHandle xyz = item("Xyz spot", root);
         addDest(xyz, { pageAt(1), QPDFObjectHandle::newName("/XYZ"),
                        QPDFObjectHandle::newReal(0), QPDFObjectHandle::newReal(700),
-                       QPDFObjectHandle::newReal(0) });
+                       QPDFObjectHandle::newNull() });
+        // A child under the first item, in the file's own order. §99 reads destinations positionally,
+        // and qpdf's outline helper returns a nested item BEFORE its parent -- so a sample that is
+        // flat everywhere cannot tell the two orders apart, and the code that used the helper's order
+        // passed every flat check. This row is what makes "the join is in the sidebar's order" a
+        // reading rather than an assumption: renaming the parent alone must cost one position, and it
+        // costs two under the wrong order.
+        const QPDFObjectHandle xyzChild = item("Xyz child", xyz);
+        addDest(xyzChild, { pageAt(1), QPDFObjectHandle::newName("/XYZ"),
+                            QPDFObjectHandle::newReal(0), QPDFObjectHandle::newReal(400),
+                            QPDFObjectHandle::newNull() });
+        xyz.replaceKey("/First", xyzChild);
+        xyz.replaceKey("/Last", xyzChild);
+        xyz.replaceKey("/Count", QPDFObjectHandle::newInteger(1));
         const QPDFObjectHandle fitHorizontal = item("FitH spot", root);
         addDest(fitHorizontal, { pageAt(4), QPDFObjectHandle::newName("/FitH"),
                                  QPDFObjectHandle::newReal(650) });
@@ -2042,7 +2061,8 @@ bool writePositionalOutlineSample(const QString &source, const QString &destinat
         }
         root.replaceKey("/First", row.front());
         root.replaceKey("/Last", row.back());
-        root.replaceKey("/Count", QPDFObjectHandle::newInteger(int(row.size())));
+        // Five items in the tree: four at the top and the one nested child.
+        root.replaceKey("/Count", QPDFObjectHandle::newInteger(int(row.size()) + 1));
 
         qpdf.getRoot().replaceKey("/Outlines", root);
         QPDFWriter writer(qpdf, destination.toUtf8().constData());
@@ -7295,12 +7315,14 @@ int main(int argc, char **argv)
                       .arg(error));
             OutlineWalk before;
             error.clear();
-            check(walkOutlineFile(positional, before, &error) && before.total == 4,
-                  QStringLiteral("and all four items are readable from the file: %1")
+            check(walkOutlineFile(positional, before, &error) && before.total == 5,
+                  QStringLiteral("and all five items are readable from the file: %1")
                       .arg(before.total));
             check(before.destinations.join(QStringLiteral(", "))
-                      == QStringLiteral("[/XYZ 0 700 0], [/FitH 650], [/Fit], none"),
-                  QStringLiteral("the four destination shapes, as written: %1")
+                      == QStringLiteral("[/XYZ 0 700 null], [/XYZ 0 400 null], [/FitH 650], "
+                                        "[/Fit], none"),
+                  QStringLiteral("the five destination shapes, in the order a sidebar draws them "
+                                 "(parent before its child): %1")
                       .arg(before.destinations.join(QStringLiteral(", "))));
 
             // What Qt's own model sees, because that decides the cost of a fix. It reports a
@@ -7334,12 +7356,19 @@ int main(int argc, char **argv)
             check(ours.load(positional, QString()) == Document::Status::Ready,
                   "our reader opens it too");
             const QVector<OutlineRow> asSeen = outlineRowsOf(ours.outline());
-            check(asSeen.size() == 4,
-                  QStringLiteral("four rows reach the flat list the box would show (%1)")
+            check(asSeen.size() == 5,
+                  QStringLiteral("five rows reach the flat list the box would show (%1)")
                       .arg(asSeen.size()));
+            // Still true, and now harmless: the sidebar's own reading carries no place inside the
+            // page (§75's cause), which is exactly why route (b) -- ask Qt for one more role -- was
+            // recorded as a false fix. §99 takes the destinations from the file instead, so this
+            // costs nothing; it stays pinned because it is the reason the position cannot come from
+            // this list.
             check(asSeen.at(0).location.isNull() && asSeen.at(1).location.isNull(),
-                  "KNOWN GAP §75, the cause: our read path hands the sidebar no position for "
-                  "either of them, though the file has both and Qt reports the first");
+                  QStringLiteral("the sidebar's read still carries no position for either of them "
+                                 "(%1 / %2) -- which is why §99 reads destinations off the file")
+                      .arg(asSeen.at(0).location.isNull())
+                      .arg(asSeen.at(1).location.isNull()));
 
             DocumentEditor flattener;
             error.clear();
@@ -7353,14 +7382,60 @@ int main(int argc, char **argv)
                   QStringLiteral("setup: and that request is written: %1").arg(error));
             OutlineWalk after;
             error.clear();
-            check(walkOutlineFile(afterPath, after, &error) && after.total == 4,
-                  QStringLiteral("the copy still holds all four bookmarks: %1").arg(after.total));
-            check(after.destinations.join(QStringLiteral(", "))
-                      == QStringLiteral("[/Fit], [/Fit], [/Fit], none"),
-                  QStringLiteral("KNOWN GAP §75, the effect: every position is gone -- both the "
-                                 "/XYZ and the /FitH came out as /Fit, so a reader who renames one "
-                                 "bookmark moves all the others to the top of their pages: %1")
+            check(walkOutlineFile(afterPath, after, &error) && after.total == 5,
+                  QStringLiteral("the copy still holds all five bookmarks: %1").arg(after.total));
+            check(after.destinations.join(QStringLiteral(", ")) == before.destinations.join(QStringLiteral(", ")),
+                  QStringLiteral("§75's effect, closed by §99: a save that asked for the tree it was "
+                                 "given writes the same four destinations back -- the /XYZ with its "
+                                 "null zoom and the /FitH with its 650, where this used to answer "
+                                 "[/Fit], [/Fit], [/Fit], none: %1")
                       .arg(after.destinations.join(QStringLiteral(", "))));
+
+            // And the two ways a row can stop being the row it started as, each with its own number.
+            // "Carried only when unchanged" is worth nothing if the change-detection is wrong in
+            // either direction: too eager and a rename borrows a neighbour's number, too shy and the
+            // box warns about losses that are not happening.
+            DocumentEditor renamed;
+            error.clear();
+            QVector<OutlineRow> renameOne = asSeen;
+            renameOne[0].title = QStringLiteral("Xyz spot, renamed");
+            check(renamed.open(positional, QString(), &error) && renamed.setOutline(renameOne, &error),
+                  QStringLiteral("setup: a request that renames the first bookmark is accepted: %1")
+                      .arg(error));
+            // One. The nested child keeps its place, and so does the /FitH after it: the join takes
+            // rows by title and page, so no walk order can shift them. §99's first version matched by
+            // index and reported two here, and the flat sample it was written against could not tell
+            // the two designs apart -- which is also why this sample now has a child in it.
+            check(renamed.positionalBookmarksAtRisk() == 1,
+                  QStringLiteral("and it puts exactly that one's position at risk, not the child "
+                                 "below it or the /FitH after it: %1")
+                      .arg(renamed.positionalBookmarksAtRisk()));
+            const QString renamedPath = scratch.filePath(QStringLiteral("positional-renamed.pdf"));
+            error.clear();
+            check(renamed.saveAs(renamedPath, &error),
+                  QStringLiteral("setup: and it is written: %1").arg(error));
+            OutlineWalk renamedAfter;
+            error.clear();
+            check(walkOutlineFile(renamedPath, renamedAfter, &error),
+                  QStringLiteral("setup: the renamed copy is readable: %1").arg(error));
+            check(renamedAfter.destinations.join(QStringLiteral(", "))
+                      == QStringLiteral("[/Fit], [/XYZ 0 400 null], [/FitH 650], [/Fit], none"),
+                  QStringLiteral("the renamed bookmark comes back at page-top while its neighbour "
+                                 "keeps 650 -- the join is per row, not per file: %1")
+                      .arg(renamedAfter.destinations.join(QStringLiteral(", "))));
+
+            DocumentEditor inserted;
+            error.clear();
+            QVector<OutlineRow> shift = asSeen;
+            shift.prepend(OutlineRow{QStringLiteral("Made here"), 1, 0, QPointF()});
+            check(inserted.open(positional, QString(), &error) && inserted.setOutline(shift, &error),
+                  QStringLiteral("setup: a request that inserts a new first row is accepted: %1")
+                      .arg(error));
+            check(inserted.positionalBookmarksAtRisk() == 0,
+                  QStringLiteral("and adding a bookmark in front of the tree costs no other "
+                                 "bookmark its place -- the join is by what a row is, not where it "
+                                 "stands: %1")
+                      .arg(inserted.positionalBookmarksAtRisk()));
 
             // §80 turns that same fact into the number 编辑书签 says before the press, and pins the
             // number at both ends: two of the four carry a position as written, none carry one after
@@ -7372,18 +7447,31 @@ int main(int argc, char **argv)
             error.clear();
             check(carrying.open(positional, QString(), &error),
                   QStringLiteral("setup: the file as written opens for the count: %1").arg(error));
-            check(carrying.sourcePositionalBookmarks() == 2,
-                  QStringLiteral("two of the four name a place inside a page -- /XYZ and /FitH, "
-                                 "not /Fit and not the heading: %1")
+            check(carrying.sourcePositionalBookmarks() == 3,
+                  QStringLiteral("three of the five name a place inside a page -- the /XYZ pair and "
+                                 "the /FitH, not /Fit and not the heading: %1")
                       .arg(carrying.sourcePositionalBookmarks()));
             DocumentEditor flattened;
             error.clear();
             check(flattened.open(afterPath, QString(), &error),
                   QStringLiteral("setup: the saved copy opens for the count: %1").arg(error));
-            check(flattened.sourcePositionalBookmarks() == 0,
-                  QStringLiteral("and after one save through the box none do, which is the whole of "
-                                 "what the sentence exists to say: %1")
+            check(flattened.sourcePositionalBookmarks() == 3,
+                  QStringLiteral("and after one save through the box all three still do, which is "
+                                 "what §99 changed under §80's sentence: it warned about a loss that "
+                                 "no longer happens for an untouched tree: %1")
                       .arg(flattened.sourcePositionalBookmarks()));
+            DocumentEditor untouched;
+            error.clear();
+            check(untouched.open(positional, QString(), &error) && untouched.setOutline(asSeen, &error),
+                  QStringLiteral("setup: the unchanged request opens again for the risk count: %1")
+                      .arg(error));
+            check(untouched.sourcePositionalBookmarks() == 3,
+                  QStringLiteral("the file still says three of its bookmarks carry a position: %1")
+                      .arg(untouched.sourcePositionalBookmarks()));
+            check(untouched.positionalBookmarksAtRisk() == 0,
+                  QStringLiteral("while this request puts none of them at risk, which is the number "
+                                 "the box now reads: %1")
+                      .arg(untouched.positionalBookmarksAtRisk()));
         }
 
         // ---- under a split, where each piece is a separate document ----

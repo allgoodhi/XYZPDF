@@ -25,6 +25,7 @@ void flattenRows(const QVector<OutlineNode> &nodes, int level, QVector<OutlineRo
         row.level = level;
         row.page = node.page;
         row.location = node.location;
+        row.dest = node.dest;
         into->append(row);
         flattenRows(node.children, level + 1, into);
     }
@@ -76,6 +77,7 @@ Outline outlineFromRows(const QVector<OutlineRow> &rows)
         node.title = row.title;
         node.page = row.page;
         node.location = row.location;
+        node.dest = row.dest;
         children->append(node);
 
         path.append(children->size() - 1);

@@ -407,20 +407,23 @@ void BookmarkDialog::updateSummary()
                        nullptr, gone);
         }
 
-        // §75's third route, and the only one this version takes: the data path stays as it is --
-        // the tree is read as titles and page numbers and written back as /Fit -- so a bookmark that
-        // named a place inside a page will come back naming the top of it. Nothing on this screen
-        // can show that, because the column that would hold it does not exist, so the one thing left
-        // is to say it before the press and mean it: counted off the file on disk, not off this list.
+        // §75's third route used to be the only one available, and §80 said it out loud: the tree was
+        // read as titles and page numbers and written back as /Fit, so *every* positional bookmark
+        // lost its place on the page. §99 took route (a) instead -- the destination is read off the
+        // file at open and carried by the rows that are still the rows they started as -- so the
+        // sentence now has to be about the ones that no longer match: a rename, an insert at an
+        // earlier slot, or a re-nest shifts the join, and those bookmarks come back at page-top
+        // while the untouched ones keep their place. Counted off the request being asked, not off the
+        // file, because after §99 the two numbers answer different questions and only one of them is
+        // something the reader is about to cause.
         //
-        // Not said when the document has none, for the same reason §77 gives for the form sentence:
-        // a warning about a loss that cannot happen here teaches the reader to ignore the warnings
-        // that can.
-        const int positional = editor ? editor->sourcePositionalBookmarks() : 0;
-        if (positional > 0) {
-            line += tr("\n\n这份文档里有 %n 条书签指着页面内的某个位置（不只是第几页）。按确定再保存，"
-                       "它们都会变成整页适配 —— 那一层位置这一版留不住，书签的名字、层级和页码照旧。",
-                       nullptr, positional);
+        // Not said when the number is 0, for the same reason §77 gives for the form sentence: a
+        // warning about a loss that cannot happen here teaches the reader to ignore the ones that can.
+        const int atRisk = editor ? editor->positionalAtRiskFor(asked) : 0;
+        if (atRisk > 0) {
+            line += tr("\n\n其中 %n 条书签指着页面内的某个位置，而这一次它们对不上文件里原来的条目："
+                       "那几条写出去会变成整页适配。没被改动的书签，位置照旧带走。",
+                       nullptr, atRisk);
         }
 
         if (editor && editor->outlineAsked()) {

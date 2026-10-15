@@ -397,6 +397,15 @@ int main(int argc, char **argv)
             // appears in it, so every numerus check looks past it. Only this probe asks for n=1
             // and n=40 and compares what the reader would actually hear.
             { "BookmarkDialog", "\n\n其中 %n 条不指向任何一页。", 1 },
+            // §99 restated §80's positional sentence (the count now means "the ones this request
+            // shifts off their slot", not "every position this version cannot keep"). It counts, so
+            // it gets a probe of its own: a %n row is invisible to every catalogue shape rule, and
+            // this is the only place that asks the catalogue for both forms and compares them with
+            // the digits masked.
+            { "BookmarkDialog",
+              "\n\n其中 %n 条书签指着页面内的某个位置，而这一次它们对不上文件里原来的条目："
+              "那几条写出去会变成整页适配。没被改动的书签，位置照旧带走。",
+              1 },
         };
 
         for (const Probe &probe : probes) {

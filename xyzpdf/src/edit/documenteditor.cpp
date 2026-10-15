@@ -34,6 +34,7 @@
 #include <qpdf/QPDFWriter.hh>
 
 #include <algorithm>
+#include <QDebug>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -121,58 +122,220 @@ bool replaceableDespiteBeingRead(const QString &path)
     return refused != ERROR_ACCESS_DENIED && refused != ERROR_SHARING_VIOLATION;
 }
 
-// How many of this file's own bookmarks name a place inside a page rather than the page.
+// What one bookmark destination said, in the file's own words.
 //
-// §75 measured what the save does to them: `writeOutlineItem` emits /Fit for every row it is given,
-// because the read path hands the tree over as a title and a page number and nothing else
-// (`qtpdfbackend.cpp` asks two roles of Qt's bookmark model), so a destination that said "page 12,
-// 700 points up, at this zoom" comes back out as "page 12, top". Nothing in the program notices;
-// the number of bookmarks is unchanged and every one still lands on the page it named.
+// §75 measured that a save takes this away: `writeOutlineItem` used to emit /Fit for every row it was
+// handed, because the read path handed the tree over as a title and a page number and nothing else.
+// Asking Qt's model for one more role is not a fix -- Qt reports no position for /FitH, and a real
+// book's bookmarks were 184 /FitH out of 184 -- so the shape has to be read off the file. This is
+// that reading: the kind plus its numbers, with nulls kept, because `/XYZ 0 700 null` means "keep the
+// zoom" and a 0.0 in that slot would mean something else.
 //
-// So the count is taken off the file, not off the tree the dialog is showing -- the dialog is
-// showing the very reading that already dropped the information, and asking it would answer zero
-// for every document. Which is also why this is a sentence rather than a number the reader can
-// check: they cannot see the positions anywhere, and that is the honest description of the state.
+// Returns `None` for a destination that names only a page, and for one this parser does not know: an
+// unknown kind is left flattened exactly as it was before, rather than written back as a guess.
+BookmarkDest parseBookmarkDest(const QPDFObjectHandle &dest)
+{
+    BookmarkDest out;
+    if (!dest.isArray() || dest.getArrayNItems() < 2)
+        return out;
+    const QPDFObjectHandle kind = dest.getArrayItem(1);
+    if (!kind.isName())
+        return out;
+    static const struct
+    {
+        const char *name;
+        BookmarkDest::Kind kind;
+    } table[] = {
+        {"/Fit", BookmarkDest::Kind::Fit},   {"/XYZ", BookmarkDest::Kind::XYZ},
+        {"/FitH", BookmarkDest::Kind::FitH}, {"/FitV", BookmarkDest::Kind::FitV},
+        {"/FitR", BookmarkDest::Kind::FitR}, {"/FitB", BookmarkDest::Kind::FitB},
+        {"/FitBH", BookmarkDest::Kind::FitBH}, {"/FitBV", BookmarkDest::Kind::FitBV},
+    };
+    const std::string asked = kind.getName();
+    for (const auto &entry : table) {
+        if (asked == entry.name) {
+            out.kind = entry.kind;
+            break;
+        }
+    }
+    if (out.kind == BookmarkDest::Kind::None)
+        return out;
+    for (int i = 2; i < dest.getArrayNItems(); ++i) {
+        const QPDFObjectHandle value = dest.getArrayItem(i);
+        if (value.isNumber())
+            out.numbers.append(std::optional<double>(value.getNumericValue()));
+        else
+            out.numbers.append(std::optional<double>());
+    }
+    return out;
+}
+
+// Which file row, if any, each requested row is. Matched on what the row *is* -- title and the page
+// it names -- taking the file's rows in walk order and at most once each, and NOT on the index. An
+// index join shifts every bookmark after an inserted row, so "add a bookmark at the top" would cost
+// three other bookmarks their places: §99's first version matched that way and the insert-a-row test
+// reported the whole tree at risk.
 //
-// /Fit is the one destination that survives unchanged, and a destination naming only a page has no
-// position to lose. Anything else -- /XYZ with a top and a zoom, /FitH with a height, /FitV, /FitR,
-// /FitB, /FitBV -- is counted. getDest() resolves named destinations and a destination carried by a
-// GoTo action, so a bookmark that cannot be resolved at all answers null: those are left out here,
-// because this count is a statement about positions and not about every way a bookmark can be
-// written less precisely than the file had it.
-int countPositionalBookmarks(QPDF &qpdf)
+// The price of matching on content is the duplicate: adding a second 「Xyz spot」@1 leaves one of the
+// two without the file's destination, because only one row may consume it, and that one comes back
+// at page top. Recorded here because the test that covers it is a one-row insert with a repeated
+// title, and because "which of the two copies keeps the place" has no right answer to give.
+struct MatchedRows
+{
+    QVector<int> fileIndex;   // one per requested row; -1 when the file has no counterpart
+    QVector<bool> consumed;   // one per file row
+};
+
+// The one place that decides the correspondence. Both the destinations a write carries and the
+// number the box warns about go through here: two copies of a matching rule is how one of them ends
+// up wrong, and §75's cause-check is what this design has to stay consistent with.
+MatchedRows matchRowsToSource(const QVector<OutlineRow> &file, const QVector<OutlineRow> &rows)
+{
+    MatchedRows out;
+    out.fileIndex.reserve(rows.size());
+    out.consumed = QVector<bool>(file.size(), false);
+    for (const OutlineRow &row : rows) {
+        int found = -1;
+        for (int i = 0; i < file.size(); ++i) {
+            if (!out.consumed.at(i) && file.at(i).title == row.title && file.at(i).page == row.page) {
+                found = i;
+                break;
+            }
+        }
+        if (found >= 0)
+            out.consumed[found] = true;
+        out.fileIndex.append(found);
+    }
+    return out;
+}
+
+// The file's own bookmark tree: title, level, page (a position in the document as opened) and the
+// destination as written. Read at open, and what setOutline() attaches destinations from.
+//
+// Why this is not the tree the box shows: that one comes from Qt's model, which is the right source
+// for a title and a page and the wrong one for a place inside a page (§75). So the program now holds
+// two readings of the same tree, and they are joined by *position in the walk* plus a check that the
+// title and page agree -- a row that moved, was renamed or was made here is left without a
+// destination rather than being given a neighbour's.
+//
+// Walked by hand rather than with the helper's walk() callback because the recursion has to carry the
+// depth as it goes and assemble rows in the order a sidebar draws them -- the same order the dialog
+// lists them, which is what makes the join by index meaningful at all.
+// The destination of one outline item, read from the item's own keys: /Dest, or the /D of a GoTo
+// action, and a name looked up in the older root /Dest dictionary. A destination that cannot be
+// resolved this way answers null, and the caller treats that as "nothing to keep" -- which is what
+// §80 already did for the count, and what the writer already did for the row: flattened, not guessed.
+QPDFObjectHandle itemDestination(QPDF &qpdf, const QPDFObjectHandle &item)
+{
+    QPDFObjectHandle asked = item.getKey("/Dest");
+    if (asked.isNull()) {
+        const QPDFObjectHandle action = item.getKey("/A");
+        if (action.isDictionary() && action.getKey("/S").isName()
+            && action.getKey("/S").getName() == "/GoTo")
+            asked = action.getKey("/D");
+    }
+    if (asked.isName() || asked.isString()) {
+        // A named destination. The Names tree is the current place for these; the root /Dest
+        // dictionary is the older one. Looked up in the second, and an unresolved name is left
+        // alone -- resolving the tree would mean reaching the document's name table here, and the
+        // honest answer for a bookmark we cannot place is the same one the writer already gives.
+        const QPDFObjectHandle table = qpdf.getRoot().getKey("/Dest");
+        if (table.isDictionary()) {
+            const std::string key = asked.isName() ? asked.getName() : asked.getStringValue();
+            const QPDFObjectHandle found = table.getKey(asked.isName() ? key : "/" + key);
+            if (!found.isNull())
+                return found;
+        }
+        return QPDFObjectHandle::newNull();
+    }
+    return asked;
+}
+
+// The file's own bookmark tree: title, level, page (a position in the document as opened) and the
+// destination as written. Read at open, and what setOutline() attaches destinations from.
+//
+// Why this is not the tree the box shows: that one comes from Qt's model, which is the right source
+// for a title and a page and the wrong one for a place inside a page (§75). So the program now holds
+// two readings of the same tree, and they are joined by *position in the walk* plus a check that the
+// title and page agree -- a row that moved, was renamed or was made here is left without a
+// destination rather than being given a neighbour's.
+//
+// Walked through the object chain -- /First (backed up along /Prev), then /Next, recursing into
+// /First -- instead of with QPDFOutlineDocumentHelper. Two reasons, one measured and one not.
+// Measured: with the helper, an index-join over a FLAT four-bookmark file reported two bookmarks at
+// risk for a request that renamed one, which is what an order different from the sidebar's looks
+// like from here. Not measured: what that order actually was -- printing the two lists side by side
+// later showed them agreeing, so the honest sentence is "the helper's order is not documented to be
+// the order a sidebar draws, and one run behaved as if it were not". Walking the chain removes the
+// question, and it is the same chain this program's own writer builds, so what is read and what is
+// written cannot disagree about the shape of the tree. The helper's constructors are private, so
+// resolving one item's destination by hand through this chain is the only way to have both.
+QVector<OutlineRow> outlineFromSource(QPDF &qpdf)
+{
+    QVector<OutlineRow> rows;
+    const QPDFObjectHandle root = qpdf.getRoot().getKey("/Outlines");
+    if (!root.isDictionary())
+        return rows;
+    const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+
+    std::function<void(QPDFObjectHandle, int)> visitSiblings = [&](QPDFObjectHandle item, int level) {
+        while (item.isDictionary()) {
+            OutlineRow row;
+            const QPDFObjectHandle title = item.getKey("/Title");
+            if (title.isString())
+                row.title = QString::fromUtf8(title.getUTF8Value().c_str());
+            row.level = level;
+            const QPDFObjectHandle dest = itemDestination(qpdf, item);
+            row.dest = parseBookmarkDest(dest);
+            // The page the destination names, by identity within this document. §78's rule that
+            // object numbers are not identity is about comparing across two writes; both sides here
+            // are the open file, so handle identity is the right question to ask.
+            const QPDFObjectHandle wanted = dest.isArray() ? dest.getArrayItem(0)
+                                                           : QPDFObjectHandle::newNull();
+            if (wanted.isDictionary()) {
+                for (size_t i = 0; i < pages.size(); ++i) {
+                    if (pages[i].getObjectHandle().isSameObjectAs(wanted)) {
+                        row.page = int(i);
+                        break;
+                    }
+                }
+            }
+            rows.append(row);
+            if (qEnvironmentVariableIsSet("XYZPDF_DBG_WALK"))
+                qWarning("walk L%d title=%s page=%d kind=%d", level,
+                         row.title.toUtf8().constData(), row.page, int(row.dest.kind));
+            const QPDFObjectHandle kids = item.getKey("/First");
+            if (kids.isDictionary())
+                visitSiblings(kids, level + 1);
+            item = item.getKey("/Next");
+        }
+    };
+    QPDFObjectHandle first = root.getKey("/First");
+    // /First should be the leftmost item; walking back along /Prev first is what §63's controls
+    // taught this program to do when reading a tree somebody else wrote.
+    while (first.isDictionary() && first.getKey("/Prev").isDictionary())
+        first = first.getKey("/Prev");
+    visitSiblings(first, 1);
+    return rows;
+}
+
+// How many of the file's own bookmarks name a place inside a page rather than the page -- answered
+// off the reading above, so the number the box says out loud (§80) and the destinations a save can
+// carry cannot drift apart. /Fit and a page-only destination have nothing to lose; anything the
+// parser did not recognise counts as something to lose, which is the honest direction to be wrong in:
+// it warns rather than quietly flattening.
+int countPositionalBookmarks(const QVector<OutlineRow> &rows)
 {
     int total = 0;
-    QPDFOutlineDocumentHelper outlines(qpdf);
-    if (!outlines.hasOutlines())
-        return 0;
-    // Walked by hand rather than with the helper's walk() callback because the recursion has to
-    // count *and* read: a nested bookmark is as much at risk as a top-level one, and the tree is
-    // what the file has, not what our list can hold.
-    std::function<void(const std::vector<QPDFOutlineObjectHelper> &)> visit
-        = [&](const std::vector<QPDFOutlineObjectHelper> &items) {
-            for (const QPDFOutlineObjectHelper &listed : items) {
-                QPDFOutlineObjectHelper item = listed;
-                const QPDFObjectHandle dest = item.getDest();
-                bool onlyThePage = false;
-                if (dest.isArray()) {
-                    // [page] and [page /Fit] say nothing about where inside the page to look.
-                    const int parts = dest.getArrayNItems();
-                    if (parts <= 1)
-                        onlyThePage = true;
-                    else {
-                        const QPDFObjectHandle kind = dest.getArrayItem(1);
-                        onlyThePage = kind.isName() && kind.getName() == "/Fit";
-                    }
-                } else if (dest.isNull()) {
-                    onlyThePage = true; // no destination to lose
-                }
-                if (!onlyThePage)
-                    ++total;
-                visit(item.getKids());
-            }
-        };
-    visit(outlines.getTopLevelOutlines());
+    for (const OutlineRow &row : rows) {
+        if (row.dest.kind == BookmarkDest::Kind::None) {
+            // A bookmark whose destination never resolved has no position that could be taken away
+            // from it -- that was §80's rule and it is kept here rather than in the parser.
+            continue;
+        }
+        if (row.dest.isPositional() || !row.dest.numbers.isEmpty())
+            ++total;
+    }
     return total;
 }
 
@@ -796,6 +959,35 @@ int outlineDescendants(const OutlineNode &node)
     return below;
 }
 
+// The PDF name a destination kind is written back as, or nullptr when there is nothing to keep and
+// the caller falls back to /Fit. Kept beside parseBookmarkDest's table rather than open-coded in the
+// caller: a kind read in one place and unrecognised in the other would flatten silently, which is
+// exactly the failure this path replaces.
+const char *outlineDestKind(const BookmarkDest &dest)
+{
+    switch (dest.kind) {
+    case BookmarkDest::Kind::XYZ:
+        return "/XYZ";
+    case BookmarkDest::Kind::Fit:
+        return "/Fit";
+    case BookmarkDest::Kind::FitH:
+        return "/FitH";
+    case BookmarkDest::Kind::FitV:
+        return "/FitV";
+    case BookmarkDest::Kind::FitR:
+        return "/FitR";
+    case BookmarkDest::Kind::FitB:
+        return "/FitB";
+    case BookmarkDest::Kind::FitBH:
+        return "/FitBH";
+    case BookmarkDest::Kind::FitBV:
+        return "/FitBV";
+    case BookmarkDest::Kind::None:
+        return nullptr;
+    }
+    return nullptr;
+}
+
 // One item, then its children, then the links that make the row readable as a row. A null return
 // means `*error` already holds the sentence: the only way this fails is a page number that is not
 // in the document, which the caller has refused before getting here.
@@ -811,18 +1003,28 @@ QPDFObjectHandle writeOutlineItem(QPDF &qpdf, const OutlineNode &node, QPDFObjec
             *error = QStringLiteral("bookmark page %1 is not in the document").arg(node.page);
             return QPDFObjectHandle::newNull();
         }
-        // /Fit rather than /XYZ: a bookmark written here says "the top of this page", which is
-        // what the sidebar's click does with it. The reason is now measured rather than assumed
-        // (docs/store-submission.md §75): the row this writer is handed has no position in it,
-        // because the read path never asks Qt's model for its Location role -- and asking for that
-        // role would not be enough anyway, since Qt reports no position for /FitH, which is the
-        // shape a real book's bookmarks use (184 of 184 in the book measured here). So a fix has
-        // to carry the destination from the file, not just read one more role. Until it does, the
-        // flattening is pinned as a KNOWN GAP in documenteditor_smoke, with a check on the cause
-        // and a separate one on the effect.
+        // Where to look. A row that came from a file whose own /Dest said something keeps that
+        // saying (§75's route (a), taken in §99): the kind and its numbers go back as they were
+        // read, nulls included, because `/XYZ 0 700 null` instructs "keep the zoom" while a 0 in
+        // that slot instructs something else. A row this program made -- or one the reader renamed,
+        // re-nested or moved, so no honest counterpart in the file could be found -- says "the top
+        // of this page", which is what this writer did for every bookmark before §99 and what the
+        // sidebar's own click does with it.
         QPDFObjectHandle dest = QPDFObjectHandle::newArray();
         dest.appendItem(pages.at(size_t(node.page)).getObjectHandle());
-        dest.appendItem(QPDFObjectHandle::newName("/Fit"));
+        if (const char *kind = outlineDestKind(node.dest); kind != nullptr) {
+            dest.appendItem(QPDFObjectHandle::newName(kind));
+            for (const std::optional<double> &one : node.dest.numbers) {
+                if (!one.has_value())
+                    dest.appendItem(QPDFObjectHandle::newNull());
+                else if (*one == double(int(*one)))
+                    dest.appendItem(QPDFObjectHandle::newInteger(int(*one)));
+                else
+                    dest.appendItem(QPDFObjectHandle::newReal(*one));
+            }
+        } else {
+            dest.appendItem(QPDFObjectHandle::newName("/Fit"));
+        }
         item.replaceKey("/Dest", dest);
     }
     QPDFObjectHandle handle = qpdf.makeIndirectObject(item);
@@ -1370,11 +1572,12 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
                                                             : QPDFObjectHandle::newNull();
         sourceHasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
     }
-    // And how many of its bookmarks name a place inside a page, while the parser still has the
-    // file. The 编辑书签 box asks this every time its summary changes, and by then this class holds
-    // no QPDF at all -- §75's flattening is invisible from the tree the box shows, because the
-    // reading that built that tree is what dropped the positions.
-    sourcePositionalBookmarkCount = countPositionalBookmarks(*document);
+    // And the tree itself, while the parser still has the file: the destinations it carries are the
+    // only place a position can come from (§75), and this class keeps no QPDF open afterwards, so a
+    // save that wants them has to have been given them here. The count the 编辑书签 box says out loud
+    // (§80) is answered off the same reading, not off a second walk.
+    sourceOutline = outlineFromSource(*document);
+    sourcePositionalBookmarkCount = countPositionalBookmarks(sourceOutline);
     return true;
 }
 
@@ -1814,6 +2017,10 @@ bool DocumentEditor::setOutline(const QVector<OutlineRow> &rows, QString *error)
 
     QVector<OutlineEdit> edits;
     edits.reserve(rows.size());
+    // Which requested row is which file bookmark, and what that costs -- both read off the same
+    // matcher, so the number the box warns about is the number this request actually carries.
+    const MatchedRows matched = matchRowsToSource(sourceOutline, rows);
+    positionalAtRiskCount = positionalAtRiskFor(rows);
     for (const OutlineRow &row : rows) {
         if (row.level < 1) {
             // Refused rather than clamped: a tree that quietly moved a bookmark a level would be a
@@ -1854,6 +2061,17 @@ bool DocumentEditor::setOutline(const QVector<OutlineRow> &rows, QString *error)
         // bookmark comes back a heading, which is what §69 already pins for a page lost *after* the
         // ask. One answer for both orders.
         edit.page = row.page < 0 ? PageRef() : PageRef{0, row.page};
+        // §75's route (a), taken here: the file's own destination rides along on a row the reader
+        // left where it was. The join is by place in the walk *and* by title and page both still
+        // agreeing, because a row that was renamed, re-nested or made in the box has no honest
+        // counterpart in the file -- giving it the neighbour's `/FitH 650` would be worse than the
+        // flattening this replaces, and §75's own reading is what says a neighbour's number is a
+        // plausible-looking lie.
+        // The file's own position for this row, when there is one to take: see matchRowsToSource()
+        // for what that means and for the duplicate-title case it cannot resolve.
+        const int from = matched.fileIndex.at(edits.size());
+        if (from >= 0)
+            edit.dest = sourceOutline.at(from).dest;
         edits.append(edit);
     }
 
@@ -1892,6 +2110,21 @@ bool DocumentEditor::outlineAsked() const
     return false;
 }
 
+int DocumentEditor::positionalAtRiskFor(const QVector<OutlineRow> &rows) const
+{
+    // The file's positional bookmarks that this request leaves behind: renamed away, deleted, or
+    // duplicated past the one copy that could take the place. Wording matters here -- the sentence in
+    // the box says these "won't be carried into what gets written", which is true of all three, and
+    // the number stays 0 for a tree the reader only re-titled at another place in.
+    const MatchedRows matched = matchRowsToSource(sourceOutline, rows);
+    int atRisk = 0;
+    for (int i = 0; i < sourceOutline.size(); ++i) {
+        if (!matched.consumed.at(i) && sourceOutline.at(i).dest.isPositional())
+            ++atRisk;
+    }
+    return atRisk;
+}
+
 QVector<OutlineRow> DocumentEditor::outlineRowsFor(const QVector<OutlineEdit> &edits,
                                                    const QVector<PageRef> &written)
 {
@@ -1906,6 +2139,11 @@ QVector<OutlineRow> DocumentEditor::outlineRowsFor(const QVector<OutlineEdit> &e
         // in this output -- the bookmark stays, without a target, which is what outline.h already
         // says to do with a bookmark that names no page rather than dropping it.
         row.page = edit.page.page < 0 ? -1 : written.indexOf(edit.page);
+        // The destination is the one thing that does *not* depend on where the page ended up: it
+        // describes a place on the page, and the page travels with the reference above. A destination
+        // whose page is gone is dropped with it (row.page becomes -1, a heading), so nothing here can
+        // write a place on a page that is not in the file.
+        row.dest = edit.dest;
         rows.append(row);
     }
     return rows;

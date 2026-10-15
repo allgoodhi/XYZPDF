@@ -17,6 +17,47 @@
 #include <QPointF>
 #include <QString>
 #include <QVector>
+#include <optional>
+
+// Where the file wanted the reader to look, kept as the file said it.
+//
+// PDF 2.0 §12.4.2 gives a destination a page plus one of these eight kinds, each with its own
+// number list. This is not `location` below: a `QPointF` cannot say `/FitH 650` (one number, no
+// horizontal position), `FitR` (four), or "keep the current zoom" (a null), and §75 measured that
+// the shape a real book actually uses is `/FitH <top>` -- 184 of 184 -- so a point is exactly the
+// representation that would have saved none of them.
+//
+// `None` means there is nothing to keep: the file named only a page, or the row was created in this
+// program and never had a file-side shape. It is what a bookmark written by our own box carries, and
+// the writer answers it with `/Fit`, which is what it did before this type existed (§75's flattening).
+struct BookmarkDest
+{
+    enum class Kind
+    {
+        None,
+        Fit,
+        XYZ,
+        FitH,
+        FitV,
+        FitR,
+        FitB,
+        FitBH,
+        FitBV
+    };
+    Kind kind = Kind::None;
+    // The numbers after the page and the kind, in PDF's own order, with their nulls kept:
+    // `/XYZ 0 700 null` instructs "leave the zoom alone", which is a different instruction from a
+    // zoom of 0, so a plain double cannot carry the slot.
+    QVector<std::optional<double>> numbers;
+
+    // Whether the destination names a place *inside* a page rather than the page. `/Fit` and a
+    // destination that is only a page have no position to lose; that is §75's rule, and §80's
+    // count of at-risk bookmarks is answered from this one place so the two cannot disagree.
+    bool isPositional() const
+    {
+        return kind != Kind::None && kind != Kind::Fit;
+    }
+};
 
 // One bookmark as the library reports it.
 struct OutlineRow
@@ -32,6 +73,10 @@ struct OutlineRow
     // Where on that page, in points. Invalid when the bookmark only names a
     // page.
     QPointF location;
+    // What the file itself said about where to look. Carried by the read that goes into the
+    // editor's model, not by the sidebar's read (Qt's model gives no position for `/FitH` at all,
+    // §75), and the writer puts it back verbatim. Default-constructed for a row this program made.
+    BookmarkDest dest;
 };
 
 struct OutlineNode
@@ -39,6 +84,7 @@ struct OutlineNode
     QString title;
     int page = -1;
     QPointF location;
+    BookmarkDest dest;
     QVector<OutlineNode> children;
 };
 

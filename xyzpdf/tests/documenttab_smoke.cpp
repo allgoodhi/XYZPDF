@@ -2640,12 +2640,49 @@ int main(int argc, char **argv)
         // reading a summary that never reached the branch it claims to test.
         box.findChild<QTableWidget *>()->item(0, 0)->setText(QStringLiteral("改一下名字"));
         const QString said = saidByBox(box);
-        check(said.contains(QStringLiteral("2 条书签指着页面内的某个位置")),
-              QStringLiteral("the box says, before the press, how many positions a save will drop: %1")
+        // §99 changed what this number counts, and the test has to follow it. The file carries two
+        // positional bookmarks; a request that replaces the whole tree with one row of our own
+        // matches none of them, so only the row standing in slot 0 -- where the file had /XYZ -- is
+        // reported. Saying 2 here would be §80's old claim ("这一版一条都留不住"), which stopped
+        // being true the moment the destinations started riding along with the rows.
+        QVector<OutlineRow> justRenamed = one;
+        justRenamed[0].title = QStringLiteral("改一下名字");
+        check(carrying.positionalAtRiskFor(justRenamed) == 2,
+              QStringLiteral("setup: replacing the whole tree with one new row leaves both of the "
+                             "file's positions behind: %1")
+                  .arg(carrying.positionalAtRiskFor(justRenamed)));
+        check(said.contains(QStringLiteral("其中 2 条书签指着页面内的某个位置")),
+              QStringLiteral("the box says, before the press, how many positions THIS request "
+                             "will leave behind: %1")
                   .arg(said));
-        check(said.contains(QStringLiteral("整页适配")) && said.contains(QStringLiteral("留不住")),
-              QStringLiteral("and says what they become, and that this version cannot keep them: %1")
+        check(said.contains(QStringLiteral("整页适配")) && said.contains(QStringLiteral("对不上")),
+              QStringLiteral("and says what those become, and why this time it is the request and "
+                             "not the version: %1")
                   .arg(said));
+
+        // The half §99 bought, and the reason the warning is not decoration: ask for the file's own
+        // tree, change something that carries no position, and nothing is at risk -- so the sentence
+        // is not said about a loss that is not happening (§77's rule, now with a live case where it
+        // applies). One row's title is edited, so this is still a real request and not the untouched
+        // 一模一样 answer §71 pins.
+        const QVector<OutlineRow> asTheFileHas = {
+            { QStringLiteral("Xyz spot"), 1, 1, QPointF() },
+            { QStringLiteral("FitH spot"), 1, 4, QPointF() },
+            { QStringLiteral("Fit page"), 1, 7, QPointF() },
+            { QStringLiteral("Heading"), 1, -1, QPointF() },
+        };
+        BookmarkDialog carried(&tab, &carrying, outlineFromRows(asTheFileHas));
+        carried.findChild<QTableWidget *>()->item(3, 0)->setText(QStringLiteral("Heading, renamed"));
+        const QString carriedSaid = saidByBox(carried);
+        QVector<OutlineRow> renamedHeading = asTheFileHas;
+        renamedHeading[3].title = QStringLiteral("Heading, renamed");
+        check(carrying.positionalAtRiskFor(renamedHeading) == 0,
+              QStringLiteral("setup: renaming a bookmark that had no position puts none at risk: %1")
+                  .arg(carrying.positionalAtRiskFor(renamedHeading)));
+        check(!carriedSaid.contains(QStringLiteral("页面内的某个位置")),
+              QStringLiteral("and nothing is said about positions, though this file has two of "
+                             "them: %1")
+                  .arg(carriedSaid));
 
         // The negative half, same box, a document with nothing at risk.
         DocumentEditor plain;

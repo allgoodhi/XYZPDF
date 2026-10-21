@@ -248,6 +248,55 @@ int main(int argc, char **argv)
                   "and that is when the pages are rendered into it");
             check(!strip->waiting(), "the job it was holding has been taken on");
 
+            // ---- and only the strip that can be seen is rendered ----
+            //
+            // The other half of the same argument (docs/review-03.md §2.2):
+            // the walk used to render every page of the document and keep
+            // every picture for as long as it was open -- 120x170 of ARGB
+            // each, about 81 KB, so 49 MB on a 600-page book, outside the
+            // render cache's budget entirely. A strip shows a handful of rows;
+            // holding six hundred is the same mistake review-02 found in
+            // PageView::images one layer down.
+            {
+                const QString book = directory + QStringLiteral("/huge.pdf");
+                check(tab.open(book) == Document::Status::Ready, "the 600-page book opens");
+                check(tab.pageCount() == 600, "and it really is 600 pages");
+                check(waitFor([strip] { return strip->heldCount() > 0; }),
+                      "its strip renders the rows at the top");
+
+                // Given every chance to render the rest, the way the old walk
+                // would have: if the band were not bounding this, six hundred
+                // pages of a text document render in well under a second
+                // (0 ms each, measured with pdfprobe).
+                waitFor([] { return false; }, 1500);
+                const int held = strip->heldCount();
+                check(held < 60,
+                      QStringLiteral("but it holds only the rows near the viewport, not the "
+                                     "document (holding %1 of 600)").arg(held));
+                check(held == thumbnailsRendered(strip),
+                      QStringLiteral("and what it says it holds is what is in the model "
+                                     "(%1 against %2)").arg(held).arg(thumbnailsRendered(strip)));
+
+                // Not bounded by rendering nothing: the far end of the
+                // document gets its pictures when it is the far end that is
+                // being looked at.
+                auto *bar = strip->verticalScrollBar();
+                bar->setValue(bar->maximum());
+                check(waitFor([strip] {
+                          const QAbstractItemModel *rows =
+                              static_cast<const QAbstractItemView *>(strip)->model();
+                          return !qvariant_cast<QIcon>(
+                                      rows->index(rows->rowCount() - 1, 0).data(Qt::DecorationRole))
+                                      .isNull();
+                      }),
+                      "scrolling to the end renders the last page into the strip");
+                check(strip->heldCount() < 60,
+                      QStringLiteral("and the count is still bounded after the scroll (%1)")
+                          .arg(strip->heldCount()));
+
+                check(tab.open(path) == Document::Status::Ready, "and the first fixture is back");
+            }
+
             // Back to where the rest of this file expects to find the tab.
             tab.setSidebarVisible(false);
         }

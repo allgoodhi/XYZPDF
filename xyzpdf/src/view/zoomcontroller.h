@@ -65,6 +65,25 @@ public:
     // not have to ask again.
     double stepped(double from, int steps) const;
 
+    // How many notches an arriving wheel event is worth, carrying the
+    // remainder over to the next one.
+    //
+    // ---- why the remainder has to be kept ----
+    //
+    // A mouse wheel detent is 120, so `delta / 120` worked for anyone with a
+    // mouse and silently did nothing for anyone without one: a Windows
+    // precision touchpad sends a stream of small deltas (20, 40) as the fingers
+    // move, every one of which divides to zero. Ctrl plus two fingers therefore
+    // zoomed by nothing at all, and because the view accepted the event it did
+    // not scroll either -- the gesture did nothing whatsoever
+    // (docs/review-03.md §2.3).
+    //
+    // `carried` is the caller's accumulator and is updated here. A change of
+    // direction drops what was carried rather than cancelling against it, so
+    // that a push the other way answers at once instead of first spending the
+    // leftovers of the push before it.
+    static int wheelSteps(int &carried, int angleDelta);
+
     // Where the scroll position has to be for the document point under `anchor`
     // to stay under it after the zoom changes.
     //

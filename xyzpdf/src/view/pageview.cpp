@@ -284,16 +284,19 @@ void PageView::setZoomMode(ZoomController::Mode mode)
 
 double PageView::fittingZoom() const
 {
-    const int page = layout.currentPage();
-    const QVector<QSizeF> &sizes = layout.pagePoints();
-    if (page < 0 || page >= sizes.size() || sizes.at(page).isEmpty())
-        return layout.zoom();
-
-    // What "fit" is fitted *to*. The layout decides: a single page in the normal
+    // What "fit" is fitted *to*. The layout decides: a page in the normal
     // modes, the whole spread in the two-page and book modes -- fitting one page
     // there would leave the facing page twice as wide as the window and force a
     // sideways scroll, the opposite of what "fit width" promises.
-    const QSizeF fitAgainst = layout.fitTarget(page);
+    //
+    // The *largest* target in the document, not the one being read. That is not
+    // a detail: fitting the current page is a feedback loop through the
+    // horizontal scrollbar on any document that mixes page sizes, and it spins
+    // at 100% of a core for as long as the document is open. The measurement
+    // and the cost of this answer are in PageLayout::largestFitTarget().
+    const QSizeF fitAgainst = layout.largestFitTarget();
+    if (fitAgainst.isEmpty())
+        return layout.zoom();
     const QSizeF viewportSize(viewport()->width(), viewport()->height());
     // The controller owns this decision for all three modes, including "the
     // factor the user chose, whatever the window is doing". Asking it rather
@@ -1511,12 +1514,20 @@ void PageView::wheelEvent(QWheelEvent *event)
     // Ctrl and the wheel zooms; anything else scrolls, which is what the base
     // class does and what every other program does.
     if (!event->modifiers().testFlag(Qt::ControlModifier)) {
+        // What was carried belongs to a zoom gesture that has ended.
+        wheelCarried = 0;
         QAbstractScrollArea::wheelEvent(event);
         return;
     }
 
-    const int steps = event->angleDelta().y() / 120;
+    // Through the accumulator rather than straight into a division: a touchpad
+    // sends deltas far smaller than a detent and `delta / 120` threw every one
+    // of them away. See ZoomController::wheelSteps().
+    const int steps = ZoomController::wheelSteps(wheelCarried, event->angleDelta().y());
     if (steps == 0) {
+        // Accepted even though nothing happened: the gesture is a zoom, and
+        // letting it through to the base class would scroll the page while the
+        // reader is pinching it.
         event->accept();
         return;
     }

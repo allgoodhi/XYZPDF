@@ -82,6 +82,35 @@ public:
     // modes it is just the page's own size.
     QSizeF fitTarget(int page) const;
 
+    // The widest and the tallest fit target in the document, as one size.
+    //
+    // ---- why a fit mode fits this and not the page being read ----
+    //
+    // Fitting the current page is what a reader would describe, and on a
+    // document whose pages are all one size it is the same answer. On a
+    // document that mixes sizes it is a loop that never ends, measured on
+    // tests/fixtures/text.pdf (595x842 then 400x500) in a window 886 px wide
+    // (docs/store-submission.md §100):
+    //
+    //   fit the 400-wide page -> zoom 2.16 -> the 595-wide page is 1306 px and
+    //   no longer fits -> the horizontal scrollbar appears -> the viewport
+    //   loses 14 px of height -> a different page is now the one being read ->
+    //   fit the 595-wide page -> zoom 1.45 -> everything fits -> the scrollbar
+    //   goes -> the viewport is 14 px taller -> back to the first page.
+    //
+    // 253,000 resize events in twenty seconds, at 100% of a core, with nothing
+    // on screen moving. The feedback runs through the scrollbar, so the cure is
+    // to make the fitted size not depend on the viewport at all: the widest
+    // page decides, every page then fits the width, and no scrollbar can
+    // appear to start the cycle.
+    //
+    // The cost is honest and small: on a document with one oversized page the
+    // others are drawn smaller than they would otherwise be. That is what "fit
+    // width" means when it is a property of the document rather than of the
+    // scroll position -- and it is also what keeps the zoom from changing under
+    // the reader as they scroll past an odd page.
+    QSizeF largestFitTarget() const;
+
     // How big the whole content is, which is what the scroll area is told.
     QSizeF contentSize() const;
 

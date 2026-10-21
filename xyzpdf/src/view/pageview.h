@@ -510,6 +510,10 @@ private:
     double lastDevicePixelRatio = 1.0;
     // Night reading. Changes what an image is an answer to (see setNightInverted).
     bool night = false;
+    // Wheel movement that has not yet added up to a zoom notch. A mouse
+    // delivers a whole notch at a time and never uses this; a touchpad
+    // delivers nothing else. See ZoomController::wheelSteps().
+    int wheelCarried = 0;
     qint64 prefetchBytes = 0;    // Set while goToPage() moves the scrollbar, so that the scroll handler does
     // not recompute the current page from the new position and announce a
     // different one moments after the jump announced its own.

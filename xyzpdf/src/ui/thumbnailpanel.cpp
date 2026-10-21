@@ -68,8 +68,37 @@ void ThumbnailPanel::start(const QVector<QSizeF> &sizes, Document *document)
     }
     viewport()->update();
 
+    waitingSizes.clear();
+    waitingDocument = nullptr;
     if (!document || sizes.isEmpty())
         return;
+
+    // Remembered rather than begun: the walk costs the reader the global PDFium
+    // lock, and the sidebar starts hidden. See the note in the header for the
+    // measurement that says how much.
+    waitingSizes = sizes;
+    waitingDocument = document;
+    beginIfVisible();
+}
+
+void ThumbnailPanel::showEvent(QShowEvent *event)
+{
+    QListView::showEvent(event);
+    beginIfVisible();
+}
+
+void ThumbnailPanel::beginIfVisible()
+{
+    if (!waitingDocument || !isVisible())
+        return;
+
+    // Taken out of the waiting slot before the job starts, so that a second
+    // showEvent -- the sidebar hidden and shown again while the walk runs --
+    // does not start the same walk twice.
+    const QVector<QSizeF> sizes = waitingSizes;
+    Document *document = waitingDocument;
+    waitingSizes.clear();
+    waitingDocument = nullptr;
 
     const QSharedPointer<QAtomicInt> cancel = generation;
     const int width = thumbWidth;

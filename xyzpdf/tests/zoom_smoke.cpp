@@ -97,6 +97,39 @@ int main()
         checkClose(ZoomController::clamp(1e9), ZoomController::Maximum, "and a silly large one");
     }
 
+    // ---- a wheel that does not turn in whole notches ----
+    //
+    // docs/review-03.md §2.3: the view divided the angle by 120 and threw the
+    // remainder away, so a mouse (which sends 120 at a time) zoomed and a
+    // Windows precision touchpad (which sends 20 or 40 as the fingers move)
+    // did nothing at all -- and nothing is what it kept doing, because the
+    // event was accepted either way.
+    {
+        int carried = 0;
+        check(ZoomController::wheelSteps(carried, 120) == 1, "a mouse notch is one step");
+        check(carried == 0, "and leaves nothing behind");
+
+        carried = 0;
+        check(ZoomController::wheelSteps(carried, 40) == 0, "a third of a notch is not a step yet");
+        check(ZoomController::wheelSteps(carried, 40) == 0, "nor is two thirds");
+        check(ZoomController::wheelSteps(carried, 40) == 1,
+              "but three of them are one step -- this is the touchpad case");
+        check(carried == 0, "with nothing left over");
+
+        carried = 0;
+        check(ZoomController::wheelSteps(carried, 300) == 2,
+              "a fast flick is worth every whole notch in it");
+        check(carried == 60, "and carries the rest");
+        check(ZoomController::wheelSteps(carried, 60) == 1, "which the next event completes");
+
+        carried = 0;
+        ZoomController::wheelSteps(carried, 80);
+        check(carried == 80, "a part-notch is carried");
+        check(ZoomController::wheelSteps(carried, -120) == -1,
+              "and a push the other way answers at once rather than spending it first");
+        check(ZoomController::wheelSteps(carried, 0) == 0, "an empty event is not a step");
+    }
+
     // ---- the point under the cursor ----
     //
     // The document point under the anchor is (scroll + anchor) / zoom, and the

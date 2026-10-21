@@ -203,6 +203,35 @@ void PageLayout::rebuild()
     content = QSizeF(width, qMax(y, viewport.height()));
 }
 
+QSizeF PageLayout::largestFitTarget() const
+{
+    QSizeF largest;
+    const auto grow = [&largest](const QSizeF &candidate) {
+        largest.setWidth(qMax(largest.width(), candidate.width()));
+        largest.setHeight(qMax(largest.height(), candidate.height()));
+    };
+
+    // Walked directly rather than through fitTarget() for every page: in the
+    // spread modes that function searches the spread list, so asking it once
+    // per page would be quadratic on a long book for an answer that is the
+    // same either way.
+    if (layoutMode != Mode::TwoPage && layoutMode != Mode::Book) {
+        for (const QSizeF &size : sizes)
+            grow(size);
+        return largest;
+    }
+    for (const QPair<int, int> &spread : spreadList()) {
+        const int left = spread.first;
+        const int right = spread.second;
+        const QSizeF leftSize =
+            left >= 0 ? sizes.at(left) : (right >= 0 ? sizes.at(right) : QSizeF());
+        const QSizeF rightSize = right >= 0 ? sizes.at(right) : QSizeF();
+        grow(QSizeF(leftSize.width() + (right >= 0 ? rightSize.width() : 0.0),
+                    qMax(leftSize.height(), rightSize.height())));
+    }
+    return largest;
+}
+
 QSizeF PageLayout::contentSize() const
 {
     return content;

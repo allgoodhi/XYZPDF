@@ -66,6 +66,25 @@ double ZoomController::stepped(double from, int steps) const
     return clamp(from * std::pow(Step, steps));
 }
 
+int ZoomController::wheelSteps(int &carried, int angleDelta)
+{
+    // One detent, fixed by Windows and repeated by every other platform Qt
+    // reports angles for.
+    constexpr int kDetent = 120;
+
+    if (angleDelta == 0)
+        return 0;
+    // A push the other way starts from nothing: leftovers from the push before
+    // belong to a gesture that is over.
+    if ((carried > 0) != (angleDelta > 0))
+        carried = 0;
+
+    carried += angleDelta;
+    const int steps = carried / kDetent;
+    carried -= steps * kDetent;
+    return steps;
+}
+
 QPointF ZoomController::scrollForAnchor(const QPointF &scroll, const QPointF &anchor,
                                         double fromZoom, double toZoom)
 {

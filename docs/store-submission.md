@@ -6683,3 +6683,170 @@ push 各要一词 —— §16 那"三处相同"欠 §84–§97 **十三片**。
 **仍然欠的**：`/Brepro`、§55 XFA、§47 那句读者可见的话、§79 的锁与就地保存、widget 自画 `/AP`
 （§94 已抬成"打印会出白纸"）—— 这五条是要你定的；25,684,592 是谁、地址栏解不解斜杠（§97 欠）；
 `pathforms` 的中文那一支；**§16 那"三处相同"欠 §84–§99 十六片**（重打包+重装要一词，push 也要一词）。
+
+## 100. review-03 那五条改完了 —— 而第四条"待验"是真的，第六条是它带出来的：一个会把 CPU 烧满的无限循环（2026-10-22）
+
+他一句"就按建议开始修改"。改的是 `docs/review-03.md` 末尾那张"建议的下一步顺序"的前五条。
+**第六条不在单子上**：它是在给第四条写测量时掉出来的，而且比单子上任何一条都重。
+六条各有一条能红的控制，**其中三条的第一版控制是假的**（详见各节）。
+
+### 1. 缩略图推迟到侧栏打开（review-03 §2.1）
+
+`DocumentTab::open()` 过去无条件 `thumbnailPanel->start(...)`，而 `sidebarWanted` 初值是 `false`：
+打开任何文档都立刻起一个 worker 从第 0 页渲到最后一页，**为一个默认不显示的面板**，
+每一次渲染都占着 Qt PDF 那把全局递归锁。
+
+**先量**（`xyzpdf_pdfprobe`，仓库自带 fixture）：
+
+```
+                        120 px 缩略图       2500 px 整页
+scan.pdf（300dpi 纯图）    17 ms（最差 27）     30 ms
+huge.pdf（合成文字）        0 ms（最差 2）       3 ms
+```
+
+**输出缩到 1/15，耗时只降到 57%** —— 成本在解码不在采样。推下去：500 页扫描书 ≈ 8.5 秒锁；
+文字文档上几乎免费。**它只在最慢的那类文档上发作**，是 review-02 那次"非常卡"的第二层
+（那次修内存，这次是锁）。
+
+改法：`start()` 只记下活，`showEvent()` 里才开走（`beginIfVisible()`，两边都调）。
+`QTabWidget` 隐藏非当前页，所以"侧栏开着但停在书签那一页"也不渲 —— 这是对的。
+
+**控制**：把 `!isVisible()` 拿掉 → `documenttab_smoke` 红 2 条。两条是成对写的：只断"没渲"的话，
+一个**永远不渲**的实现也能过。
+
+### 2. 文档属性对话框（review-03 §3.1，PLAN M2 最后一条）
+
+M0–M3 里唯一一条"除了界面哪儿都写好了"的：`DocMetadata`、`QtPdfBackend::metadata()`、
+`document_smoke` 的断言都在，全仓库 `grep 属性` 命中 **0**。
+
+新 `src/ui/propertiesdialog.{h,cpp}`（54 + 110 行），只读表单、值可选中复制。三处决定：
+**页面大小那一行点名第几页**（PDF 可以混尺寸，一行"页面大小"是在挑一个还不说自己挑了）；
+**「打开时需要口令」不写成「已加密」**（`DocMetadata::encrypted` 填的是"这次真用了口令"，
+而"这文件允许你做什么"不问 owner 口令答不出来）；**空字段写「（无）」**。
+`propertiesInfo()` 与 `showProperties()` 分开，是为了测试不必去抓一个 exec() 出来的模态框。
+菜单：文件 末尾，`属性(&R)…` / `P&roperties…`、Ctrl+D。
+
+**控制两条**：`sizedPage` 写死 0 → 红 2 条；空值回退拿掉 → 红 1 条。
+**而第二条的第一版是假的**：断言写成"（无）出现过"，可两个日期行本来就在印（无），
+于是回退被拿掉它照样绿。改成**只留一个空字段、数个数**才红。（第一次假控制。）
+
+### 3. Ctrl+滚轮在精密触控板上什么都不做（review-03 §2.3）
+
+`angleDelta().y() / 120` 整除，PTP 一次送 20–40，余量又被 `accept()` 吞掉 —— 不缩放也不滚动。
+新 `ZoomController::wheelSteps(int &carried, int angleDelta)`：纯函数，攒余量，换方向清零。
+**控制**：退回 `angleDelta / kDetent` → `zoom_smoke` 红 4 条。
+**没验的一层**：这台机器没有触控板，20–40 这个形状是读来的，不是按出来的。
+
+### 4. 前台打印/导出期间的重入（review-03 §2.4）—— 写的是"待验"，量出来是真的
+
+`print()` 与 `exportImages()` 在前台一页一页渲，回调里一句 `QApplication::processEvents()`。
+排队进来的东西都在那一句里跑 —— 包括"关闭标签"，它把标签摘出去并 `deleteLater()`。
+
+**量**：排一条 `closeTabAction->trigger()` 进泵，拿 `QPointer` 看。没有护栏时
+**标签在泵的第二轮就没了** —— 也就是
+**`deleteLater()` 在 `processEvents()` 里被调用，就是那一句 `processEvents()` 把它执行掉**，
+与我第一版注释里写的"会推迟到外层循环"正好相反。那段注释当场删了。
+
+**第一版测量是假绿**：我先用 `window.close()` 当"关闭"，它只藏窗口、根本不碰标签 ——
+控制（`deleteLater()` 换成 `delete tab`）**一点变化都没有**，exit 0。
+**本项目第五次把一条不会变的绿当成结论**（§86/§90/§95/§97 之后）。换成真会删标签的那条路
+（`closeTabAction`，菜单与 Ctrl+W 走的）才看见真相。（第二次假控制。）
+
+修法：`DocumentTab::ForegroundJob`（RAII 计数），`print()`/`exportImages()` 进门就拿一个；
+`MainWindow::closeTab()` 与 `closeEvent()` 各拒一次并说一句话。
+**为什么不能靠"框是窗口模态的"**：那只挡键盘鼠标，是界面的副作用，不是规则。
+**控制**：关掉 `closeTab()` 那条 `if` → 红 2 条（而且测试两半都断：job 在时被拒、job 一撤同一条关闭就过
+—— 只断前半的话，一个永远拒绝关闭的实现也能过）。
+
+### 5. 表单字段那句提示（review-03 四.1 / §94）
+
+打开文档时用 qpdf 问一次 `/AcroForm /Fields`（`DocumentEditor` 开了就扔，不留第二个句柄），
+`MainWindow::openDocument()` 把"已打开 X"换成一句停 12 秒的话：
+「这份文档含表单字段，本版不显示字段里填的内容（屏幕、导出和打印都一样）」。
+**成本先量后用**：`text.pdf` 0 ms、`scan.pdf` 0 ms、**`huge.pdf`（600 页）22 ms** ——
+旁边作参照的是这条路本来就要花的"读完 600 页尺寸 27 ms"（perf.md），同一量级。
+**控制**：`formFieldsInSource = false` 写死 → 红 1 条。
+**没做的那一半**：打印框里还没有这句话；事实已经在手上（`hasFormFields()`），接上去是一行。
+
+### 6. 单子上没有的那一条：适应宽度在混尺寸文档上是一个**无限循环**
+
+给第 4 条写测量的时候，`mainwindow_smoke` 挂了 300 秒**不出一个字**。第一反应是测量写坏了；
+实际不是 —— 把护栏关掉（标签被删掉）它就跑完，护栏打开（**文档继续开着**）它就不回来。
+也就是说：**一份开着的文档本身在无限地产生事件**。
+
+数出来的（在 `requestVisiblePages` / `resizeEvent` / `setPageImage` 各放一个计数器）：
+**20 秒 253,000 次 resizeEvent**，CPU 一整核，屏幕上什么都没动。把 resize 的几何印出来，
+两态循环一眼可见：
+
+```
+vp=886x599 content=886x1980  zoom=1.449 hbar=0 range=0
+vp=886x585 content=1306x2928 zoom=2.155 hbar=1 range=420
+vp=886x599 ...（无限）
+```
+
+**机制**：`PageView::fittingZoom()` 过去按 `layout.currentPage()` 取 `fitTarget` —— 适应宽度
+适应的是**正在读的那一页**。`tests/fixtures/text.pdf` 两页是 595x842 与 400x500
+（595/400 = **1.4875**，正是上面 1306/886 与 2.155/1.449 的比）。于是：
+
+> 适应 400 那页 → 缩放 2.16 → 595 那页变成 1306 px 放不下 → 横向滚动条出现 →
+> 视口**矮了 14 px** → 当前页变成另一页 → 适应 595 那页 → 1.45 → 都放得下 →
+> 滚动条消失 → 视口高回来 → 回到第一步。
+
+反馈是从**横向滚动条**绕回来的，所以治法是让"适应什么"根本不看视口：新
+`PageLayout::largestFitTarget()`（全文档最宽/最高的那个 fit target，双页/书籍模式按 spread 走一遍，
+不是每页问一次 `fitTarget` —— 那在长书上是平方），`fittingZoom()` 用它。
+这样每一页都放得下宽度，滚动条不会出现，循环无从起头。
+
+**代价写在代码注释里**：一份文档里有一页特别宽时，其余页会画得比以前小。
+换来的是"适应宽度"成为**文档的属性而不是滚动位置的属性"** —— 顺带也没有了"滚过一页缩放自己跳一下"。
+
+**这条在真机上长什么样**：窗口宽度落在那个区间、文档页宽不一致，就是一核烧满、窗口发黏，
+而且**永远不会自己停**。`text.pdf` 是仓库自带的 fixture，不是编出来的边角料。
+
+**控制**：`fittingZoom()` 改回 `fitTarget(1)`（非最宽那页）→ `documenttab_smoke` 红 1 条
+（`fit width fits the widest page of the document (595 pt at 2.105 is 1252.47 px in a 866 px viewport)`）。
+**而这里也有一条假控制（第三次）**：我最早写的断言是"滚到第 2 页缩放不变"，
+退回按当前页适应之后它**照样绿** —— 因为 `applyFitIfNeeded()` 只在 resize 时跑，
+而那一刻 layout 存的当前页还没跟上（实测 `tab.currentPage()==1` 而算出来的仍是 595 那页）。
+一条不会红的绿断言不如没有，删了，换成现在这条按"最宽页"写的。
+
+**欠的**：**级联本身没有红线护着**。`layout_smoke` 钉的是 `largestFitTarget()` 的算术，
+`documenttab_smoke` 钉的是"适应的是最宽页"；而真·循环要窗口 + 标签条 + 那个几何才会起，
+重新引入时 `mainwindow_smoke` **不是变红，是不再结束**（实测 253,000 次 resize，300 秒被杀）。
+"测试会挂"算一种失败，但不是一条好失败 —— 这是一条欠账，写在这里不许合上。
+
+### 目录
+
+`update_translations` → **578 → 603 条**（新增 25），numerus **48 条不变**，**0 unfinished**，
+四条规则全绿。
+
+**而它替我填错了一条，而且没有任何规则看得见**：lupdate 的 same-text heuristic 按源文完全相等
+套用已有译文，于是属性框里的「主题」（PDF 的 `/Subject`）拿到了外观设置那个「主题」的 `Theme`。
+这一条在目录里是**已完成、(context, source) 全匹配、四条形状规则全绿**的 —— 只有眼睛看得见
+（和 §98 那 29 条括号同族）。改成 `Subject`，并把这条写进 AGENTS.md。
+
+### 数字
+
+产品代码：`documenttab.cpp` +52/−0、`documenttab.h` +74/−0、`mainwindow.cpp` +52/−1、
+`mainwindow.h` +1/−0、`src/ui/thumbnailpanel.cpp` +29/−0、`.h` +53/−4、
+`src/view/pageview.cpp` +19/−8、`.h` +4/−0、`src/view/pagelayout.cpp` +29/−0、`.h` +29/−0、
+`src/view/zoomcontroller.cpp` +19/−0、`.h` +19/−0、新文件 `src/ui/propertiesdialog.h` 54 行 /
+`.cpp` 110 行、`CMakeLists.txt` +4。
+测试：`documenttab_smoke.cpp` +214/−0（`check(` **404→431**）、`mainwindow_smoke.cpp` +65/−0
+（`check(` **144→150**）、`zoom_smoke.cpp` +33/−0（`check(` **3→15**）、`layout_smoke.cpp` +22/−0
+（`check(` **15→16**，另加 4 处 `checkClose`）。
+文档：新 `docs/review-03.md`（通检本身）、`AGENTS.md` +2 条。
+
+门禁：**26 passed / 0 failed**（31 个目标，5 个 probe 不跑），目录 603/603、numerus 48、0 unfinished。
+控制七条，**每条单独红过再按 sha256 还原**：缩略图推迟、属性量页、属性空值、滚轮余量、
+前台护栏、表单探测、适应宽度取最宽页。其中三条的第一版控制不会红，都已换掉（见上）。
+清场：`Get-Process xyzpdf` 计数 0。
+
+**仍然欠的**（除 §99 那张单子照旧）：上面第 6 条那条级联没有红线；review-03 §2.2（缩略图内存
+仍无上限、不计入预算）、§3.2（全词匹配与结果列表）、§3.3（截图入口）、§3.4（没有重新加载、
+主窗口照旧锁着文件）、第一节三条结构。
+**屏幕上读到的**：`-Mode menudump` 中英各一遍，新那一行在真窗口里都在、都 enabled ——
+英文 `Properties…`（UIA 把 `&` 吃掉，所以源文那个 `P&roperties…` 读成这样）、中文 `属性(R)…`，
+位置都在 `导出为图片` 与 `关闭标签` 之间。
+**没验的**：触控板那一下没人按过；**框自己**没在真窗口里打开过（`gui-probe.ps1` 还没有它的模式，
+菜单行在不等于框画得对）；打印框里还没有表单那句话。

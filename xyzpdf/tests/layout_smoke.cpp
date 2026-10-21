@@ -219,6 +219,28 @@ int main()
         // fits against two page-widths (200), not one.
         checkClose(layout.fitTarget(0).width(), 200, "page 1 fits against a full spread");
         checkClose(layout.fitTarget(1).width(), 150, "page 2 fits against its spread's two pages");
+
+        // And the one a fit mode actually uses: the largest target anywhere in
+        // the document, so that the zoom is the document's and not the scroll
+        // position's. Fitting the page being read is a loop through the
+        // horizontal scrollbar on a document like this one -- see
+        // PageLayout::largestFitTarget() and docs/store-submission.md §100.
+        checkClose(layout.largestFitTarget().width(), 200,
+                   "the largest spread in this book is page 1's, blank half and all");
+        checkClose(layout.largestFitTarget().height(), 300,
+                   "and the tallest page decides the height, whichever spread it is in");
+    }
+
+    // ---- the largest fit target in the ordinary modes ----
+    {
+        PageLayout layout;
+        layout.setViewportSize(QSizeF(400, 600));
+        layout.setPageSizes({QSizeF(595, 842), QSizeF(400, 500), QSizeF(300, 900)});
+        checkClose(layout.largestFitTarget().width(), 595, "the widest page decides the width");
+        checkClose(layout.largestFitTarget().height(), 900, "and the tallest the height");
+        PageLayout empty;
+        check(empty.largestFitTarget().isEmpty(),
+              "and a layout with no pages has no target rather than a made-up one");
     }
 
     // ---- nothing open ----

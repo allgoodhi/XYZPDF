@@ -28,7 +28,9 @@
 #include "../src/ui/movepagesdialog.h"
 #include "../src/ui/ocrdialog.h"
 #include "../src/ui/protectpagesdialog.h"
+#include "../src/ui/propertiesdialog.h"
 #include "../src/ui/splitpagesdialog.h"
+#include "../src/ui/thumbnailpanel.h"
 #include "../src/ui/watermarkdialog.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
@@ -37,11 +39,13 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QGroupBox>
+#include <QIcon>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
@@ -120,6 +124,39 @@ PageView *viewOf(DocumentTab &tab)
     return tab.view();
 }
 
+// How many rows of the thumbnail strip have a picture in them.
+//
+// Read off the model rather than off the panel, because what is being asked is
+// what a reader would see: a row with no decoration is a page number on an
+// empty tile. An icon that exists but is null counts as nothing, which is what
+// QIcon::isNull() says.
+int thumbnailsRendered(const QAbstractItemView *strip)
+{
+    const QAbstractItemModel *model = strip->model();
+    if (!model)
+        return 0;
+    int rendered = 0;
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const QVariant decoration = model->index(row, 0).data(Qt::DecorationRole);
+        if (!qvariant_cast<QIcon>(decoration).isNull())
+            ++rendered;
+    }
+    return rendered;
+}
+
+// Everything the labels of a dialog say, run together.
+//
+// The properties dialog is a form of labels and nothing else, so "what does it
+// show" is exactly this string -- and asserting on it rather than on row
+// indices means a row added above does not move the test.
+QString labelsOf(const QWidget *dialog)
+{
+    QStringList said;
+    for (const QLabel *label : dialog->findChildren<QLabel *>())
+        said.append(label->text());
+    return said.join(QLatin1Char(0x0a));
+}
+
 // One mouse event, straight to the viewport.
 //
 // Sent to the viewport rather than to the view because that is where Qt
@@ -167,6 +204,165 @@ int main(int argc, char **argv)
         check(waitFor([view] { return view->hasImageFor(0); }),
               "the page on screen is rendered and drawn");
         check(tab.pageCount() == 2, "the document's pages are known to the tab");
+    }
+
+    // ---- the thumbnails wait for the sidebar to be opened ----
+    //
+    // docs/review-03.md §2.1: opening a document used to start a walk over
+    // every one of its pages, rendering each into the strip, whether or not the
+    // sidebar had ever been shown -- and every one of those renders holds the
+    // global PDFium lock the page the reader is waiting for needs. On a scanned
+    // page a 120 px thumbnail costs 17 ms against the whole page's 30 (measured
+    // with tools/pdfprobe.cpp), so a 500-page scan spent about 8.5 seconds of
+    // that lock on pictures for a panel nobody had opened.
+    //
+    // Both halves are asserted, because only one of them is visible in the
+    // pictures: nothing is rendered while the sidebar is shut, *and* it is
+    // rendered once it is opened. A deferral that never ends would pass the
+    // first check on its own.
+    {
+        auto *strip = tab.findChild<ThumbnailPanel *>();
+        check(strip != nullptr, "the tab has a thumbnail strip");
+        if (strip) {
+            check(!strip->isVisible(), "the sidebar starts shut");
+            check(strip->waiting(), "so the strip is holding a job rather than running one");
+            // Through the base class: ThumbnailPanel has a member called `model`
+            // of its own, which hides QAbstractItemView::model() from anyone
+            // holding the derived type.
+            const auto *stripView = static_cast<const QAbstractItemView *>(strip);
+            check(stripView->model() != nullptr
+                      && stripView->model()->rowCount() == tab.pageCount(),
+                  "the strip has a row per page even before any of them is rendered");
+
+            // Given every chance to render: the walk is a worker and its results
+            // arrive as queued events, so a loop pumped for a while is what the
+            // claim "nothing happened" has to survive.
+            waitFor([] { return false; }, 400);
+            check(thumbnailsRendered(strip) == 0, "and no page has been rendered into it");
+
+            tab.setSidebarVisible(true);
+            check(strip->isVisible(),
+                  "opening the sidebar puts the strip on screen (text.pdf has no bookmarks, so "
+                  "it is the tab in front)");
+            check(waitFor([strip, &tab] { return thumbnailsRendered(strip) == tab.pageCount(); }),
+                  "and that is when the pages are rendered into it");
+            check(!strip->waiting(), "the job it was holding has been taken on");
+
+            // Back to where the rest of this file expects to find the tab.
+            tab.setSidebarVisible(false);
+        }
+    }
+
+    // ---- a fit mode fits the document, not the page being read ----
+    //
+    // The decision that broke a loop which spun at 100% of a core for as long
+    // as a mixed-size document was open (docs/store-submission.md §100, found
+    // while measuring something else): fit width used to fit the current page,
+    // so on this fixture -- 595x842 then 400x500 -- the zoom followed the
+    // scroll position. The rest of the loop is the horizontal scrollbar:
+    // narrow page fitted -> the wide one overflows -> scrollbar appears -> the
+    // viewport loses height -> a different page is current -> fit the wide one
+    // -> everything fits -> the scrollbar goes -> round again, forever.
+    //
+    // What is asserted here is only that the fitted zoom is the widest page's.
+    // **The cascade itself is not pinned by this file**: it needs the window,
+    // the strip and a geometry where the two states disagree, and when it is
+    // reintroduced mainwindow_smoke does not go red -- it stops finishing
+    // (measured: 253,000 resize events, killed at 300 s). That is an owed test,
+    // not a covered one.
+    {
+        tab.setZoomMode(ZoomController::Mode::FitWidth);
+        // A width of its own, so that a resize really is delivered: the block
+        // above showed and hid the sidebar, so the viewport the zoom was last
+        // computed against is not the one this block is about.
+        tab.resize(880, 700);
+        waitFor([] { return false; }, 300);
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }), "page 1 is drawn at fit width");
+
+        // The widest page of this fixture is page 1 at 595 pt. Fit width is
+        // that page's fit whatever else is on screen, so the zoom times 595
+        // is the viewport's width less the margin the fit leaves.
+        const double zoom = tab.zoom();
+        const double fittedWidth = 595.0 * zoom;
+        const double viewportWidth = view->viewport()->width();
+        check(fittedWidth <= viewportWidth && fittedWidth > viewportWidth - 40,
+              QStringLiteral("fit width fits the widest page of the document (595 pt at %1 is "
+                             "%2 px in a %3 px viewport)")
+                  .arg(zoom).arg(fittedWidth).arg(viewportWidth));
+
+        tab.resize(900, 700);
+        waitFor([] { return false; }, 200);
+        check(waitFor([view] { return view->isRendered(0); }), "and back");
+    }
+
+    // ---- the properties dialog (PLAN M2) ----
+    //
+    // Two halves, because they fail apart: what the tab gathers out of the
+    // document, and what the dialog makes of it. docs/review-03.md §3.1 is why
+    // this is new -- DocMetadata, the backend's metadata() and its test all
+    // existed, and no window had ever shown any of it.
+    //
+    // The gathering is asserted through propertiesInfo() rather than by opening
+    // the dialog: showProperties() ends in exec(), and a test that has to find a
+    // modal window and press a button on it hangs for the full timeout on the
+    // day the window does not appear.
+    {
+        view->goToPage(1);
+        const PropertiesDialog::Info info = tab.propertiesInfo();
+        check(QFileInfo(info.path).fileName() == QStringLiteral("text.pdf"),
+              "the properties name the file that is open");
+        check(info.pageCount == tab.pageCount(), "and its page count");
+        check(info.fileBytes == QFileInfo(info.path).size(), "and its size on disk");
+        check(info.sizedPage == 1,
+              "the page measured is the one being read, not page 1 -- a PDF may mix sizes");
+        view->goToPage(0);
+        const PropertiesDialog::Info onFirst = tab.propertiesInfo();
+        check(onFirst.sizedPage == 0, "reading page 1 measures page 1");
+        // This fixture's two pages are deliberately different sizes, which is
+        // the whole reason the row names a page instead of claiming one size
+        // for the document.
+        check(onFirst.pagePoints != info.pagePoints,
+              QStringLiteral("and the two pages of this fixture measure differently "
+                             "(%1x%2 against %3x%4)")
+                  .arg(onFirst.pagePoints.width())
+                  .arg(onFirst.pagePoints.height())
+                  .arg(info.pagePoints.width())
+                  .arg(info.pagePoints.height()));
+
+        PropertiesDialog::Info made = info;
+        // A4 by hand, so that the millimetre arithmetic is checked against a
+        // number everyone knows rather than against whatever the fixture is.
+        made.pagePoints = QSizeF(595, 842);
+        // Every field filled except the author, and both dates valid, so that
+        // there is exactly one empty value in the dialog. Counted rather than
+        // searched for: with several fields empty, "it says （无） somewhere"
+        // passes even when the rule that puts it there has been taken out --
+        // measured, that is what the first control of this block did.
+        made.metadata.title = QStringLiteral("A Title");
+        made.metadata.subject = QStringLiteral("A Subject");
+        made.metadata.keywords = QStringLiteral("a, b");
+        made.metadata.creator = QStringLiteral("A Creator");
+        made.metadata.producer = QStringLiteral("A Producer 9.9");
+        made.metadata.creationDate = QDateTime(QDate(2026, 1, 2), QTime(3, 4));
+        made.metadata.modificationDate = made.metadata.creationDate;
+        made.metadata.author.clear();
+        PropertiesDialog filled(nullptr, made);
+        const QString shown = labelsOf(&filled);
+        check(shown.contains(QStringLiteral("text.pdf")), "the dialog shows the file name");
+        check(shown.contains(QStringLiteral("A Producer 9.9")),
+              "and the producer string, which is the field people copy out");
+        check(shown.contains(QStringLiteral("595")) && shown.contains(QStringLiteral("210")),
+              "and the page in points and in millimetres (595 pt is 210 mm)");
+        check(shown.count(QStringLiteral("（无）")) == 1,
+              QStringLiteral("the one empty field says so rather than being blank (counted %1)")
+                  .arg(shown.count(QStringLiteral("（无）"))));
+        check(!shown.contains(QStringLiteral("没有填写任何")),
+              "and a file with one field filled in is not called empty");
+
+        PropertiesDialog bare(nullptr, info);
+        check(labelsOf(&bare).contains(QStringLiteral("没有填写任何")),
+              "a file that says nothing about itself is called that, once, at the top");
     }
 
     // ---- zooming still shows a page ----
@@ -2097,6 +2293,24 @@ int main(int argc, char **argv)
             check(saidOf(inForm).contains(QStringLiteral("字段填的答案属于它画在哪一页上")),
                   QStringLiteral("so the box says what a deletion does to an answer before the "
                                  "press: %1").arg(saidOf(inForm)));
+
+            // The same question asked of the tab, which is what decides whether
+            // the reader is told anything at all. docs/review-03.md 四.1: this
+            // program draws no field contents anywhere, so a filled-in form
+            // looks like an empty one -- on screen, in an export and on paper
+            // (§94). Until the fields are drawn, the open has to say so, and it
+            // can only say so if it knows.
+            {
+                const QString wasOpen = tab.documentPath();
+                check(tab.open(withForm) == Document::Status::Ready,
+                      "the form-bearing copy opens in the tab");
+                check(tab.hasFormFields(),
+                      "and the tab knows there are form fields in it, which is what the status "
+                      "line says on the way past");
+                check(tab.open(wasOpen) == Document::Status::Ready,
+                      "the book without a form opens again");
+                check(!tab.hasFormFields(), "and the tab does not claim a form that is not there");
+            }
 
             DocumentEditor plain;
             openBook(plain);

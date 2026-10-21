@@ -48,6 +48,7 @@
 #include <QString>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QPointer>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -1101,6 +1102,70 @@ int main(int argc, char **argv)
                   "and neither mode is ticked afterwards");
         }
         chrome.hide();
+    }
+
+    // ---- closing a tab while a foreground job is pumping the loop ----
+    //
+    // docs/review-03.md §2.4 asked whether DocumentTab::print() and
+    // exportImages() have a reentrancy hole, and the answer measured here is
+    // yes. Both are foreground: they render page by page on this thread and
+    // call QApplication::processEvents() between pages so the progress box
+    // repaints and its Cancel button works. Anything queued runs in there --
+    // including 关闭标签, which takes the tab out of the strip and deletes it.
+    //
+    // The first version of this measurement had no guard in the way, and the
+    // tab was gone before the pump's second turn: deleteLater() inside a
+    // processEvents() is run by that processEvents(), which is the opposite of
+    // what the comment here first claimed. So the job now says it is running
+    // and MainWindow refuses to take the tab apart underneath it.
+    //
+    // Both halves are asserted, because a refusal that never lifts would pass
+    // the first on its own: refused while the job is standing, and the same
+    // close going through the moment it is not.
+    {
+        const QString path = directory + QStringLiteral("/text.pdf");
+        window.show();
+        dropFiles(window, {QUrl::fromLocalFile(path).toString()}, Qt::CopyAction);
+        check(waitFor([&window] { return currentDocumentTab(window) != nullptr; }),
+              "a document is open for the close-during-pump measurement");
+
+        auto *strip = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+        auto *closeTab = window.findChild<QAction *>(QStringLiteral("closeTabAction"));
+        QPointer<DocumentTab> tab = currentDocumentTab(window);
+        check(strip != nullptr && closeTab != nullptr && tab != nullptr,
+              "and the strip and its 关闭标签 are where the test expects them");
+
+        if (strip && closeTab && tab) {
+            const int before = strip->count();
+            {
+                // Stands in for print() or exportImages(): the same object
+                // those two put on their own stack, for the same span.
+                const DocumentTab::ForegroundJob job(tab);
+
+                // Queued, so that it lands inside the pump below rather than
+                // here. This is the action the menu and Ctrl+W trigger.
+                QTimer::singleShot(0, &window, [closeTab] { closeTab->trigger(); });
+
+                bool diedDuringThePump = false;
+                for (int turn = 0; turn < 40 && !diedDuringThePump; ++turn) {
+                    QApplication::processEvents(); // the call the export's callback makes
+                    diedDuringThePump = tab.isNull();
+                }
+                check(!diedDuringThePump,
+                      "a tab that a foreground job is standing in is not destroyed by a close "
+                      "that arrives inside the job's own event pump");
+                check(strip->count() == before,
+                      "and it stays in the strip rather than half-leaving it");
+            }
+
+            // The job is over: the same close now goes through, so what was
+            // measured above is a refusal and not a close that never arrived.
+            QTimer::singleShot(0, &window, [closeTab] { closeTab->trigger(); });
+            check(waitFor([strip, before] { return strip->count() == before - 1; }),
+                  "once the job is done the same close takes the tab out");
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            check(tab.isNull(), "and the tab is deleted");
+        }
     }
 
     if (failures == 0) {

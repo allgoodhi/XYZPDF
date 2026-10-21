@@ -19,6 +19,7 @@
 #include "src/export/wordexport.h"
 #include "src/ocr/ocrengine.h"
 #include "src/render/rendercache.h"
+#include "src/ui/propertiesdialog.h"
 #include "src/view/pagelayout.h"
 #include "src/view/pageview.h"
 #include "src/view/zoomcontroller.h"
@@ -94,6 +95,45 @@ public:
     // lowers it to free memory gets the memory back rather than getting it back
     // the next time they scroll.
     void setCacheLimit(qint64 bytes);
+
+    // ---- a job that holds this object on the stack ----
+    //
+    // Printing and exporting to images run in the foreground: they render page
+    // by page on this thread and pump the event loop between pages so the
+    // progress box stays alive and its Cancel button works. Anything queued
+    // runs in that pump -- and a 关闭标签 arriving there used to take this very
+    // object out of the strip and delete it, with print() still on its stack
+    // and about to render another page through a backend that had just been
+    // freed. Measured in mainwindow_smoke, which is where the shape is visible;
+    // docs/review-03.md §2.4 is where it was first suspected.
+    //
+    // Today the only thing stopping that is the progress box being window
+    // modal, which blocks the menu, the shortcut and the strip's ✕ -- an
+    // accident of the UI rather than a rule, and nothing at all for a route
+    // that does not come through the keyboard. So the job says so, and
+    // MainWindow refuses to take the tab apart while one is running.
+    class ForegroundJob
+    {
+    public:
+        explicit ForegroundJob(DocumentTab *owner)
+            : tab(owner)
+        {
+            if (tab)
+                ++tab->foregroundJobs;
+        }
+        ~ForegroundJob()
+        {
+            if (tab)
+                --tab->foregroundJobs;
+        }
+        ForegroundJob(const ForegroundJob &) = delete;
+        ForegroundJob &operator=(const ForegroundJob &) = delete;
+
+    private:
+        DocumentTab *tab = nullptr;
+    };
+
+    bool hasForegroundJob() const { return foregroundJobs > 0; }
 
     // Whether renders are still on their way. The window asks before deciding
     // that a launch with no window has nothing left to do, and a launch that
@@ -172,6 +212,20 @@ public:
     // disable the toggle on a document that has none.
     bool hasOutline() const;
 
+    // Whether the open document carries AcroForm fields.
+    //
+    // Asked because this reader draws none of them: Qt PDF's annotation flag
+    // covers every /Subtype except /Widget, measured six ways in
+    // docs/store-submission.md §82 and §94 -- so a filled-in form reads as an
+    // empty one on screen, in an export, and on paper. Until the fields are
+    // drawn, the least this program can do is say so instead of showing a
+    // blank box and letting the reader believe the file is empty.
+    //
+    // The answer comes from qpdf, in one catalogue lookup at open time: 0 ms on
+    // ordinary files and 22 ms on a 600-page one, measured beside the ~27 ms
+    // the open already spends reading every page's size.
+    bool hasFormFields() const { return formFieldsInSource; }
+
     // ---- 打印 ----
     //
     // Asks for the print choices, then renders and prints. Foreground, with a
@@ -182,6 +236,21 @@ public:
     // Writes every page out as a PNG into a folder the reader chooses. Foreground
     // with a cancel-able progress dialog, like printing.
     void exportImages();
+
+    // What the file says about itself, in a dialog (PLAN M2's 文档属性对话框).
+    //
+    // Here rather than in MainWindow because the answers come from the backend,
+    // and the backend is this class's: the window would otherwise need a way to
+    // reach through a tab to the document, which is the thing the 1 : N split
+    // exists to avoid.
+    void showProperties();
+
+    // The same answers without the dialog. Split out so that "what this tab
+    // would show" can be checked without an exec() to escape from: a test that
+    // has to find a modal dialog and press a button on it hangs for ten minutes
+    // when the dialog does not appear, and the thing worth asserting here is
+    // the gathering, not Qt's ability to open a window.
+    PropertiesDialog::Info propertiesInfo() const;
 
     // ---- 编辑（M5）----
     //
@@ -397,6 +466,11 @@ private:
     // shown: a document with no bookmarks cannot show one, but the window's menu
     // item still reflects what was asked.
     bool sidebarWanted = false;
+    // How many foreground jobs (print, image export) are on this object's
+    // stack. See ForegroundJob above.
+    int foregroundJobs = 0;
+    // Set while opening; see hasFormFields().
+    bool formFieldsInSource = false;
 
     // ---- search state ----
     //

@@ -568,8 +568,20 @@ void MainWindow::buildMenus()
     });
     fileMenu->addAction(exportImagesAction);
 
+    // Last of the things done to the file as a whole, and before the separator
+    // that closes it: this is where every other reader keeps it.
+    propertiesAction = makeAction(tr("属性(&R)…"), QKeySequence(QStringLiteral("Ctrl+D")));
+    propertiesAction->setObjectName(QStringLiteral("propertiesAction"));
+    propertiesAction->setToolTip(tr("这个文件说了些什么：标题、作者、生成器、页面大小"));
+    connect(propertiesAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->showProperties();
+    });
+    fileMenu->addAction(propertiesAction);
+
     fileMenu->addSeparator();
     closeTabAction = makeAction(tr("关闭标签(&W)"), QKeySequence::Close);
+    closeTabAction->setObjectName(QStringLiteral("closeTabAction"));
     connect(closeTabAction, &QAction::triggered, this, &MainWindow::closeCurrentTab);
     fileMenu->addAction(closeTabAction);
 
@@ -1514,7 +1526,21 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                     tab->setCurrentPage(saved.page);
             }
         }
-        statusBar()->showMessage(tr("已打开 %1").arg(info.fileName()), 4000);
+        // A form is worth a sentence of its own, and a longer one: this reader
+        // draws no field contents anywhere -- not on screen, not in an export,
+        // not on paper (docs/store-submission.md §94 measured all six paths) --
+        // so a reader who prints a filled-in form gets empty boxes and no
+        // warning. Said here rather than in a box because it is not a question
+        // and there is nothing to decide; said for longer than "已打开" because
+        // it is the only chance they get.
+        if (tab->hasFormFields()) {
+            statusBar()->showMessage(
+                tr("已打开 %1 —— 这份文档含表单字段，本版不显示字段里填的内容（屏幕、导出和打印都一样）。")
+                    .arg(info.fileName()),
+                12000);
+        } else {
+            statusBar()->showMessage(tr("已打开 %1").arg(info.fileName()), 4000);
+        }
         updateForCurrentTab();
         // A page number on the command line is a jump, so it happens here
         // rather than in a queue: the document is loaded and measured by now.
@@ -1812,6 +1838,19 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // is for the routes that take the window instead -- the 关闭 item, the X, and
     // the rule that the last tab closing closes the window, which by the time it
     // gets here has already removed the tab that triggered it.
+    // A window whose tab is in the middle of a print or an export does not go
+    // anywhere either: closing it here would hide it and then, when the job
+    // finally returned, the message saying where the files went would come out
+    // of a window that is not on screen. Same reason as closeTab(), one level up.
+    for (int index = 0; index < tabs->count(); ++index) {
+        auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
+        if (tab && tab->hasForegroundJob()) {
+            setStatusMessage(tr("还有标签正在打印或导出，完成之后才能关闭窗口。"), 5000);
+            event->ignore();
+            return;
+        }
+    }
+
     if (confirmDiscardingEditsInAllTabs())
         event->accept();
     else
@@ -1823,6 +1862,17 @@ void MainWindow::closeTab(int index)
     auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
     if (!tab)
         return;
+
+    // Not while the tab is printing or exporting. Those run in the foreground and
+    // pump the event loop between pages, so this call can arrive from inside one
+    // of them -- and deleting the object whose method is on the stack is the end
+    // of the process, not the end of the tab. Measured in mainwindow_smoke; the
+    // progress box being window modal hides it from the keyboard but is not a
+    // rule.
+    if (tab->hasForegroundJob()) {
+        setStatusMessage(tr("这个标签正在打印或导出，完成之后才能关闭。"), 5000);
+        return;
+    }
 
     // Before the tab is taken out: the edits live in it and nowhere else, so this is
     // the last moment at which saying "those were not to be thrown away" is worth
@@ -2148,6 +2198,7 @@ void MainWindow::updateForCurrentTab()
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
+                            propertiesAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,
                             watermarkAction, bookmarkAction,

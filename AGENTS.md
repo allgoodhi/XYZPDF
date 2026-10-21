@@ -47,9 +47,21 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   （子树一个候选都不返回，只在进程自己的顶层窗口里）。找不到就把两层的名字/类名倒出来，别只印"没找到"。
   同一族还有另一课：`mergedonor` 三处查找只写英文那一支，中文界面下必然 Bail 在"没有那一行"—— **那句话说的是
   harness，不是产品**。
+- **前台任务跑着的时候不许拆它的标签**（§100 实测）：打印与导出为图片是前台跑的，
+  每页一句 `QApplication::processEvents()`。**`deleteLater()` 在 `processEvents()` 里被调用，就是
+  那一句 `processEvents()` 把它执行掉** —— 所以排队进来的一条「关闭标签」会把正在执行
+  `print()` 的那个 `DocumentTab` 当场析构。护栏是 `DocumentTab::ForegroundJob`（RAII）加
+  `MainWindow::closeTab()` / `closeEvent()` 两处拒绝；框是窗口模态这件事只挡键盘和鼠标，
+  **不是规则**。再写类似的前台循环就拿一个 `ForegroundJob`。
 - 临时文件走 `TempManager`；**永不写用户的 PDF 文件**（v1 只读）
 - 测试：`python tools/build_all_tests.py`（配置+构建+运行，缺一不可；它还会跑 `tools/check_translations.py`
   对一遍目录——代码里改了用户可见的话，就靠这一步发现目录没跟上）
+- **`update_translations` 会替你填词，而它填的是别的上下文那一条**（§100 实测）：lupdate 的
+  same-text heuristic 按**源文完全相等**套用已有译文，于是属性框里的「主题」（PDF 的
+  `/Subject`）直接拿到了外观设置里那个「主题」的 `Theme`。这条在目录里是**已完成、
+  (context, source) 全匹配、四条形状规则全绿**的 —— `check_translations.py` 永远看不见。
+  所以每次 `update_translations` 之后，**新增那几条要用眼睛过一遍**（包括它自己印的
+  `Same-text heuristic provided N translation(s)` 那 N 条）。
 - 目录也可以重新生成：`cmake --build build-local-release --target update_translations` 是安全的
   （2026-09-27 实测：42 条 numerus / 84 个 `<numerusform>` 一字不动，唯一变了的那一行只是 `'` 被转义成
   `&apos;`）。但要知道 **`i18n_smoke` 的探针在 lupdate 眼里就是调用点** —— 产品不再用的串只要还挂在探针表上

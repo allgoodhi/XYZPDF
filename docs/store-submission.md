@@ -7240,3 +7240,28 @@ z.dll                5aef909e51b8… /    91,648
 分成两片，账是清的：§106 对到 §105，**§16 现在欠 §107 这一片**。
 
 门禁 **26 passed / 0 failed**，目录 623/623 一字未动（没有新的用户可见字符串）。清场：`Get-Process xyzpdf` 计数 0。
+
+## 108. 重打包并重装：§107 送进装上的那一份，§16 对到 §107（2026-10-22）
+
+他一句"可以"。和 §106 同一套顺序、同一个打包环境（`WindowsSdkDir` 空，PATH 里含 `Windows Kits` 的只有
+Performance Toolkit），**产品代码一字未动**。
+
+- 打包前快照：只有 `xyzpdf.exe` 变了 —— `023a3c0e33ca…` / **1,403,904**，与 §106 那颗**同尺寸不同字节**
+  （§107 的一行改动加一次重链；§82 那条照旧：哈希变了不说明改了多少，尺寸相同也不说明没改）。
+  其余六颗与 §106 逐字节相同。
+- 包：18,387,077 字节（17.5 MB），解开 40.6 MB / 67 个文件，`verify-package` exit 0，
+  **`payload is the same 67 file(s) as payload-dc2f8ef75575-20261022`**（§106 那张清单）。
+- 装上的：`allgoodhi.XYZPDF_0.1.0.0_x64__edpkq8hzfe5n4`，设置容器照旧跟着重装清空。
+- **四列全等**（打包前构建树 / 打包后构建树 / 包内 / `WindowsApps\…\bin`），七颗都是 `same=True`，
+  比对脚本 exit 0（它在 §106 被量过：指错目录时印 `MISSING same=False` 并 exit 1）。
+
+**屏幕上，这一趟真正要看的那一行**：`-Mode menudump -Installed`，查看 菜单 ——
+
+```
+§106（修之前）  只查看 False · 选择 False · 识别 False · 翻译 True  · 截图 False
+§108（修之后）  只查看 False · 选择 False · 识别 False · 翻译 False · 截图 False
+```
+
+同一根仪器、同一种启动（包里那份、不带文档），在装上的字节上读到的前后对照。
+
+产品代码 +0/−0。清场：`Get-Process xyzpdf` 计数 0。**§16 现在对到 §107。**

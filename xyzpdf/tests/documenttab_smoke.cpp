@@ -1682,6 +1682,32 @@ int main(int argc, char **argv)
             // field, which is what Ctrl+F twice is for.
             check(field && tab.findBarWidget()->focusWidget() == field,
                   "with the caret in the field, ready to be typed in");
+
+            // ---- and it is a bar, not half the window ----
+            //
+            // Found on screen by the gui-probe branch (handoff-01 D), not by any
+            // test here: after Ctrl+F the bar measured 360 px in a 720 px page area,
+            // because the tab's vertical layout gave the find bar and the reading
+            // area equal shares of the spare height -- neither had a stretch factor.
+            // Every count was green; only the picture was wrong. The file-change bar
+            // (handoff-01 B) sits in the same layout and would have done the same.
+            //
+            // Asked as heights against the bar's own size hint, so the assertion is
+            // about the bug (a bar that grows) rather than about a pixel count that
+            // a font change would move.
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            const int barHeight = tab.findBarWidget()->height();
+            const int wanted = tab.findBarWidget()->sizeHint().height();
+            check(barHeight <= wanted + 8,
+                  QStringLiteral("the find bar is as tall as it asks to be, not a share of the window "
+                                 "(%1 px against a hint of %2 in a %3 px tab)")
+                      .arg(barHeight)
+                      .arg(wanted)
+                      .arg(tab.height()));
+            check(view->height() >= tab.height() - barHeight - 16,
+                  QStringLiteral("and the page keeps the rest of the height (%1 of %2)")
+                      .arg(view->height())
+                      .arg(tab.height()));
         }
 
         // ---- a needle in two pages ----

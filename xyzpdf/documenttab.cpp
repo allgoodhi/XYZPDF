@@ -187,7 +187,12 @@ DocumentTab::DocumentTab(QWidget *parent)
     layout->setSpacing(0);
     layout->addWidget(findBar);
     layout->addWidget(fileChangeBar);
-    layout->addWidget(readingSplit);
+    // The reading area takes every spare pixel, and the two bars above it only
+    // what they ask for. Without the 1 the layout split the spare height evenly:
+    // after Ctrl+F the find bar measured 350-360 px in a 700-720 px tab, half the
+    // window, with every test green -- the gui-probe branch saw it on screen
+    // (handoff-01 D) and documenttab_smoke now pins it as heights.
+    layout->addWidget(readingSplit, 1);
 
     // A bookmark click lands where the file said, not just on its page (§75's leftovers: a real
     // book's 184 bookmarks are all /FitH, and Qt's own Location role reports 0,0 for those). The

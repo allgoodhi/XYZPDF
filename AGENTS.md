@@ -87,7 +87,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms`（十五种模式
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics`（二十种模式
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -145,6 +145,13 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   所以下一轮 picker 可能落在你上次存出去的那个目录里（§62 那问的是第三个来源）。
   `build-local-release/gui-verify/` 下那些是历次草稿，在 gitignore 的构建树里、丢了找不回来 ——
   量出可用的新路由就收进 `tools/gui-probe.ps1`
+- **§109 那五个新模式各带一个 `-Control`**：同一条屏幕判定、故意走错一步（`propsdialog` 期望 41 页、
+  `findwhole` 去点「区分大小写」、`snapshot` 跳过 Ctrl+Shift+5、`strippreview` 跳过旋转、`mnemonics` 跳过 Alt+g），
+  必须 exit 1 —— 屏幕上的判定必须能红，这次是写进了模式本身而不是靠人记得去改。`mnemonics` 是 §98 那句
+  "Alt+字母真能打开对应项，这一族从没在屏幕上按过一次"的第一次实按：英 f/e/v/d/g/w/h、中 f/e/v/d/g/n/h
+  各只展开自己那一项。**并行分支的 gui-probe 必须传 `-Exe <它自己的 worktree>\xyzpdf\build-local-release\xyzpdf.exe`**，
+  默认值指向主检出。同一轮里它还量到一条所有计数都看不见的产品缺陷（查找栏占半个窗口，§110）——
+  又一次"布局这种事只有图能看出来"。
 - **书签的目的地从文件带下去、原样写回；连接认内容不认位置**（§99，关掉 §75 的路 (a)）。开文件时
   `outlineFromSource()` 按对象链读 `/Dest` 的种类 + 数字（**null 保留**：`/XYZ 0 700 null` 是"缩放别动"），
   `writeOutlineItem()` 原样发出去。哪一行对应哪一条按 **标题 + 页** 取（各一次），**不要按下标连** ——

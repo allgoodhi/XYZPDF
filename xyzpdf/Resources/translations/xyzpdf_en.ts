@@ -754,7 +754,7 @@ The parser says: %1</translation>
     </message>
     <message>
         <location filename="../../documenttab.cpp" line="115"/>
-        <location filename="../../documenttab.cpp" line="1316"/>
+        <location filename="../../documenttab.cpp" line="1317"/>
         <source>缩略图</source>
         <translation>Thumbnails</translation>
     </message>
@@ -780,65 +780,65 @@ The parser says: %1</translation>
 Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1107"/>
+        <location filename="../../documenttab.cpp" line="1108"/>
         <source>正在打印…</source>
         <translation>Printing…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1107"/>
-        <location filename="../../documenttab.cpp" line="1157"/>
+        <location filename="../../documenttab.cpp" line="1108"/>
+        <location filename="../../documenttab.cpp" line="1158"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1125"/>
+        <location filename="../../documenttab.cpp" line="1126"/>
         <source>打印</source>
         <translation>Print</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1143"/>
-        <location filename="../../documenttab.cpp" line="1148"/>
-        <location filename="../../documenttab.cpp" line="1177"/>
+        <location filename="../../documenttab.cpp" line="1144"/>
+        <location filename="../../documenttab.cpp" line="1149"/>
+        <location filename="../../documenttab.cpp" line="1178"/>
         <source>导出为图片</source>
         <translation>Export as Images</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1143"/>
+        <location filename="../../documenttab.cpp" line="1144"/>
         <source>请先选择保存文件夹。</source>
         <translation>Choose a folder to save into first.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1148"/>
+        <location filename="../../documenttab.cpp" line="1149"/>
         <source>页码范围里没有可导出的页面。</source>
         <translation>The page range has no pages to export.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1157"/>
+        <location filename="../../documenttab.cpp" line="1158"/>
         <source>正在导出为图片…</source>
         <translation>Exporting images…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1195"/>
+        <location filename="../../documenttab.cpp" line="1196"/>
         <source>修改这份文档</source>
         <translation>Editing this document</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1212"/>
+        <location filename="../../documenttab.cpp" line="1213"/>
         <source>这个标签里没有打开的文档。</source>
         <translation>There is no document open in this tab.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1214"/>
+        <location filename="../../documenttab.cpp" line="1215"/>
         <source>这个标签正在打印或导出，完成之后才能重新加载。</source>
         <translation>This tab is printing or exporting; it can be reloaded once that has finished.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1220"/>
+        <location filename="../../documenttab.cpp" line="1221"/>
         <source>重新加载</source>
         <translation>Reload</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1221"/>
+        <location filename="../../documenttab.cpp" line="1222"/>
         <source>「%1」还带着没有写进任何文件的修改：%2。
 
 重新加载会把这些修改丢掉。要继续吗？</source>
@@ -847,105 +847,105 @@ Continue?</translation>
 Reloading will throw those changes away. Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1235"/>
+        <location filename="../../documenttab.cpp" line="1236"/>
         <source>%1 不在了，所以没有可以重新加载的东西。</source>
         <translation>%1 is no longer there, so there is nothing to reload.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1246"/>
+        <location filename="../../documenttab.cpp" line="1247"/>
         <source>重新加载 %1 失败。</source>
         <translation>Could not reload %1.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1292"/>
+        <location filename="../../documenttab.cpp" line="1293"/>
         <source>原第 %1 页</source>
         <translation>Page %1 of the file</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1302"/>
+        <location filename="../../documenttab.cpp" line="1303"/>
         <source>%1（合并）</source>
         <translation>%1 (merged)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1303"/>
+        <location filename="../../documenttab.cpp" line="1304"/>
         <source>来自 %1 的第 %2 页</source>
         <translation>Page %2 of %1</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1316"/>
+        <location filename="../../documenttab.cpp" line="1317"/>
         <source>缩略图（修改预览）</source>
         <translation>Thumbnails (preview of changes)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1318"/>
+        <location filename="../../documenttab.cpp" line="1319"/>
         <source>这里显示的是保存之后的页面顺序和朝向；正在读的文件本身没有变</source>
         <translation>These show the pages in the order and orientation a save would write; the file you are reading has not changed</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1382"/>
+        <location filename="../../documenttab.cpp" line="1383"/>
         <source>旋转页面</source>
         <translation>Rotate Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1401"/>
+        <location filename="../../documenttab.cpp" line="1402"/>
         <source>移动页面</source>
         <translation>Move Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1441"/>
+        <location filename="../../documenttab.cpp" line="1442"/>
         <source>合并文件进来</source>
         <translation>Merge Files In</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1456"/>
-        <location filename="../../documenttab.cpp" line="1468"/>
+        <location filename="../../documenttab.cpp" line="1457"/>
+        <location filename="../../documenttab.cpp" line="1469"/>
         <source>拆分文件</source>
         <translation>Split Files</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1494"/>
+        <location filename="../../documenttab.cpp" line="1495"/>
         <location filename="../../tests/i18n_smoke.cpp" line="542"/>
         <source>加密 / 去掉口令</source>
         <translation>Encrypt / Remove Password</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1515"/>
+        <location filename="../../documenttab.cpp" line="1516"/>
         <location filename="../../tests/i18n_smoke.cpp" line="568"/>
         <source>加水印</source>
         <translation>Add Watermark</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1542"/>
+        <location filename="../../documenttab.cpp" line="1543"/>
         <source>编辑书签</source>
         <translation>Edit Bookmarks</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1600"/>
+        <location filename="../../documenttab.cpp" line="1601"/>
         <source>%1 已修改.pdf</source>
         <translation>%1 modified.pdf</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1605"/>
+        <location filename="../../documenttab.cpp" line="1606"/>
         <source>把这些修改存成一个新文件</source>
         <translation>Save these changes into a new file</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1622"/>
+        <location filename="../../documenttab.cpp" line="1623"/>
         <source>保存修改</source>
         <translation>Save Changes</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1605"/>
+        <location filename="../../documenttab.cpp" line="1606"/>
         <source>PDF 文档 (*.pdf)</source>
         <translation>PDF documents (*.pdf)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1364"/>
+        <location filename="../../documenttab.cpp" line="1365"/>
         <source>删除页面</source>
         <translation>Delete Pages</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1440"/>
+        <location filename="../../documenttab.cpp" line="1441"/>
         <source>
 
 列表里前面 %n 个文件已经记下了，要退回去用撤销。</source>
@@ -959,7 +959,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1457"/>
+        <location filename="../../documenttab.cpp" line="1458"/>
         <source>这份要写出的文档只有 %n 页，拆不出第二个文件来。</source>
         <translation>
             <numerusform>The document this would write has only %n page, so there is no second file to split off.</numerusform>
@@ -2418,80 +2418,85 @@ The original file is not touched. This step only records the change; a save is s
 <context>
     <name>PrintDialog</name>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="22"/>
-        <location filename="../../src/ui/printdialog.cpp" line="97"/>
+        <location filename="../../src/ui/printdialog.cpp" line="23"/>
+        <location filename="../../src/ui/printdialog.cpp" line="107"/>
         <source>打印</source>
         <translation>Print</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="32"/>
+        <location filename="../../src/ui/printdialog.cpp" line="35"/>
+        <source>这份文档含表单字段，本版打印出来字段里是空的。</source>
+        <translation>This document contains form fields; in this version they will print blank.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/printdialog.cpp" line="42"/>
         <source>页面范围</source>
         <translation>Pages</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="39"/>
+        <location filename="../../src/ui/printdialog.cpp" line="49"/>
         <source>当前页（第 %1 页）</source>
         <translation>Current page (page %1)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="43"/>
+        <location filename="../../src/ui/printdialog.cpp" line="53"/>
         <source>自定义</source>
         <translation>Custom</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="45"/>
+        <location filename="../../src/ui/printdialog.cpp" line="55"/>
         <source>例如 1-3,5,8-10</source>
         <translation>For example 1-3,5,8-10</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="66"/>
+        <location filename="../../src/ui/printdialog.cpp" line="76"/>
         <source>排版</source>
         <translation>Layout</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="70"/>
+        <location filename="../../src/ui/printdialog.cpp" line="80"/>
         <source>适应可打印区域</source>
         <translation>Fit to the printable area</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="71"/>
+        <location filename="../../src/ui/printdialog.cpp" line="81"/>
         <source>实际大小（可能裁切）</source>
         <translation>Actual size (may be cropped)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="72"/>
+        <location filename="../../src/ui/printdialog.cpp" line="82"/>
         <source>缩放</source>
         <translation>Scaling</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="77"/>
+        <location filename="../../src/ui/printdialog.cpp" line="87"/>
         <source>每页版数</source>
         <translation>Pages per sheet</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="86"/>
-        <location filename="../../src/ui/printdialog.cpp" line="113"/>
+        <location filename="../../src/ui/printdialog.cpp" line="96"/>
+        <location filename="../../src/ui/printdialog.cpp" line="123"/>
         <source>打印机：（默认）</source>
         <translation>Printer: (default)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="87"/>
-        <location filename="../../src/ui/printdialog.cpp" line="114"/>
+        <location filename="../../src/ui/printdialog.cpp" line="97"/>
+        <location filename="../../src/ui/printdialog.cpp" line="124"/>
         <source>打印机：%1</source>
         <translation>Printer: %1</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="90"/>
+        <location filename="../../src/ui/printdialog.cpp" line="100"/>
         <source>选择打印机 / 份数 / 双面…</source>
         <translation>Choose printer / copies / duplex…</translation>
     </message>
     <message>
-        <location filename="../../src/ui/printdialog.cpp" line="98"/>
+        <location filename="../../src/ui/printdialog.cpp" line="108"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/ui/printdialog.cpp" line="76"/>
+        <location filename="../../src/ui/printdialog.cpp" line="86"/>
         <source>%n 页/张</source>
         <translation>
             <numerusform>%n page per sheet</numerusform>
@@ -2499,7 +2504,7 @@ The original file is not touched. This step only records the change; a save is s
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/ui/printdialog.cpp" line="35"/>
+        <location filename="../../src/ui/printdialog.cpp" line="45"/>
         <source>全部（%n 页）</source>
         <translation>
             <numerusform>All (%n page)</numerusform>

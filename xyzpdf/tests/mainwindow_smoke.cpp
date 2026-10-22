@@ -195,6 +195,25 @@ int main(int argc, char **argv)
     // ---- the window takes drops at all ----
     check(window.acceptDrops(), "the window is a drop target");
 
+    // ---- with nothing open, no tool can be chosen ----
+    //
+    // Every tool acts on a page, so in a window with no document all five are
+    // grey. 翻译 was the one that was not: it was left off the list in
+    // updateForCurrentTab() when it was added as the fourth tool, and it stayed
+    // lit in an empty window until somebody read the installed copy's menu and
+    // saw four grey items and one that was not (docs/store-submission.md §106).
+    {
+        for (const char *name : {"viewToolAction", "selectToolAction", "recognizeToolAction",
+                                 "translateToolAction", "snapshotToolAction"}) {
+            auto *tool = window.findChild<QAction *>(QString::fromLatin1(name));
+            check(tool != nullptr, QStringLiteral("the %1 exists").arg(QLatin1String(name)));
+            if (tool)
+                check(!tool->isEnabled(),
+                      QStringLiteral("and with no document open, %1 is grey")
+                          .arg(QLatin1String(name)));
+        }
+    }
+
     // ---- a PDF dragged in is accepted, as a copy, and stays accepted ----
     {
         QMimeData mime;

@@ -2239,7 +2239,7 @@ void MainWindow::updateForCurrentTab()
                             mergeFileAction, splitFileAction, protectFileAction,
                             watermarkAction, bookmarkAction,
                             viewToolAction, selectToolAction,
-                            recognizeToolAction, snapshotToolAction}) {
+                            recognizeToolAction, translateToolAction, snapshotToolAction}) {
         if (action)
             action->setEnabled(hasDocument);
     }

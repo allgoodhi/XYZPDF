@@ -81,15 +81,25 @@
 #include <windows.h>
 #undef small
 
+// The crash forensics docs/store-submission.md §103 owed: a minidump of the faulting
+// thread, written by this process rather than by the machine's error reporting.
+// Declared after windows.h for the same reason the #undef above is: this header is
+// another layer of the same SDK.
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
 
 #include <cmath>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <iostream>
+#include <string>
+#include <typeinfo>
 
 namespace {
 
@@ -226,6 +236,267 @@ void sendMouse(QWidget *viewport, QEvent::Type type, const QPointF &position,
     QApplication::sendEvent(viewport, &event);
 }
 
+// ---- the crash dump §103 asked for ----
+//
+// §103's control run printed its four FAILs and ended on 0xC0000005. Two product-shaped
+// reproductions were run three times each and all six came back clean, so the slice wrote
+// "没查出来就不写成解释" and left it open. What was missing was an artifact: nothing in the
+// process caught the exception, and the exit code is not a stack.
+//
+// This filter is armed only when XYZPDF_TEST_CRASH_DUMP is set, so a gate run writes no
+// files and no ordinary developer run is slower. It is SetUnhandledExceptionFilter -- this
+// process only. The machine's own error-reporting settings are not a test's to change, and
+// leaving the search running would hand the crash to something that wants a dialog pressed.
+//
+// The dump is the artifact; the stack printed beside it is the reading. The gate build
+// carries no .pdb (CMake's Release flags are /O2 without /Zi), so dbghelp resolves only
+// what the loaded images export: Qt's frames come back by name, ours as module+offset.
+// That is enough to say which image the faulting instruction and the return chain live
+// in, which is what §103 could not say -- and the same source built into a scratch tree
+// with /Zi + /DEBUG gives the names beside those offsets.
+bool readableAt(DWORD64 address, size_t bytes)
+{
+    // Reading the fault site is itself a read, so both ends of the run are asked first:
+    // an instruction pointer that is not mapped would turn the report into a second
+    // fault, and the filter has no second chance to catch it.
+    const auto committed = [](DWORD64 at) {
+        MEMORY_BASIC_INFORMATION page{};
+        return VirtualQuery(reinterpret_cast<const void *>(at), &page, sizeof(page))
+                   == sizeof(page)
+               && page.State == MEM_COMMIT
+               && (page.Protect == PAGE_EXECUTE_READ || page.Protect == PAGE_READONLY
+                   || page.Protect == PAGE_EXECUTE_READWRITE || page.Protect == PAGE_WRITECOPY
+                   || page.Protect == PAGE_EXECUTE_WRITECOPY);
+    };
+    return committed(address) && committed(address + bytes - 1);
+}
+
+std::wstring crashDumpDirectory()
+{
+    QString directory = qEnvironmentVariable("XYZPDF_TEST_CRASH_DUMP_DIR");
+    if (directory.isEmpty()) {
+        wchar_t buffer[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, buffer) > 0)
+            directory = QString::fromWCharArray(buffer);
+    }
+    return directory.toStdWString();
+}
+
+std::wstring crashDumpPath(unsigned exceptionCode)
+{
+    const std::wstring directory = crashDumpDirectory();
+    if (directory.empty())
+        return {};
+    const QString asText = QString::fromStdWString(directory);
+    if (!QDir().mkpath(asText))
+        return {};
+    const QString name = QStringLiteral("xyzpdf_documenttab_smoke-%1-%2-%3.dmp")
+                             .arg(GetCurrentProcessId())
+                             .arg(QDateTime::currentDateTime().toString(
+                                      QStringLiteral("yyyyMMdd-HHmmss")))
+                             .arg(exceptionCode, 8, 16, QLatin1Char('0'));
+    return QDir(asText).filePath(name).toStdWString();
+}
+
+// One address as `name+displacement [image+offset]`, or `image+offset` when nothing names
+// the address, or "no mapped image holds this address" when no image does.
+QString frameAt(DWORD64 address)
+{
+    // Which image, asked of the OS rather than of dbghelp. SymGetModuleInfoW64 answers out
+    // of the module list SymInitialize built at startup, and the recognition path's DLLs
+    // are loaded later -- so an address inside one of them read back as "unknown image",
+    // which is a fact about that cache and not about the address (the §96 shape again: a
+    // zero describes the search, not the machine).
+    QString where = QStringLiteral("no mapped image holds this address");
+    HMODULE module = nullptr;
+    if (address != 0
+        && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                  | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCWSTR>(address), &module)
+        && module) {
+        wchar_t path[MAX_PATH] = {};
+        GetModuleFileNameW(module, path, MAX_PATH);
+        where = QString::fromWCharArray(path).section(QLatin1Char('\\'), -1) + QStringLiteral("+0x")
+                + QString::number(address - reinterpret_cast<DWORD64>(module), 16);
+    }
+
+    // The name, from dbghelp: a real one where the image carries debug information, and the
+    // nearest export otherwise. SYMBOL_INFO carries a variable-length name, so the buffer is
+    // the struct plus the room and the pointer is cast rather than the struct declared with
+    // a size. The older IMAGEHLP_SYMBOL64 is a different shape and SymFromAddr will not take
+    // it.
+    alignas(8) unsigned char storage[sizeof(SYMBOL_INFO) + 512];
+    auto *symbol = reinterpret_cast<SYMBOL_INFO *>(storage);
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    symbol->MaxNameLen = 512;
+    DWORD64 displacement = 0;
+    if (SymFromAddr(GetCurrentProcess(), address, &displacement, symbol)) {
+        // The cast is not decoration: SYMBOL_INFO::Name is declared CHAR[1], and handed to
+        // fromUtf8 as an array it binds to the QByteArrayView overload, which takes the
+        // declared length -- every frame then comes back as its own first letter.
+        where = QString::fromUtf8(static_cast<const char *>(symbol->Name)) + QStringLiteral("+0x")
+                + QString::number(displacement, 16) + QStringLiteral(" [") + where
+                + QStringLiteral("]");
+    }
+    return where;
+}
+
+LONG WINAPI writeCrashDumpAndStack(EXCEPTION_POINTERS *pointers)
+{
+    const DWORD code =
+        pointers && pointers->ExceptionRecord ? pointers->ExceptionRecord->ExceptionCode : 0;
+    const DWORD64 faulting =
+        pointers && pointers->ExceptionRecord
+            ? DWORD64(pointers->ExceptionRecord->ExceptionAddress)
+            : 0;
+
+    bool dumpWritten = false;
+    const std::wstring path = crashDumpPath(code);
+    if (!path.empty()) {
+        const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION stream{};
+            stream.ThreadId = GetCurrentThreadId();
+            stream.ExceptionPointers = pointers;
+            stream.ClientPointers = FALSE;
+            // IndirectlyReferencedMemory walks what the stack points at, which is what makes
+            // the dump answer a question later instead of only recording that a thread died.
+            const auto type = static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithThreadInfo
+                                                         | MiniDumpWithIndirectlyReferencedMemory);
+            dumpWritten = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, type,
+                                            &stream, nullptr, nullptr)
+                          != FALSE;
+            CloseHandle(file);
+        }
+    }
+
+    std::fprintf(stderr, "CRASH: exception 0x%08lX at %s\n", code,
+                 frameAt(faulting).toUtf8().constData());
+    // 0xE06D7363 is MSVC's code for a thrown C++ exception. Its record carries three
+    // values -- the 0x19930520 signature, the thrown object, and the throw info -- and
+    // nothing else: naming the type from here means walking MSVC's private ThrowInfo,
+    // so the numbers are printed as they are. The type was read separately (see the
+    // report); a guess at somebody's internal layout is not a reading.
+    if (code == 0xE06D7363 && pointers && pointers->ExceptionRecord) {
+        std::fprintf(stderr, "CRASH:   thrown C++ exception, record");
+        for (DWORD index = 0; index < pointers->ExceptionRecord->NumberParameters; ++index)
+            std::fprintf(stderr, " 0x%llX",
+                         static_cast<unsigned long long>(pointers->ExceptionRecord->ExceptionInformation[index]));
+        std::fprintf(stderr, "\n");
+    }
+    // For an access violation the record carries what was being touched: Information[0]
+    // is 0 read / 1 write / 8 DEP-execution and [1] is the address. Without it a fault at
+    // an unknown instruction is only a location, not a shape -- and with it the report can
+    // say whether the pointer was null, stale, or pointing outside every mapped image.
+    if (code == EXCEPTION_ACCESS_VIOLATION && pointers && pointers->ExceptionRecord
+        && pointers->ExceptionRecord->NumberParameters >= 2) {
+        const ULONG_PTR *information = pointers->ExceptionRecord->ExceptionInformation;
+        std::fprintf(stderr, "CRASH:   access %s of 0x%llX -- %s\n",
+                     information[0] == 0 ? "read" : (information[0] == 1 ? "write" : "exec"),
+                     static_cast<unsigned long long>(information[1]),
+                     information[1] == 0
+                         ? "no address at all"
+                         : frameAt(static_cast<DWORD64>(information[1])).toUtf8().constData());
+    }
+    // The bytes the faulting instruction is made of, so the same instruction can be
+    // found again in a build that does carry symbols.
+    if (faulting != 0 && readableAt(faulting, 12)) {
+        const auto *at = reinterpret_cast<const unsigned char *>(faulting);
+        std::fprintf(stderr, "CRASH:   bytes at fault");
+        for (int byte = 0; byte < 12; ++byte)
+            std::fprintf(stderr, " %02X", at[byte]);
+        std::fprintf(stderr, "\n");
+    }
+    std::fprintf(stderr, "CRASH: dump %s\n",
+                 dumpWritten ? QString::fromStdWString(path).toUtf8().constData()
+                             : "NOT WRITTEN");
+    std::fflush(stderr);
+
+    // The walk is best-effort and last: if it fails, the dump and the lines above it are
+    // still on disk and on the console.
+    CONTEXT context = pointers ? *pointers->ContextRecord : CONTEXT{};
+    STACKFRAME64 frame{};
+    frame.AddrPC.Offset = context.Rip;
+    frame.AddrStack.Offset = context.Rsp;
+    frame.AddrFrame.Offset = context.Rbp;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrStack.Mode = AddrModeFlat;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    for (int depth = 0; depth < 48; ++depth) {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), GetCurrentThread(), &frame,
+                         &context, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr)) {
+            std::fprintf(stderr, "CRASH: the walk stopped at frame %d\n", depth);
+            break;
+        }
+        if (frame.AddrPC.Offset == 0)
+            break;
+        const QString text = QStringLiteral("CRASH: #%1 %2").arg(depth).arg(frameAt(frame.AddrPC.Offset));
+        std::fprintf(stderr, "%s\n", text.toUtf8().constData());
+    }
+    std::fflush(stderr);
+
+    // The exit code the crash would have produced anyway, so the harness still reads red.
+    TerminateProcess(GetCurrentProcess(), code != 0 ? code : 1);
+    return EXCEPTION_CONTINUE_SEARCH; // not reached while the terminate succeeds
+}
+
+void installCrashReporting()
+{
+    // Name the exception before the process goes. An unhandled C++ exception otherwise
+    // ends the run with an exit code and no line, which is exactly how §103's crash was
+    // recorded: "0xC0000005, and I did not find out what it was".
+    //
+    // The uncaught_exceptions() guard is not tidiness: `throw;` with no exception in
+    // flight re-enters terminate, and a reporter that dies while reporting is worse than
+    // the silence it replaces.
+    //
+    // With XYZPDF_TEST_CRASH_DUMP set, the filter below is reached first and prints the
+    // stack beside the dump; this handler is what answers for a C++ exception when no dump
+    // was asked for.
+    std::set_terminate([] {
+        // Two ways in, and the second one is the measured case. `throw;` names the
+        // exception when a handler is still on the stack, but terminate for an exception
+        // that escaped all the way out of the event loop is reached with
+        // uncaught_exceptions() == 0 -- that is exactly the §103 case, and guarding on the
+        // count alone silenced the line it was written to print. So: the count first, then
+        // the stored exception, and only then the honest "nothing in flight" (terminate is
+        // also reached with no exception at all, and `throw;` there re-enters terminate).
+        const bool countSaysSo = std::uncaught_exceptions() > 0;
+        const std::exception_ptr stored = countSaysSo ? nullptr : std::current_exception();
+        if (countSaysSo || stored) {
+            try {
+                if (countSaysSo)
+                    throw;
+                std::rethrow_exception(stored);
+            } catch (const std::exception &e) {
+                // typeid().name() keeps the MSVC spelling, which is the sentence: the
+                // answer this slice owed was "class QUnhandledException".
+                std::fprintf(stderr, "TERMINATE: uncaught std::exception [%s] what=[%s]\n",
+                             typeid(e).name(), e.what());
+            } catch (...) {
+                std::fprintf(stderr, "TERMINATE: uncaught exception that is not a std::exception\n");
+            }
+        } else {
+            std::fprintf(stderr, "TERMINATE: std::terminate with no exception in flight\n");
+        }
+        std::fflush(stderr);
+        std::_Exit(3);
+    });
+    if (!qEnvironmentVariableIsSet("XYZPDF_TEST_CRASH_DUMP"))
+        return;
+    // Symbols have to be enumerated before the crash: doing it inside the filter is a
+    // smaller amount of work standing between the fault and the dump.
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    const bool symbols = SymInitialize(GetCurrentProcess(), nullptr, TRUE) != FALSE;
+    SetUnhandledExceptionFilter(writeCrashDumpAndStack);
+    // Armed, and where the files would land: a run that reports a crash without this line
+    // cannot be told apart from a run whose filter was never switched on.
+    note(QStringLiteral("crash dump filter armed (symbols: %1, dumps into: %2)")
+             .arg(symbols ? QStringLiteral("loaded") : QStringLiteral("NOT loaded"))
+             .arg(QString::fromStdWString(crashDumpDirectory())));
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -234,6 +505,7 @@ int main(int argc, char **argv)
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
 
     QApplication application(argc, argv);
+    installCrashReporting();
     const QString directory = argc > 1 ? QString::fromLocal8Bit(argv[1])
                                        : QStringLiteral("tests/fixtures");
     const QString path = directory + QStringLiteral("/text.pdf");

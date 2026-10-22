@@ -18,11 +18,11 @@
 #include "src/document/outline.h"
 #include "src/document/textsearch.h"
 #include "src/export/wordexport.h"
-#include "src/ocr/ocrengine.h"
 #include "src/render/rendercache.h"
 #include "src/services/documentoutput.h"
 #include "src/services/filechangenotice.h"
 #include "src/services/foregroundjobs.h"
+#include "src/services/ocrsession.h"
 #include "src/services/searchsession.h"
 #include "src/services/wordexportsession.h"
 #include "src/translate/keystore.h"
@@ -43,7 +43,6 @@
 
 class DocumentEditor;
 class FindBar;
-class OcrDialog;
 class OutlinePanel;
 class PageRenderer;
 class PageView;
@@ -462,10 +461,6 @@ private:
     // Bumped whenever a result in flight would be an answer to an old question.
     void invalidateRenders();
 
-    // The box the user dragged over a text-free part of a page: rendered at a
-    // size of its own, then recognized, then answered in a window.
-    void onRegionCaptured(int page, QRectF points);
-
     // A link clicked in the reading tool: jump to the page it names, or -- for
     // an external one -- ask first and then hand the URL to the browser.
     void onLinkActivated(const Link &link);
@@ -473,12 +468,6 @@ private:
     // Whether a scan of this tab's document is still running, for the reload
     // that has to wait for it. See drainRenders().
     bool searchRunning() const;
-    // Runs the recognition off the UI thread and fills the window in when it
-    // is done. The crop is copied into the worker; the window is watched with
-    // a QPointer, because the user may close it first. When `thenTranslate` is
-    // set (the translate tool boxing a picture), the recognized words are sent
-    // straight to a translation and `dialog` is null.
-    void startRecognition(const QImage &crop, QPointer<OcrDialog> dialog, bool thenTranslate = false);
 
     // Shows the sidebar only when the reader asked for it *and* the document has
     // bookmarks -- the one place those two conditions meet.
@@ -578,6 +567,12 @@ private:
     // exists to prevent. Its flag is set first, so that the wait is one page
     // rather than a whole document -- both of those live with the session.
     std::unique_ptr<WordExportSession> wordExport;
+
+    // The box the reader drags on a page: the crop's own render, the recognizer,
+    // and the window the answer goes into. It is not one of the jobs
+    // drainRenders() stops for, and why not is written at the top of
+    // src/services/ocrsession.h.
+    std::unique_ptr<OcrSession> ocr;
 
     Document::Status status = Document::Status::FileError;
     bool opened = false;

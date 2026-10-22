@@ -313,8 +313,10 @@ set(XYZPDF_SOURCES
     src/services/documentoutput.h
     src/services/documentoutput.cpp
     src/services/filechangenotice.h
-    src/services/foregroundjobs.h
     src/services/filechangenotice.cpp
+    src/services/foregroundjobs.h
+    src/services/ocrsession.h
+    src/services/ocrsession.cpp
     src/services/searchsession.h
     src/services/searchsession.cpp
     src/services/wordexportsession.h
@@ -797,6 +799,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/render/rendercache.cpp
                 src/services/documentoutput.cpp
                 src/services/filechangenotice.cpp
+                src/services/ocrsession.cpp
                 src/services/searchsession.cpp
                 src/services/wordexportsession.cpp
                 src/theme/thememanager.cpp
@@ -846,6 +849,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/render/rendercache.cpp
                 src/services/documentoutput.cpp
                 src/services/filechangenotice.cpp
+                src/services/ocrsession.cpp
                 src/services/searchsession.cpp
                 src/services/wordexportsession.cpp
                 src/settings/settingsdialog.cpp

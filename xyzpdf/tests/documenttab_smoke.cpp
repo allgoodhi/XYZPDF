@@ -43,6 +43,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
 #include <QIcon>
@@ -343,6 +344,67 @@ int main(int argc, char **argv)
         tab.resize(900, 700);
         waitFor([] { return false; }, 200);
         check(waitFor([view] { return view->isRendered(0); }), "and back");
+    }
+
+    // ---- reading the file again (docs/review-03.md §3.4) ----
+    //
+    // For the document that is being regenerated while it is being read. The
+    // three things worth pinning are not "it reopens": they are that the
+    // reader is put back where they were, that a file which has gone does not
+    // take the document off the screen, and that a job standing on this object
+    // says no rather than pulling the floor out (§100's ForegroundJob).
+    {
+        QTemporaryDir scratch;
+        check(scratch.isValid(), "setup: a scratch folder for the reload");
+        const QString copy = scratch.filePath(QStringLiteral("reload-me.pdf"));
+        check(QFile::copy(path, copy), "setup: a copy of the fixture to read and then delete");
+
+        check(tab.open(copy) == Document::Status::Ready, "the copy opens");
+        view->goToPage(1);
+        tab.setZoom(1.5);
+        tab.rotateBy(90);
+        check(waitFor([&tab] { return tab.currentPage() == 1; }), "the reader is on page 2 of it");
+
+        QString error;
+        check(tab.reload(&error), QStringLiteral("it reads again (%1)").arg(error));
+        check(tab.isOpen(), "and is still open");
+        check(tab.currentPage() == 1, "on the page the reader was on");
+        check(qFuzzyCompare(tab.zoom(), 1.5),
+              QStringLiteral("at the zoom they had set (%1)").arg(tab.zoom()));
+        check(tab.rotation() == 90,
+              QStringLiteral("and the way up they had turned it (%1)").arg(tab.rotation()));
+        check(waitFor([view] { return view->isRendered(1); }), "and the page is drawn again");
+
+        // A job standing on the tab: the same guard the window uses.
+        {
+            const DocumentTab::ForegroundJob job(&tab);
+            QString busy;
+            check(!tab.reload(&busy), "a reload is refused while a foreground job is running");
+            check(!busy.isEmpty(), "and says why");
+        }
+
+        // ---- and the file cannot go, which is the other half of §3.4 ----
+        //
+        // This started out as "delete it under the reader and check the reload
+        // refuses without emptying the tab". The delete fails: PDFium opens
+        // the file without FILE_SHARE_DELETE, so for as long as a document is
+        // on screen Windows will not let anyone remove or replace it -- §66
+        // measured that for the preview pane and fixed it there by reading a
+        // copy; the main window still holds the reader's own file.
+        //
+        // So the branch in reload() that answers "it is not there any more" is
+        // **not reachable from here**, and the assertion below is the reason
+        // why, pinned. If somebody makes the main window read a copy too, this
+        // line goes red -- and that is the moment to come back and test the
+        // branch properly.
+        check(!QFile::remove(copy),
+              "the open document cannot be deleted out from under the reader (PDFium holds the "
+              "handle; see §66 and docs/review-03.md §3.4)");
+        check(tab.isOpen() && tab.pageCount() == 2, "and it is still open and whole");
+
+        check(tab.open(path) == Document::Status::Ready, "the fixture is back for what follows");
+        tab.setZoomMode(ZoomController::Mode::FitWidth);
+        view->setRotation(0);
     }
 
     // ---- the properties dialog (PLAN M2) ----

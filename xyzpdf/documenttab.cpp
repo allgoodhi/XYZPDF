@@ -1197,6 +1197,65 @@ DocumentEditor *DocumentTab::editSession()
     return editor.get();
 }
 
+bool DocumentTab::reload(QString *error)
+{
+    const auto refuse = [error](const QString &why) {
+        if (error)
+            *error = why;
+        return false;
+    };
+
+    if (!opened)
+        return refuse(tr("这个标签里没有打开的文档。"));
+    if (hasForegroundJob())
+        return refuse(tr("这个标签正在打印或导出，完成之后才能重新加载。"));
+    if (hasUnsavedEdits()) {
+        // Asked rather than refused outright: the edits are a list of
+        // operations against the pages of the document that is about to be
+        // replaced, so they cannot survive this -- but it is the reader's call.
+        const auto answer = WindowDialogs::question(
+            window(), tr("重新加载"),
+            tr("「%1」还带着没有写进任何文件的修改：%2。"
+               "\n\n重新加载会把这些修改丢掉。要继续吗？")
+                .arg(QFileInfo(documentPath()).fileName(), pendingEditsSummary()),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return refuse(QString());
+    }
+
+    const QString path = documentPath();
+    // Asked before the open rather than after it: open() empties the tab on a
+    // failure, which is right for "open this other file" and wrong for "read
+    // this one again" -- a file that has been deleted or is halfway through
+    // being rewritten would take the document off the screen.
+    if (!QFileInfo::exists(path))
+        return refuse(tr("%1 不在了，所以没有可以重新加载的东西。").arg(QFileInfo(path).fileName()));
+
+    const int page = pageView->currentPage();
+    const double zoom = pageView->zoom();
+    const ZoomController::Mode mode = pageView->zoomMode();
+    const PageLayout::Mode layout = pageView->layoutMode();
+    const int rotation = pageView->rotation();
+    const QString password = documentPassword;
+
+    if (open(path, password) != Document::Status::Ready) {
+        const QString why = lastError();
+        return refuse(why.isEmpty() ? tr("重新加载 %1 失败。").arg(QFileInfo(path).fileName()) : why);
+    }
+
+    pageView->setLayoutMode(layout);
+    if (mode == ZoomController::Mode::Percent)
+        pageView->setZoom(zoom);
+    else
+        pageView->setZoomMode(mode);
+    pageView->setRotation(rotation);
+    // Clamped by the new document's length, which is the whole reason this is
+    // a page number: a file that was regenerated shorter has no page 40.
+    if (page > 0)
+        pageView->goToPage(qMin(page, pageCount() - 1));
+    return true;
+}
+
 PropertiesDialog::Info DocumentTab::propertiesInfo() const
 {
     PropertiesDialog::Info info;

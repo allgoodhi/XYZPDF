@@ -568,6 +568,30 @@ void MainWindow::buildMenus()
     });
     fileMenu->addAction(exportImagesAction);
 
+    // Beside the exports rather than beside Open: it is a thing done to the
+    // document that is already open, and F5 is the key every reader uses for
+    // it.
+    reloadAction = makeAction(tr("重新加载(&L)"), QKeySequence(QStringLiteral("F5")));
+    reloadAction->setObjectName(QStringLiteral("reloadAction"));
+    reloadAction->setToolTip(tr("把这个文件再读一遍，回到当前这一页"));
+    connect(reloadAction, &QAction::triggered, this, [this] {
+        DocumentTab *tab = currentTab();
+        if (!tab)
+            return;
+        QString error;
+        if (tab->reload(&error)) {
+            setStatusMessage(tr("已重新加载 %1").arg(QFileInfo(tab->documentPath()).fileName()),
+                             4000);
+            updateForCurrentTab();
+            return;
+        }
+        // An empty reason is the reader having said no to the question the tab
+        // asked them; there is nothing to report about a thing they declined.
+        if (!error.isEmpty())
+            WindowDialogs::warning(this, tr("重新加载"), error);
+    });
+    fileMenu->addAction(reloadAction);
+
     // Last of the things done to the file as a whole, and before the separator
     // that closes it: this is where every other reader keeps it.
     propertiesAction = makeAction(tr("属性(&R)…"), QKeySequence(QStringLiteral("Ctrl+D")));
@@ -2210,7 +2234,7 @@ void MainWindow::updateForCurrentTab()
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
-                            propertiesAction,
+                            propertiesAction, reloadAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,
                             watermarkAction, bookmarkAction,

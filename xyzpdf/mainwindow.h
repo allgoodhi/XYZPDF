@@ -251,6 +251,7 @@ private:
     QAction *printAction = nullptr;
     QAction *exportImagesAction = nullptr;
     QAction *propertiesAction = nullptr;
+    QAction *reloadAction = nullptr;
     // 文档: the list of edits this tab is holding, seen from its three ends --
     // what can be recorded, what the list can be moved back to, and the one
     // command that writes a file.

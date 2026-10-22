@@ -238,6 +238,22 @@ public:
     // with a cancel-able progress dialog, like printing.
     void exportImages();
 
+    // Reads the open file again, putting the reader back where they were.
+    //
+    // For the document that is being regenerated while it is being read -- a
+    // LaTeX or Word export, which is most of why a reader reaches for F5 --
+    // and the only way to see a change on disk short of closing the tab
+    // (docs/review-03.md §3.4). Returns false, having said why, when there is
+    // nothing to read again: no document, a file that has gone, pending edits
+    // the reader has not agreed to lose, or a print or export standing on this
+    // object (ForegroundJob).
+    //
+    // Page, zoom, zoom mode, layout and rotation are carried across. The page
+    // number rather than the scroll position: a regenerated document has a
+    // different length, and a pixel offset into the old one points at nothing
+    // in the new.
+    bool reload(QString *error);
+
     // What the file says about itself, in a dialog (PLAN M2's 文档属性对话框).
     //
     // Here rather than in MainWindow because the answers come from the backend,

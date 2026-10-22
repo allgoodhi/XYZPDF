@@ -139,6 +139,22 @@ void SplitPagesDialog::updateSummary()
         line += tr("\n\n这份文档有表单字段：拆出来的每一份只带着它自己那些页上字段的答案，"
                    "别的页上填的内容不会跟着过去（字段本身在每份里都还登记着）。");
     }
+    // §47, and the case a split is the only way to make: a thread that is perfectly legal inside
+    // one document -- a reply on page 12 answering a note on page 3 -- stops being one the moment
+    // the two pages are written as two files. Counted from the number in the box, so changing it
+    // changes the sentence before anything is pressed (§80's rule).
+    if (const int severed = editor ? editor->repliesAtRiskForSplit(size) : 0; severed > 0) {
+        line += tr("\n\n这 %n 条回答跟它们所回答的那条批注会被拆到两个文件里去，所以在每一份里都只成"
+                   "一条独立的批注（写的字都还在）。",
+                   nullptr, severed);
+    }
+    // The packet describes the whole document's form, and no piece is the whole document: each of
+    // them would carry every answer typed anywhere in it, which is what §55 measured coming out of
+    // a split. A save that writes pieces writes no XFA into any of them.
+    if (editor && editor->hasXfa()) {
+        line += tr("\n\n这份文档还带着一份 XFA 表单：拆出来的文件里不会再有它，别的阅读器会改用表单"
+                   "字段那一份。");
+    }
     // Said every time, like the other three dialogs here do, and more needed here than
     // there: a split is the one entry in the list that writes no page differently, so the
     // only thing it changes is how many files come out at the end.

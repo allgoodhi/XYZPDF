@@ -713,6 +713,8 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         opened = false;
         documentPassword.clear();
         formFieldsInSource = false;
+        xfaInSource = false;
+        dynamicXfaInSource = false;
         // The tab is on no file now, and the old file's changes are no longer
         // this tab's to report -- including the failure that may have been
         // caused by a half-written replacement of that very file.
@@ -791,12 +793,16 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
     // That reading already happens inside DocumentEditor::open() for the writer's sake, so the
     // sidebar costs no second pass over the file.
     formFieldsInSource = false;
+    xfaInSource = false;
+    dynamicXfaInSource = false;
     sourceOutlineRows.clear();
     {
         DocumentEditor probe;
         QString ignored;
         if (probe.open(path, password, &ignored)) {
             formFieldsInSource = probe.hasFormFields();
+            xfaInSource = probe.hasXfa();
+            dynamicXfaInSource = probe.hasDynamicXfa();
             sourceOutlineRows = probe.sourceOutlineRows();
         }
     }

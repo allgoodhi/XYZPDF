@@ -230,10 +230,23 @@ public:
     // drawn, the least this program can do is say so instead of showing a
     // blank box and letting the reader believe the file is empty.
     //
-    // The answer comes from qpdf, in one catalogue lookup at open time: 0 ms on
-    // ordinary files and 22 ms on a 600-page one, measured beside the ~27 ms
-    // the open already spends reading every page's size.
+    // The answer comes from qpdf, in one catalogue lookup at open time. The pass that answers this
+    // and the two below was re-measured when they were added: 2 ms for a 40-page file and 24 ms for
+    // a 600-page one (tests/documenttab_smoke.cpp prints it), against the 22 ms §77 recorded for
+    // the same open before it carried the XFA and the annotation-thread readings.
     bool hasFormFields() const { return formFieldsInSource; }
+
+    // Whether the open document carries its form a second time, as XFA -- and whether that XFA is
+    // the dynamic kind, whose pages no reader can draw without running the packet.
+    //
+    // Asked from the same one open-time reading as hasFormFields() above, because this version
+    // neither displays nor edits what is in there, and 文档 says so on the way in rather than
+    // letting a reader find an empty-looking page. The two answers are separate because the two
+    // situations are not the same size: an XFA document with static AcroForm fields underneath the
+    // packet still shows those fields in another reader, while a dynamic one generally shows a
+    // single "please wait" page there.
+    bool hasXfa() const { return xfaInSource; }
+    bool hasDynamicXfa() const { return dynamicXfaInSource; }
 
     // Whether the thumbnail strip is showing pending edits rather than the file
     // as it is on disk (docs/review-03.md §1.3). The main view always shows the
@@ -562,6 +575,9 @@ private:
     int foregroundJobs = 0;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
+    // What the open-time probe answered about XFA, kept for hasXfa() / hasDynamicXfa() above.
+    bool xfaInSource = false;
+    bool dynamicXfaInSource = false;
     // The file's own bookmarks as qpdf read them at open: title, level, page and the destination
     // exactly as written. Qt's bookmark model, which fills the sidebar, has no place inside a page
     // for the shapes real books use, so the panel's rows are joined against these by title and

@@ -412,6 +412,47 @@ int main(int argc, char **argv)
             // asks for the singular as well and compares the two with the digits
             // masked, which is what catches an English plural of one.
             { "SearchPanel", "还有 %n 处没有列出", 1 },
+            // F3's two counted sentences -- §47 said before the press in 删除页面, 合并文件进来 and
+            // 拆分文件. All three carry `%n`, so all three are invisible to every catalogue shape
+            // rule unless something asks the catalogue for n=1 and n=40 and compares the answers
+            // with the digits masked. Two of them share a Chinese source? No: the delete and split
+            // wordings differ (a delete costs a thread, a split sends the pair to two files), and
+            // the merge one counts the annotations on the pages coming in. Each is probed in its own
+            // context, which is the only place the pairing of wording and box is recorded.
+            { "DeletePagesDialog",
+              "\n\n这 %n 条回答会失去它们所回答的那条批注，保存出来就成了各自独立的批注（写的字都还"
+              "在）。",
+              1 },
+            { "MergePagesDialog",
+              "\n\n这些页上有 %n 条是对另一条批注的回答：合并只把页上的批注带进来，带不进它们之间的"
+              "联系，保存出来每一条都成了各自独立的批注（写的字都还在）。",
+              1 },
+            { "SplitPagesDialog",
+              "\n\n这 %n 条回答跟它们所回答的那条批注会被拆到两个文件里去，所以在每一份里都只成一条"
+              "独立的批注（写的字都还在）。",
+              1 },
+            // And the five that say the same thing about XFA without a number in them: the two the
+            // status line chooses between, and the three box sentences. Not shape-rule bait the way
+            // a `%n` row is, but they are the newest strings in the program and a sweep that stops
+            // at the counted ones is how an untranslated sentence reaches an English screen.
+            { "MainWindow",
+              "已打开 %1 —— 这份文档的表单还有一份 XFA 写法，本版既不显示也不编辑它的内容（屏幕上"
+              "看的是字段那份）。" },
+            { "MainWindow",
+              "已打开 %1 —— 这是一份动态 XFA 文档：正文要由支持 XFA 的阅读器现画，本版既不显示也不"
+              "编辑它的内容；不含 XFA 的阅读器打开它，一般只看到一页「请稍候」之类的话。" },
+            { "DeletePagesDialog",
+              "\n\n这份文档还带着一份 XFA 表单：删过页面的文件里不会再有它，别的阅读器会改用表单字"
+              "段那一份。" },
+            { "MovePagesDialog",
+              "\n\n这份文档还带着一份 XFA 表单：重排过页面的文件里不会再有它，别的阅读器会改用表单"
+              "字段那一份。" },
+            { "MergePagesDialog",
+              "\n\n这份文档还带着一份 XFA 表单：合进过页面的文件里不会再有它，别的阅读器会改用表单"
+              "字段那一份。" },
+            { "SplitPagesDialog",
+              "\n\n这份文档还带着一份 XFA 表单：拆出来的文件里不会再有它，别的阅读器会改用表单字段"
+              "那一份。" },
         };
 
         for (const Probe &probe : probes) {

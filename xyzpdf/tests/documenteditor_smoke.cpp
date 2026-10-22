@@ -637,6 +637,59 @@ QString writeLinkedAnnotationsCopy(const QString &source, const QString &destina
     return destination;
 }
 
+// The same note-and-reply pair, with the note taken out of the page's /Annots and the reply left
+// naming it. This is the shape a page copy leaves behind (§47's measurement), and it is here
+// because the counting the dialogs do has to *not* see it as a thread: a reply that already answers
+// nothing is not something a request can break again.
+QString makeDanglingReplyCopy(const QString &source, const QString &destination, QString *error)
+{
+    auto rect = [](double left, double top, double right, double bottom) {
+        QPDFObjectHandle value = QPDFObjectHandle::newArray();
+        value.appendItem(QPDFObjectHandle::newReal(left));
+        value.appendItem(QPDFObjectHandle::newReal(top));
+        value.appendItem(QPDFObjectHandle::newReal(right));
+        value.appendItem(QPDFObjectHandle::newReal(bottom));
+        return value;
+    };
+    try {
+        QPDF qpdf;
+        qpdf.processFile(source.toUtf8().constData());
+        const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+        QPDFObjectHandle page = pages.at(0).getObjectHandle();
+
+        // Built as an object the page never lists rather than by removing it afterwards: an
+        // annotation only ever reachable through another's /IRT is exactly what the file holds when
+        // the page it came from is not in it.
+        QPDFObjectHandle note = QPDFObjectHandle::newDictionary();
+        note.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        note.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+        note.replaceKey("/Rect", rect(60, 700, 90, 730));
+        note.replaceKey("/Contents", QPDFObjectHandle::newString("the note no page shows"));
+        note = qpdf.makeIndirectObject(note);
+
+        QPDFObjectHandle reply = QPDFObjectHandle::newDictionary();
+        reply.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+        reply.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+        reply.replaceKey("/Rect", rect(60, 600, 90, 630));
+        reply.replaceKey("/Contents", QPDFObjectHandle::newString("a reply to nothing"));
+        reply.replaceKey("/IRT", note);
+        reply.replaceKey("/RT", QPDFObjectHandle::newName("/R"));
+        reply = qpdf.makeIndirectObject(reply);
+        reply.replaceKey("/P", page);
+
+        QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+        annots.appendItem(reply);
+        page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+        QPDFWriter writer(qpdf, destination.toUtf8().constData());
+        writer.write();
+    } catch (const std::exception &e) {
+        *error = QString::fromUtf8(e.what());
+        return {};
+    }
+    return destination;
+}
+
 // The same two annotations, but one page apart: the note (with its popup) on page 1 and the reply
 // that answers it on page 2.
 //
@@ -1455,7 +1508,9 @@ QString writeTwoNamelessFields(const QString &source, const QString &destination
 // that says the form has a page, and a dataset that carries the typed value. That is enough to
 // follow the bytes; it is not a real generator's output, and nothing here claims it is.
 QString writeXfaFieldCopy(const QString &source, const QString &destination,
-                          const QString &fieldName, const QString &fieldValue, QString *error)
+                          const QString &fieldName, const QString &fieldValue, QString *error,
+                          bool withAcroFormFields = true, bool needsRendering = false,
+                          bool withXfaPacket = true)
 {
     try {
         // One pass from the source, not writeFieldCopy followed by a second opening of the result.
@@ -1489,7 +1544,15 @@ QString writeXfaFieldCopy(const QString &source, const QString &destination,
         QPDFObjectHandle fields = QPDFObjectHandle::newArray();
         fields.appendItem(field);
         QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
-        form.replaceKey("/Fields", fields);
+        // The two shapes a dynamic XFA document is recognised by, both of them real: a form whose
+        // fields are not registered in /AcroForm /Fields at all (the packet is the only list), and
+        // /NeedsRendering set to ask the reader to draw the pages itself. Either one is enough for
+        // DocumentEditor::hasDynamicXfa(), so the two flags are separate arguments here and the
+        // tests below set one at a time.
+        if (withAcroFormFields)
+            form.replaceKey("/Fields", fields);
+        if (needsRendering)
+            form.replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
 
         const QString templateXml =
             QStringLiteral("<?xml version=\"1.0\"?><xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xfdf/"
@@ -1513,7 +1576,8 @@ QString writeXfaFieldCopy(const QString &source, const QString &destination,
         xfa.appendItem(packet);
         xfa.appendItem(QPDFObjectHandle::newString("datasets"));
         xfa.appendItem(data);
-        form.replaceKey("/XFA", xfa);
+        if (withXfaPacket)
+            form.replaceKey("/XFA", xfa);
         qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
 
         QPDFWriter writer(qpdf, destination.toUtf8().constData());
@@ -4321,11 +4385,15 @@ int main(int argc, char **argv)
                       .arg(namelessTree.unregisteredWidgets));
         }
 
-        // ---- XFA: the form's second copy, and whether anything keeps it in step ----
+        // ---- XFA: the form's second copy, and what a save now does with it ----
         //
-        // §53 and §54 both left this named and untouched. It is the same question as §51 -- what is
-        // left dangling when a page goes out -- asked of a copy of the form that lives in XML rather
-        // than in dictionaries, and that some viewers treat as the form.
+        // §53 and §54 both left this named and untouched, and §55 measured all four directions and
+        // stopped, because what to do about it was three product questions in a row. This is the
+        // answer to those: nothing in the write path can keep an XML packet in step with a page
+        // collection it cannot read, and PDF 2.0 removed XFA for that reason -- so a save whose
+        // pages changed writes no packet, and a save whose pages did not change writes one exactly
+        // as the source had it. The four measurements below are the same four §55 took, re-asserted
+        // against the rule, and the block after them is the half that must not change.
         {
             const QString xfaFile = scratch.filePath(QStringLiteral("target-with-xfa.pdf"));
             const QString xfaDonorField = scratch.filePath(QStringLiteral("donor-with-plain-field.pdf"));
@@ -4346,8 +4414,19 @@ int main(int argc, char **argv)
                                   QStringLiteral("typed in the donor"), &error)
                        .isEmpty(),
                   QStringLiteral("setup: and a donor page carrying an ordinary field: %1").arg(error));
+            // The reading the dialogs and the status line are built on, asked of the same file the
+            // write path is about: an editor that cannot say "there is a packet here" can neither
+            // drop it nor say anything about it.
+            {
+                DocumentEditor packeted;
+                check(packeted.open(xfaFile, QString(), &error),
+                      QStringLiteral("setup: the packet document opens in the editor: %1").arg(error));
+                check(packeted.hasXfa(), "and the editor knows there is an XFA packet in it");
+                check(!packeted.hasDynamicXfa(),
+                      "and does not call a packet that has AcroForm fields under it a dynamic one");
+            }
 
-            // A. the field's page deleted: does the XML follow?
+            // A. the field's page deleted: the packet goes rather than describing a page that is gone.
             DocumentEditor gone;
             check(gone.open(xfaFile, QString(), &error) && gone.deletePages({0}, &error),
                   QStringLiteral("setup: the packet document opens and loses its first page: %1")
@@ -4357,24 +4436,22 @@ int main(int argc, char **argv)
             check(gone.saveAs(goneOut, &error),
                   QStringLiteral("and the deletion is written: %1").arg(error));
             const XfaReport afterDelete = readXfa(goneOut);
-            std::cout << "MEASURE xfa delete: present=" << afterDelete.present
-                      << " pairs=" << afterDelete.pairs << " bytes="
-                      << afterDelete.text.toUtf8().size() << " still says P1="
-                      << afterDelete.text.contains(QStringLiteral("name=\"P1\""))
-                      << " still says the answer="
-                      << afterDelete.text.contains(
-                             QStringLiteral("<xfaField>typed on page 1</xfaField>"))
-                      << " pages=" << readAnnotations(goneOut).countPerPage.size() << '\n';
-            check(afterDelete.present && afterDelete.pairs == 2
-                      && afterDelete.text.contains(QStringLiteral("name=\"P1\"")),
-                  QStringLiteral("KNOWN, measured (docs §55): the packet is carried through the "
-                                 "deletion byte for byte and still describes a page this file no "
-                                 "longer has (%1 pairs in a document of %2 pages) -- nothing in the "
-                                 "write path reads XFA, and qpdf has no XFA facility at all")
+            std::cout << "MEASURE xfa delete: present=" << afterDelete.present << " pairs="
+                      << afterDelete.pairs << " bytes=" << afterDelete.text.toUtf8().size()
+                      << " pages=" << readAnnotations(goneOut).countPerPage.size()
+                      << " fields still listed=" << readAnnotations(goneOut).fields << '\n';
+            check(!afterDelete.present && afterDelete.text.isEmpty(),
+                  QStringLiteral("the packet is gone from the file a deletion wrote, instead of "
+                                 "riding through byte for byte to describe a page this document does "
+                                 "not have (%1 pairs left in a file of %2 pages)")
                       .arg(afterDelete.pairs)
                       .arg(readAnnotations(goneOut).countPerPage.size()));
+            check(readAnnotations(goneOut).countPerPage.size()
+                      == readAnnotations(xfaFile).countPerPage.size() - 1,
+                  "and the deletion itself still happened -- the packet went with the page that was "
+                  "already going, not instead of it");
 
-            // B. a split: every piece gets the whole form.
+            // B. a split: no piece carries the whole form of a document it is only part of.
             DocumentEditor apart;
             check(apart.open(xfaFile, QString(), &error) && apart.splitInto(20, &error),
                   QStringLiteral("setup: the same document is split into two: %1").arg(error));
@@ -4388,18 +4465,18 @@ int main(int argc, char **argv)
             std::cout << "MEASURE xfa pieces: one present=" << pieceOne.present << " pairs="
                       << pieceOne.pairs << " bytes=" << pieceOne.text.toUtf8().size()
                       << " ; two present=" << pieceTwo.present << " pairs=" << pieceTwo.pairs
-                      << " bytes=" << pieceTwo.text.toUtf8().size() << " same text="
-                      << (pieceOne.text == pieceTwo.text) << '\n';
-            check(pieceOne.present && pieceTwo.present && pieceOne.text == built.text
-                      && pieceTwo.text == built.text,
-                  QStringLiteral("KNOWN, measured (docs §55): both pieces carry the entire packet, "
-                                 "byte-identical to the source's -- so the form definition and every "
-                                 "answer in it reach files that hold only half the pages (%1 and %2 "
-                                 "bytes)")
+                      << " bytes=" << pieceTwo.text.toUtf8().size() << '\n';
+            check(!pieceOne.present && !pieceTwo.present,
+                  QStringLiteral("neither piece carries the packet any more -- §55 measured both "
+                                 "halves holding every answer typed anywhere in the form, which is a "
+                                 "form belonging to a document neither file is (source %1 bytes; "
+                                 "piece one now holds %2, piece two %3)")
+                      .arg(built.text.toUtf8().size())
                       .arg(pieceOne.text.toUtf8().size())
                       .arg(pieceTwo.text.toUtf8().size()));
 
-            // C. a field merged INTO the packet document: the packet says nothing about it.
+            // C. a field merged INTO the packet document: the two copies cannot be reconciled, so
+            //    only the one this program can tidy is written.
             DocumentEditor joined;
             check(joined.open(xfaFile, QString(), &error)
                       && joined.mergeFile(xfaDonorField, {0}, DocumentEditor::MoveTarget::Back, -1,
@@ -4412,20 +4489,19 @@ int main(int argc, char **argv)
                   QStringLiteral("and that is written: %1").arg(error));
             const XfaReport afterMerge = readXfa(joinedOut);
             const AnnotationReport mergedFields = readAnnotations(joinedOut);
-            std::cout << "MEASURE xfa merge in: pairs=" << afterMerge.pairs << " bytes="
-                      << afterMerge.text.toUtf8().size() << " mentions the new field="
-                      << afterMerge.text.contains(QStringLiteral("donorField"))
-                      << " acroform entries=" << mergedFields.fields << '\n';
-            check(mergedFields.fields == 2 && !afterMerge.text.contains(QStringLiteral("donorField")),
-                  QStringLiteral("the form list grows to %1 fields while the packet stays the size "
-                                 "it was and never mentions the field that arrived -- the two copies "
-                                 "of this form are now different forms (%2 bytes of XML)")
+            std::cout << "MEASURE xfa merge in: present=" << afterMerge.present << " acroform entries="
+                      << mergedFields.fields << '\n';
+            check(!afterMerge.present && mergedFields.fields == 2,
+                  QStringLiteral("the form list grows to %1 fields and the packet that never "
+                                 "mentioned the one that arrived is not written at all (it was %2 "
+                                 "bytes of XML describing only the other field)")
                       .arg(mergedFields.fields)
-                      .arg(afterMerge.text.toUtf8().size()));
+                      .arg(built.text.toUtf8().size()));
             check(pagesAsReadByTheReader(joinedOut) == pagesBefore + 1,
-                  "and Qt PDF opens the file whose two form copies disagree");
+                  "and Qt PDF opens the file whose form is now said once");
 
-            // D. a page merged OUT of the packet document: the packet does not travel with the page.
+            // D. a page merged OUT of the packet document: unchanged from §55, and for the same
+            //    reason -- XFA belongs to the document, not to the page.
             DocumentEditor plain;
             check(plain.open(source, QString(), &error)
                       && plain.mergeFile(xfaFile, {0}, DocumentEditor::MoveTarget::Back, -1, &error),
@@ -4442,11 +4518,325 @@ int main(int argc, char **argv)
                       << arrivedFields.fieldNames.join(QStringLiteral("|")).toStdString() << "]\n";
             check(!arrived.present && arrivedFields.fields == 1,
                   QStringLiteral("the page came, its field came with it, and the packet did not: "
-                                 "present=%1, %2 fields in the form list -- XFA belongs to the "
-                                 "document, not the page, so a merged-in form arrives with only half "
-                                 "of its description")
+                                 "present=%1, %2 fields in the form list -- the destination never had "
+                                 "a packet to drop, and a page copy cannot bring one")
                       .arg(arrived.present)
                       .arg(arrivedFields.fields));
+        }
+
+        // ---- the four operations that leave the page collection alone keep the packet ----
+        //
+        // The other half of the rule, and the half a write path that simply deleted XFA would pass.
+        // A rotation, a watermark, a bookmark tree and a password all change what a save writes
+        // without changing which pages there are or in what order -- so the packet still describes
+        // this document, and this program has no business rewriting a description it cannot read.
+        // Four saves, each with exactly one of the four, against the same file.
+        {
+            const QString keptFile = scratch.filePath(QStringLiteral("xfa-kept.pdf"));
+            error.clear();
+            check(!writeXfaFieldCopy(source, keptFile, QStringLiteral("xfaField"),
+                                     QStringLiteral("typed on page 1"), &error)
+                       .isEmpty(),
+                  QStringLiteral("setup: a packet document for the four keeps: %1").arg(error));
+            const XfaReport keptBuilt = readXfa(keptFile);
+            check(keptBuilt.present && keptBuilt.pairs == 2,
+                  QStringLiteral("setup: and the file for the keeps has a packet in it (%1 pairs)")
+                      .arg(keptBuilt.pairs));
+
+            // Four blocks rather than a table, because each one asks a different signature and a
+            // failure has to name the operation that caused it. Each editor takes exactly one
+            // pending operation: changesPageCollection() reads the whole list, so a second request
+            // in the same list could be one of the four that do move pages, and the "kept" reading
+            // would then be about nothing.
+            {
+                DocumentEditor turned;
+                check(turned.open(keptFile, QString(), &error)
+                          && turned.rotatePages({1}, 1, &error),
+                      QStringLiteral("setup: a rotation of one page: %1").arg(error));
+                const QString out = scratch.filePath(QStringLiteral("xfa-kept-rotate.pdf"));
+                error.clear();
+                check(turned.saveAs(out, &error),
+                      QStringLiteral("setup: the rotation is written: %1").arg(error));
+                const XfaReport kept = readXfa(out);
+                std::cout << "MEASURE xfa kept rotate: present=" << kept.present << " same="
+                          << (kept.text == keptBuilt.text) << '\n';
+                check(kept.present && kept.text == keptBuilt.text,
+                      "a save that only rotated pages still carries the packet, byte for byte");
+            }
+            {
+                DocumentEditor marked;
+                DocumentEditor::Watermark mark;
+                mark.text = QStringLiteral("XF");
+                mark.opacityPercent = 40;
+                mark.pages = {1};
+                check(marked.open(keptFile, QString(), &error)
+                          && marked.addWatermark(mark, &error),
+                      QStringLiteral("setup: a watermark on one page: %1").arg(error));
+                const QString out = scratch.filePath(QStringLiteral("xfa-kept-watermark.pdf"));
+                error.clear();
+                check(marked.saveAs(out, &error),
+                      QStringLiteral("setup: the watermark is written: %1").arg(error));
+                const XfaReport kept = readXfa(out);
+                std::cout << "MEASURE xfa kept watermark: present=" << kept.present << " same="
+                          << (kept.text == keptBuilt.text) << '\n';
+                check(kept.present && kept.text == keptBuilt.text,
+                      "a save that only drew a watermark still carries the packet");
+            }
+            {
+                DocumentEditor bookmarked;
+                check(bookmarked.open(keptFile, QString(), &error),
+                      "setup: opened for a bookmark");
+                QVector<OutlineRow> rows;
+                OutlineRow row;
+                row.title = QStringLiteral("XF bookmark");
+                row.page = 1;
+                rows.append(row);
+                check(bookmarked.setOutline(rows, &error),
+                      QStringLiteral("setup: one bookmark recorded: %1").arg(error));
+                const QString out = scratch.filePath(QStringLiteral("xfa-kept-outline.pdf"));
+                error.clear();
+                check(bookmarked.saveAs(out, &error),
+                      QStringLiteral("setup: the bookmark tree is written: %1").arg(error));
+                const XfaReport kept = readXfa(out);
+                std::cout << "MEASURE xfa kept outline: present=" << kept.present << " same="
+                          << (kept.text == keptBuilt.text) << '\n';
+                check(kept.present && kept.text == keptBuilt.text,
+                      "a save that only replaced the bookmark tree still carries the packet");
+            }
+            {
+                // Permissions only, and deliberately: an output written with a口令 would need one to
+                // read the packet back out of, and readXfa() asks for none. An empty open password
+                // still goes through setR6EncryptionParameters, so this is the same writer branch as
+                // a 加密 a reader would type -- the same `case Protection::What::Encrypt`.
+                DocumentEditor sealed;
+                check(sealed.open(keptFile, QString(), &error), "setup: opened for a password");
+                DocumentEditor::Protection permissionsOnly;
+                permissionsOnly.what = DocumentEditor::Protection::What::Encrypt;
+                check(sealed.protectWith(permissionsOnly, &error),
+                      QStringLiteral("setup: the permission bits asked for: %1").arg(error));
+                const QString out = scratch.filePath(QStringLiteral("xfa-kept-protect.pdf"));
+                error.clear();
+                check(sealed.saveAs(out, &error),
+                      QStringLiteral("setup: that is written: %1").arg(error));
+                const XfaReport kept = readXfa(out);
+                QPDF opens;
+                QString encrypted = QStringLiteral("-");
+                try {
+                    opens.processFile(out.toUtf8().constData());
+                    encrypted = QString::number(opens.isEncrypted());
+                } catch (const std::exception &) {
+                    // Left as the reading: the check below says what came out.
+                }
+                std::cout << "MEASURE xfa kept protect: present=" << kept.present << " same="
+                          << (kept.text == keptBuilt.text) << " encrypted="
+                          << encrypted.toStdString() << '\n';
+                check(encrypted == QStringLiteral("1"),
+                      QStringLiteral("setup: and the file really is the protected one "
+                                     "(isEncrypted=%1)").arg(encrypted));
+                check(kept.present && kept.text == keptBuilt.text,
+                      "a save that only changed what the file says about permission still carries "
+                      "the packet");
+            }
+        }
+
+        // ---- which packets count as *dynamic*, which is the stronger of the two sentences ----
+        //
+        // A document whose form exists only as XFA has no static picture of itself anywhere: the
+        // pages a reader sees are drawn by an XFA engine at open time, and a reader without one
+        // shows a placeholder (§55 read exactly that shape). That is a different thing to tell a
+        // reader from "the fields are in there but we do not draw them", so the two answers are
+        // separate -- and each of the two ways a packet is called dynamic is set on its own, with
+        // the third shape (the flag with no packet) beside them, because a rule with two halves
+        // joined by OR needs the case where only one of them is true.
+        {
+            struct Shape
+            {
+                const char *name;
+                bool fields;
+                bool needsRendering;
+                bool packet;
+                bool expectXfa;
+                bool expectDynamic;
+            };
+            const Shape shapes[] = {
+                // The packet with registered fields under it and no flag: the ordinary static case,
+                // which the write path drops on a page edit and the open reports with the weaker
+                // sentence.
+                { "static", true, false, true, true, false },
+                // /NeedsRendering with the fields still registered: the flag alone makes it dynamic.
+                { "needs-rendering-with-fields", true, true, true, true, true },
+                // A packet and no /Fields at all: the other half of the rule, and the shape a
+                // pure-XFA form actually has.
+                { "packet-without-fields", false, false, true, true, true },
+                // The flag with no packet: a form whose appearances a reader has to draw, which is
+                // not XFA in any sense and must not borrow the stronger sentence.
+                { "needs-rendering-without-packet", true, true, false, false, false },
+                // Neither: an ordinary AcroForm, the case every other test here has been running on.
+                { "no-xfa-at-all", true, false, false, false, false },
+            };
+            for (const Shape &shape : shapes) {
+                const QString path = scratch.filePath(
+                    QStringLiteral("xfa-shape-%1.pdf").arg(QString::fromLatin1(shape.name)));
+                error.clear();
+                check(!writeXfaFieldCopy(source, path, QStringLiteral("xfaField"),
+                                         QStringLiteral("typed on page 1"), &error, shape.fields,
+                                         shape.needsRendering, shape.packet)
+                           .isEmpty(),
+                      QStringLiteral("setup: the %1 shape is written: %2")
+                          .arg(QString::fromLatin1(shape.name), error));
+                // The file says what it says, checked before the editor is asked: without this row a
+                // generator that quietly dropped the key would make the editor's "no" look right
+                // (§82's rule that a reading of zero needs the same breath saying the file carries
+                // the thing).
+                const XfaReport built = readXfa(path);
+                check(built.present == shape.packet
+                          && (!shape.packet || built.pairs == 2),
+                      QStringLiteral("%1: the file itself carries a packet: %2, %3 pairs")
+                          .arg(QString::fromLatin1(shape.name))
+                          .arg(built.present)
+                          .arg(built.pairs));
+                DocumentEditor editor;
+                check(editor.open(path, QString(), &error),
+                      QStringLiteral("setup: the editor opens the %1 shape: %2")
+                          .arg(QString::fromLatin1(shape.name), error));
+                check(editor.hasXfa() == shape.expectXfa,
+                      QStringLiteral("%1: hasXfa() answers %2, the file says packet=%3")
+                          .arg(QString::fromLatin1(shape.name))
+                          .arg(shape.expectXfa)
+                          .arg(built.present));
+                check(editor.hasDynamicXfa() == shape.expectDynamic,
+                      QStringLiteral("%1: hasDynamicXfa() answers %2 (fields=%3, "
+                                     "/NeedsRendering=%4, packet=%5)")
+                          .arg(QString::fromLatin1(shape.name))
+                          .arg(shape.expectDynamic)
+                          .arg(shape.fields)
+                          .arg(shape.needsRendering)
+                          .arg(shape.packet));
+                check(!editor.hasDynamicXfa() || editor.hasXfa(),
+                      QStringLiteral("%1: nothing is called dynamic without a packet underneath it")
+                          .arg(QString::fromLatin1(shape.name)));
+            }
+        }
+
+        // ---- §47: what a request would cost the threads between annotations, said before it ----
+        //
+        // The counting the three dialogs put on screen. Each query is asked twice over with a
+        // different request and no operation accepted in between, because the shape this has to keep
+        // is the one §80 pinned: the number a reader acts on is the number of the request in front
+        // of them, not the number of whatever the list last took.
+        {
+            const QString threaded = scratch.filePath(QStringLiteral("at-risk-threaded.pdf"));
+            error.clear();
+            check(!writeCrossPageThreadCopy(donor, threaded, &error).isEmpty(),
+                  QStringLiteral("setup: a note on page 1 and a reply to it on page 2: %1")
+                      .arg(error));
+            const LinkReport built = readLinkedAnnotations(threaded);
+            check(built.replies == 1 && built.repliesOnAnotherPage == 1,
+                  QStringLiteral("setup: the file really carries one thread that crosses pages "
+                                 "(%1 replies, %2 across pages)")
+                      .arg(built.replies)
+                      .arg(built.repliesOnAnotherPage));
+
+            DocumentEditor editor;
+            check(editor.open(threaded, QString(), &error),
+                  QStringLiteral("setup: the threaded document opens: %1").arg(error));
+            // The thread the file carries is the one the counts below move around: with the note on
+            // page 1 of this document and the reply on page 2, a request that names page 1 has a
+            // cost and a request that names page 3 does not.
+
+            // Delete: the target's page goes and the reply's stays -- that is the cost. Every other
+            // pairing has an answer of its own, so the number cannot be a constant the code never
+            // looked at.
+            check(editor.repliesAtRiskForDelete({0}) == 1,
+                  "taking the page that holds the note costs the reply its thread");
+            check(editor.repliesAtRiskForDelete({1}) == 0,
+                  "taking the page that holds the reply costs nothing: no standalone reply is left");
+            check(editor.repliesAtRiskForDelete({0, 1}) == 0,
+                  "and taking both leaves neither half behind to be broken about");
+            check(editor.repliesAtRiskForDelete({2}) == 0,
+                  "while a page carrying neither annotation costs the thread nothing");
+            check(editor.repliesAtRiskForDelete({}) == 0, "and an empty request says nothing");
+            check(editor.repliesAtRiskForDelete({0}) == 1,
+                  "asking again after all of those gives the same answer -- none of them was "
+                  "accepted, and nothing was remembered from the last one");
+            check(!editor.isDirty(), "and the queries left the pending list empty");
+
+            // Split: the same thread is whole or broken depending on the number in the box, and the
+            // two answers have to be different or the query is reading the file rather than the
+            // request.
+            check(editor.repliesAtRiskForSplit(1) >= 1,
+                  "每 1 页一份 sends the note's page and the reply's page to two files");
+            check(editor.repliesAtRiskForSplit(2) == 0,
+                  "每 2 页一份 leaves them in the same piece, and says so");
+            check(editor.repliesAtRiskForSplit(0) == 0,
+                  "and a piece size that is not a request at all is not a cost either");
+
+            // And the accepted request changes what the *other* query answers, which is what makes
+            // these prospective rather than cached: after the note's page is gone, a split cannot
+            // cut that thread again because the thread is already the delete's doing.
+            DocumentEditor cut;
+            check(cut.open(threaded, QString(), &error) && cut.deletePages({0}, &error),
+                  QStringLiteral("setup: a second editor, with the note's page already deleted: %1")
+                      .arg(error));
+            check(cut.repliesAtRiskForDelete({1}) == 0,
+                  "and taking the reply's page now costs nothing: the note is already gone");
+            check(cut.repliesAtRiskForSplit(1) == 0,
+                  "nor does a split of that document cut a thread this file no longer has");
+
+            // Merge: the donor's own links, read by inspectImport, counted against the pages a row
+            // of the list names. Same-page threads count here even though they do not count for a
+            // delete, because a page copy takes the annotation and not the object /IRT names (§78's
+            // merged-twice sample: two copies, no thread in either).
+            const QString linked = scratch.filePath(QStringLiteral("at-risk-linked.pdf"));
+            error.clear();
+            check(!writeLinkedAnnotationsCopy(donor, linked, &error).isEmpty(),
+                  QStringLiteral("setup: a note, its popup and a reply to it, all on page 1: %1")
+                      .arg(error));
+            QVector<DocumentEditor::ReplyLink> links;
+            int donorPages = 0;
+            error.clear();
+            check(DocumentEditor::inspectImport(linked, &donorPages, &error, nullptr, &links),
+                  QStringLiteral("setup: the linked donor is inspected: %1").arg(error));
+            const LinkReport linkedBuilt = readLinkedAnnotations(linked);
+            check(linkedBuilt.replies == 1,
+                  QStringLiteral("setup: and the file carries one thread (%1 replies)")
+                      .arg(linkedBuilt.replies));
+            check(links.size() == 1 && links.at(0).replyPage == 0 && links.at(0).targetPage == 0,
+                  QStringLiteral("the same thread, as the pair the merge box counts: reply page %1, "
+                                 "target page %2")
+                      .arg(links.isEmpty() ? -1 : links.at(0).replyPage)
+                      .arg(links.isEmpty() ? -1 : links.at(0).targetPage));
+            check(DocumentEditor::repliesAtRiskForImport(links, {0}) == 1,
+                  "merging the page it is on costs that reply its thread");
+            check(DocumentEditor::repliesAtRiskForImport(links, {1}) == 0,
+                  "while merging a page beside it costs nothing");
+            check(DocumentEditor::repliesAtRiskForImport(links, {}) == 0,
+                  "and a row that has named no page has cut no thread");
+            check(DocumentEditor::repliesAtRiskForImport(QVector<DocumentEditor::ReplyLink>{}, {0})
+                      == 0,
+                  "and a donor the reader can find no thread in is read as none");
+
+            // A donor whose thread dangles already: an annotation naming something no page shows is
+            // not a link, and the save's repair has nothing left to take off. §78's three-way
+            // reading, asked of the counting function rather than of the written file.
+            const QString dangling = scratch.filePath(QStringLiteral("at-risk-dangling.pdf"));
+            error.clear();
+            const QString danglingOut = makeDanglingReplyCopy(donor, dangling, &error);
+            check(!danglingOut.isEmpty(),
+                  QStringLiteral("setup: a reply whose /IRT names an object no page shows: %1")
+                      .arg(error));
+            QVector<DocumentEditor::ReplyLink> deadLinks;
+            int deadPages = 0;
+            QString deadError;
+            check(DocumentEditor::inspectImport(dangling, &deadPages, &deadError, nullptr,
+                                                &deadLinks),
+                  QStringLiteral("setup: the dangling donor is inspected: %1").arg(deadError));
+            check(readLinkedAnnotations(dangling).replies == 1
+                      && readLinkedAnnotations(dangling).repliesOnNoPage == 1,
+                  "and the file does carry that one already-dead thread");
+            check(deadLinks.isEmpty(),
+                  "which is a thread the counting leaves out: it is already broken, so no request "
+                  "can be the one that breaks it");
         }
 
         // ---- a field that brings its own drawing: does §54's "zero pixels" survive that? ----

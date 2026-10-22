@@ -175,6 +175,14 @@ void MovePagesDialog::updateSummary()
                       .arg(anchor + 1);
         }
     }
+    // XFA is the form's second copy, and it names its fields by page number rather than by page.
+    // A reorder adds and takes away nothing a reader can see, but it is the one operation that
+    // moves a page out from under those numbers, so the packet describes the wrong pages from the
+    // moment this is saved -- and a save that rearranged the collection writes none of it (§55).
+    if (editor && editor->hasXfa()) {
+        line += tr("\n\n这份文档还带着一份 XFA 表单：重排过页面的文件里不会再有它，别的阅读器会改用"
+                   "表单字段那一份。");
+    }
     // Same sentence the other two edit dialogs end with, for the same reason.
     summaryLabel->setText(tr("%1\n\n原来那份文件不会改动。这一步只是记下修改，"
                              "要它成为一个文件，还得走保存。")

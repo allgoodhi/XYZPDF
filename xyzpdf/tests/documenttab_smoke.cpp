@@ -2855,6 +2855,345 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- XFA and the threads between annotations: said before the press ----
+    //
+    // Two features of the same shape, so they are tested in one place. Both are a sentence a
+    // reader has to be given *while the boxes are still editable* -- F3's rule, restated from §77
+    // and §80 -- and both count off the request in front of the reader rather than off the last
+    // thing the pending list accepted. The three controls of this block are therefore all of the
+    // same kind: change the request, and the sentence has to change with it, because a line that
+    // is simply "this document has X" would pass every assertion that only checks the words.
+    //
+    // The samples are written here rather than carried in tests/fixtures: §17's rule (the fixture
+    // folder is globbed by other tests), and none of the real files has an XFA packet or a reply
+    // annotation in it.
+    {
+        QTemporaryDir scratch;
+        check(scratch.isValid(), "setup: a scratch folder for the XFA and threaded copies");
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        QString error;
+
+        // A book whose form is said twice: an AcroForm field on page 1 and a packet describing it.
+        const QString xfaBook = scratch.filePath(QStringLiteral("with-xfa.pdf"));
+        // The same, with /NeedsRendering set and no /Fields registered: the dynamic case.
+        const QString dynamicBook = scratch.filePath(QStringLiteral("dynamic-xfa.pdf"));
+        const auto buildPacket = [](const QString &source, const QString &file, bool withFields,
+                                   bool needsRendering, QString *why) -> bool {
+            try {
+                QPDF qpdf;
+                qpdf.processFile(source.toUtf8().constData());
+                QPDFObjectHandle page =
+                    QPDFPageDocumentHelper(qpdf).getAllPages().front().getObjectHandle();
+                QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+                field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+                field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+                field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+                field.replaceKey("/T", QPDFObjectHandle::newString("onOne"));
+                field.replaceKey("/V", QPDFObjectHandle::newString("typed on page 1"));
+                QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+                rect.appendItem(QPDFObjectHandle::newReal(60));
+                rect.appendItem(QPDFObjectHandle::newReal(600));
+                rect.appendItem(QPDFObjectHandle::newReal(260));
+                rect.appendItem(QPDFObjectHandle::newReal(630));
+                field.replaceKey("/Rect", rect);
+                field = qpdf.makeIndirectObject(field);
+                field.replaceKey("/P", page);
+                QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+                annots.appendItem(field);
+                page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+
+                QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+                if (withFields) {
+                    QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+                    fields.appendItem(field);
+                    form.replaceKey("/Fields", fields);
+                }
+                if (needsRendering)
+                    form.replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
+
+                const QString templateXml = QStringLiteral(
+                    "<?xml version=\"1.0\"?><xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xfdf/\">"
+                    "<template><pageSet><page name=\"P1\"/></pageSet></template></xdp:xdp>");
+                QPDFObjectHandle packet =
+                    QPDFObjectHandle::newStream(&qpdf, templateXml.toUtf8().constData());
+                packet.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
+                QPDFObjectHandle xfa = QPDFObjectHandle::newArray();
+                xfa.appendItem(QPDFObjectHandle::newString(""));
+                xfa.appendItem(packet);
+                form.replaceKey("/XFA", xfa);
+                qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+                QPDFWriter writer(qpdf, file.toUtf8().constData());
+                writer.write();
+            } catch (const std::exception &e) {
+                *why = QString::fromUtf8(e.what());
+                return false;
+            }
+            return true;
+        };
+        // A thread across two pages of one document: the note on page 1, the reply that answers it
+        // on page 2. Legal where it is, and the shape 删除页面 and 拆分文件 can break.
+        const auto buildThread = [](const QString &source, const QString &file,
+                                   QString *why) -> bool {
+            const auto rect = [](QPDF &qpdf, double left, double top, double right,
+                                 double bottom) {
+                QPDFObjectHandle value = QPDFObjectHandle::newArray();
+                value.appendItem(QPDFObjectHandle::newReal(left));
+                value.appendItem(QPDFObjectHandle::newReal(top));
+                value.appendItem(QPDFObjectHandle::newReal(right));
+                value.appendItem(QPDFObjectHandle::newReal(bottom));
+                return value;
+            };
+            try {
+                QPDF qpdf;
+                qpdf.processFile(source.toUtf8().constData());
+                const std::vector<QPDFPageObjectHelper> pages
+                    = QPDFPageDocumentHelper(qpdf).getAllPages();
+                QPDFObjectHandle first = pages.at(0).getObjectHandle();
+                QPDFObjectHandle second = pages.at(1).getObjectHandle();
+
+                QPDFObjectHandle note = QPDFObjectHandle::newDictionary();
+                note.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+                note.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+                note.replaceKey("/Rect", rect(qpdf, 60, 700, 90, 730));
+                note.replaceKey("/Contents", QPDFObjectHandle::newString("the note on page 1"));
+                note = qpdf.makeIndirectObject(note);
+                note.replaceKey("/P", first);
+                QPDFObjectHandle firstAnnots = QPDFObjectHandle::newArray();
+                firstAnnots.appendItem(note);
+                first.replaceKey("/Annots", qpdf.makeIndirectObject(firstAnnots));
+
+                QPDFObjectHandle reply = QPDFObjectHandle::newDictionary();
+                reply.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+                reply.replaceKey("/Subtype", QPDFObjectHandle::newName("/Text"));
+                reply.replaceKey("/Rect", rect(qpdf, 60, 600, 90, 630));
+                reply.replaceKey("/Contents", QPDFObjectHandle::newString("a reply on page 2"));
+                reply.replaceKey("/IRT", note);
+                reply.replaceKey("/RT", QPDFObjectHandle::newName("/R"));
+                reply = qpdf.makeIndirectObject(reply);
+                reply.replaceKey("/P", second);
+                QPDFObjectHandle secondAnnots = QPDFObjectHandle::newArray();
+                secondAnnots.appendItem(reply);
+                second.replaceKey("/Annots", qpdf.makeIndirectObject(secondAnnots));
+
+                QPDFWriter writer(qpdf, file.toUtf8().constData());
+                writer.write();
+            } catch (const std::exception &e) {
+                *why = QString::fromUtf8(e.what());
+                return false;
+            }
+            return true;
+        };
+
+        QString made;
+        check(buildPacket(book, xfaBook, true, false, &made),
+              QStringLiteral("setup: a copy of the book carrying an XFA packet: %1").arg(made));
+        check(buildPacket(book, dynamicBook, false, true, &made),
+              QStringLiteral("setup: and a dynamic one: %1").arg(made));
+        const QString threaded = scratch.filePath(QStringLiteral("threaded.pdf"));
+        check(buildThread(book, threaded, &made),
+              QStringLiteral("setup: and a copy with a reply across two pages: %1").arg(made));
+
+        // ---- what the tab knows on the way in ----
+        //
+        // The status line is MainWindow's, but the answers it says are read here, off the one
+        // qpdf probe open() already makes -- and that probe is the thing a regression could quietly
+        // stop filling in.
+        {
+            check(tab.open(xfaBook) == Document::Status::Ready,
+                  "the packet copy opens in the tab");
+            check(tab.hasXfa(), "and the tab knows there is an XFA packet in it");
+            check(!tab.hasDynamicXfa(),
+                  "but does not call a packet that has fields under it a dynamic one");
+
+            check(tab.open(dynamicBook) == Document::Status::Ready,
+                  "the dynamic copy opens");
+            check(tab.hasXfa() && tab.hasDynamicXfa(),
+                  "and both answers come back yes: no /Fields registered under the packet");
+
+            check(tab.open(book) == Document::Status::Ready, "the plain book opens again");
+            check(!tab.hasXfa() && !tab.hasDynamicXfa(),
+                  "and neither answer is claimed for a document with no packet at all");
+            check(tab.open(threaded) == Document::Status::Ready, "the threaded copy opens");
+            check(!tab.hasXfa(),
+                  "while a document full of annotations is not mistaken for one full of XFA");
+
+            // The cost of what these three answers add, measured rather than asserted -- open() is
+            // on the path a reader feels, and both readings ride the qpdf pass the tab was already
+            // making (§77 measured that pass at 22 ms for a 600-page file). A 0 here means the two
+            // added lookups are free next to it; a number is printed whatever it is, so the next
+            // person to add a third reading has a before-picture.
+            {
+                const QString big = directory + QStringLiteral("/huge.pdf");
+                QElapsedTimer clock;
+                DocumentEditor small;
+                clock.start();
+                const bool openedSmall = small.open(threaded, QString(), &error);
+                const qint64 smallMs = clock.elapsed();
+                DocumentEditor large;
+                clock.restart();
+                const bool openedLarge = large.open(big, QString(), &error);
+                const qint64 largeMs = clock.elapsed();
+                std::cout << "MEASURE open cost: 40-page threaded=" << smallMs
+                          << "ms pages=" << (openedSmall ? small.pageCount() : -1) << " | 600-page="
+                          << largeMs << "ms pages="
+                          << (openedLarge ? large.pageCount() : 0) << '\n';
+                check(openedSmall && openedLarge,
+                      "setup: both files opened for the cost reading");
+                check(smallMs < 100 && largeMs < 400,
+                      QStringLiteral("and neither reading is slow enough to be a sentence worth "
+                                     "writing about on its own: %1 ms for 40 pages, %2 ms for the "
+                                     "big one")
+                          .arg(smallMs)
+                          .arg(largeMs));
+            }
+        }
+
+        const auto saidOf = [](QDialog &box) {
+            const auto labels = box.findChildren<QLabel *>();
+            for (QLabel *label : labels) {
+                if (label->text().contains(QStringLiteral("原来那份文件")))
+                    return label->text();
+            }
+            return QString();
+        };
+        const auto rangeOf = [](QDialog &box) {
+            const auto edits = box.findChildren<QLineEdit *>();
+            for (QLineEdit *edit : edits) {
+                if (edit->placeholderText().contains(QStringLiteral("1-3")))
+                    return edit;
+            }
+            return static_cast<QLineEdit *>(nullptr);
+        };
+
+        // ---- the XFA sentence, in the four boxes whose operations drop the packet ----
+        {
+            DocumentEditor packeted;
+            check(packeted.open(xfaBook, QString(), &error),
+                  QStringLiteral("setup: the editor opens the packet copy: %1").arg(error));
+            DocumentEditor plainBook;
+            check(plainBook.open(book, QString(), &error),
+                  QStringLiteral("setup: and the plain one: %1").arg(error));
+
+            DeletePagesDialog del(&tab, 0, &packeted);
+            check(saidOf(del).contains(QStringLiteral("XFA 表单")),
+                  QStringLiteral("删除页面 says what happens to the packet: %1").arg(saidOf(del)));
+            DeletePagesDialog delPlain(&tab, 0, &plainBook);
+            check(!saidOf(delPlain).contains(QStringLiteral("XFA")),
+                  QStringLiteral("and stays out of a box that has no packet to lose: %1")
+                      .arg(saidOf(delPlain)));
+
+            MovePagesDialog mov(&tab, 0, &packeted);
+            check(saidOf(mov).contains(QStringLiteral("XFA 表单")),
+                  QStringLiteral("移动页面 says it too, because the packet names pages by number: %1")
+                      .arg(saidOf(mov)));
+            MergePagesDialog mer(&tab, &packeted);
+            // A row first, because this box answers an empty list with "还没有加上要合并进来的
+            // 文件" in place of any arithmetic -- and the packet sentence belongs to a request, so
+            // it belongs in that branch. §47's count for the merge is taken with a row below.
+            check(mer.addPaths({book}).isEmpty(), "setup: one donor row is on the list");
+            check(saidOf(mer).contains(QStringLiteral("XFA 表单")),
+                  QStringLiteral("合并文件进来 as well: %1").arg(saidOf(mer)));
+            SplitPagesDialog spl(&tab, &packeted);
+            check(saidOf(spl).contains(QStringLiteral("XFA 表单")),
+                  QStringLiteral("and 拆分文件, where every piece would have carried the whole form: %1")
+                      .arg(saidOf(spl)));
+
+            // The two boxes whose operations keep the packet keep their silence about it -- the
+            // sentence is about a cost, not about a property of the file.
+            RotatePagesDialog rot(&tab, 0, &packeted);
+            check(!saidOf(rot).contains(QStringLiteral("XFA")),
+                  QStringLiteral("旋转页面 has nothing to say, because it changes no page: %1")
+                      .arg(saidOf(rot)));
+            ProtectPagesDialog pro(&tab, &packeted);
+            check(!saidOf(pro).contains(QStringLiteral("XFA")),
+                  QStringLiteral("and neither has 加密 / 去掉口令: %1").arg(saidOf(pro)));
+        }
+
+        // ---- §47: the reply count moves with the request, before any press ----
+        {
+            DocumentEditor threaded1;
+            check(threaded1.open(threaded, QString(), &error),
+                  QStringLiteral("setup: the editor opens the threaded copy: %1").arg(error));
+
+            DeletePagesDialog del(&tab, 0, &threaded1);
+            QLineEdit *range = rangeOf(del);
+            check(range != nullptr, "setup: the range box of 删除页面");
+            if (range) {
+                range->setText(QStringLiteral("1"));
+                const QString said = saidOf(del);
+                check(said.contains(QStringLiteral("这 1 条回答会失去")),
+                      QStringLiteral("taking the note's page is said while it is still a request: %1")
+                          .arg(said));
+                range->setText(QStringLiteral("2"));
+                const QString second = saidOf(del);
+                check(!second.contains(QStringLiteral("条回答会失去")),
+                      QStringLiteral("taking the reply's own page costs no thread, and the box "
+                                     "stops saying it: %1")
+                          .arg(second));
+                range->setText(QStringLiteral("1-2"));
+                check(!saidOf(del).contains(QStringLiteral("条回答会失去")),
+                      QStringLiteral("and taking both leaves no reply behind to be standalone: %1")
+                          .arg(saidOf(del)));
+                range->setText(QStringLiteral("1"));
+                check(saidOf(del).contains(QStringLiteral("这 1 条回答会失去")),
+                      QStringLiteral("asking again says it again -- the number is this request's, "
+                                     "not the last one's: %1")
+                          .arg(saidOf(del)));
+                check(!threaded1.isDirty(),
+                      "and none of that was ever pressed: the pending list is still empty");
+            }
+
+            SplitPagesDialog spl(&tab, &threaded1);
+            auto *size = spl.findChild<QSpinBox *>();
+            check(size != nullptr, "setup: the spin box of 拆分文件");
+            if (size) {
+                size->setValue(1);
+                check(saidOf(spl).contains(QStringLiteral("会被拆到两个文件里去")),
+                      QStringLiteral("每 1 页一份 sends the note and its reply to separate files: %1")
+                          .arg(saidOf(spl)));
+                size->setValue(2);
+                check(!saidOf(spl).contains(QStringLiteral("拆到两个文件")),
+                      QStringLiteral("while 每 2 页一份 leaves the pair together, and says nothing "
+                                     "about them: %1")
+                          .arg(saidOf(spl)));
+            }
+        }
+
+        // ---- §47 in the merge box: the donor's replies, counted off the rows as they stand ----
+        {
+            DocumentEditor editor;
+            check(editor.open(book, QString(), &error),
+                  QStringLiteral("setup: a plain document to merge into: %1").arg(error));
+            MergePagesDialog box(&tab, &editor);
+            check(box.addPaths({threaded}).isEmpty(),
+                  "setup: the threaded document is on the list");
+            QString donorRange;
+            const auto rows = box.findChildren<QTableWidget *>();
+            check(!rows.isEmpty(), "setup: the list has a row for it");
+            if (!rows.isEmpty()) {
+                donorRange = rows.at(0)->item(0, 2) ? rows.at(0)->item(0, 2)->text() : QString();
+                check(!donorRange.isEmpty(),
+                      QStringLiteral("and the row spells its own whole range: %1").arg(donorRange));
+            }
+            const QString said = saidOf(box);
+            check(said.contains(QStringLiteral("条是对另一条批注的回答")),
+                  QStringLiteral("the merge box says the thread comes in broken: %1").arg(said));
+
+            // The control: the same row, a range that names neither of the two pages carrying
+            // annotations. Nothing else about the box has changed, so a count that came from the
+            // file rather than the request would still print the sentence.
+            if (!rows.isEmpty() && rows.at(0)->item(0, 2)) {
+                rows.at(0)->item(0, 2)->setText(QStringLiteral("10-12"));
+                check(!saidOf(box).contains(QStringLiteral("条是对另一条批注的回答")),
+                      QStringLiteral("and it goes when the pages named hold no reply: %1")
+                          .arg(saidOf(box)));
+                rows.at(0)->item(0, 2)->setText(donorRange);
+                check(saidOf(box).contains(QStringLiteral("条是对另一条批注的回答")),
+                      QStringLiteral("back on when the range names them again: %1").arg(saidOf(box)));
+            }
+        }
+    }
+
     // ---- 加密 / 去掉口令: the box and the editor refuse the same requests ----
     //
     // The dialog greys 确定 for exactly the requests DocumentEditor::protectWith() and

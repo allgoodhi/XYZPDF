@@ -119,6 +119,23 @@ void DeletePagesDialog::updateSummary()
         line += tr("\n\n这份文档有表单字段：字段填的答案属于它画在哪一页上，删掉的那一页上填的答案"
                    "不会出现在保存出来的文件里（字段本身还登记着）。");
     }
+    // §47, and counted off this request rather than off the last one the list accepted: the save
+    // takes the dead thread off a reply whose note's page is going (§78), which leaves the words
+    // standing as a note of their own. That is a thing the reader is about to cause, so it is said
+    // while the range box still has time to answer.
+    if (const int lost = editor ? editor->repliesAtRiskForDelete(pages) : 0; lost > 0) {
+        line += tr("\n\n这 %n 条回答会失去它们所回答的那条批注，保存出来就成了各自独立的批注"
+                   "（写的字都还在）。",
+                   nullptr, lost);
+    }
+    // XFA is the form's second copy, kept as XML that describes this document's pages by number.
+    // Take pages out and it describes a document that does not exist, and nothing in the write
+    // path can fix a copy it cannot read -- so a save whose pages changed writes none of it
+    // (docs/store-submission.md §55, and DocumentEditor::dropXfaForThisDocument()).
+    if (editor && editor->hasXfa()) {
+        line += tr("\n\n这份文档还带着一份 XFA 表单：删过页面的文件里不会再有它，别的阅读器会改用"
+                   "表单字段那一份。");
+    }
     // Said every time, because this is the first command in the program that can
     // make a document smaller, and what a reader needs to know before pressing the
     // button is that the file they opened is not the file that changes -- and that

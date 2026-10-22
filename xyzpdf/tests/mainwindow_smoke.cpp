@@ -42,6 +42,7 @@
 #include <QMimeData>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QPointF>
@@ -54,8 +55,12 @@
 #include <QToolButton>
 #include <QUrl>
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <thread>
 
 namespace {
 
@@ -177,6 +182,55 @@ bool waitFor(const std::function<bool()> &ready, int timeoutMilliseconds = 10000
     return true;
 }
 
+// Counts the viewport resizes a scrollbar coming or going causes. That is the
+// wire the fit-width feedback loop ran around: fitting a narrower page made a
+// wider one overflow, the horizontal bar appeared, the viewport lost its
+// height, the page under the middle changed, and the fit followed it back.
+class ResizeCounter : public QObject
+{
+public:
+    int count = 0;
+
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        Q_UNUSED(watched);
+        if (event->type() == QEvent::Resize)
+            ++count;
+        return false;
+    }
+};
+
+// ---- the run has to end, even when the regression does not ----
+//
+// docs/store-submission.md §100 measured the fit-width cascade at 253,000
+// resize events in 20 s; when it came back during that slice, this test did
+// not fail, it hung, and was killed by hand after 300 s with nothing printed.
+// A gate timeout is a red run, but one that names no test and no reason.
+//
+// This thread turns any overrun into a named FAIL and a non-zero exit. The
+// default is generous (120 s; this test takes a few seconds) and can be
+// shortened for experiments with XYZPDF_SMOKE_TIMEOUT_MS -- the control run
+// for the cascade below uses that.
+void armFinishWatchdog()
+{
+    int limitMilliseconds = 120000;
+    bool configured = false;
+    const int fromEnvironment =
+        qEnvironmentVariableIntValue("XYZPDF_SMOKE_TIMEOUT_MS", &configured);
+    if (configured && fromEnvironment > 0)
+        limitMilliseconds = fromEnvironment;
+
+    std::thread([limitMilliseconds] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(limitMilliseconds));
+        std::fprintf(stderr, "FAIL: mainwindow_smoke did not finish within %.1f s\n",
+                     limitMilliseconds / 1000.0);
+        std::fflush(stderr);
+        // The test is still on its way through an event loop that will not
+        // come back; waiting for any cleanup is exactly what never happens.
+        std::_Exit(1);
+    }).detach();
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -184,6 +238,7 @@ int main(int argc, char **argv)
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
 
     QApplication application(argc, argv);
+    armFinishWatchdog();
     const QString directory = argc > 1 ? QString::fromLocal8Bit(argv[1])
                                        : QStringLiteral("tests/fixtures");
     const QString pdf = directory + QStringLiteral("/text.pdf");
@@ -1052,6 +1107,101 @@ int main(int argc, char **argv)
             check(QWidget::mouseGrabber() != bar, "and letting go gives the pointer back");
         }
         blank.hide();
+    }
+
+    // ---- fit width is the document's, so changing page cannot restart it ----
+    //
+    // docs/store-submission.md §100's cascade. text.pdf is 595x842 followed by
+    // 400x500; in a window around 900 px wide, "fit width" used to fit the page
+    // being read. Fitting the narrow page made the wide one overflow, the
+    // horizontal scrollbar appeared, the viewport lost 14 px of height, the
+    // page at the middle of the viewport changed back to the wide one, the bar
+    // disappeared -- and the two states fed each other for as long as the
+    // document stayed open. §100 counted 253,000 resize events in 20 s.
+    //
+    // The fix fits the largest target in the document, so the page being read
+    // is no longer an input. This puts the view in the state that used to
+    // start the loop (second page current, then one resize event) and asks it
+    // to go quiet. The watchdog above is the other half: a regression that
+    // never returns still fails with a named line instead of a gate timeout.
+    {
+        MainWindow cascade;
+        cascade.resize(900, 700);
+        cascade.show();
+
+        const QString mixed = directory + QStringLiteral("/text.pdf");
+        dropFiles(cascade, {QUrl::fromLocalFile(mixed).toString()}, Qt::CopyAction);
+        check(waitFor([&cascade] { return currentDocumentTab(cascade) != nullptr; }),
+              "the mixed-size document is open for the fit-width cascade");
+
+        DocumentTab *tab = currentDocumentTab(cascade);
+        PageView *view = tab ? tab->view() : nullptr;
+        check(view != nullptr, "and it has a page view");
+        if (view) {
+            check(view->pageCount() == 2,
+                  QStringLiteral("with both pages laid out (%1)").arg(view->pageCount()));
+            check(waitFor([view] { return view->isRendered(0); }), "the first page is drawn");
+            // Asked for, not assumed: MainWindow restores the last session for a
+            // file it has seen, and an earlier block in this same run has
+            // already put text.pdf into fit page. The cascade needs fit width.
+            view->setZoomMode(ZoomController::Mode::FitWidth);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            check(view->zoomMode() == ZoomController::Mode::FitWidth,
+                  "and it is in fit width, the mode the cascade lives in");
+            check(view->horizontalScrollBar()->maximum() == 0,
+                  QStringLiteral("fit width leaves nothing to scroll sideways on the first page "
+                                 "(range %1)")
+                      .arg(view->horizontalScrollBar()->maximum()));
+            const double widestFit = view->zoom();
+
+            // The narrow page is the one whose fit used to overflow the other.
+            view->goToPage(1);
+            check(waitFor([view] { return view->currentPage() == 1; }),
+                  QStringLiteral("the second, narrow page is current (page %1)")
+                      .arg(view->currentPage()));
+
+            // A real geometry change is what the loop rode: the window is
+            // resized, the view is laid out again, the fit is recomputed for the
+            // page being read, and the bar that answer brings with it takes 14 px
+            // off the viewport -- which changes the page being read again.
+            ResizeCounter viewportResizes;
+            view->viewport()->installEventFilter(&viewportResizes);
+            cascade.resize(900, 701);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            cascade.resize(900, 700);
+
+            // Bounded on both sides, because the regression is "never settles":
+            // the measurement stops asking after two seconds, then listens for
+            // 400 ms of quiet. The watchdog above is the other half of this --
+            // a processEvents() that never returns cannot be reached by an
+            // assertion in the test that is stuck inside it.
+            QElapsedTimer settling;
+            settling.start();
+            while (settling.elapsed() < 2000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            const int afterSettling = viewportResizes.count;
+            QElapsedTimer quiet;
+            quiet.start();
+            while (quiet.elapsed() < 400)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            const int duringQuiet = viewportResizes.count - afterSettling;
+
+            check(duringQuiet == 0,
+                  QStringLiteral("the view stops resizing itself once fitted (%1 resize event(s) "
+                                 "in a quiet 400 ms, %2 while settling)")
+                      .arg(duringQuiet)
+                      .arg(afterSettling));
+            check(view->horizontalScrollBar()->maximum() == 0,
+                  QStringLiteral("and no sideways scrollbar is left over (range %1)")
+                      .arg(view->horizontalScrollBar()->maximum()));
+            check(qFuzzyCompare(view->zoom(), widestFit),
+                  QStringLiteral("fit follows the widest page, not the one being read (%1 "
+                                 "against %2)")
+                      .arg(view->zoom())
+                      .arg(widestFit));
+            view->viewport()->removeEventFilter(&viewportResizes);
+        }
+        cascade.hide();
     }
 
     // ---- fullscreen and presentation ----

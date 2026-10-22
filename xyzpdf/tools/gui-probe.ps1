@@ -5,9 +5,12 @@
     round by round (three rounds were lost on 2026-09-27 to "the export line never
     appears", which was only ever a wrong property read -- see Get-StatusName).
 
-    It drives the *dev* build by default and needs no keyboard, no clipboard and no
-    foreground window: menu rows come from ExpandCollapse, our own Qt fields are read as
-    UIA properties, and the one native dialog in the way is driven with Win32 messages.
+    It drives the *dev* build by default. Most modes need no keyboard and no clipboard: menu
+    rows come from ExpandCollapse, our own Qt fields are read as UIA properties, and the one
+    native dialog in the way is driven with Win32 messages. The five modes added on 2026-10-22
+    (propsdialog, findwhole, snapshot, strippreview, mnemonics) do use synthesized keys, and
+    snapshot also owns the clipboard; all five verify the foreground before typing, because a
+    key sent to somebody else's window is not a reading.
 
     Modes:
       inventory      every non-empty Name in the window, with its control type. This is
@@ -68,6 +71,26 @@
                      through its own Value pattern, and which row the menu shows once the request is
                      recorded. exec() blocks, so this is the only route through
                      menu -> dialog -> setOutline that any check has ever taken.
+      propsdialog    press Ctrl+D and read the properties window back: its class, the file name it
+                     states, the Pages label and a standalone number that must equal the count the
+                     main window's own status bar shows. -Control expects one page too many, so the
+                     page-count verdict must exit 1. Needs tests/fixtures/many-pages.pdf (40 pages).
+      findwhole      type PDF into the find bar, then press the Whole words box with a REAL click and
+                     require the count to go from two hits to none (text.pdf holds XYZPDF twice).
+                     -Control clicks Match case instead, which changes neither, and exits 1.
+      snapshot       press Ctrl+Shift+5, drag across picture.pdf, and require three things to agree:
+                     the toolbar toggle is On, the status line names W x H, and the clipboard image
+                     has that exact size and carries the page's red block. -Control skips the
+                     shortcut and exits 1. NOTE: this overwrites the user's clipboard.
+      strippreview   open the sidebar, measure the first thumbnail's red block, rotate the current
+                     page through the dialog, then require the strip tab to read "Thumbnails
+                     (preview of changes)" and the block to turn portrait. -Control skips the
+                     rotation and exits 1. The page itself is white on white, so the red block is the
+                     measurable half of "the thumbnail is now landscape".
+      mnemonics      press Alt+letter for every top-level menu (f/e/v/d/g/w/h in English,
+                     f/e/v/d/g/n/h in Chinese) and require exactly that item expanded; the other
+                     language's Window letter and l must expand nothing. -Control skips the Go press
+                     and exits 1.
 
     Examples (from the repository root):
       powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1 -Mode inventory
@@ -77,6 +100,12 @@
       ... -Mode langswitch -Installed -To English
       ... -Mode outlinetree -Doc H:/tmp/outline/real-book.pdf -Log H:/tmp/outline/outlinetree.txt
       ... -Mode bookdialog -Doc H:/tmp/outline/real-book.pdf -Log H:/tmp/outline/bookdialog.txt
+      ... -Mode propsdialog -Doc xyzpdf/tests/fixtures/many-pages.pdf
+      ... -Mode findwhole -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode snapshot -Doc xyzpdf/tests/fixtures/picture.pdf
+      ... -Mode strippreview -Doc xyzpdf/tests/fixtures/picture.pdf
+      ... -Mode mnemonics -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode findwhole -Control -Doc xyzpdf/tests/fixtures/text.pdf   (the control must exit 1)
 
     -Log takes a UTF-8 file, which is the only way to read a Chinese interface back from this
     console (it is GBK, so the window title alone arrives as mojibake). Write such a path with
@@ -84,7 +113,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -119,6 +148,15 @@ param(
   # Leave the language switched instead of putting it back. Off by default: the installed copy is
   # the reader's, and a probe that changes it has to change it back.
   [switch]$Keep,
+  # CONTROL RUN for the five modes added on 2026-10-22. The rule in this project is that every
+  # new assertion has to be shown able to fail (sec.99: a control that cannot change the outcome
+  # proves the opposite of what it looks like). Those five modes are harness work, so their
+  # control cannot be "break the product and restore it" -- the product must stay untouched.
+  # Instead -Control takes a deliberately wrong route while keeping the SAME verdict: skip the
+  # Ctrl+Shift+5 press, click Match case instead of Whole words, expect one page too many, skip
+  # the rotation, skip one Alt key. Each of those must exit 1; a control that stays green means
+  # the verdict was never looking at the screen. Only those five modes read this switch.
+  [switch]$Control,
   # Run against the installed package instead of the build tree. It cannot be started by exe
   # path (WindowsApps blocks that) and takes no file argument (no AppExecutionAlias is declared),
   # so an installed run has to open its own document through the native picker first.
@@ -137,6 +175,10 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Drawing
+# SendKeys and the clipboard. The modes that use them are the only ones that need a foreground
+# window, and each of them checks the foreground before typing (a key sent to somebody else's
+# window is not a reading). Windows PowerShell 5.1 starts in STA, which the clipboard needs.
+Add-Type -AssemblyName System.Windows.Forms
 
 Add-Type @"
 using System;
@@ -171,6 +213,21 @@ public static class W32 {
     SetCursorPos(x, y);
     mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);
     System.Threading.Thread.Sleep(60);
+    mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
+  }
+  // The snapshot tool acts on a drag, not a click: a press, a path, a release. Twelve steps
+  // because Qt delivers the intermediate moves as mouse events and the box is built from them;
+  // a press and release at two points with nothing between has not been measured here.
+  public static void Drag(int x1, int y1, int x2, int y2) {
+    SetCursorPos(x1, y1);
+    System.Threading.Thread.Sleep(120);
+    mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);
+    System.Threading.Thread.Sleep(150);
+    for (int i = 1; i <= 12; i++) {
+      SetCursorPos(x1 + (x2 - x1) * i / 12, y1 + (y2 - y1) * i / 12);
+      System.Threading.Thread.Sleep(25);
+    }
+    System.Threading.Thread.Sleep(150);
     mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
   }
 }
@@ -913,6 +970,213 @@ function Open-PackagedDocument($theApp, [string]$rowName) {
   }
   Say '  the picker was accepted but no window naming the file appeared'
   return $false
+}
+
+function MenuBarItems($win) {
+  # Re-enumerated for every reading rather than held: the top-level items are the ones whose
+  # ExpandCollapseState answers "did this Alt+letter open a menu", and holding their elements
+  # across a menu open/close is the kind of stale handle sec.45 warned about.
+  foreach ($b in @(FindType $win $CT::MenuBar)) {
+    return @($b.FindAll($TS::Children, $ANY))
+  }
+  return @()
+}
+function PageStatusCount($procId) {
+  # The page count the main window states itself, in the status bar's "1 / 40" label. The
+  # properties dialog is compared against THIS and not against a number written here: a
+  # hard-coded 40 would pass on the 40-page fixture whether or not the dialog was read at all.
+  foreach ($sb in @(FindType (Window $procId) $CT::StatusBar)) {
+    foreach ($t in @(FindType $sb $CT::Text)) {
+      if ($t.Current.Name -match '^[0-9]+ / ([0-9]+)$') { return [int]$Matches[1] }
+    }
+  }
+  return -1
+}
+function FindClass($procId, [string]$className) {
+  # Two layers, both required: sec.85 measured the delete box inside the main window's subtree
+  # while sec.87 measured the merge box only among the process's own top-level windows. The
+  # class name is the widget's C++ class, which no translation can change; the title is ours.
+  $main = Window $procId
+  if ($main) {
+    foreach ($e in @(FindType $main $CT::Window)) {
+      if ($e.Current.ClassName -eq $className) { return $e }
+    }
+  }
+  foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $procId))))) {
+    if ($w.Current.ClassName -eq $className) { return $w }
+  }
+  # Last resort: a Qt dialog that is not typed Window in the subtree has been seen here before
+  # (the first properties round found it only by scanning every descendant). The class name is
+  # still the widget's C++ class, so this cannot match a translation.
+  if ($main) {
+    foreach ($e in @($main.FindAll($TS::Descendants, $ANY))) {
+      if ($e.Current.ClassName -eq $className) { return $e }
+    }
+  }
+  return $null
+}
+function WaitClass($procId, [string]$className, [int]$rounds = 20) {
+  for ($k = 1; $k -le $rounds; $k++) {
+    $d = FindClass $procId $className
+    if ($d) { Say ('  ' + $className + ' found on round ' + $k); return $d }
+    Start-Sleep -Milliseconds 400
+  }
+  return $null
+}
+function WaitClassGone($procId, [string]$className, [int]$rounds = 20) {
+  for ($k = 1; $k -le $rounds; $k++) {
+    if (-not (FindClass $procId $className)) { return $true }
+    Start-Sleep -Milliseconds 400
+  }
+  return $false
+}
+function FindAuto($root, [string]$id) {
+  # A widget's objectName is the stable name for a control whose label is translated
+  # (findField / findCaseBox / findWholeBox / findCount), but Qt puts the whole object path in
+  # UIA's AutomationId -- QApplication.mainWindow...DocumentTab.findBar.findField -- so an exact
+  # equality condition finds nothing (measured 2026-10-22). Compare the tail segment instead.
+  foreach ($e in @($root.FindAll($TS::Descendants, $ANY))) {
+    $aid = $e.Current.AutomationId
+    if ($aid -eq $id -or $aid -like ('*.' + $id)) { return $e }
+  }
+  return $null
+}
+function WaitName($e, [string]$want, [int]$rounds = 24) {
+  # A QLabel's UIA Name follows its text, and the search that fills it runs on a worker; the
+  # count therefore arrives some time after the needle is typed. Poll for the exact sentence
+  # instead of sleeping and reading once -- a single read at the wrong moment looks identical
+  # to a label that never changed.
+  for ($k = 1; $k -le $rounds; $k++) {
+    if ($e.Current.Name -eq $want) { return $true }
+    Start-Sleep -Milliseconds 250
+  }
+  return $false
+}
+function TabNamed($win, [string[]]$needles) {
+  # Exact names, because the sidebar's tab texts are the thing under test: a fuzzy match would
+  # accept "Thumbnails (preview of changes)" when the plain tab was expected.
+  foreach ($t in @(FindType $win $CT::TabItem)) {
+    foreach ($n in $needles) {
+      if ($t.Current.Name -eq $n) { return $t }
+    }
+  }
+  return $null
+}
+function ThumbItems($win) {
+  # The strip is the QListView whose widget class is ThumbnailPanel. Found by class, not by
+  # the tab title: that title is translated and changes spelling once there is an edit to
+  # preview, while the class name cannot change. Its rows are direct children (measured).
+  foreach ($e in @(FindType $win $CT::List)) {
+    if ($e.Current.ClassName -ne 'ThumbnailPanel') { continue }
+    return @($e.FindAll($TS::Children, $ANY) | Where-Object {
+      $_.Current.ControlType.ProgrammaticName -eq 'ControlType.ListItem' })
+  }
+  return @()
+}
+function ThumbRed($win, [string]$tag) {
+  # Measure the red block inside the first thumbnail, and say where the picture came from.
+  # Returns a hashtable rather than printing a result: a helper that writes a line to the
+  # pipeline makes its return value an array (the mistake that turned StatusInk's count into
+  # a two-element array). The caller prints the fields.
+  #
+  # Two subtleties, both measured:
+  #  * the picture is anchored to the window FRAME, so the row's UIA rectangle has to be
+  #    mapped with GetWindowRect's origin, never the client rectangle (sec.89/91);
+  #  * the row's bottom carries the page-number label, which is painted RED when selected.
+  #    Scanning the whole row once produced a 94x168 bbox for a block that is 94x77; the top
+  #    78% holds the thumbnail itself and none of that label.
+  $items = @(ThumbItems $win)
+  if ($items.Count -eq 0) { return @{ ok = $false; why = 'no row in ThumbnailPanel' } }
+  $item = $items[0]
+  $ir = $item.Current.BoundingRectangle
+  $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+  $gr = [W32]::Rect($hwnd)
+  $co = [W32]::ClientOrigin($hwnd)
+  $fw = [int]($gr.right - $gr.left)
+  $fh = [int]($gr.bottom - $gr.top)
+  $left = [int][math]::Floor($ir.X - $gr.left)
+  $top = [int][math]::Floor($ir.Y - $gr.top)
+  $width = [int][math]::Ceiling($ir.Width)
+  $height = [int][math]::Ceiling($ir.Height)
+  $cl = $co.x - $gr.left
+  $ct = $co.y - $gr.top
+  if ($width -lt 20 -or $height -lt 20) {
+    return @{ ok = $false; why = ('the first row is only ' + $width + 'x' + $height) }
+  }
+  if ($left -lt $cl -or $top -lt $ct -or ($left + $width) -gt $fw -or ($top + $height) -gt $fh) {
+    return @{ ok = $false; why = ('the row at ' + $left + ',' + $top + ' ' + $width + 'x' + $height +
+              ' is not inside the window picture (' + $fw + 'x' + $fh + ', client starts ' + $cl + ',' + $ct + ')') }
+  }
+  $winBmp = New-Object System.Drawing.Bitmap($fw, $fh)
+  $wg = [System.Drawing.Graphics]::FromImage($winBmp)
+  $hdc = $wg.GetHdc()
+  $painted = [W32]::PrintWindow($hwnd, $hdc, 2)
+  $wg.ReleaseHdc($hdc)
+  $wg.Dispose()
+  $crop = $winBmp.Clone((New-Object System.Drawing.Rectangle($left, $top, $width, $height)),
+                        $winBmp.PixelFormat)
+  $leaf = [System.IO.Path]::GetFileNameWithoutExtension($Doc)
+  $shot = Join-Path $scratch ('strippreview-' + $tag + '-' + $leaf + '.png')
+  $crop.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+  $scanBottom = [int]($height * 0.78)
+  $red = 0; $x0 = $width; $y0 = $scanBottom; $x1 = -1; $y1 = -1
+  for ($y = 0; $y -lt $scanBottom; $y++) {
+    for ($x = 0; $x -lt $width; $x++) {
+      $c = $crop.GetPixel($x, $y)
+      if ($c.R -gt 150 -and $c.G -lt 120 -and $c.B -lt 120) {
+        $red++
+        if ($x -lt $x0) { $x0 = $x }
+        if ($x -gt $x1) { $x1 = $x }
+        if ($y -lt $y0) { $y0 = $y }
+        if ($y -gt $y1) { $y1 = $y }
+      }
+    }
+  }
+  $crop.Dispose(); $winBmp.Dispose()
+  $bw = 0; $bh = 0
+  if ($red -gt 0) { $bw = $x1 - $x0 + 1; $bh = $y1 - $y0 + 1 }
+  return @{ ok = $true; printed = $painted; red = $red; bw = $bw; bh = $bh;
+            row = ($width.ToString() + 'x' + $height.ToString()); scanned = $scanBottom; shot = $shot }
+}
+function ForegroundIs($win) {
+  if (-not $win) { return $false }
+  $fg = [W32]::GetForegroundWindow()
+  $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+  return $fg.Equals($hwnd)
+}
+function TakeForeground($procId) {
+  # Keyboard input goes wherever the foreground is, so a mode that sends a key must own it.
+  # Measured on this machine: SwitchToThisWindow, SetForegroundWindow, BringWindowToTop and a
+  # click on our own title bar all left the foreground on the console/IDE; expanding a top-level
+  # menu through UIA does activate the app. So: expand the first menu, close it with Esc, and
+  # only believe the reading afterwards. Esc is sent ONLY if rows really appeared -- otherwise
+  # the key would go to whichever window does own the screen, which is what this avoids.
+  $win = Window $procId
+  if (-not $win) { return $null }
+  $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+  Say ('  foreground before [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
+  if (-not (ForegroundIs $win)) {
+    $before = @(MenuItems $procId).Count
+    $bar = $null
+    foreach ($b in @(FindType $win $CT::MenuBar)) { $bar = $b; break }
+    $first = $null
+    if ($bar) { foreach ($b in @($bar.FindAll($TS::Children, $ANY))) { $first = $b; break } }
+    if ($first) {
+      $xp = Pat $first 'ExpandCollapse'
+      if ($xp) { try { $xp.Expand() } catch { Say ('  Expand threw: ' + $_.Exception.Message) } }
+    }
+    Start-Sleep -Milliseconds 500
+    if (@(MenuItems $procId).Count -gt $before) {
+      [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+      Start-Sleep -Milliseconds 500
+    } else {
+      Say '  the menu never showed rows, so no Esc was sent'
+    }
+  }
+  $fg = [W32]::GetForegroundWindow()
+  Say ('  foreground after  [' + [W32]::Text($fg) + ']')
+  if (-not $fg.Equals($hwnd)) { return $null }
+  return (Window $procId)
 }
 
 if (-not $Installed -and -not (Test-Path $Doc)) { Bail ("no document at $Doc -- pass -Doc <path to a pdf>") }
@@ -2432,6 +2696,479 @@ switch ($Mode) {
     } else {
       Say '  no undo row at all in the Document menu'
     }
+  }
+  'propsdialog' {
+    # The properties window (PLAN M2, Ctrl+D, class PropertiesDialog) is one of the things sec.100-105
+    # added and no real window has ever shown. The headless suite reads PropertiesDialog::Info; this
+    # reads what a reader gets: the class of the window Ctrl+D opens, the file name it states, the
+    # Pages label, and a standalone number beside it.
+    # The expected page count is NOT written here. It is read from the main window's own "1 / 40"
+    # status label, so the verdict compares two on-screen statements; a hard-coded 40 would pass on
+    # the 40-page fixture even if the dialog were never read. -Control expects one page too many,
+    # which keeps every other step identical and makes the page-count verdict fail on purpose.
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground; refusing to send Ctrl+D into another window' }
+    $pageCount = PageStatusCount $app.Id
+    Say ('  status bar page count: ' + $pageCount)
+    if ($pageCount -lt 1) { Bail '  the main window states no page count, so there is nothing to compare the dialog with' }
+    $leaf = [System.IO.Path]::GetFileName($Doc)
+    $wantPages = if ($Control) { $pageCount + 1 } else { $pageCount }
+    $pagesWord = if ($Language -eq 'zh_CN') { CjStr 0x9875, 0x6570 } else { 'Pages' }
+    Say ('  expect file [' + $leaf + '] and ' + $pagesWord + '=' + $wantPages +
+         $(if ($Control) { '  (CONTROL: the dialog cannot show this)' } else { '' }))
+    [System.Windows.Forms.SendKeys]::SendWait('^d')
+    # The window can exist before its labels do: the first read after Ctrl+D returned a dialog
+    # with zero Text descendants. Poll for the class AND its first label rather than binding to
+    # the first handle that matches, which is the stale-handle shape sec.87 wrote down.
+    $dlg = $null
+    for ($k = 1; $k -le 20 -and -not $dlg; $k++) {
+      Start-Sleep -Milliseconds 400
+      $d = FindClass $app.Id 'PropertiesDialog'
+      if ($d -and @(FindType $d $CT::Text).Count -gt 0) { $dlg = $d }
+    }
+    if (-not $dlg) { Bail '  Ctrl+D did not leave a PropertiesDialog with any labels' }
+    Say ('  dialog [' + $dlg.Current.Name + '] class=' + $dlg.Current.ClassName)
+    $texts = @(FindType $dlg $CT::Text | ForEach-Object { $_.Current.Name })
+    Say ('  ' + $texts.Count + ' Text element(s):')
+    foreach ($t in $texts) { Say ('    |' + $t.Replace("`r", ' ').Replace("`n", ' / ') + '|') }
+    $sawName = @($texts | Where-Object { $_.Trim() -eq $leaf }).Count -gt 0
+    $pagesLabel = @($texts | Where-Object { $_.Trim() -eq $pagesWord }).Count -gt 0
+    $sawPages = @($texts | Where-Object {
+      (($_.Trim() -replace ',', '') -replace '\s', '') -eq "$wantPages"
+    }).Count -gt 0
+    Say ('  file name on screen=' + $sawName + '  label [' + $pagesWord + ']=' + $pagesLabel +
+         '  standalone ' + $wantPages + '=' + $sawPages)
+    # Close before judging. The verdict is already in hand, and a window-modal box left open would
+    # be inherited by whatever the process does next (and by the next probe round if the kill fails).
+    [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+    $closed = WaitClassGone $app.Id 'PropertiesDialog' 10
+    Say ('  Escape closed it: ' + $closed)
+    if (-not $sawName) {
+      if ($Control) { Bail ('  CONTROL: the dialog did not name the open file [' + $leaf + ']') }
+      Bail ('  the properties dialog does not name the open file [' + $leaf + ']')
+    }
+    if (-not $pagesLabel) { Bail ('  no [' + $pagesWord + '] label in either language') }
+    if (-not $sawPages) {
+      if ($Control) {
+        Bail ('  CONTROL: the dialog showed no standalone ' + $wantPages +
+              ' -- the page-count verdict is live (CONTROL exit 1)')
+      }
+      Bail ('  no standalone [' + $wantPages + '] in the dialog; the Pages row does not agree with the status bar')
+    }
+    Say '  properties dialog agrees with the status bar on the file and the page count'
+  }
+  'findwhole' {
+    # The find bar's Whole words box (objectName findWholeBox) has only ever been driven through
+    # Qt's own signals in the headless suite. Here it gets a real click. text.pdf contains XYZPDF
+    # twice and no standalone PDF, so the count must go from two hits to none -- a verdict that is
+    # impossible to produce without actually setting the box.
+    # Clicked, not TogglePattern.Toggle()'d: the pattern flipped the state but the second call did
+    # not put the count back (measured), so it is not the route a reader takes.
+    # -Control clicks Match case instead. That is a real click on a real box, so the reading is
+    # exercised, but it cannot change this count; the whole-word state and the count both stay
+    # wrong for the verdict, which must exit 1.
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground' }
+    # Ctrl+F first: it is the reader's own shortcut and it cannot miss a menu row. The menu route
+    # is kept as the retry, because the one round written from the scratch notes clicked Find and
+    # found no bar 700 ms later -- either the click did not land or the bar was slower than the
+    # fixed sleep, and neither is a product finding. So: shortcut, poll for the four named fields,
+    # then menu, then poll again.
+    function Grab-FindBar {
+      $f = FindAuto $win 'findField'
+      $w = FindAuto $win 'findWholeBox'
+      $c = FindAuto $win 'findCaseBox'
+      $n = FindAuto $win 'findCount'
+      if ($f -and $w -and $c -and $n) { return @($f, $w, $c, $n) }
+      return $null
+    }
+    $parts = $null
+    [System.Windows.Forms.SendKeys]::SendWait('^f')
+    for ($k = 1; $k -le 12 -and -not $parts; $k++) {
+      Start-Sleep -Milliseconds 300
+      $parts = Grab-FindBar
+    }
+    if (-not $parts) {
+      Say '  Ctrl+F did not show the bar within 3.6 s; trying the Edit menu'
+      TopMenu $app.Id @('Edit', (CjStr 0x7F16, 0x8F91)) | Out-Null
+      $row = RowAny $app.Id @('Find', (CjStr 0x67E5, 0x627E))
+      if (-not $row) { Bail '  no Find row under Edit in either language' }
+      Say ('  menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled)
+      ClickAt $row
+      for ($k = 1; $k -le 12 -and -not $parts; $k++) {
+        Start-Sleep -Milliseconds 300
+        $parts = Grab-FindBar
+      }
+    }
+    if (-not $parts) {
+      Say '  the find bar did not appear; the fields this window does expose:'
+      foreach ($e in @(FindType $win $CT::Edit) + @(FindType $win $CT::CheckBox)) {
+        Say ('    ' + $e.Current.ControlType.ProgrammaticName + ' |' + $e.Current.Name +
+             '| id=[' + $e.Current.AutomationId + ']')
+      }
+      Bail '  no findField / findWholeBox / findCaseBox / findCount in either route'
+    }
+    $field = $parts[0]
+    $whole = $parts[1]
+    $case = $parts[2]
+    $count = $parts[3]
+    Say '  find bar up with all four named fields'
+    $vp = Pat $field 'Value'
+    if (-not $vp) { Bail '  the find field offers no Value pattern' }
+    $vp.SetValue('PDF')
+    $wantBefore = if ($Language -eq 'zh_CN') { (CjStr 0x7B2C) + ' 1 / 2 ' + (CjStr 0x4E2A) } else { '1 of 2' }
+    $noMatch = if ($Language -eq 'zh_CN') { CjStr 0x6CA1, 0x6709, 0x627E, 0x5230 } else { 'No matches' }
+    $gotBefore = WaitName $count $wantBefore 24
+    Say ('  after typing PDF: count |' + $count.Current.Name + '| (wanted [' + $wantBefore + ']) -> ' + $gotBefore)
+    if (-not $gotBefore) {
+      Bail ('  the count never reached [' + $wantBefore + ']; this mode is written for ' +
+            'tests/fixtures/text.pdf, whose two XYZPDF words are the two substring hits')
+    }
+    # Re-grab the boxes after the search ran. The elements found the instant the bar appeared
+    # can still carry an empty rectangle -- one round printed 0,0 0x0 while the bar was plainly
+    # on screen and the same ids measure 106x20 a second later -- so wait for a real one.
+    # The local is NOT called $target: script parameters are case-insensitive, and -Target is
+    # [string], so $target = <element> is silently coerced to the element's type name.
+    $box = if ($Control) { $case } else { $whole }
+    for ($k = 1; $k -le 10 -and $box.Current.BoundingRectangle.Width -le 0; $k++) {
+      Start-Sleep -Milliseconds 200
+      $fresh = Grab-FindBar
+      if ($fresh) {
+        $field = $fresh[0]; $whole = $fresh[1]; $case = $fresh[2]; $count = $fresh[3]
+        $box = if ($Control) { $case } else { $whole }
+      }
+    }
+    $tr = $box.Current.BoundingRectangle
+    Say ('  clicking ' + $(if ($Control) { 'Match case (CONTROL)' } else { 'Whole words' }) +
+         ' at ' + [int]$tr.X + ',' + [int]$tr.Y + ' ' + [int]$tr.Width + 'x' + [int]$tr.Height)
+    if ($tr.Width -le 0) { Bail '  the Whole words box has no rectangle on screen; nothing was clicked' }
+    ClickAt $box
+    Start-Sleep -Milliseconds 500
+    $wholeState = (Pat $whole 'Toggle').Current.ToggleState.ToString()
+    $caseState = (Pat $case 'Toggle').Current.ToggleState.ToString()
+    Say ('  after the click: whole=' + $wholeState + ' case=' + $caseState +
+         ' count |' + $count.Current.Name + '|')
+    if ($Control) {
+      if ($wholeState -ne 'On') {
+        Bail ('  CONTROL: clicking Match case left Whole words ' + $wholeState + ' and the count at |' +
+              $count.Current.Name + '| -- the whole-word verdict is live (CONTROL exit 1)')
+      }
+      if ($count.Current.Name -eq $noMatch) {
+        Bail '  CONTROL: the count reached No matches anyway, so the click was not what changed it'
+      }
+      Bail '  CONTROL: the control run did not redden the whole-word verdict'
+    }
+    if ($wholeState -ne 'On') { Bail ('  the Whole words box reads ' + $wholeState + ' after a real click') }
+    $gotAfter = WaitName $count $noMatch 24
+    Say ('  count after Whole words: |' + $count.Current.Name + '| (wanted [' + $noMatch + ']) -> ' + $gotAfter)
+    if (-not $gotAfter) { Bail '  Whole words did not remove the two substring hits' }
+    Say '  whole-word box: two substring hits became none, on screen'
+  }
+  'snapshot' {
+    # The Snapshot tool (Ctrl+Shift+5) had never been run in a real window: the clipboard is not a
+    # channel any headless test can read, so nothing had checked that a drag puts the page's pixels
+    # on it. This mode sets a sentinel text first (so "the clipboard changed" is measurable), presses
+    # the shortcut, drags across picture.pdf, and requires three readings to agree:
+    #   * the toolbar's Snapshot toggle is On (the shortcut reached the action);
+    #   * the status line names W x H (the app's own receipt of the crop);
+    #   * the clipboard image has exactly that size and carries the page's red block.
+    # -Control skips the shortcut; the toggle must then be Off and the mode exits 1.
+    # NOTE: this overwrites the user's clipboard and cannot restore it -- PowerShell can read a
+    # bitmap but there is no general "save every format and put it back" route.
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground; the drag would land in another window' }
+    try {
+      [System.Windows.Forms.Clipboard]::SetText('XYZPDF-PROBE-SENTINEL')
+    } catch {
+      Bail ('  could not set the clipboard sentinel: ' + $_.Exception.Message)
+    }
+    Say ('  clipboard sentinel set; has text=' + [System.Windows.Forms.Clipboard]::ContainsText())
+    if ($Control) {
+      Say '  CONTROL: the Ctrl+Shift+5 press is skipped'
+    } else {
+      [System.Windows.Forms.SendKeys]::SendWait('^+5')
+      Start-Sleep -Milliseconds 700
+    }
+    $snap = $null
+    foreach ($e in @(FindType $win $CT::CheckBox)) {
+      if ($e.Current.Name -eq 'Snapshot' -or $e.Current.Name -eq (CjStr 0x622A, 0x56FE)) { $snap = $e; break }
+    }
+    if (-not $snap) { Bail '  no Snapshot checkbox on the toolbar in either language' }
+    $tp = Pat $snap 'Toggle'
+    if (-not $tp) { Bail '  the Snapshot toolbar button has no TogglePattern' }
+    $state = $tp.Current.ToggleState.ToString()
+    Say ('  Snapshot toolbar toggle: ' + $state + ' (name |' + $snap.Current.Name + '|)')
+    if ($state -ne 'On') {
+      if ($Control) {
+        Bail ('  CONTROL: with the shortcut skipped the Snapshot tool is ' + $state +
+              ' -- the toolbar-state verdict is live (CONTROL exit 1)')
+      }
+      Bail ('  Ctrl+Shift+5 left the Snapshot tool ' + $state)
+    }
+    $pv = $null
+    # By class name, not by control type: measured 2026-10-22, Qt exposes PageView under a type
+    # that is none of Document/Pane/Image, and the scratch that first drove this tool matched the
+    # class name over all descendants.
+    foreach ($e in @($win.FindAll($TS::Descendants, $ANY))) {
+      if ($e.Current.ClassName -eq 'PageView') { $pv = $e; break }
+    }
+    if (-not $pv) { Bail '  no PageView element to drag across' }
+    $r = $pv.Current.BoundingRectangle
+    $cx = [int]($r.X + $r.Width / 2)
+    $cy = [int]($r.Y + $r.Height / 2)
+    $dx = [int][math]::Min(100, [math]::Max(20, ($r.Width - 20) / 2))
+    $dy = [int][math]::Min(75, [math]::Max(15, ($r.Height - 20) / 2))
+    Say ('  PageView at ' + [int]$r.X + ',' + [int]$r.Y + ' ' + [int]$r.Width + 'x' + [int]$r.Height +
+         '; dragging ' + (2 * $dx) + 'x' + (2 * $dy) + ' from ' + ($cx - $dx) + ',' + ($cy - $dy) +
+         ' to ' + ($cx + $dx) + ',' + ($cy + $dy))
+    [W32]::Drag($cx - $dx, $cy - $dy, $cx + $dx, $cy + $dy)
+    # The message is shown for five seconds, so the poll is tight; the status bar's Name is where
+    # showMessage() text lives (the StatusName comment explains why a Text search finds nothing).
+    $enPat = '^Copied a ([0-9]+) . ([0-9]+) picture$'
+    $zhPat = '^' + (CjStr 0x5DF2, 0x590D, 0x5236) + ' ([0-9]+) . ([0-9]+) ' +
+             (CjStr 0x7684, 0x56FE, 0x7247) + '$'
+    $msg = ''
+    $mw = 0; $mh = 0
+    for ($k = 1; $k -le 24; $k++) {
+      Start-Sleep -Milliseconds 250
+      $msg = StatusName $app.Id
+      if ($msg -match $enPat) { $mw = [int]$Matches[1]; $mh = [int]$Matches[2]; break }
+      if ($msg -match $zhPat) { $mw = [int]$Matches[1]; $mh = [int]$Matches[2]; break }
+    }
+    Say ('  status line [' + $msg + '] -> ' + $mw + ' x ' + $mh)
+    if ($mw -lt 1 -or $mh -lt 1) { Bail '  the status line never said the picture was copied with a size' }
+    $img = $null
+    try { $img = [System.Windows.Forms.Clipboard]::GetImage() } catch {
+      Say ('  GetImage threw: ' + $_.Exception.Message)
+    }
+    if (-not $img) { Bail '  no image on the clipboard after the drag' }
+    $iw = $img.Width; $ih = $img.Height
+    $red = 0
+    for ($y = 0; $y -lt $ih; $y += 2) {
+      for ($x = 0; $x -lt $iw; $x += 2) {
+        $c = $img.GetPixel($x, $y)
+        if ($c.R -gt 150 -and $c.G -lt 120 -and $c.B -lt 120) { $red++ }
+      }
+    }
+    $img.Dispose()
+    $text = ''
+    try {
+      if ([System.Windows.Forms.Clipboard]::ContainsText()) { $text = [System.Windows.Forms.Clipboard]::GetText() }
+    } catch { }
+    Say ('  clipboard image ' + $iw + 'x' + $ih + ', red samples ' + $red +
+         ', sentinel still on the clipboard=' + ($text -eq 'XYZPDF-PROBE-SENTINEL'))
+    if ($iw -ne $mw -or $ih -ne $mh) {
+      Bail ('  the status line says ' + $mw + 'x' + $mh + ' but the clipboard image is ' + $iw + 'x' + $ih)
+    }
+    if ($text -eq 'XYZPDF-PROBE-SENTINEL') { Bail '  the clipboard still holds the sentinel text; no image was put there' }
+    if ($red -lt 100) {
+      Bail ('  the clipboard image carries only ' + $red + ' red sample(s); this mode is written for ' +
+            'picture.pdf and its red block')
+    }
+    Say '  snapshot: the toolbar, the status line and the clipboard image agree, and the page red is in it'
+  }
+  'strippreview' {
+    # The thumbnail strip's preview of unsaved edits has only been checked headlessly (the row model
+    # and its tab text). This mode does it where a reader does: open the navigation sidebar, measure
+    # the first thumbnail, rotate the current page through its dialog, then read the tab and the
+    # thumbnail again.
+    # What is measurable: the strip's tab text, and the red block in picture.pdf. The page itself is
+    # white on white, so "the thumbnail is now landscape" cannot be read off its outline here; a
+    # quarter turn maps the landscape red block to portrait, and that is the pixel half of the claim.
+    # -Control skips the rotation but keeps both expectations, so the tab verdict must exit 1.
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground' }
+    # The sidebar row is checkable. Read it before clicking: on an already-open sidebar, a click
+    # would HIDE it and the report would read "the strip never appeared". The pattern is read, not
+    # called -- a TogglePattern.Toggle on a row of an open Qt menu does nothing (measured by the
+    # outlinetree mode), so a real click is the only route.
+    TopMenu $app.Id @('View', (CjStr 0x67E5, 0x770B)) | Out-Null
+    $side = RowAny $app.Id @('Navigation Sidebar', (CjStr 0x5BFC, 0x822A, 0x4FA7, 0x680F))
+    if (-not $side) { Bail '  no Navigation Sidebar row in either language' }
+    $sideToggle = Pat $side 'Toggle'
+    $sideState = '(no TogglePattern)'
+    if ($sideToggle) { $sideState = $sideToggle.Current.ToggleState.ToString() }
+    Say ('  sidebar row |' + $side.Current.Name + '| toggle=' + $sideState)
+    if ($sideState -eq 'On') {
+      [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+      Start-Sleep -Milliseconds 400
+    } else {
+      ClickAt $side
+      Start-Sleep -Milliseconds 1400
+    }
+    $stripTab = TabNamed $win @('Thumbnails', (CjStr 0x7F29, 0x7565, 0x56FE))
+    if (-not $stripTab) {
+      foreach ($t in @(FindType $win $CT::TabItem)) { Say ('  tab |' + $t.Current.Name + '|') }
+      Bail '  the sidebar has no Thumbnails tab'
+    }
+    ClickAt $stripTab
+    Start-Sleep -Milliseconds 800
+    $plainTabName = $stripTab.Current.Name
+    Say ('  strip tab |' + $plainTabName + '|')
+    # The tiles are rendered off the UI thread. Retry the measurement: no row yet and a row that is
+    # still being painted look the same in one reading.
+    $plain = $null
+    for ($k = 1; $k -le 12; $k++) {
+      Start-Sleep -Milliseconds 500
+      $plain = ThumbRed $win 'plain'
+      if ($plain.ok -and $plain.red -gt 100) { break }
+    }
+    if (-not $plain.ok) { Bail ('  the plain thumbnail could not be measured: ' + $plain.why) }
+    Say ('  plain thumbnail: red=' + $plain.red + ' bbox=' + $plain.bw + 'x' + $plain.bh +
+         ' (row ' + $plain.row + ', scanned top ' + $plain.scanned + ' rows) saved ' + $plain.shot)
+    if ($plain.red -le 100) { Bail '  the plain thumbnail has no red block; this mode is written for picture.pdf' }
+    if ($plain.bw -le $plain.bh) {
+      Bail ('  the plain red block is ' + $plain.bw + 'x' + $plain.bh + ', not landscape -- the ' +
+            'thumbnail is not a picture of this page')
+    }
+    $previewNames = @('Thumbnails (preview of changes)',
+                      (CjStr 0x7F29, 0x7565, 0x56FE, 0xFF08, 0x4FEE, 0x6539, 0x9884, 0x89C8, 0xFF09))
+    if ($Control) {
+      Say '  CONTROL: the Rotate Pages step is skipped'
+    } else {
+      TopMenu $app.Id @('Document', (CjStr 0x6587, 0x6863)) | Out-Null
+      $rot = RowAny $app.Id @('Rotate Pages', (CjStr 0x65CB, 0x8F6C, 0x9875, 0x9762))
+      if (-not $rot) { Bail '  no Rotate Pages row in either language' }
+      Say ('  menu row |' + $rot.Current.Name + '| enabled=' + $rot.Current.IsEnabled)
+      ClickAt $rot
+      $dlg = WaitClass $app.Id 'RotatePagesDialog'
+      if (-not $dlg) { Bail '  the rotate dialog did not open' }
+      Say ('  dialog [' + $dlg.Current.Name + '] class=' + $dlg.Current.ClassName)
+      $radio = $null
+      foreach ($e in @(FindType $dlg $CT::RadioButton)) {
+        if ($e.Current.Name -like '*Current page*' -or
+            $e.Current.Name -like ('*' + (CjStr 0x5F53, 0x524D, 0x9875) + '*')) { $radio = $e; break }
+      }
+      if (-not $radio) { Bail '  no Current page radio in either language' }
+      Say ('  clicking |' + $radio.Current.Name + '|')
+      ClickAt $radio
+      Start-Sleep -Milliseconds 400
+      $go = $null
+      foreach ($e in @(FindType $dlg $CT::Button)) {
+        if ($e.Current.Name -eq 'Rotate these pages' -or
+            $e.Current.Name -eq (CjStr 0x65CB, 0x8F6C, 0x8FD9, 0x4E9B, 0x9875)) { $go = $e; break }
+      }
+      if (-not $go) { Bail '  no Rotate these pages button' }
+      Say ('  pressing |' + $go.Current.Name + '| enabled=' + $go.Current.IsEnabled)
+      ClickAt $go
+      if (-not (WaitClassGone $app.Id 'RotatePagesDialog' 20)) {
+        Bail '  the rotate dialog did not close after the press'
+      }
+      Say '  rotate dialog closed'
+    }
+    # Both runs now hold the SAME expectation. That is what makes -Control a control: it skips the
+    # action, not the verdict.
+    $preview = $null
+    for ($k = 1; $k -le 24; $k++) {
+      Start-Sleep -Milliseconds 500
+      $preview = TabNamed $win $previewNames
+      if ($preview) { break }
+    }
+    if (-not $preview) {
+      if ($Control) {
+        Bail ('  CONTROL: with the rotation skipped the strip tab is still |' + $plainTabName +
+              '| -- the preview-tab verdict is live (CONTROL exit 1)')
+      }
+      Bail ('  the strip tab never became |' + ($previewNames -join ' / ') + '|')
+    }
+    Say ('  strip tab now |' + $preview.Current.Name + '|')
+    $after = $null
+    for ($k = 1; $k -le 20; $k++) {
+      $after = ThumbRed $win 'preview'
+      if ($after.ok -and $after.red -gt 100 -and $after.bh -gt $after.bw) { break }
+      Start-Sleep -Milliseconds 500
+    }
+    if (-not $after.ok) { Bail ('  the preview thumbnail could not be measured: ' + $after.why) }
+    Say ('  preview thumbnail: red=' + $after.red + ' bbox=' + $after.bw + 'x' + $after.bh +
+         ' saved ' + $after.shot)
+    if ($after.red -le 100) { Bail '  the preview thumbnail has no red block' }
+    if ($after.bh -le $after.bw) {
+      Bail ('  the red block did not turn portrait after the rotation (' + $after.bw + 'x' + $after.bh + ')')
+    }
+    Say ('  strip preview: the tab says so, and the landscape block became portrait -- a quarter turn ' +
+         'of the page (the page outline itself is white on white and is not measured here)')
+  }
+  'mnemonics' {
+    # Alt+letter had never been pressed. sec.98 rewrote the English forms to in-word mnemonics and
+    # checked them as strings; whether the accelerators exist on a real window is a different claim.
+    # The bar order is File, Edit, View, Document, Go, Window, Language, Help. The Window letter
+    # differs (w in English, n in Chinese); Language has no mnemonic in either interface.
+    # Assert by INDEX, not by name: the Chinese UIA names carry their own "(F)" text, so a name
+    # needle would turn this into a translation test (sec.87's lesson about lookups).
+    # -Control skips the Go press but keeps the expectation, so the mnemonic verdict must exit 1.
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground; Alt keys would go to another window' }
+    $firstItems = @(MenuBarItems $win)
+    Say ('  menu bar has ' + $firstItems.Count + ' item(s):')
+    for ($i = 0; $i -lt $firstItems.Count; $i++) { Say ('    ' + $i + ' |' + $firstItems[$i].Current.Name + '|') }
+    if ($firstItems.Count -lt 8) { Bail '  the menu bar is shorter than the eight items this mode indexes' }
+    $map = if ($Language -eq 'zh_CN') {
+      @{ 0 = 'f'; 1 = 'e'; 2 = 'v'; 3 = 'd'; 4 = 'g'; 5 = 'n'; 7 = 'h' }
+    } else {
+      @{ 0 = 'f'; 1 = 'e'; 2 = 'v'; 3 = 'd'; 4 = 'g'; 5 = 'w'; 7 = 'h' }
+    }
+    $negatives = if ($Language -eq 'zh_CN') { @('w', 'l') } else { @('n', 'l') }
+    $labels = @('File', 'Edit', 'View', 'Document', 'Go', 'Window', 'Language', 'Help')
+    foreach ($index in @(0, 1, 2, 3, 4, 5, 7)) {
+      $win = Window $app.Id
+      if (-not $win) { Bail '  the window disappeared mid-run' }
+      if (-not (ForegroundIs $win)) {
+        Bail '  the app lost the foreground; refusing to send an Alt key into another window'
+      }
+      $items = @(MenuBarItems $win)
+      $letter = $map[$index]
+      $skip = $Control -and $index -eq 4
+      if ($skip) {
+        Say ('  Alt+' + $letter + ' (CONTROL: press skipped)')
+      } else {
+        [System.Windows.Forms.SendKeys]::SendWait('%' + $letter)
+        Start-Sleep -Milliseconds 800
+      }
+      $expanded = @()
+      for ($i = 0; $i -lt $items.Count; $i++) {
+        $xp = Pat $items[$i] 'ExpandCollapse'
+        if ($xp) {
+          $st = $xp.Current.ExpandCollapseState.ToString()
+          if ($st -eq 'Expanded' -or $st -eq 'PartiallyExpanded') { $expanded += $i }
+        }
+      }
+      Say ('  Alt+' + $letter + ' -> expanded [' + ($expanded -join ',') + '] (wanted ' + $index + ')')
+      if ($expanded.Count -ne 1 -or $expanded[0] -ne $index) {
+        if ($skip) {
+          Bail ('  CONTROL: without the Alt+' + $letter + ' press nothing expanded (expected ' + $index +
+                ') -- the mnemonic verdict is live (CONTROL exit 1)')
+        }
+        Bail ('  Alt+' + $letter + ' did not expand only item ' + $index + ' (' + $labels[$index] + ')')
+      }
+      [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+      Start-Sleep -Milliseconds 400
+    }
+    foreach ($letter in $negatives) {
+      $win = Window $app.Id
+      if (-not $win) { Bail '  the window disappeared mid-run' }
+      if (-not (ForegroundIs $win)) {
+        Bail '  the app lost the foreground; refusing to send an Alt key into another window'
+      }
+      $items = @(MenuBarItems $win)
+      [System.Windows.Forms.SendKeys]::SendWait('%' + $letter)
+      Start-Sleep -Milliseconds 800
+      $expanded = @()
+      for ($i = 0; $i -lt $items.Count; $i++) {
+        $xp = Pat $items[$i] 'ExpandCollapse'
+        if ($xp) {
+          $st = $xp.Current.ExpandCollapseState.ToString()
+          if ($st -eq 'Expanded' -or $st -eq 'PartiallyExpanded') { $expanded += $i }
+        }
+      }
+      Say ('  Alt+' + $letter + ' (negative) -> expanded [' + ($expanded -join ',') + ']')
+      if ($expanded.Count -ne 0) {
+        Bail ('  Alt+' + $letter + ' expanded item(s) ' + ($expanded -join ',') +
+              ', but that letter belongs to no menu in this interface')
+      }
+      [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+      Start-Sleep -Milliseconds 300
+    }
+    Say '  every expected Alt letter opened exactly its own menu; the negatives opened nothing'
   }
 }
 Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }

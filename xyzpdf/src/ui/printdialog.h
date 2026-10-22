@@ -25,8 +25,10 @@ class PrintDialog : public QDialog
 public:
     // `printer` is not owned here; the dialog only opens QPrintDialog against it
     // so the user's choices land on it. `currentPage` and `pageCount` are for the
-    // "current page" and "all pages" wording.
-    PrintDialog(QWidget *parent, QPrinter *printer, int currentPage, int pageCount);
+    // "current page" and "all pages" wording. `hasFormFields` adds the line that
+    // says this program draws no field contents, so a filled form prints blank.
+    PrintDialog(QWidget *parent, QPrinter *printer, int currentPage, int pageCount,
+                bool hasFormFields);
 
     Print::Settings settings() const;
 

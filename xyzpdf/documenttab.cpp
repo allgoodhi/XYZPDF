@@ -1095,7 +1095,8 @@ void DocumentTab::print()
     const ForegroundJob job(this);
 
     QPrinter printer(QPrinter::HighResolution);
-    PrintDialog dialog(window(), &printer, pageView->currentPage(), pageCount());
+    PrintDialog dialog(window(), &printer, pageView->currentPage(), pageCount(),
+                       hasFormFields());
     if (dialog.exec() != QDialog::Accepted)
         return;
     const Print::Settings settings = dialog.settings();

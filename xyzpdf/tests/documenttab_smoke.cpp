@@ -27,6 +27,7 @@
 #include "../src/ui/mergepagesdialog.h"
 #include "../src/ui/movepagesdialog.h"
 #include "../src/ui/ocrdialog.h"
+#include "../src/ui/printdialog.h"
 #include "../src/ui/protectpagesdialog.h"
 #include "../src/ui/propertiesdialog.h"
 #include "../src/ui/rotatepagesdialog.h"
@@ -54,6 +55,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QPrinter>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollBar>
@@ -532,6 +534,124 @@ int main(int argc, char **argv)
 
         tab.setSidebarVisible(false);
         check(tab.open(path) == Document::Status::Ready, "the first fixture is back");
+    }
+
+    // ---- the print dialog says a form will come out blank ----
+    //
+    // The program draws no field contents (§82/§94), so a filled form prints as
+    // empty boxes. The open says so once in the status line; this is the window
+    // where the reader is about to choose the output, and the place the sentence
+    // is still true when it matters.
+    {
+        QPrinter printer(QPrinter::HighResolution);
+        PrintDialog plain(nullptr, &printer, 0, 2, false);
+        check(!labelsOf(&plain).contains(QStringLiteral("表单字段")),
+              "a document with no form gets no form warning");
+
+        PrintDialog withForm(nullptr, &printer, 0, 2, true);
+        const QString said = labelsOf(&withForm);
+        check(said.contains(QStringLiteral("这份文档含表单字段")),
+              QStringLiteral("a form inside is named before the print: %1").arg(said));
+        check(said.count(QStringLiteral("字段里是空的")) == 1,
+              QStringLiteral("and said once, not twice (counted %1)")
+                  .arg(said.count(QStringLiteral("字段里是空的"))));
+    }
+
+    // ---- the strip after a move, and the click that follows it ----
+    //
+    // §105 pinned delete and rotation through the dialogs a reader uses, but
+    // reorder had no assertion of its own: the strip's order is what a save
+    // would write, and a moved page is where row number and page number part
+    // company for every row after it. Driven through 移动页面, the only door the
+    // tab opens to its edit list.
+    {
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        check(tab.open(book) == Document::Status::Ready, "the 40-page book opens for the move");
+        const int pages = tab.pageCount();
+        check(pages == 40, QStringLiteral("and it is 40 pages (%1)").arg(pages));
+
+        auto *strip = tab.findChild<ThumbnailPanel *>();
+        auto *bar = tab.findChild<QTabWidget *>();
+        tab.setSidebarVisible(true);
+        if (bar && strip)
+            bar->setCurrentWidget(strip);
+        const int stripTab = bar && strip ? bar->indexOf(strip) : -1;
+        const QString plainTitle = stripTab >= 0 ? bar->tabText(stripTab) : QString();
+
+        if (strip && stripTab >= 0) {
+            check(strip->rowCount() == pages, "before the move, a row per page");
+
+            // Page 1 to the back. The box opens on 当前页 + 最后面, and typing into
+            // its range box switches it to 指定页码 -- what a reader does.
+            answerNextDialog<MovePagesDialog>(QStringLiteral("1"));
+            tab.movePages();
+            check(tab.hasUnsavedEdits(), "the move is recorded");
+            check(strip->rowCount() == pages, "a move keeps every row");
+            check(strip->rowAt(0).sourcePage == 1,
+                  QStringLiteral("the first row is the file's second page (it shows %1)")
+                      .arg(strip->rowAt(0).sourcePage + 1));
+            check(strip->rowAt(pages - 1).sourcePage == 0,
+                  QStringLiteral("and the last row is the page that moved there (it shows %1)")
+                      .arg(strip->rowAt(pages - 1).sourcePage + 1));
+            check(bar->tabText(stripTab) != plainTitle,
+                  QStringLiteral("the strip says it is a preview (\"%1\")")
+                      .arg(bar->tabText(stripTab)));
+            check(tab.pageCount() == pages,
+                  "while the document on screen still has its own order");
+
+            // Row 40 is page 1 of the file, not page 40: the click follows the
+            // row's page, and the reader starts somewhere else so the receipt
+            // could not already be true before the click.
+            view->goToPage(10);
+            check(tab.currentPage() == 10, "setup: the reader is on page 11 before the click");
+            Q_EMIT strip->clicked(static_cast<const QAbstractItemView *>(strip)->model()->index(
+                pages - 1, 0));
+            check(waitFor([&tab] { return tab.currentPage() == 0; }),
+                  QStringLiteral("clicking the last row goes to the page it shows (now on %1)")
+                      .arg(tab.currentPage() + 1));
+
+            tab.undoEdit();
+            check(!tab.hasUnsavedEdits(), "one undo takes the move back");
+            check(strip->rowAt(0).sourcePage == 0
+                      && strip->rowAt(pages - 1).sourcePage == pages - 1,
+                  "and the strip is the file as it is again");
+        }
+
+        tab.setSidebarVisible(false);
+        check(tab.open(path) == Document::Status::Ready, "the first fixture is back after the move");
+    }
+
+    // ---- a merge is a source, not a page number ----
+    //
+    // The merge box picks files through the shell's own dialog, so this stops at
+    // the model the box feeds (docs/handoff-01.md C.2): what a save walks must
+    // contain a page from another file, and the source must name that file --
+    // the two answers the strip's merged row is built from.
+    {
+        DocumentEditor editor;
+        QString error;
+        check(editor.open(path, QString(), &error),
+              QStringLiteral("setup: the editor for the merge opened: %1").arg(error));
+        const QString donor = directory + QStringLiteral("/many-pages.pdf");
+        const int before = editor.pageCount();
+        check(editor.mergeFile(donor, {0, 1}, DocumentEditor::MoveTarget::Back, -1, &error),
+              QStringLiteral("two pages of the donor come in at the back: %1").arg(error));
+
+        const QVector<DocumentEditor::PageRef> order = editor.pageOrder();
+        check(order.size() == before + 2,
+              QStringLiteral("the page order is two pages longer (%1 against %2)")
+                  .arg(order.size())
+                  .arg(before));
+        const DocumentEditor::PageRef merged = order.at(before);
+        check(merged.source != 0,
+              "a merged page carries the file it came from rather than page 1 of this document");
+        check(merged.page == 0, "and its own page number inside that file");
+        check(QFileInfo(editor.importPathFor(merged.source)).fileName()
+                  == QFileInfo(donor).fileName(),
+              QStringLiteral("the source names the file to draw it from (%1)")
+                  .arg(editor.importPathFor(merged.source)));
+        check(editor.importPathFor(0).isEmpty(),
+              "while this document's own pages have no file to import from");
     }
 
     // ---- the properties dialog (PLAN M2) ----

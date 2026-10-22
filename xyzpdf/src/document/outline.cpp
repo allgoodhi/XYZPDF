@@ -31,6 +31,20 @@ void flattenRows(const QVector<OutlineNode> &nodes, int level, QVector<OutlineRo
     }
 }
 
+// The tree in the same depth-first order outlineRowsOf() reports, its nodes visited in step with a
+// list of matches. `cursor` runs once per node; the caller has already checked that list's length.
+void attachDestinations(const QVector<OutlineRow> &fileRows, const QVector<int> &matches, int *cursor,
+                        QVector<OutlineNode> *nodes)
+{
+    for (OutlineNode &node : *nodes) {
+        const int fileIndex = *cursor < matches.size() ? matches.at(*cursor) : -1;
+        ++*cursor;
+        if (fileIndex >= 0)
+            node.dest = fileRows.at(fileIndex).dest;
+        attachDestinations(fileRows, matches, cursor, &node.children);
+    }
+}
+
 } // namespace
 
 int Outline::count() const
@@ -90,6 +104,37 @@ QVector<OutlineRow> outlineRowsOf(const Outline &tree)
     QVector<OutlineRow> rows;
     flattenRows(tree.nodes, 1, &rows);
     return rows;
+}
+
+QVector<int> matchOutlineRows(const QVector<OutlineRow> &fileRows,
+                              const QVector<OutlineRow> &rows)
+{
+    QVector<bool> consumed(fileRows.size(), false);
+    QVector<int> matched;
+    matched.reserve(rows.size());
+    for (const OutlineRow &row : rows) {
+        int found = -1;
+        for (int i = 0; i < fileRows.size(); ++i) {
+            if (!consumed.at(i) && fileRows.at(i).title == row.title
+                && fileRows.at(i).page == row.page) {
+                found = i;
+                consumed[i] = true;
+                break;
+            }
+        }
+        matched.append(found);
+    }
+    return matched;
+}
+
+void attachOutlineDestinations(Outline &tree, const QVector<OutlineRow> &fileRows)
+{
+    // outlineRowsOf() is the same depth-first walk attachDestinations() makes, so one match per
+    // node can be applied in step. The tree here is a fresh read (Qt's, on open), so every node
+    // still carries the default destination; there is no older one being overwritten.
+    const QVector<int> matches = matchOutlineRows(fileRows, outlineRowsOf(tree));
+    int cursor = 0;
+    attachDestinations(fileRows, matches, &cursor, &tree.nodes);
 }
 
 int outlineSubtreeEnd(const QVector<OutlineRow> &rows, int index)

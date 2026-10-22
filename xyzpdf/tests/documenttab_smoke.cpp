@@ -28,6 +28,7 @@
 #include "../src/ui/movepagesdialog.h"
 #include "../src/ui/ocrdialog.h"
 #include "../src/ui/printdialog.h"
+#include "../src/ui/outlinepanel.h"
 #include "../src/ui/protectpagesdialog.h"
 #include "../src/ui/propertiesdialog.h"
 #include "../src/ui/rotatepagesdialog.h"
@@ -4092,6 +4093,183 @@ int main(int argc, char **argv)
                  .arg(pagesStillSaid)
                  .arg(static_cast<int>(reopened))
                  .arg(other.pageCount()));
+    }
+
+    // ---- a bookmark click lands where the file said (§75's leftovers) ----
+    //
+    // §75 measured that Qt's bookmark model reports 0,0 for /FitH -- the shape a real book uses
+    // 184 times out of 184 -- so a sidebar built from it can only jump to a page's top. §99 carried
+    // the destinations into the file's own writing and left the click on the page number. This is
+    // the click: the panel's Qt-read tree is joined by title and page to the file's own rows, the
+    // destination is turned into a distance from the top of the page *as drawn* (so the reader's
+    // rotation is part of the answer), and the view scrolls there.
+    //
+    // The sample is hand-built because our own writer cannot make a bookmark with a position; the
+    // page is the 595x842 one from many-pages.pdf, so the unrotated answers are 842 - 700 = 142
+    // for /XYZ 100 700 and 842 - 650 = 192 for /FitH 650. At a quarter turn the /XYZ's x becomes
+    // the vertical coordinate (100), and the /FitH line becomes vertical, which has no height to
+    // jump to and therefore answers the page's top.
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "setup: a temporary folder for the bookmark-jump sample");
+        const QString sample = dir.filePath(QStringLiteral("jump-bookmarks.pdf"));
+        bool built = false;
+        QString why;
+        try {
+            QPDF qpdf;
+            qpdf.processFile((directory + QStringLiteral("/many-pages.pdf")).toUtf8().constData());
+            const std::vector<QPDFPageObjectHelper> pages =
+                QPDFPageDocumentHelper(qpdf).getAllPages();
+            auto pageAt = [&](int index) { return pages.at(size_t(index)).getObjectHandle(); };
+            auto item = [&qpdf](const std::string &title, QPDFObjectHandle parent) {
+                QPDFObjectHandle handle = QPDFObjectHandle::newDictionary();
+                handle.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(title));
+                handle.replaceKey("/Parent", parent);
+                return qpdf.makeIndirectObject(handle);
+            };
+            auto addDest = [](QPDFObjectHandle handle, std::vector<QPDFObjectHandle> parts) {
+                QPDFObjectHandle dest = QPDFObjectHandle::newArray();
+                for (QPDFObjectHandle &part : parts)
+                    dest.appendItem(part);
+                handle.replaceKey("/Dest", dest);
+            };
+            QPDFObjectHandle root = QPDFObjectHandle::newDictionary();
+            root.replaceKey("/Type", QPDFObjectHandle::newName("/Outlines"));
+            root = qpdf.makeIndirectObject(root);
+
+            const QPDFObjectHandle spot = item("Spot", root);
+            addDest(spot, { pageAt(0), QPDFObjectHandle::newName("/XYZ"),
+                            QPDFObjectHandle::newReal(100), QPDFObjectHandle::newReal(700),
+                            QPDFObjectHandle::newNull() });
+            const QPDFObjectHandle line = item("Line", root);
+            addDest(line, { pageAt(0), QPDFObjectHandle::newName("/FitH"),
+                            QPDFObjectHandle::newReal(650) });
+            const QPDFObjectHandle whole = item("Whole", root);
+            addDest(whole, { pageAt(1), QPDFObjectHandle::newName("/Fit") });
+
+            std::vector<QPDFObjectHandle> row = { spot, line, whole };
+            for (size_t i = 0; i < row.size(); ++i) {
+                if (i > 0)
+                    row[i].replaceKey("/Prev", row[i - 1]);
+                if (i + 1 < row.size())
+                    row[i].replaceKey("/Next", row[i + 1]);
+            }
+            root.replaceKey("/First", row.front());
+            root.replaceKey("/Last", row.back());
+            root.replaceKey("/Count", QPDFObjectHandle::newInteger(int(row.size())));
+            qpdf.getRoot().replaceKey("/Outlines", root);
+            QPDFWriter writer(qpdf, sample.toUtf8().constData());
+            writer.write();
+            built = true;
+        } catch (const std::exception &e) {
+            why = QString::fromUtf8(e.what());
+        }
+        check(built, QStringLiteral("setup: a file whose bookmarks name places inside pages: %1")
+                         .arg(why));
+
+        DocumentTab reading;
+        reading.resize(900, 700);
+        reading.show();
+        check(reading.open(sample) == Document::Status::Ready,
+              QStringLiteral("setup: the bookmark-jump sample opens: %1").arg(reading.lastError()));
+        reading.setSidebarVisible(true);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+        auto *panel = reading.findChild<OutlinePanel *>();
+        check(panel != nullptr, "the tab has a bookmark panel");
+        if (panel) {
+            panel->expandAll();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            // Through the base class: OutlinePanel has a member called `model` of its own, which
+            // hides QAbstractItemView::model() from anyone holding the derived type -- the same
+            // shape as the thumbnail strip's member below (§2.1's test).
+            const auto *panelView = static_cast<const QAbstractItemView *>(panel);
+            check(panelView->model() && panelView->model()->rowCount() == 3,
+                  QStringLiteral("the panel shows the sample's three bookmarks (%1 rows)")
+                      .arg(panelView->model() ? panelView->model()->rowCount() : -1));
+
+            const auto indexOf = [panelView](const QString &title) {
+                const QAbstractItemModel *model = panelView->model();
+                for (int row = 0; model && row < model->rowCount(); ++row) {
+                    const QModelIndex index = model->index(row, 0);
+                    if (index.data(Qt::DisplayRole).toString() == title)
+                        return index;
+                }
+                return QModelIndex();
+            };
+            // A real mouse click on the row, not the signal behind it: what is being checked is
+            // that the click a reader makes carries the file's destination all the way to the
+            // scrollbar, and a direct Q_EMIT would skip the panel's own role lookup.
+            const auto clickTitle = [&](const QString &title) {
+                const QModelIndex index = indexOf(title);
+                if (!index.isValid())
+                    return false;
+                panel->scrollTo(index);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+                const QRect rect = panel->visualRect(index);
+                if (!rect.isValid() || !panel->viewport()->rect().contains(rect.center()))
+                    return false;
+                sendMouse(panel->viewport(), QEvent::MouseButtonPress, rect.center());
+                sendMouse(panel->viewport(), QEvent::MouseButtonRelease, rect.center());
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+                return true;
+            };
+
+            PageView *view = viewOf(reading);
+            view->setLayoutMode(PageLayout::Mode::Continuous);
+            view->setZoomMode(ZoomController::Mode::Percent);
+            view->setZoom(1.0);
+            view->setRotation(0);
+            view->goToPage(0);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            const int firstTop = view->verticalScrollBar()->value();
+
+            check(clickTitle(QStringLiteral("Spot")), "the panel has a clickable Spot row");
+            check(view->verticalScrollBar()->value() == firstTop + 142,
+                  QStringLiteral("/XYZ 100 700 puts the viewport 142 pt down page 1 (scroll is "
+                                 "%1, page top %2)")
+                      .arg(view->verticalScrollBar()->value())
+                      .arg(firstTop));
+            check(view->currentPage() == 0, "and the page it landed on is the one it names");
+
+            check(clickTitle(QStringLiteral("Line")), "the panel has a clickable Line row");
+            check(view->verticalScrollBar()->value() == firstTop + 192,
+                  QStringLiteral("/FitH 650 puts it 192 pt down (scroll is %1, page top %2)")
+                      .arg(view->verticalScrollBar()->value())
+                      .arg(firstTop));
+
+            view->goToPage(1);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            const int secondTop = view->verticalScrollBar()->value();
+            check(clickTitle(QStringLiteral("Whole")), "the panel has a clickable Whole row");
+            check(view->verticalScrollBar()->value() == secondTop,
+                  QStringLiteral("/Fit moves to page 2's top (scroll is %1, that top is %2)")
+                      .arg(view->verticalScrollBar()->value())
+                      .arg(secondTop));
+            check(view->currentPage() == 1, "and it did change page for the /Fit bookmark");
+
+            // The same destination under a quarter turn: the page's x axis is now vertical, so
+            // /XYZ's 100 is the height to land at, and the /FitH line is vertical -- the top is
+            // the only height it can honestly mean.
+            view->goToPage(0);
+            view->setRotation(90);
+            view->goToPage(0);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            check(view->rotation() == 90, "setup: the page is turned a quarter turn");
+            const int turnedTop = view->verticalScrollBar()->value();
+            check(clickTitle(QStringLiteral("Spot")),
+                  "the turned page still has a clickable Spot row");
+            check(view->verticalScrollBar()->value() == turnedTop + 100,
+                  QStringLiteral("after the turn /XYZ 100 700 lands 100 pt down (scroll is %1, "
+                                 "page top %2)")
+                      .arg(view->verticalScrollBar()->value())
+                      .arg(turnedTop));
+            check(clickTitle(QStringLiteral("Line")), "and a clickable Line row");
+            check(view->verticalScrollBar()->value() == turnedTop,
+                  QStringLiteral("a vertical /FitH line has no height, so it lands on the page top "
+                                 "(scroll is %1)")
+                      .arg(view->verticalScrollBar()->value()));
+        }
     }
 
     if (failures == 0) {

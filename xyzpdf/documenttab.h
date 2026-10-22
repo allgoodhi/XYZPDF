@@ -15,6 +15,7 @@
 #pragma once
 
 #include "src/document/document.h"
+#include "src/document/outline.h"
 #include "src/document/textsearch.h"
 #include "src/export/wordexport.h"
 #include "src/ocr/ocrengine.h"
@@ -561,6 +562,12 @@ private:
     int foregroundJobs = 0;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
+    // The file's own bookmarks as qpdf read them at open: title, level, page and the destination
+    // exactly as written. Qt's bookmark model, which fills the sidebar, has no place inside a page
+    // for the shapes real books use, so the panel's rows are joined against these by title and
+    // page (matchOutlineRows()) before a click can land at the file's place. Read from the same
+    // throwaway editor open that answers hasFormFields(), so this costs no second file open.
+    QVector<OutlineRow> sourceOutlineRows;
     // See thumbnailsShowPendingEdits().
     bool thumbnailsPreviewEdits = false;
 

@@ -417,6 +417,11 @@ void PageView::dropAllImages()
 
 void PageView::goToPage(int page)
 {
+    goToLocation(page, 0.0);
+}
+
+void PageView::goToLocation(int page, double offsetPoints)
+{
     if (pageCount() == 0)
         return;
     const int clamped = qBound(0, page, pageCount() - 1);
@@ -425,10 +430,15 @@ void PageView::goToPage(int page)
 
     const QRectF rect = layout.rectOf(clamped);
     if (!rect.isNull()) {
-        // The page's top edge at the top of the viewport, and the horizontal
-        // position left where it was: the layout centres pages, so the
-        // horizontal scrollbar is only ever where a zoomed-in reader put it,
-        // and moving it here would undo that on every page change.
+        // The page's top edge -- displaced by the destination, when a bookmark named a place
+        // inside the page -- and the horizontal position left where it was: the layout centres
+        // pages, so the horizontal scrollbar is only ever where a zoomed-in reader put it, and
+        // moving it here would undo that on every page change.
+        //
+        // The offset is in points of the drawn page while the layout is in logical pixels, and
+        // the page it may name is the laid-out one: that size already has the reader's rotation
+        // in it, which is why the number the caller computed from the destination is a distance
+        // from the top edge on screen. Zero stays exactly the old goToPage() arithmetic.
         //
         // The flag is not about the scrollbar, it is about who gets to say
         // which page is current. Moving the scrollbar runs the scroll handler,
@@ -437,8 +447,10 @@ void PageView::goToPage(int page)
         // *next* page. So without this the window announced the page that was
         // asked for and then, a moment later, the one after it, and the status
         // bar and the page box flickered through both.
+        const double pageHeightPoints = layout.pagePoints().at(clamped).height();
+        const double bounded = qBound(0.0, offsetPoints, pageHeightPoints);
         adjustingScroll = true;
-        verticalScrollBar()->setValue(qRound(rect.top()));
+        verticalScrollBar()->setValue(qRound(rect.top() + bounded * layout.zoom()));
         adjustingScroll = false;
     }
     requestVisiblePages();

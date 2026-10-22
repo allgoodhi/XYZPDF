@@ -2,6 +2,7 @@
 
 #include "src/core/appsettings.h"
 #include "src/core/windowdialogs.h"
+#include "src/document/bookmarkposition.h"
 #include "src/document/pagemetrics.h"
 #include "src/document/qtpdfbackend.h"
 #include "src/edit/documenteditor.h"
@@ -188,9 +189,19 @@ DocumentTab::DocumentTab(QWidget *parent)
     layout->addWidget(fileChangeBar);
     layout->addWidget(readingSplit);
 
-    connect(outlinePanel, &OutlinePanel::jumpToPage, this, [this](int page) {
-        pageView->goToPage(page);
-    });
+    // A bookmark click lands where the file said, not just on its page (§75's leftovers: a real
+    // book's 184 bookmarks are all /FitH, and Qt's own Location role reports 0,0 for those). The
+    // destination comes back from the panel joined by title and page against the file's own rows;
+    // what is left is to say it in the page's drawn coordinates, which needs the page's size and
+    // the reader's rotation -- both of which live here rather than in a tree view.
+    connect(outlinePanel, &OutlinePanel::jumpToLocation, this,
+            [this](int page, const BookmarkDest &dest) {
+                if (page < 0 || page >= pageCount())
+                    return;
+                pageView->goToLocation(page,
+                                       bookmarkTopOffset(dest, backend->pageSize(page),
+                                                         pageView->rotation()));
+            });
     connect(thumbnailPanel, &ThumbnailPanel::jumpToPage, this, [this](int page) {
         pageView->goToPage(page);
     });
@@ -702,6 +713,7 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         // caused by a half-written replacement of that very file.
         unwatchFile();
         hideFileChangeNotice();
+        sourceOutlineRows.clear();
         clearSearch();
         // The view is emptied rather than left showing the previous document:
         // a page from another file under a tab named after this one is worse
@@ -756,9 +768,8 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
 
     pageView->setPageSizes(sizes);
 
-    // The reading panel's two tabs, filled once the document is known to be open:
-    // its bookmarks, and a background pass that renders every page's thumbnail.
-    outlinePanel->setOutline(backend->outline());
+    // The thumbnail tab's background pass can start now; the bookmark tab waits one block,
+    // because what it shows has to be joined with the file's own reading first.
     thumbnailPanel->start(sizes, backend.get());
 
     // Does this file have form fields? Asked here, once, through a qpdf that is
@@ -769,13 +780,28 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
     // 600-page file. A file qpdf cannot read is not a form: the reader is
     // already looking at it through Qt PDF, and a second opinion that disagrees
     // is not worth a sentence.
+    //
+    // The same open hands back the file's own bookmark rows, destinations included -- this class
+    // keeps no QPDF, and the sidebar needs them to know where inside a page a click should land.
+    // That reading already happens inside DocumentEditor::open() for the writer's sake, so the
+    // sidebar costs no second pass over the file.
     formFieldsInSource = false;
+    sourceOutlineRows.clear();
     {
         DocumentEditor probe;
         QString ignored;
-        if (probe.open(path, password, &ignored))
+        if (probe.open(path, password, &ignored)) {
             formFieldsInSource = probe.hasFormFields();
+            sourceOutlineRows = probe.sourceOutlineRows();
+        }
     }
+    // Qt is the right source for the titles and pages the panel draws and the wrong one for the
+    // place inside the page (§75 measured 0,0 for every /FitH), so its tree is joined with qpdf's
+    // by title and page. A file qpdf could not read keeps its tree with default destinations, and
+    // clicks go to page tops exactly as they did before.
+    Outline sidebarOutline = backend->outline();
+    attachOutlineDestinations(sidebarOutline, sourceOutlineRows);
+    outlinePanel->setOutline(sidebarOutline);
     // Open on whichever tab has something to lead with -- bookmarks if the file
     // has them, otherwise the thumbnails, which it always does.
     sidebar->setCurrentIndex(outlinePanel->hasOutline() ? 0 : 1);

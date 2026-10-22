@@ -276,6 +276,8 @@ set(XYZPDF_SOURCES
     src/ui/protectpagesdialog.cpp
     src/ui/rotatepagesdialog.h
     src/ui/rotatepagesdialog.cpp
+    src/ui/searchpanel.h
+    src/ui/searchpanel.cpp
     src/ui/splitpagesdialog.h
     src/ui/splitpagesdialog.cpp
     src/ui/thirdpartydialog.h
@@ -693,6 +695,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/propertiesdialog.cpp
                 src/ui/protectpagesdialog.cpp
                 src/ui/rotatepagesdialog.cpp
+                src/ui/searchpanel.cpp
                 src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
@@ -757,6 +760,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/propertiesdialog.cpp
                 src/ui/protectpagesdialog.cpp
                 src/ui/rotatepagesdialog.cpp
+                src/ui/searchpanel.cpp
                 src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp

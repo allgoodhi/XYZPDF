@@ -1501,6 +1501,13 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         }
         updateSearchCount();
     });
+    // The find bar's 列出全部 opens the sidebar itself; the 导航侧栏 tick has to
+    // follow, or the panel stands open while the menu says it is shut.
+    // updateForCurrentTab reads the wish back behind a signal blocker.
+    connect(tab, &DocumentTab::sidebarWantedChanged, this, [this, tab] {
+        if (tab == currentTab())
+            updateForCurrentTab();
+    });
 
     const auto applyTitle = [this, tab](const QString &title) {
         const int at = tabs->indexOf(tab);

@@ -44,6 +44,7 @@ class QFileSystemWatcher;
 class QLabel;
 class QTabWidget;
 class QTimer;
+class SearchPanel;
 class ThumbnailPanel;
 class TranslateDialog;
 class QAtomicInt;
@@ -194,6 +195,9 @@ public:
     // and both of those want the caret in the field.
     void showFindBar();
     FindBar *findBarWidget() const { return findBar; }
+    // The sidebar tab that lists the hits, for the window and for tests. The
+    // list itself is fed by this class; the panel only shows what it is given.
+    SearchPanel *searchPanelWidget() const { return searchPanel; }
 
     PageView *view() const { return pageView; }
 
@@ -391,6 +395,10 @@ Q_SIGNALS:
     // How the search is going: which match is in front, how many there are, and
     // whether the count is still being worked out.
     void searchChanged(int current, int total, bool searching);
+    // The reader asked for the sidebar somewhere other than the window's menu --
+    // the find bar's 列出全部. The window re-reads the wish so its 导航侧栏 item
+    // cannot say the panel is shut while it is open.
+    void sidebarWantedChanged();
     // The render cache's used bytes, for the status bar's honesty about memory.
     void cacheChanged(qint64 usedBytes, qint64 limitBytes);
     // How far the export has got: pages written of pages in the document. Sent
@@ -536,12 +544,14 @@ private:
     // means here; there is no event that says so.
     qint64 fileChangeSize = -1;
     PageView *pageView = nullptr;
-    // The left reading panel: bookmarks and page thumbnails, one tab each. It is
-    // hidden until the reader opens it (sidebarWanted), and shown for any open
-    // document -- thumbnails exist whether or not the file has bookmarks.
+    // The left reading panel: bookmarks, page thumbnails and the hits of the
+    // current search, one tab each. It is hidden until the reader opens it
+    // (sidebarWanted), and shown for any open document -- thumbnails exist
+    // whether or not the file has bookmarks.
     QTabWidget *sidebar = nullptr;
     OutlinePanel *outlinePanel = nullptr;
     ThumbnailPanel *thumbnailPanel = nullptr;
+    SearchPanel *searchPanel = nullptr;
     // Whether the reader asked for the sidebar, kept separate from whether it is
     // shown: a document with no bookmarks cannot show one, but the window's menu
     // item still reflects what was asked.

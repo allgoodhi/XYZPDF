@@ -201,6 +201,153 @@ int main()
               QStringLiteral("at the position it starts at (got %1)").arg(matches.first().from));
     }
 
+    // ---- the row of context around a hit ----
+    //
+    // What the results list puts beside the page number (handoff-01 A). The
+    // rules that are worth pinning are the ones a reader sees: the hit is where
+    // the bold goes, the row is one line even when the page put a break in the
+    // middle of it, an ellipsis marks only the ends that were actually cut, and
+    // neither end can claim to be the page's own beginning or end when it is not.
+    {
+        // English, cut on both sides. Twenty characters before the hit is
+        // exactly what the row has room for, so the run before the bold is a
+        // length this can check rather than describe.
+        const QString english =
+            QStringLiteral("The quick brown fox jumps over the lazy dog and then keeps running "
+                           "to the end of the field.");
+        const auto matches = find(english, QStringLiteral("lazy"));
+        check(matches.size() == 1, "one hit to put in the row");
+        if (!matches.isEmpty()) {
+            const TextSearch::Snippet snippet = matches.first().snippet;
+            check(snippet.text.startsWith(QChar(0x2026)) && snippet.text.endsWith(QChar(0x2026)),
+                  QStringLiteral("an ellipsis at each end that the cut left out (got \"%1\")")
+                      .arg(snippet.text));
+            check(snippet.text.mid(snippet.from, snippet.to - snippet.from)
+                      == QStringLiteral("lazy"),
+                  QStringLiteral("the bold range is the hit itself (got \"%1\")")
+                      .arg(snippet.text.mid(snippet.from, snippet.to - snippet.from)));
+            check(snippet.from == 21,
+                  QStringLiteral("twenty characters before it, plus the ellipsis (got %1)")
+                      .arg(snippet.from));
+            check(snippet.text.contains(QStringLiteral("jumps over the lazy dog")),
+                  QStringLiteral("and the words on both sides are the page's own (got \"%1\")")
+                      .arg(snippet.text));
+        }
+
+        // Chinese: no spaces to count and no word boundary to rely on, so the
+        // same rule has to hold on characters alone.
+        const QString chinese = QStringLiteral(
+            "在项目里，搜索是最常被用到的功能之一。阅读器的搜索结果列表要把命中的那一处上下文"
+            "带出来，方便读者判断是不是要找的地方。这里再补一句，好让右边也走出二十个字，"
+            "两端都真的被裁到。");
+        const auto chineseMatches = find(chinese, QStringLiteral("上下文"));
+        check(chineseMatches.size() == 1, "the Chinese sentence has the needle once");
+        if (!chineseMatches.isEmpty()) {
+            const TextSearch::Snippet snippet = chineseMatches.first().snippet;
+            check(snippet.text.mid(snippet.from, snippet.to - snippet.from)
+                      == QStringLiteral("上下文"),
+                  QStringLiteral("which is the bold range in its row (got \"%1\")")
+                      .arg(snippet.text.mid(snippet.from, snippet.to - snippet.from)));
+            check(snippet.text.startsWith(QChar(0x2026)) && snippet.text.endsWith(QChar(0x2026)),
+                  QStringLiteral("cut on both sides (got \"%1\")").arg(snippet.text));
+        }
+
+        // A hit at the very start of the page has nothing in front of it, so a
+        // leading ellipsis there would be a claim about a cut that never was.
+        {
+            const TextSearch::Snippet start = TextSearch::snippetAround(
+                QStringLiteral("XYZPDF starts this page and keeps going for a while after that."),
+                0, 6);
+            check(!start.text.startsWith(QChar(0x2026)),
+                  QStringLiteral("a hit at the page's start has no ellipsis in front (got \"%1\")")
+                      .arg(start.text));
+            check(start.text.endsWith(QChar(0x2026)) && start.from == 0 && start.to == 6,
+                  "and is cut only at the far end");
+        }
+        // And the mirror image: the hit ends the page, so nothing is left out
+        // behind it.
+        {
+            const QString text = QStringLiteral("The last words on this page are XYZPDF");
+            const TextSearch::Snippet end =
+                TextSearch::snippetAround(text, int(text.length()) - 6, int(text.length()));
+            check(end.text.endsWith(QStringLiteral("XYZPDF")) && !end.text.endsWith(QChar(0x2026)),
+                  QStringLiteral("a hit at the page's end is not cut behind it (got \"%1\")")
+                      .arg(end.text));
+            check(end.text.startsWith(QChar(0x2026)), "but is still cut in front");
+        }
+
+        // Across a line break: the row is one line, and the word after the
+        // break is separated by a space -- one space, not a newline and not
+        // the two characters of a Windows break.
+        {
+            const QString text = QStringLiteral(
+                "first\nsecond needle and more text after that keeps going on");
+            const auto matches = find(text, QStringLiteral("needle"));
+            check(matches.size() == 1, "the hit after a line break is found");
+            if (!matches.isEmpty()) {
+                const TextSearch::Snippet snippet = matches.first().snippet;
+                check(!snippet.text.contains(QLatin1Char('\n'))
+                          && !snippet.text.contains(QLatin1Char('\r')),
+                      QStringLiteral("the row has no line break left in it (got \"%1\")")
+                          .arg(snippet.text));
+                check(snippet.text.contains(QStringLiteral("first second")),
+                      QStringLiteral("the break between the two lines is one space (got \"%1\")")
+                          .arg(snippet.text));
+                check(snippet.text.mid(snippet.from, snippet.to - snippet.from)
+                          == QStringLiteral("needle"),
+                      "and the bold still lands on the hit");
+            }
+
+            const QString windows = QStringLiteral("alpha\r\nalpha\r\nalpha needle alpha alpha");
+            const TextSearch::Snippet folded =
+                TextSearch::snippetAround(windows, int(windows.indexOf(QStringLiteral("needle"))),
+                                          int(windows.indexOf(QStringLiteral("needle"))) + 6, 40);
+            check(!folded.text.contains(QStringLiteral("  ")),
+                  QStringLiteral("a Windows break folds to one space, not two (got \"%1\")")
+                      .arg(folded.text));
+        }
+
+        // A hit that itself spans the break: the bold has to cover both lines'
+        // worth of it, which is where an index computed on the page instead of
+        // on the row would land somewhere else.
+        {
+            const QString text = QStringLiteral("the first line\nsecond line and more");
+            const auto matches = find(text, QStringLiteral("line\nsec"));
+            check(matches.size() == 1, "a phrase across a break is one hit");
+            if (!matches.isEmpty()) {
+                const TextSearch::Snippet snippet = matches.first().snippet;
+                check(snippet.text.mid(snippet.from, snippet.to - snippet.from)
+                          == QStringLiteral("line sec"),
+                      QStringLiteral("and its bold range covers the folded break (got \"%1\")")
+                          .arg(snippet.text.mid(snippet.from, snippet.to - snippet.from)));
+            }
+        }
+
+        // No context asked for is the match alone, still marked on both sides
+        // when it is not the whole page.
+        {
+            const TextSearch::Snippet bare =
+                TextSearch::snippetAround(QStringLiteral("abcNEEDLEdef"), 3, 9, 0);
+            check(bare.text == QStringLiteral("…NEEDLE…") && bare.from == 1 && bare.to == 7,
+                  QStringLiteral("a bare snippet is the hit with an ellipsis each side (got "
+                                 "\"%1\" at %2..%3)")
+                      .arg(bare.text)
+                      .arg(bare.from)
+                      .arg(bare.to));
+        }
+
+        // Nothing to point at: an empty or backwards range answers with nothing
+        // rather than with text no match belongs to.
+        {
+            const TextSearch::Snippet empty = TextSearch::snippetAround(QStringLiteral("abc"), 2, 2);
+            check(empty.text.isEmpty() && empty.from == 0 && empty.to == 0,
+                  "an empty range has no row");
+            const TextSearch::Snippet backwards =
+                TextSearch::snippetAround(QStringLiteral("abc"), 2, 1);
+            check(backwards.text.isEmpty(), "and neither has a backwards one");
+        }
+    }
+
     if (failures == 0) {
         std::cout << "the search rules hold\n";
         return 0;

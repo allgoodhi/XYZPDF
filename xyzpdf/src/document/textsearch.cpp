@@ -30,6 +30,62 @@ bool TextSearch::isWordCharacter(QChar character)
     }
 }
 
+TextSearch::Snippet TextSearch::snippetAround(const QString &text, int from, int to, int context)
+{
+    Snippet snippet;
+    if (text.isEmpty())
+        return snippet;
+
+    from = qBound(0, from, int(text.length()));
+    to = qBound(from, to, int(text.length()));
+    if (from == to)
+        return snippet;
+
+    context = qMax(0, context);
+    const int first = qMax(0, from - context);
+    const int last = qMin(int(text.length()), to + context);
+
+    // Where each character of the window ended up after the line breaks were
+    // folded. A Windows break is two characters and one space, so an index
+    // taken from the page is not an index into the row -- and the bold run is
+    // drawn from those indices.
+    QVector<int> atInRow(last - first + 1, 0);
+    int rowLength = 0;
+    for (int at = first; at < last; ++at) {
+        atInRow[at - first] = rowLength;
+        const QChar character = text.at(at);
+        if (character == QLatin1Char('\r') && at + 1 < last
+            && text.at(at + 1) == QLatin1Char('\n')) {
+            // One break, not two, and not two spaces either: a row that showed
+            // the CRLF as "  " reads like a typo in the document.
+            atInRow[at + 1 - first] = rowLength;
+            snippet.text.append(QLatin1Char(' '));
+            ++rowLength;
+            ++at;
+            continue;
+        }
+        if (character == QLatin1Char('\n') || character == QLatin1Char('\r')
+            || character == QChar(0x2028) || character == QChar(0x2029)) {
+            snippet.text.append(QLatin1Char(' '));
+        } else {
+            snippet.text.append(character);
+        }
+        ++rowLength;
+    }
+    atInRow[last - first] = rowLength;
+
+    snippet.from = atInRow[from - first];
+    snippet.to = atInRow[to - first];
+    if (first > 0) {
+        snippet.text.prepend(QChar(0x2026));
+        ++snippet.from;
+        ++snippet.to;
+    }
+    if (last < text.length())
+        snippet.text.append(QChar(0x2026));
+    return snippet;
+}
+
 QVector<TextSearch::Match> TextSearch::matchesInPage(int page, const QString &text,
                                                      const QString &needle, bool caseSensitive,
                                                      bool wholeWord)
@@ -55,7 +111,15 @@ QVector<TextSearch::Match> TextSearch::matchesInPage(int page, const QString &te
             continue;
         if (boundaryAfter && !isBoundary(text, at + length))
             continue;
-        matches.append(Match{page, at, at + length});
+        Match match;
+        match.page = page;
+        match.from = at;
+        match.to = at + length;
+        // Cut here, while the page's text is in hand. The results list needs a
+        // row of context per hit, and asking the document for the page again
+        // would be a second PDFium read behind the lock every render takes.
+        match.snippet = snippetAround(text, at, at + length);
+        matches.append(match);
     }
     return matches;
 }

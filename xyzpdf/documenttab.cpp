@@ -6,8 +6,6 @@
 #include "src/document/pagemetrics.h"
 #include "src/document/qtpdfbackend.h"
 #include "src/edit/documenteditor.h"
-#include "src/export/imageexport.h"
-#include "src/print/printjob.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
 #include "src/translate/translator.h"
@@ -15,12 +13,10 @@
 #include "src/ui/deletepagesdialog.h"
 #include "src/ui/bookmarkdialog.h"
 #include "src/ui/findbar.h"
-#include "src/ui/imageexportdialog.h"
 #include "src/ui/mergepagesdialog.h"
 #include "src/ui/movepagesdialog.h"
 #include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
-#include "src/ui/printdialog.h"
 #include "src/ui/propertiesdialog.h"
 #include "src/ui/protectpagesdialog.h"
 #include "src/ui/rotatepagesdialog.h"
@@ -32,7 +28,6 @@
 #include "src/view/pageview.h"
 
 #include <QApplication>
-#include <QAtomicInt>
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
@@ -44,8 +39,6 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPrintDialog>
-#include <QPrinter>
-#include <QProgressDialog>
 #include <QPushButton>
 #include <QSplitter>
 #include <QTabWidget>
@@ -193,6 +186,16 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(wordExport.get(), &WordExportSession::progress, this, &DocumentTab::wordExportProgress);
     connect(wordExport.get(), &WordExportSession::reportFinished, this,
             &DocumentTab::wordExportFinished);
+
+    // Printing and exporting to images are the two jobs that run in front of the
+    // reader, on this thread, pumping events between pages -- so they are the
+    // two that hold the tab's foreground count, and the window asks that count
+    // before taking the tab apart.
+    jobs = std::make_unique<ForegroundJobs>();
+    output = std::make_unique<DocumentOutput>(
+        this, pageView, jobs.get(), openDocument, [this] { return hasFormFields(); });
+    connect(output.get(), &DocumentOutput::imageExportFinished, this,
+            &DocumentTab::imageExportFinished);
 
     connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
     connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
@@ -1076,101 +1079,12 @@ void DocumentTab::onLinkActivated(const Link &link)
 
 void DocumentTab::print()
 {
-    if (!opened)
-        return;
-
-    // From here to the end of the method this tab must not be taken apart: the
-    // settings dialog and the progress box both pump the event loop, and a
-    // 关闭标签 landing in either one would delete the object this call is
-    // standing in. See DocumentTab::ForegroundJob.
-    const ForegroundJob job(this);
-
-    QPrinter printer(QPrinter::HighResolution);
-    PrintDialog dialog(window(), &printer, pageView->currentPage(), pageCount(),
-                       hasFormFields());
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    const Print::Settings settings = dialog.settings();
-
-    // A cancel-able progress dialog over a foreground job. Print::run calls the
-    // callback once per sheet on this thread; pumping events here is what lets
-    // the dialog repaint and its Cancel button be noticed between sheets.
-    auto cancel = QSharedPointer<QAtomicInt>::create(0);
-    QProgressDialog progress(tr("正在打印…"), tr("取消"), 0, 1, window());
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.setAutoReset(false);
-    progress.setValue(0);
-
-    const Print::Report report = Print::run(
-        *backend, printer, settings,
-        [&progress, &cancel](int done, int total) {
-            progress.setMaximum(total);
-            progress.setValue(done);
-            QApplication::processEvents();
-            if (progress.wasCanceled())
-                cancel->storeRelaxed(1);
-        },
-        cancel.data());
-
-    if (!report.ok && !report.cancelled)
-        WindowDialogs::warning(window(), tr("打印"), report.error);
+    output->print();
 }
 
 void DocumentTab::exportImages()
 {
-    if (!opened)
-        return;
-
-    // The same reason printing holds one: two dialogs that pump the loop, and
-    // a render loop between them that does it once per page.
-    const ForegroundJob job(this);
-
-    ImageExportDialog dialog(window(), pageView->currentPage(), pageCount());
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    const QString directory = dialog.directory();
-    if (directory.isEmpty()) {
-        WindowDialogs::warning(window(), tr("导出为图片"), tr("请先选择保存文件夹。"));
-        return;
-    }
-    const QVector<int> pages = dialog.pages();
-    if (pages.isEmpty()) {
-        WindowDialogs::warning(window(), tr("导出为图片"), tr("页码范围里没有可导出的页面。"));
-        return;
-    }
-    const QString base = QFileInfo(documentPath()).completeBaseName();
-
-    // Foreground, like printing: each page is a render under the same lock the
-    // view uses, and pumping events in the callback is what keeps the progress
-    // box live and its Cancel button responsive between pages.
-    auto cancel = QSharedPointer<QAtomicInt>::create(0);
-    QProgressDialog progress(tr("正在导出为图片…"), tr("取消"), 0, pages.size(), window());
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.setAutoReset(false);
-    progress.setValue(0);
-
-    const ImageExport::Report report = ImageExport::run(
-        *backend, pages, directory, base, dialog.format(), dialog.dpi(),
-        [&progress, &cancel](int done, int total) {
-            progress.setMaximum(total);
-            progress.setValue(done);
-            QApplication::processEvents();
-            if (progress.wasCanceled())
-                cancel->storeRelaxed(1);
-        },
-        cancel.data());
-
-    if (report.cancelled)
-        return;
-    if (!report.ok) {
-        WindowDialogs::warning(window(), tr("导出为图片"), report.error);
-        return;
-    }
-    AppSettings::setLastOpenDirectory(directory);
-    Q_EMIT imageExportFinished(report.directory, report.pages);
+    output->exportImages();
 }
 
 DocumentEditor *DocumentTab::editSession()

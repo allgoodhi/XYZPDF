@@ -20,7 +20,9 @@
 #include "src/export/wordexport.h"
 #include "src/ocr/ocrengine.h"
 #include "src/render/rendercache.h"
+#include "src/services/documentoutput.h"
 #include "src/services/filechangenotice.h"
+#include "src/services/foregroundjobs.h"
 #include "src/services/searchsession.h"
 #include "src/services/wordexportsession.h"
 #include "src/translate/keystore.h"
@@ -105,42 +107,27 @@ public:
 
     // ---- a job that holds this object on the stack ----
     //
-    // Printing and exporting to images run in the foreground: they render page
-    // by page on this thread and pump the event loop between pages so the
-    // progress box stays alive and its Cancel button works. Anything queued
-    // runs in that pump -- and a 关闭标签 arriving there used to take this very
-    // object out of the strip and delete it, with print() still on its stack
-    // and about to render another page through a backend that had just been
-    // freed. Measured in mainwindow_smoke, which is where the shape is visible;
-    // docs/review-03.md §2.4 is where it was first suspected.
-    //
-    // Today the only thing stopping that is the progress box being window
-    // modal, which blocks the menu, the shortcut and the strip's ✕ -- an
-    // accident of the UI rather than a rule, and nothing at all for a route
-    // that does not come through the keyboard. So the job says so, and
-    // MainWindow refuses to take the tab apart while one is running.
+    // Why the tab must not be taken apart while a print or an image export is
+    // running -- including the 关闭标签 that used to delete it from inside the
+    // event pump -- is written at the top of src/services/foregroundjobs.h, and
+    // the counting lives there now that the two jobs are in DocumentOutput.
+    // The name stays here because this is what MainWindow asks about and what a
+    // test stands open on a tab: it is the guard over this tab's own counter.
     class ForegroundJob
     {
     public:
         explicit ForegroundJob(DocumentTab *owner)
-            : tab(owner)
+            : scope(owner ? owner->jobs.get() : nullptr)
         {
-            if (tab)
-                ++tab->foregroundJobs;
-        }
-        ~ForegroundJob()
-        {
-            if (tab)
-                --tab->foregroundJobs;
         }
         ForegroundJob(const ForegroundJob &) = delete;
         ForegroundJob &operator=(const ForegroundJob &) = delete;
 
     private:
-        DocumentTab *tab = nullptr;
+        ForegroundJobs::Scope scope;
     };
 
-    bool hasForegroundJob() const { return foregroundJobs > 0; }
+    bool hasForegroundJob() const { return jobs->busy(); }
 
     // Whether renders are still on their way. The window asks before deciding
     // that a launch with no window has nothing left to do, and a launch that
@@ -269,13 +256,14 @@ public:
 
     // ---- 打印 ----
     //
-    // Asks for the print choices, then renders and prints. Foreground, with a
-    // cancel-able progress dialog: a QPrinter's paint device is a GUI-thread
-    // thing, so this is not a worker-thread job the way an export is.
+    // Both of these run in DocumentOutput: the dialogs, the render loop and the
+    // progress box. Why they stay in the foreground -- a QPrinter's paint device
+    // being a GUI-thread thing -- is written at the top of
+    // src/services/documentoutput.h; what the tab adds is the guard, because the
+    // object those jobs stand on is this one.
     void print();
 
-    // Writes every page out as a PNG into a folder the reader chooses. Foreground
-    // with a cancel-able progress dialog, like printing.
+    // Writes every page out as a PNG into a folder the reader chooses.
     void exportImages();
 
     // Reads the open file again, putting the reader back where they were.
@@ -558,8 +546,10 @@ private:
     // item still reflects what was asked.
     bool sidebarWanted = false;
     // How many foreground jobs (print, image export) are on this object's
-    // stack. See ForegroundJob above.
-    int foregroundJobs = 0;
+    // stack, and the two jobs that put it there. The counter is declared first
+    // and so outlives them; DocumentOutput holds a pointer to it.
+    std::unique_ptr<ForegroundJobs> jobs;
+    std::unique_ptr<DocumentOutput> output;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
     // What the open-time probe answered about XFA, kept for hasXfa() / hasDynamicXfa() above.

@@ -310,7 +310,10 @@ set(XYZPDF_SOURCES
     src/render/rendercache.cpp
     src/render/rendertoken.h
 
+    src/services/documentoutput.h
+    src/services/documentoutput.cpp
     src/services/filechangenotice.h
+    src/services/foregroundjobs.h
     src/services/filechangenotice.cpp
     src/services/searchsession.h
     src/services/searchsession.cpp
@@ -792,6 +795,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/watermarkdialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
+                src/services/documentoutput.cpp
                 src/services/filechangenotice.cpp
                 src/services/searchsession.cpp
                 src/services/wordexportsession.cpp
@@ -840,6 +844,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/translate/translator.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
+                src/services/documentoutput.cpp
                 src/services/filechangenotice.cpp
                 src/services/searchsession.cpp
                 src/services/wordexportsession.cpp

@@ -29,6 +29,7 @@
 #include "../src/ui/ocrdialog.h"
 #include "../src/ui/protectpagesdialog.h"
 #include "../src/ui/propertiesdialog.h"
+#include "../src/ui/rotatepagesdialog.h"
 #include "../src/ui/splitpagesdialog.h"
 #include "../src/ui/thumbnailpanel.h"
 #include "../src/ui/watermarkdialog.h"
@@ -61,6 +62,8 @@
 #include <QTemporaryDir>
 #include <QTableWidget>
 #include <QThreadPool>
+#include <QTabWidget>
+#include <QTimer>
 
 // The overwrite measurement asks the same question the save's last step does, and that is a Win32
 // call rather than a Qt one.
@@ -80,6 +83,7 @@
 
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <iostream>
 
 namespace {
@@ -156,6 +160,47 @@ QString labelsOf(const QWidget *dialog)
     for (const QLabel *label : dialog->findChildren<QLabel *>())
         said.append(label->text());
     return said.join(QLatin1Char(0x0a));
+}
+
+// Answers one of the tab's own dialogs the way a reader would: waits for it to
+// open, types `pages` into its page box, presses the button that accepts it.
+//
+// Armed *before* the menu action is called, because the action ends in exec()
+// and nothing after that line runs until the dialog is gone. Bounded both ways:
+// a dialog that never appears costs a few seconds rather than the run, and one
+// that appears and cannot be filled in is rejected, so the exec() underneath
+// always returns.
+template <typename Dialog>
+void answerNextDialog(const QString &pages)
+{
+    auto *timer = new QTimer;
+    auto ticks = std::make_shared<int>(0);
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, ticks, pages] {
+        Dialog *open = nullptr;
+        for (QWidget *top : QApplication::topLevelWidgets()) {
+            if (auto *candidate = qobject_cast<Dialog *>(top); candidate && candidate->isVisible())
+                open = candidate;
+            for (Dialog *child : top->findChildren<Dialog *>()) {
+                if (child->isVisible())
+                    open = child;
+            }
+        }
+        if (open) {
+            if (auto *box = open->template findChild<QLineEdit *>())
+                box->setText(pages);
+            auto *buttons = open->template findChild<QDialogButtonBox *>();
+            QPushButton *accept = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+            if (accept && accept->isEnabled())
+                accept->click();
+            else
+                open->reject();
+            timer->deleteLater();
+            return;
+        }
+        if (++*ticks > 100)
+            timer->deleteLater(); // never appeared; nothing to unblock
+    });
+    timer->start(50);
 }
 
 // One mouse event, straight to the viewport.
@@ -405,6 +450,88 @@ int main(int argc, char **argv)
         check(tab.open(path) == Document::Status::Ready, "the fixture is back for what follows");
         tab.setZoomMode(ZoomController::Mode::FitWidth);
         view->setRotation(0);
+    }
+
+    // ---- the strip shows what a save would write (docs/review-03.md §1.3) ----
+    //
+    // Every structural edit used to be invisible: delete a page and the page was
+    // still there, turn one and it was not turned, until the edits were written
+    // to a new file and that file opened in another tab. He chose the cheapest
+    // of the ways out: the main view goes on showing the file, and the thumbnail
+    // strip shows the pages a save would write -- in that order, that way up.
+    //
+    // Driven through the dialogs a reader uses, because the edit list belongs to
+    // the tab and the tab only lets it be changed that way.
+    {
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        check(tab.open(book) == Document::Status::Ready, "the 40-page fixture opens");
+        const int pages = tab.pageCount();
+        check(pages == 40, QStringLiteral("and it is 40 pages (%1)").arg(pages));
+
+        auto *strip = tab.findChild<ThumbnailPanel *>();
+        auto *bar = tab.findChild<QTabWidget *>();
+        tab.setSidebarVisible(true);
+        if (bar && strip)
+            bar->setCurrentWidget(strip);
+        const int stripTab = bar && strip ? bar->indexOf(strip) : -1;
+        const QString plainTitle = stripTab >= 0 ? bar->tabText(stripTab) : QString();
+
+        if (strip && stripTab >= 0) {
+            check(strip->rowCount() == pages, "before any edit, a row per page");
+            check(!tab.thumbnailsShowPendingEdits(), "and the strip is the file as it is");
+
+            // Delete page 2.
+            answerNextDialog<DeletePagesDialog>(QStringLiteral("2"));
+            tab.deletePages();
+            check(tab.hasUnsavedEdits(), "the deletion is recorded");
+            check(strip->rowCount() == pages - 1,
+                  QStringLiteral("and the strip has one row fewer (%1 of %2)")
+                      .arg(strip->rowCount())
+                      .arg(pages));
+            check(strip->rowAt(1).sourcePage == 2,
+                  QStringLiteral("the second row is now the third page of the file (row 2 shows "
+                                 "page %1)").arg(strip->rowAt(1).sourcePage + 1));
+            check(tab.thumbnailsShowPendingEdits(), "the tab knows the strip is a preview");
+            check(bar->tabText(stripTab) != plainTitle,
+                  QStringLiteral("and the strip's own tab says so (\"%1\")")
+                      .arg(bar->tabText(stripTab)));
+            check(tab.pageCount() == pages, "while the document on screen still has every page");
+
+            // Turn page 1 right.
+            answerNextDialog<RotatePagesDialog>(QStringLiteral("1"));
+            tab.rotatePages();
+            check(strip->rowAt(0).rotation == 90,
+                  QStringLiteral("the first row is shown turned a quarter right (%1)")
+                      .arg(strip->rowAt(0).rotation));
+            check(waitFor([strip] {
+                      const QAbstractItemModel *m =
+                          static_cast<const QAbstractItemView *>(strip)->model();
+                      const QIcon icon = qvariant_cast<QIcon>(m->index(0, 0).data(Qt::DecorationRole));
+                      const QList<QSize> sizes = icon.availableSizes();
+                      return !sizes.isEmpty() && sizes.first().width() > sizes.first().height();
+                  }),
+                  "and its picture is landscape, which is what a portrait page turned is");
+
+            // A row is a page of the file, not a position: clicking the second row
+            // goes to page 3 of what is on screen.
+            Q_EMIT strip->clicked(static_cast<const QAbstractItemView *>(strip)->model()->index(1, 0));
+            check(waitFor([&tab] { return tab.currentPage() == 2; }),
+                  QStringLiteral("clicking the second row goes to the page it shows (now on %1)")
+                      .arg(tab.currentPage() + 1));
+
+            // And back, all the way.
+            tab.undoEdit();
+            tab.undoEdit();
+            check(!tab.hasUnsavedEdits(), "two undos take both edits back");
+            check(strip->rowCount() == pages && strip->rowAt(1).sourcePage == 1
+                      && strip->rowAt(0).rotation == 0,
+                  "and the strip is the file as it is again");
+            check(!tab.thumbnailsShowPendingEdits() && bar->tabText(stripTab) == plainTitle,
+                  "with its tab back to its plain name");
+        }
+
+        tab.setSidebarVisible(false);
+        check(tab.open(path) == Document::Status::Ready, "the first fixture is back");
     }
 
     // ---- the properties dialog (PLAN M2) ----

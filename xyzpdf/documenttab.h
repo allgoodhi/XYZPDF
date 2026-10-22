@@ -227,6 +227,11 @@ public:
     // the open already spends reading every page's size.
     bool hasFormFields() const { return formFieldsInSource; }
 
+    // Whether the thumbnail strip is showing pending edits rather than the file
+    // as it is on disk (docs/review-03.md §1.3). The main view always shows the
+    // file; the strip shows what a save would write. See refreshThumbnailRows().
+    bool thumbnailsShowPendingEdits() const { return thumbnailsPreviewEdits; }
+
     // ---- 打印 ----
     //
     // Asks for the print choices, then renders and prints. Foreground, with a
@@ -466,6 +471,11 @@ private:
     // parser, no undo list, and no claim on the file it was opened from.
     DocumentEditor *editSession();
 
+    // Points the thumbnail strip at the pages a save would write -- or at the
+    // document as it is, when nothing that moves a page is pending -- and says
+    // which of the two on the strip's tab.
+    void refreshThumbnailRows();
+
     // Declared before the renderer, and therefore destroyed after it: the
     // renderer holds a pointer to this document, and a document that goes away
     // first leaves it holding freed memory. Members are destroyed in reverse
@@ -492,6 +502,8 @@ private:
     int foregroundJobs = 0;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
+    // See thumbnailsShowPendingEdits().
+    bool thumbnailsPreviewEdits = false;
 
     // ---- search state ----
     //

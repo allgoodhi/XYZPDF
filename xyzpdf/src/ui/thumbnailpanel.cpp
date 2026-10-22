@@ -1,6 +1,7 @@
 #include "thumbnailpanel.h"
 
 #include "../document/document.h"
+#include "../document/pagemetrics.h"
 
 #include <QAtomicInt>
 #include <QIcon>
@@ -69,8 +70,14 @@ ThumbnailPanel::ThumbnailPanel(QWidget *parent)
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     connect(this, &QListView::clicked, this, [this](const QModelIndex &index) {
-        if (index.isValid())
-            Q_EMIT jumpToPage(index.row());
+        // The page the row shows, not the row: once the strip is showing the
+        // document a save would write, row 3 may be page 7 of the one on screen
+        // -- and a row a merge brought in has no page here to go to.
+        if (!index.isValid() || index.row() >= rows.size())
+            return;
+        const int page = rows.at(index.row()).sourcePage;
+        if (page >= 0)
+            Q_EMIT jumpToPage(page);
     });
     // Scrolling is the usual way the band moves.
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { refreshBand(); });
@@ -83,28 +90,51 @@ void ThumbnailPanel::start(const QVector<QSizeF> &sizes, Document *document)
     cancelAndDrain();
     generation = QSharedPointer<QAtomicInt>::create(0);
 
-    model->clear();
-    held.clear();
     pageSizes = sizes;
     source = sizes.isEmpty() ? nullptr : document;
+
+    rows.clear();
+    rows.reserve(sizes.size());
+    for (int page = 0; page < sizes.size(); ++page)
+        rows.append(Row{page, 0, QString::number(page + 1), QString()});
+    rebuildModel();
+    refreshBand();
+}
+
+void ThumbnailPanel::setRows(const QVector<Row> &newRows)
+{
+    // The job in flight is rendering pictures for rows that are about to mean
+    // something else, so it goes first -- and its late results are dropped by
+    // the token they carry (see startBatch).
+    cancelAndDrain();
+    generation = QSharedPointer<QAtomicInt>::create(0);
+    rows = newRows;
+    rebuildModel();
+    refreshBand();
+}
+
+void ThumbnailPanel::rebuildModel()
+{
+    model->clear();
+    held.clear();
 
     // One height for every row, from the first page's shape: the icon size is
     // uniform too, so a page of another shape is drawn inside the same box.
     // The text under it is a page number, and 24 px is room for one line.
-    const QSize picture = sizes.isEmpty() ? QSize(thumbWidth, int(thumbWidth * 1.4))
-                                          : thumbnailSize(sizes.first(), thumbWidth);
+    const QSize picture = pageSizes.isEmpty() ? QSize(thumbWidth, int(thumbWidth * 1.4))
+                                              : thumbnailSize(pageSizes.first(), thumbWidth);
     rowHeight = picture.height() + 24 + 2 * spacing();
 
-    for (int page = 0; page < sizes.size(); ++page) {
-        auto *item = new QStandardItem(QString::number(page + 1));
+    for (const Row &row : std::as_const(rows)) {
+        auto *item = new QStandardItem(row.label);
         item->setEditable(false);
         item->setTextAlignment(Qt::AlignHCenter | Qt::AlignBottom);
         item->setSizeHint(QSize(thumbWidth + 2 * spacing(), rowHeight - 2 * spacing()));
+        if (!row.toolTip.isEmpty())
+            item->setToolTip(row.toolTip);
         model->appendRow(item);
     }
     viewport()->update();
-
-    refreshBand();
 }
 
 void ThumbnailPanel::showEvent(QShowEvent *event)
@@ -175,48 +205,72 @@ void ThumbnailPanel::refreshBand()
     int renderLast = -1;
     bandRows(kRenderViewports, &renderFirst, &renderLast);
     QVector<int> wanted;
-    for (int page = renderFirst; page <= renderLast; ++page) {
-        if (!held.contains(page))
-            wanted.append(page);
+    for (int row = renderFirst; row <= renderLast; ++row) {
+        if (held.contains(row) || row >= rows.size() || rows.at(row).sourcePage < 0)
+            continue; // already drawn, or nothing here to draw
+        wanted.append(row);
     }
     if (!wanted.isEmpty())
         startBatch(wanted);
 }
 
-void ThumbnailPanel::startBatch(const QVector<int> &pages)
+void ThumbnailPanel::startBatch(const QVector<int> &wantedRows)
 {
     const QSharedPointer<QAtomicInt> cancel = generation;
     const int width = thumbWidth;
     const QVector<QSizeF> sizes = pageSizes;
     Document *document = source;
+    // Which page and which way up, for each row asked for -- copied, because the
+    // rows may be replaced on the UI thread while this runs.
+    QVector<QPair<int, Row>> work;
+    work.reserve(wantedRows.size());
+    for (const int row : wantedRows)
+        work.append({row, rows.at(row)});
 
     batchRunning = true;
     bandMovedDuringBatch = false;
-    pending = QtConcurrent::run([this, document, sizes, pages, width, cancel] {
-        for (const int page : pages) {
+    pending = QtConcurrent::run([this, document, sizes, work, width, cancel] {
+        for (const auto &job : work) {
             if (cancel->loadRelaxed())
                 break; // the document is going away, or a newer job took over
+            const int row = job.first;
+            const int page = job.second.sourcePage;
             if (page < 0 || page >= sizes.size())
                 continue;
             RenderOptions options;
             options.annotations = true;
             options.optimizedForLcd = false;
-            const QImage image = document->render(page, thumbnailSize(sizes.at(page), width),
-                                                  options);
+            options.rotationDegrees = job.second.rotation;
+            // The turned page's shape, so that a page turned a quarter is drawn
+            // landscape rather than squeezed into its old portrait box.
+            const QSizeF shape = PageMetrics::rotated(sizes.at(page), job.second.rotation);
+            const QImage image = document->render(page, thumbnailSize(shape, width), options);
             if (image.isNull() || cancel->loadRelaxed())
                 continue;
             // Hand the finished picture back to the UI thread. The context is
             // `this`, so if the panel is gone by the time the event is delivered
-            // Qt drops it rather than calling into freed memory.
+            // Qt drops it rather than calling into freed memory; the token is
+            // asked again there, because rows replaced after this was posted
+            // would otherwise receive a picture of a page they no longer show.
             QMetaObject::invokeMethod(
-                this, [this, page, image] { applyThumbnail(page, image); }, Qt::QueuedConnection);
+                this,
+                [this, row, image, cancel] {
+                    if (!cancel->loadRelaxed())
+                        applyThumbnail(row, image);
+                },
+                Qt::QueuedConnection);
         }
         // And the same for "that is the batch", posted from here rather than
         // read off the future: a future is not finished until after this lambda
         // returns, and the next band has to be decided on the UI thread anyway.
         QMetaObject::invokeMethod(
             this,
-            [this] {
+            [this, cancel] {
+                // A batch that was cancelled has already been accounted for by
+                // whoever cancelled it -- and a newer batch may be running now,
+                // which this must not mark as finished.
+                if (cancel->loadRelaxed())
+                    return;
                 batchRunning = false;
                 // The band may have moved while this ran. If it did not, there
                 // is nothing to do: everything asked for has arrived.
@@ -227,13 +281,13 @@ void ThumbnailPanel::startBatch(const QVector<int> &pages)
     });
 }
 
-void ThumbnailPanel::applyThumbnail(int page, const QImage &image)
+void ThumbnailPanel::applyThumbnail(int row, const QImage &image)
 {
-    if (page < 0 || page >= model->rowCount())
+    if (row < 0 || row >= model->rowCount())
         return; // a late result for a document that has since been replaced
-    if (auto *item = model->item(page)) {
+    if (auto *item = model->item(row)) {
         item->setIcon(QIcon(QPixmap::fromImage(image)));
-        held.insert(page);
+        held.insert(row);
     }
 }
 
@@ -261,9 +315,17 @@ void ThumbnailPanel::cancelAndDrain()
 
 void ThumbnailPanel::setCurrentPage(int page)
 {
-    if (page < 0 || page >= model->rowCount())
+    // `page` is a page of the document on screen, and the row showing it is
+    // found by what each row shows: once a delete or a move is pending they are
+    // no longer the same number, and a page being taken out has no row at all
+    // -- in which case nothing is highlighted rather than the wrong thing.
+    for (int row = 0; row < rows.size(); ++row) {
+        if (rows.at(row).sourcePage != page)
+            continue;
+        const QModelIndex index = model->index(row, 0);
+        setCurrentIndex(index);
+        scrollTo(index, QAbstractItemView::PositionAtCenter);
         return;
-    const QModelIndex index = model->index(page, 0);
-    setCurrentIndex(index);
-    scrollTo(index, QAbstractItemView::PositionAtCenter);
+    }
+    clearSelection();
 }

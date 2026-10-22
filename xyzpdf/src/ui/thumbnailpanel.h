@@ -52,6 +52,7 @@
 #include <QListView>
 #include <QSet>
 #include <QSharedPointer>
+#include <QString>
 #include <QSizeF>
 #include <QVector>
 
@@ -66,6 +67,25 @@ class ThumbnailPanel : public QListView
     Q_OBJECT
 
 public:
+    // One row of the strip: which page of the open document it shows, which way
+    // up, and what is written under it.
+    //
+    // Rows rather than "one per page" because the strip can show the document a
+    // save would write rather than the one on disk (docs/review-03.md §1.3):
+    // pages taken out are absent, pages moved are where they will be, pages
+    // turned are turned. A row whose page is not in the open document -- one a
+    // merge brings in from another file -- has no page to render, and says so
+    // in its label instead.
+    struct Row
+    {
+        // Zero-based page of the open document to draw, or -1 for none.
+        int sourcePage = -1;
+        // Degrees clockwise on top of the page's own /Rotate: 0, 90, 180, 270.
+        int rotation = 0;
+        QString label;
+        QString toolTip;
+    };
+
     explicit ThumbnailPanel(QWidget *parent = nullptr);
 
     // Rebuild the list for a freshly opened document and take on the job of
@@ -79,6 +99,14 @@ public:
     // above. Passing a null document (or no pages) is how a tab says "there is
     // nothing to show", and it clears the job as well as the list.
     void start(const QVector<QSizeF> &sizes, Document *document);
+
+    // Replaces what the rows show, keeping the document start() was given. The
+    // pictures already held belong to the old rows and are let go; the band is
+    // rendered again for the new ones. Clicking a row jumps to its sourcePage,
+    // and a row without one does nothing.
+    void setRows(const QVector<Row> &newRows);
+    int rowCount() const { return int(rows.size()); }
+    const Row &rowAt(int row) const { return rows.at(row); }
 
     // Whether there is a document none of whose pages has been drawn yet. True
     // between an open and the first time the panel is shown; the tests ask it,
@@ -112,7 +140,10 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
-    void applyThumbnail(int page, const QImage &image);
+    void applyThumbnail(int row, const QImage &image);
+    // The model, rebuilt from `rows`. Every row the same height, decided before
+    // any picture exists -- see the constructor.
+    void rebuildModel();
     // Renders what is near the viewport and lets go of what is not. Safe to
     // call at any time and from anywhere: it does nothing while the panel is
     // hidden, and while a batch is in flight it only notes that the answer has
@@ -140,6 +171,9 @@ private:
     // points at.
     QVector<QSizeF> pageSizes;
     Document *source = nullptr;
+    // What each row shows. start() fills it with one row per page; setRows()
+    // replaces it.
+    QVector<Row> rows;
     // The rows that have a picture in them right now.
     QSet<int> held;
     int rowHeight = 0;

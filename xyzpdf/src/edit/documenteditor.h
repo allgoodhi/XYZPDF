@@ -663,6 +663,17 @@ public:
     // same way a save replays them. Anything else would be two answers to "第几页".
     QVector<PageRef> pageOrder() const { return live; }
 
+    // Clockwise quarter turns (0-3) the pending list adds to `page` of the opened
+    // document. The thumbnail strip asks, so that a page the reader has turned is
+    // shown turned before anything is saved: rotations are kept as operations
+    // naming original page numbers, so pageOrder() alone cannot say it.
+    int pendingQuarterTurns(int page) const;
+
+    // The file a merge brought a page in from, named by the `source` every page of
+    // that merge carries. Empty for 0 (the opened document) and for a source no
+    // pending merge has -- which is what an undone merge leaves behind.
+    QString importPathFor(int source) const;
+
     // Whether a file can be merged into this document, and how many pages it has.
     // The dialog calls this the moment a name is chosen, because the range box has to
     // be bounded by the file's own page count rather than by whatever the reader

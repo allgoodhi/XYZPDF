@@ -134,6 +134,9 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(thumbnailPanel, &ThumbnailPanel::jumpToPage, this, [this](int page) {
         pageView->goToPage(page);
     });
+    // One connection for every place the edit list changes -- there are eight
+    // of them, and the strip has to follow all of them, undo and redo included.
+    connect(this, &DocumentTab::editStateChanged, this, &DocumentTab::refreshThumbnailRows);
 
     connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
     connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
@@ -1254,6 +1257,69 @@ bool DocumentTab::reload(QString *error)
     if (page > 0)
         pageView->goToPage(qMin(page, pageCount() - 1));
     return true;
+}
+
+void DocumentTab::refreshThumbnailRows()
+{
+    if (!opened || !thumbnailPanel)
+        return;
+
+    // What a save would write, page by page. Without an editor that is the
+    // document as it is; with one, it is the pending list played out --
+    // pages taken out are not there, moved pages are where they will land,
+    // merged pages are where they will arrive.
+    const int count = pageCount();
+    QVector<DocumentEditor::PageRef> order;
+    if (editor) {
+        order = editor->pageOrder();
+    } else {
+        order.reserve(count);
+        for (int page = 0; page < count; ++page)
+            order.append(DocumentEditor::PageRef{0, page});
+    }
+
+    bool differs = order.size() != count;
+    QVector<ThumbnailPanel::Row> rows;
+    rows.reserve(order.size());
+    for (int row = 0; row < order.size(); ++row) {
+        const DocumentEditor::PageRef &ref = order.at(row);
+        ThumbnailPanel::Row shown;
+        if (ref.source == 0) {
+            shown.sourcePage = ref.page;
+            shown.rotation = editor ? editor->pendingQuarterTurns(ref.page) * 90 : 0;
+            shown.label = QString::number(row + 1);
+            if (ref.page != row) {
+                shown.toolTip = tr("原第 %1 页").arg(ref.page + 1);
+                differs = true;
+            }
+            if (shown.rotation != 0)
+                differs = true;
+        } else {
+            // A page from another file: this document cannot draw it, so the row
+            // says where it comes from instead of showing an empty tile with a
+            // number that means nothing.
+            const QString file = QFileInfo(editor->importPathFor(ref.source)).fileName();
+            shown.label = tr("%1（合并）").arg(row + 1);
+            shown.toolTip = tr("来自 %1 的第 %2 页").arg(file).arg(ref.page + 1);
+            differs = true;
+        }
+        rows.append(shown);
+    }
+    thumbnailPanel->setRows(rows);
+    thumbnailPanel->setCurrentPage(pageView->currentPage());
+
+    // The strip is no longer a picture of the file on disk, and the reader has to
+    // be told so where they are looking: nine thumbnails beside a ten-page
+    // document is otherwise a strip that looks broken.
+    const int stripTab = sidebar->indexOf(thumbnailPanel);
+    if (stripTab >= 0) {
+        sidebar->setTabText(stripTab, differs ? tr("缩略图（修改预览）") : tr("缩略图"));
+        sidebar->setTabToolTip(stripTab,
+                               differs ? tr("这里显示的是保存之后的页面顺序和朝向；"
+                                            "正在读的文件本身没有变")
+                                       : QString());
+    }
+    thumbnailsPreviewEdits = differs;
 }
 
 PropertiesDialog::Info DocumentTab::propertiesInfo() const

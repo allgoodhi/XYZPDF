@@ -773,6 +773,28 @@ int DocumentEditor::importedPageCount() const
     return imported;
 }
 
+int DocumentEditor::pendingQuarterTurns(int page) const
+{
+    int turns = 0;
+    for (const Operation &op : pending) {
+        if (op.kind == Operation::Kind::RotatePages && op.pages.contains(page))
+            turns += op.quarterTurns;
+    }
+    return ((turns % 4) + 4) % 4;
+}
+
+QString DocumentEditor::importPathFor(int source) const
+{
+    if (source <= 0)
+        return {};
+    for (const Operation &op : pending) {
+        if (op.kind == Operation::Kind::MergeFile && op.mergeId == source && op.importIndex >= 0
+            && op.importIndex < imports.size())
+            return imports.at(op.importIndex).path;
+    }
+    return {};
+}
+
 bool DocumentEditor::hasFormFields() const
 {
     if (sourceHasFormFields)

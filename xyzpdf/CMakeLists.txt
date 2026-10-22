@@ -201,6 +201,8 @@ set(XYZPDF_SOURCES
     src/core/windowdialogs.h
     src/core/windowdialogs.cpp
 
+    src/document/bookmarkposition.h
+    src/document/bookmarkposition.cpp
     src/document/document.h
     src/document/docmetadata.h
     src/document/outline.h
@@ -591,7 +593,9 @@ endif()
 option(XYZPDF_BUILD_OUTLINE_SMOKE "Build the bookmark tree smoke test" OFF)
 if(XYZPDF_BUILD_OUTLINE_SMOKE)
     xyzpdf_add_test(outline_smoke
-        SOURCES src/document/outline.cpp)
+        SOURCES src/document/outline.cpp
+                src/document/bookmarkposition.cpp
+                src/document/pagemetrics.cpp)
 endif()
 
 # Folding a selection's two ends into the ranges to draw, with page lengths from
@@ -669,6 +673,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/view/pageview.cpp
                 src/view/pagelayout.cpp
                 src/view/zoomcontroller.cpp
+                src/document/bookmarkposition.cpp
                 src/document/qtpdfbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
@@ -726,6 +731,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/core/recentdocuments.cpp
                 src/core/thirdpartynotices.cpp
                 src/core/windowdialogs.cpp
+                src/document/bookmarkposition.cpp
                 src/document/qtpdfbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp

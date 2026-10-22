@@ -177,6 +177,14 @@ public:
     int currentPage() const { return layout.currentPage(); }
     void goToPage(int page);
 
+    // The same move, with the page's top edge displaced by `offsetPoints` of the page as drawn --
+    // the reader's rotation is already in the layout's page size, so the number is a distance from
+    // the top edge the reader sees, at the current zoom. Zero is exactly goToPage(), and an offset
+    // past the page's bottom is clamped to it. Used by a bookmark click, whose destination may name
+    // a place inside the page (bookmarkTopOffset() produces this number); the horizontal position
+    // is left alone for goToPage()'s reason.
+    void goToLocation(int page, double offsetPoints);
+
     // ---- text ----
     //
     // The document, borrowed, for the questions a mouse asks of it: where is

@@ -8,6 +8,9 @@ namespace {
 // The page a tree item points at, kept in the model so a click can read it back.
 // -1 means the bookmark names no page; such an item is shown but not selectable.
 constexpr int kPageRole = Qt::UserRole;
+// The destination the file itself wrote for this entry, carried so a click can land at the place
+// inside the page rather than at its top. Default for an entry no file row matched.
+constexpr int kDestRole = Qt::UserRole + 1;
 
 } // namespace
 
@@ -31,7 +34,7 @@ OutlinePanel::OutlinePanel(QWidget *parent)
     connect(this, &QTreeView::clicked, this, [this](const QModelIndex &index) {
         const int page = index.data(kPageRole).toInt();
         if (page >= 0)
-            Q_EMIT jumpToPage(page);
+            Q_EMIT jumpToLocation(page, index.data(kDestRole).value<BookmarkDest>());
     });
 }
 
@@ -56,6 +59,7 @@ void OutlinePanel::addNodes(const QVector<OutlineNode> &nodes, QStandardItem *un
     for (const OutlineNode &node : nodes) {
         auto *item = new QStandardItem(node.title);
         item->setData(node.page, kPageRole);
+        item->setData(QVariant::fromValue(node.dest), kDestRole);
         // A bookmark with no target page is kept -- dropping it would lose a
         // real entry the document has -- but it cannot be clicked to a page, so
         // it is not selectable and reads as a heading rather than a link.

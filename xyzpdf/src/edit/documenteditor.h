@@ -907,6 +907,12 @@ public:
     // own reading of the tree carried -- and that reading keeps a title and a page number and
     // nothing else (§75), which is exactly the information at risk.
     int sourcePositionalBookmarks() const { return sourcePositionalBookmarkCount; }
+
+    // The same reading the count above is answered from, for the sidebar: Qt's bookmark model
+    // carries no place inside a page for the shapes real books use (§75 measured 0,0 for /FitH),
+    // so the panel joins its Qt-read tree against these rows and a click lands where the file said.
+    // Read-only, and empty when the file has no outlines or could not be opened.
+    const QVector<OutlineRow> &sourceOutlineRows() const { return sourceOutline; }
     // How many of this request's bookmarks lose the position the file had in their slot: the
     // destination is carried only for a row that is still the row it started as (§99), so a rename
     // or an insert at an earlier place shifts the join. This, not the count above, is what the

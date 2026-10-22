@@ -186,25 +186,18 @@ struct MatchedRows
     QVector<bool> consumed;   // one per file row
 };
 
-// The one place that decides the correspondence. Both the destinations a write carries and the
-// number the box warns about go through here: two copies of a matching rule is how one of them ends
-// up wrong, and §75's cause-check is what this design has to stay consistent with.
+// The writer's view of the shared join: which file row each requested row is, plus the file rows
+// nobody claimed. Both the destinations a write carries and the number the box warns about go
+// through here, and here goes through matchOutlineRows() -- the sidebar lands a click by the same
+// rule, and two copies of it is how one of them ends up wrong.
 MatchedRows matchRowsToSource(const QVector<OutlineRow> &file, const QVector<OutlineRow> &rows)
 {
     MatchedRows out;
-    out.fileIndex.reserve(rows.size());
+    out.fileIndex = matchOutlineRows(file, rows);
     out.consumed = QVector<bool>(file.size(), false);
-    for (const OutlineRow &row : rows) {
-        int found = -1;
-        for (int i = 0; i < file.size(); ++i) {
-            if (!out.consumed.at(i) && file.at(i).title == row.title && file.at(i).page == row.page) {
-                found = i;
-                break;
-            }
-        }
-        if (found >= 0)
-            out.consumed[found] = true;
-        out.fileIndex.append(found);
+    for (const int index : std::as_const(out.fileIndex)) {
+        if (index >= 0)
+            out.consumed[index] = true;
     }
     return out;
 }

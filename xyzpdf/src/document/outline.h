@@ -14,6 +14,7 @@
 // the tree the rest of the program asks questions of.
 #pragma once
 
+#include <QMetaType>
 #include <QPointF>
 #include <QString>
 #include <QVector>
@@ -58,6 +59,10 @@ struct BookmarkDest
         return kind != Kind::None && kind != Kind::Fit;
     }
 };
+
+// So a sidebar item can carry one in a model role, and a click can hand it back through a signal
+// without the panel having to keep a parallel list keyed by row.
+Q_DECLARE_METATYPE(BookmarkDest)
 
 // One bookmark as the library reports it.
 struct OutlineRow
@@ -127,6 +132,32 @@ Outline outlineFromRows(const QVector<OutlineRow> &rows);
 // outlineFromRows, and the re-read list is the normalized one. That asymmetry is the reason this
 // function takes a tree at all instead of being a flag on the row list.
 QVector<OutlineRow> outlineRowsOf(const Outline &tree);
+
+// Which file row, if any, each requested row is: one index per requested row, -1 where the file has
+// no counterpart. Matched on what the row *is* -- title and the page it names -- taking the file's
+// rows in walk order and at most once each, and NOT on the index. An index join shifts every
+// bookmark after an inserted row, so "add a bookmark at the top" would cost three other bookmarks
+// their places (§99 measured exactly that).
+//
+// The price of matching on content is the duplicate: adding a second identical title on the same
+// page leaves one of the two without the file's destination, because only one row may consume it.
+// Which of the two copies keeps the place has no right answer to give, so the first request row
+// takes it and the later one comes back at page top.
+//
+// Here rather than in the editor because there are now two joins: the editor's write joins the
+// requested tree to the file to carry destinations, and the sidebar joins its Qt-read tree to the
+// same file to know where a click should land. Two copies of this rule is how one of them ends up
+// wrong, which is the reason §99 folded the writer's two uses into one place to begin with.
+QVector<int> matchOutlineRows(const QVector<OutlineRow> &fileRows,
+                              const QVector<OutlineRow> &rows);
+
+// Gives each node of a tree the destination of the file row it matches, using the join above.
+//
+// For the sidebar: Qt's bookmark model is the right source for a title and a page and the wrong one
+// for a place inside a page (§75 measured 0,0 for every /FitH), so what the panel shows arrives from
+// Qt and what a click jumps to arrives from here. A node the file has no counterpart for is left
+// with the default destination, which means "page top" rather than a neighbouring bookmark's place.
+void attachOutlineDestinations(Outline &tree, const QVector<OutlineRow> &fileRows);
 
 // How far the block starting at `index` reaches: the index one past its last descendant, so the
 // block's own length is the difference. A row and everything hanging under it move together, which

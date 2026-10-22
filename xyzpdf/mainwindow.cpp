@@ -689,6 +689,8 @@ void MainWindow::buildMenus()
             {&translateToolAction, "translateToolAction", tr("翻译"),
              QStringLiteral("Ctrl+Shift+4"),
              tr("拖选文字即翻译；拖到图片上则框选识别后再翻译")},
+            {&snapshotToolAction, "snapshotToolAction", tr("截图"),
+             QStringLiteral("Ctrl+Shift+5"), tr("拖出一个方框，把框内的画面复制成图片")},
         };
 
         for (const auto &tool : tools) {
@@ -711,6 +713,8 @@ void MainWindow::buildMenus()
                 [this] { chooseTool(PageView::Tool::Select); });
         connect(recognizeToolAction, &QAction::triggered, this,
                 [this] { chooseTool(PageView::Tool::Recognize); });
+        connect(snapshotToolAction, &QAction::triggered, this,
+                [this] { chooseTool(PageView::Tool::Snapshot); });
         connect(translateToolAction, &QAction::triggered, this,
                 [this] { chooseTool(PageView::Tool::Translate); });
 
@@ -1127,6 +1131,7 @@ void MainWindow::buildToolBar()
     toolBar->addAction(selectToolAction);
     toolBar->addAction(recognizeToolAction);
     toolBar->addAction(translateToolAction);
+    toolBar->addAction(snapshotToolAction);
     toolBar->addSeparator();
     toolBar->addAction(openAction);
 
@@ -1425,6 +1430,13 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                                                                  int pages) {
         statusBar()->showMessage(tr("已导出 %n 张图片到 %1", nullptr, pages).arg(directory),
                                  6000);
+    });
+
+    // The clipboard changed and nothing on screen did, so this line is the
+    // whole receipt. The size is in it because it is the one thing a reader
+    // checks about a crop they are about to paste somewhere.
+    connect(tab, &DocumentTab::regionCopied, this, [this](int width, int height) {
+        statusBar()->showMessage(tr("已复制 %1 × %2 的图片").arg(width).arg(height), 5000);
     });
 
     connect(tab, &DocumentTab::documentSavedAs, this,
@@ -2203,7 +2215,7 @@ void MainWindow::updateForCurrentTab()
                             mergeFileAction, splitFileAction, protectFileAction,
                             watermarkAction, bookmarkAction,
                             viewToolAction, selectToolAction,
-                            recognizeToolAction}) {
+                            recognizeToolAction, snapshotToolAction}) {
         if (action)
             action->setEnabled(hasDocument);
     }
@@ -2239,6 +2251,8 @@ void MainWindow::updateForCurrentTab()
             selectToolAction->setChecked(current == PageView::Tool::Select);
         if (recognizeToolAction)
             recognizeToolAction->setChecked(current == PageView::Tool::Recognize);
+        if (snapshotToolAction)
+            snapshotToolAction->setChecked(current == PageView::Tool::Snapshot);
         if (translateToolAction)
             translateToolAction->setChecked(current == PageView::Tool::Translate);
     }

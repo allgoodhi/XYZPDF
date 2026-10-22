@@ -1030,6 +1030,68 @@ int main(int argc, char **argv)
               QStringLiteral("and it is that line's own text (got \"%1\")").arg(selected));
     }
 
+    // ---- the same box, with the snapshot tool: pixels, and no recognition ----
+    //
+    // docs/review-03.md §3.3. Copying a crop was reachable before this tool
+    // existed -- through the recognition window's 复制图片 button -- which
+    // means a reader who wants a picture has to ask for 识别 and wait for the
+    // engine to read something nobody will look at. Both halves are asserted:
+    // the picture arrives on the clipboard, and no recognition window opens.
+    {
+        check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
+              "the text fixture is open for a snapshot");
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }), "and drawn for it");
+
+        view->setTool(PageView::Tool::Snapshot);
+        view->clearSelection();
+        const int dialogsBefore = tab.findChildren<OcrDialog *>().size();
+        QGuiApplication::clipboard()->clear();
+
+        int copiedWidth = 0;
+        int copiedHeight = 0;
+        QObject::connect(&tab, &DocumentTab::regionCopied, &tab,
+                         [&copiedWidth, &copiedHeight](int width, int height) {
+                             copiedWidth = width;
+                             copiedHeight = height;
+                         });
+
+        const QRectF page = view->pageRectInViewport(0);
+        const QPointF from(page.left() + page.width() * 0.05,
+                           page.top() + page.height() * 0.05);
+        const QPointF to(page.left() + page.width() * 0.45, page.top() + page.height() * 0.13);
+        sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true);
+        sendMouse(view->viewport(), QEvent::MouseMove, to, true);
+        sendMouse(view->viewport(), QEvent::MouseButtonRelease, to);
+
+        check(waitFor([&copiedWidth] { return copiedWidth > 0; }),
+              "a box drawn with the snapshot tool reports a picture");
+        const QImage onClipboard = QGuiApplication::clipboard()->image();
+        check(!onClipboard.isNull(), "and the clipboard has one in it");
+        check(onClipboard.width() == copiedWidth && onClipboard.height() == copiedHeight,
+              QStringLiteral("of the size the window is told to say (%1x%2 against %3x%4)")
+                  .arg(onClipboard.width())
+                  .arg(onClipboard.height())
+                  .arg(copiedWidth)
+                  .arg(copiedHeight));
+        // A crop of about two fifths of the width and the better part of a
+        // tenth of the height, rendered larger than the screen shows it: the
+        // numbers are loose because the scale is the recognizer's, but a crop
+        // that came out a pixel wide or the whole page would fail this.
+        check(onClipboard.width() > 200 && onClipboard.width() < onClipboard.height() * 6,
+              QStringLiteral("and a shape that is the box rather than the page (%1x%2)")
+                  .arg(onClipboard.width())
+                  .arg(onClipboard.height()));
+
+        // The half that is the point of the tool existing.
+        waitFor([] { return false; }, 300);
+        check(tab.findChildren<OcrDialog *>().size() == dialogsBefore,
+              "and no recognition window was opened for a picture nobody asked to read");
+        check(!tab.hasSelection(), "nor was any text selected");
+
+        view->setTool(PageView::Tool::Select);
+    }
+
     // ---- a box over the text: read, not selected ----
     //
     // The case the whole feature is for, and the one its own test did not

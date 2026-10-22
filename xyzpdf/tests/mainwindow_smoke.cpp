@@ -312,27 +312,33 @@ int main(int argc, char **argv)
 
         QList<QAction *> tools;
         {
-            const char *names[] = {"viewToolAction", "selectToolAction", "recognizeToolAction"};
+            // All five, in the order the toolbar puts them: the list used to
+            // stop at three, so 翻译 and then 截图 were added to the product
+            // without this test noticing either of them (docs/review-03.md
+            // §3.3 added the last one).
+            const char *names[] = {"viewToolAction", "selectToolAction", "recognizeToolAction",
+                                   "translateToolAction", "snapshotToolAction"};
             for (const char *name : names)
                 tools.append(toolAction(name));
-            check(!tools.contains(nullptr), "the three tool actions exist");
+            check(!tools.contains(nullptr), "the five tool actions exist");
         }
 
         if (bar && !tools.contains(nullptr)) {
             const QList<QAction *> actions = bar->actions();
             for (QAction *action : std::as_const(tools))
                 check(actions.contains(action), "and each of them is in the toolbar");
-            check(actions.size() >= 3 && actions.mid(0, 3) == tools,
-                  "as the first three buttons, in the order they were asked for");
+            check(actions.size() >= tools.size() && actions.mid(0, tools.size()) == tools,
+                  "as the first buttons on it, in the order they were asked for");
             for (QAction *action : std::as_const(tools))
                 check(action->isCheckable(), "and each of them is a checkable button");
         }
 
         // Exclusive: choosing the last one takes the tick off the others.
-        if (tools.size() == 3) {
+        if (tools.size() == 5) {
             tools.at(2)->trigger();
             check(tools.at(2)->isChecked() && !tools.at(0)->isChecked()
-                      && !tools.at(1)->isChecked(),
+                      && !tools.at(1)->isChecked() && !tools.at(3)->isChecked()
+                      && !tools.at(4)->isChecked(),
                   "only one tool is in force at a time");
 
             // And the choice reaches the document, not just the button.
@@ -363,6 +369,10 @@ int main(int argc, char **argv)
                 check(tools.at(0)->isChecked(), "the toolbar follows the tool the view is in");
                 front->setTool(PageView::Tool::Select);
                 check(tools.at(1)->isChecked(), "either way it was changed");
+                // And the newest of them, which is the one this slice added.
+                front->setTool(PageView::Tool::Snapshot);
+                check(tools.at(4)->isChecked(), "including the snapshot tool");
+                front->setTool(PageView::Tool::Select);
             }
         }
     }

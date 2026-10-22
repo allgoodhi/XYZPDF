@@ -661,9 +661,9 @@ void PageView::setTool(Tool tool)
     // before anything is dragged, so it changes with the tool. In Select mode
     // the next move refines it to an I-beam over a line of text; the other two
     // are the same everywhere on the page.
-    applyPointerShape(tool == Tool::View      ? Qt::OpenHandCursor
-                      : tool == Tool::Recognize ? Qt::CrossCursor
-                                                : Qt::ArrowCursor);
+    applyPointerShape(tool == Tool::View ? Qt::OpenHandCursor
+                      : (tool == Tool::Recognize || tool == Tool::Snapshot) ? Qt::CrossCursor
+                                                                            : Qt::ArrowCursor);
 
     viewport()->update();
     Q_EMIT toolChanged(tool);
@@ -707,8 +707,8 @@ void PageView::mousePressEvent(QMouseEvent *event)
     // translates -- which is the only way to translate a scan.
     const bool overText =
         page >= 0 && textSource && textSource->hasTextAt(page, pagePointFor(page, at));
-    const bool wantsBox =
-        activeTool == Tool::Recognize || (activeTool == Tool::Translate && !overText);
+    const bool wantsBox = activeTool == Tool::Recognize || activeTool == Tool::Snapshot
+        || (activeTool == Tool::Translate && !overText);
     if (wantsBox) {
         if (page < 0)
             return; // the backdrop, or the gap between two pages
@@ -802,8 +802,9 @@ Qt::CursorShape PageView::pointerShapeFor(const QPoint &viewportPoint) const
             return Qt::PointingHandCursor;
         return panning ? Qt::ClosedHandCursor : Qt::OpenHandCursor;
     case Tool::Recognize:
+    case Tool::Snapshot:
         // A crosshair, which is what "draw a box" looks like everywhere else,
-        // and is not confusable with either of the other two.
+        // and is not confusable with the others.
         return Qt::CrossCursor;
     case Tool::Translate:
         // The translate tool does both jobs, so it shows which one the next drag

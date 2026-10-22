@@ -365,6 +365,10 @@ Q_SIGNALS:
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
+    // A box drawn with the snapshot tool has been put on the clipboard, at
+    // this size in pixels. The window says so: this class has no status bar,
+    // and §95 measured that it never did.
+    void regionCopied(int width, int height);
     // An edit wrote a new document: where it is, what the list of operations was
     // ("删除 3 页"), how many pages the whole document has, how many files came
     // out -- which is one unless a 拆分文件 was in that list, in which case `path` is

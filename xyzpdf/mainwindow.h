@@ -242,6 +242,7 @@ private:
     QAction *viewToolAction = nullptr;
     QAction *selectToolAction = nullptr;
     QAction *recognizeToolAction = nullptr;
+    QAction *snapshotToolAction = nullptr;
     QAction *translateToolAction = nullptr;
     QAction *copyAction = nullptr;
     QAction *translateAction = nullptr;

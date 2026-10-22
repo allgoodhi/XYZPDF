@@ -85,7 +85,15 @@ public:
         // words and translates them on release; over a picture it draws a box,
         // reads it with the recognizer, and translates that. The one tool that
         // answers a question rather than just marking up the page.
-        Translate
+        Translate,
+        // A drag draws the same box the recognizer draws, and what comes out
+        // is the picture itself rather than the words in it. Its own tool
+        // rather than a second button inside the recognition window: that
+        // window is reached by asking for recognition, which runs the engine
+        // over a crop somebody only wanted a picture of -- and nobody looking
+        // for "copy this as an image" thinks to press 识别 first
+        // (docs/review-03.md §3.3).
+        Snapshot
     };
 
     explicit PageView(QWidget *parent = nullptr);

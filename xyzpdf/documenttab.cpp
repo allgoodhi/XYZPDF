@@ -933,6 +933,17 @@ void DocumentTab::onRegionCaptured(int page, QRectF points)
     if (cropImage.isNull())
         return;
 
+    // The snapshot tool wanted the pixels and nothing else: on the clipboard,
+    // and a line in the status bar so that something visibly happened -- a
+    // clipboard that changes silently is a clipboard nobody trusts. Before the
+    // recognizer, because running it here would be work for an answer that is
+    // thrown away.
+    if (pageView->tool() == PageView::Tool::Snapshot) {
+        QGuiApplication::clipboard()->setImage(cropImage);
+        Q_EMIT regionCopied(cropImage.width(), cropImage.height());
+        return;
+    }
+
     // The translate tool boxes a picture to translate it, so it goes straight
     // from the pixels to the translation window -- no intermediate recognition
     // result to click through. The recognize tool still shows what it read.

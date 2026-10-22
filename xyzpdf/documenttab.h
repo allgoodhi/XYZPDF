@@ -20,6 +20,7 @@
 #include "src/export/wordexport.h"
 #include "src/ocr/ocrengine.h"
 #include "src/render/rendercache.h"
+#include "src/services/searchsession.h"
 #include "src/translate/keystore.h"
 #include "src/translate/translator.h"
 #include "src/ui/propertiesdialog.h"
@@ -184,25 +185,25 @@ public:
 
     // ---- search ----
     //
-    // The scan runs off the UI thread, which is not a detail: text() is a PDFium
-    // call per page and every one of them takes the same global lock as the
-    // renderer, so a five-hundred-page document searched on the thread that
-    // draws is a window that does not repaint for as long as it takes. See
-    // document.h's note about which calls may sit on that thread.
+    // The scanning, the matches and what the bar and the sidebar's list say
+    // about them live in SearchSession; these are the tab's callers -- the
+    // window's toolbar and keys, the bar's own signals and the tests -- and the
+    // answers they ask for. The scan runs off the UI thread, which is not a
+    // detail: see the note at the top of src/services/searchsession.h.
     void startSearch(const QString &needle, bool caseSensitive, bool wholeWord = false);
     void clearSearch();
     // What is being searched for, and whether case matters. Two views of one
     // search -- the bar in this tab and the box in the window's toolbar -- are
     // told by these what the other one is showing, so that neither can drift.
-    QString searchText() const { return searchNeedle; }
-    bool searchCaseSensitive() const { return searchCase; }
-    bool searchWholeWord() const { return searchWhole; }
+    QString searchText() const { return search->needle(); }
+    bool searchCaseSensitive() const { return search->caseSensitive(); }
+    bool searchWholeWord() const { return search->wholeWord(); }
     // Moves to the next (+1) or previous (-1) match, wrapping round. Doing
     // nothing when there is nothing to move to.
     void stepSearch(int delta);
-    int searchMatchCount() const { return int(searchMatches.size()); }
+    int searchMatchCount() const { return search->matchCount(); }
     // Which match is being looked at, 0-based, or -1 for none.
-    int currentSearchMatch() const { return currentMatchIndex; }
+    int currentSearchMatch() const { return search->currentIndex(); }
     bool isSearching() const;
 
     // The bar the needle is typed into: shown if it is hidden, focused either
@@ -488,16 +489,8 @@ private:
     // an external one -- ask first and then hand the URL to the browser.
     void onLinkActivated(const Link &link);
 
-    // The matches a scan came back with, in page order.
-    void applySearchResults(const QVector<TextSearch::Match> &matches);
-    // One match as the range the view draws and scrolls to, or an empty range
-    // for an index that is not one.
-    PageTextRange rangeOf(int index) const;
-    // Hands the view the matches to draw and which one is in front, and tells
-    // the bar what to say.
-    void updateSearchHighlights();
-    // Whether a scan of this tab's is still running, for the reload that has to
-    // wait for it. See drainRenders().
+    // Whether a scan of this tab's document is still running, for the reload
+    // that has to wait for it. See drainRenders().
     bool searchRunning() const;
     // Runs the recognition off the UI thread and fills the window in when it
     // is done. The crop is copied into the worker; the window is watched with
@@ -620,31 +613,14 @@ private:
     // See thumbnailsShowPendingEdits().
     bool thumbnailsPreviewEdits = false;
 
-    // ---- search state ----
+    // ---- search ----
     //
-    // The matches, in page order, and which of them is in front. Replaced
-    // wholesale whenever a scan finishes: a search is a question with one
-    // answer, and half of two answers is not a result.
-    QVector<TextSearch::Match> searchMatches;
-    int currentMatchIndex = -1;
-    // What is being searched for. One string for the tab, and both of the
-    // controls that can type it -- the bar in here and the box in the window's
-    // toolbar -- show this one.
-    QString searchNeedle;
-    // Whether case matters for it, which is a setting of the search rather than
-    // of either control: the toolbar box has no checkbox of its own, so it
-    // searches the way the bar was last set.
-    bool searchCase = false;
-    bool searchWhole = false;
-    // The flag the running scan checks between pages, and the identity of the
-    // scan it belongs to: a scan whose flag is no longer `searchCancel` is
-    // answering a question this tab has stopped asking, and its answer is
-    // dropped.
-    QSharedPointer<QAtomicInt> searchCancel;
-    // The scans that have not finished, so that one is never still running when
-    // the document it is reading is replaced -- in this object's destructor and
-    // in open(), both of which call drainRenders().
-    QVector<QFuture<QVector<TextSearch::Match>>> searchTasks;
+    // The matches, the running scan and its cancel flag, and the bar's label and
+    // the sidebar's rows that go with them. Declared after `backend` and so
+    // destroyed before it: the session reaches the document through a provider
+    // that asks this tab, and a search that outlived the document it was reading
+    // is the crash drainRenders() exists to prevent.
+    std::unique_ptr<SearchSession> search;
 
     // The export, for the same reason and by the same means: it reads the
     // document page by page, and a reload under it is the crash drainRenders()

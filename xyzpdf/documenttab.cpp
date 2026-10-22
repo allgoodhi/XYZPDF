@@ -37,14 +37,20 @@
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QFutureWatcher>
 #include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QPainter>
 #include <QPrintDialog>
 #include <QPrinter>
 #include <QProgressDialog>
+#include <QPushButton>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -101,6 +107,54 @@ DocumentTab::DocumentTab(QWidget *parent)
     // am I on" stops being obvious about.
     findBar->hide();
 
+    // ---- the notice that the file changed under the reader ----
+    //
+    // Above the page and beside the find bar, because it is about the document
+    // that is on screen and it has to be seen without opening a menu.
+    //
+    // One thing this watcher can never hear: this program writing the file.
+    // v1 is read-only and every save writes a new file the reader names
+    // (AGENTS.md: 永不写用户的 PDF 文件), so there is no path from here back
+    // onto the open document. If a later version ever saves in place, opening
+    // it would raise this bar against ourselves -- which is why the rule is
+    // written down here rather than only in the document tab's header.
+    fileWatcher = new QFileSystemWatcher(this);
+    connect(fileWatcher, &QFileSystemWatcher::fileChanged, this,
+            &DocumentTab::onWatchedFileChanged);
+
+    fileChangeBar = new QWidget(this);
+    fileChangeBar->setObjectName(QStringLiteral("fileChangeBar"));
+    auto *noticeLayout = new QHBoxLayout(fileChangeBar);
+    noticeLayout->setContentsMargins(6, 4, 6, 4);
+    noticeLayout->setSpacing(6);
+    fileChangeLabel = new QLabel(tr("这个文件在磁盘上改过了。"), fileChangeBar);
+    fileChangeLabel->setObjectName(QStringLiteral("fileChangeLabel"));
+    noticeLayout->addWidget(fileChangeLabel, 1);
+
+    auto *reloadButton = new QPushButton(tr("重新加载"), fileChangeBar);
+    reloadButton->setObjectName(QStringLiteral("fileChangeReload"));
+    noticeLayout->addWidget(reloadButton);
+
+    auto *dismissButton = new QToolButton(fileChangeBar);
+    dismissButton->setObjectName(QStringLiteral("fileChangeClose"));
+    dismissButton->setText(QStringLiteral("✕"));
+    dismissButton->setToolTip(tr("关闭这条提示"));
+    noticeLayout->addWidget(dismissButton);
+
+    connect(reloadButton, &QPushButton::clicked, this, &DocumentTab::reloadFromFileChangeNotice);
+    connect(dismissButton, &QToolButton::clicked, this, &DocumentTab::hideFileChangeNotice);
+
+    // 400 ms: long enough that a word processor's several writes for one save
+    // fall inside one wait, short enough that a reader who saved and looked up
+    // at the window is not left wondering. Kept in the middle of the range the
+    // handoff names (300-500).
+    fileChangeTimer = new QTimer(this);
+    fileChangeTimer->setSingleShot(true);
+    fileChangeTimer->setInterval(400);
+    connect(fileChangeTimer, &QTimer::timeout, this, &DocumentTab::onFileChangeSettled);
+
+    fileChangeBar->hide();
+
     pageView = new PageView(this);
     outlinePanel = new OutlinePanel(this);
     thumbnailPanel = new ThumbnailPanel(this);
@@ -126,6 +180,7 @@ DocumentTab::DocumentTab(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(findBar);
+    layout->addWidget(fileChangeBar);
     layout->addWidget(readingSplit);
 
     connect(outlinePanel, &OutlinePanel::jumpToPage, this, [this](int page) {
@@ -193,6 +248,13 @@ DocumentTab::DocumentTab(QWidget *parent)
 
 DocumentTab::~DocumentTab()
 {
+    // First, and before anything it would report about is taken apart: a
+    // watcher whose document has gone would answer a change with a bar for a
+    // tab nobody can see. The watcher is a child and would go with this object
+    // anyway; saying so here keeps "the path is watched exactly as long as the
+    // tab is open on it" true at every point rather than only at the end.
+    unwatchFile();
+
     // Where the reader left off, remembered for the next time this file opens.
     // Done first, while the document is still here to ask; a tab that never
     // opened (a failed load) has nothing worth remembering.
@@ -597,6 +659,11 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         opened = false;
         documentPassword.clear();
         formFieldsInSource = false;
+        // The tab is on no file now, and the old file's changes are no longer
+        // this tab's to report -- including the failure that may have been
+        // caused by a half-written replacement of that very file.
+        unwatchFile();
+        hideFileChangeNotice();
         clearSearch();
         // The view is emptied rather than left showing the previous document:
         // a page from another file under a tab named after this one is worse
@@ -675,6 +742,16 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
     // has them, otherwise the thumbnails, which it always does.
     sidebar->setCurrentIndex(outlinePanel->hasOutline() ? 0 : 1);
     applySidebarVisibility();
+
+    // From here until the next open() or this object's end, this is the file
+    // whose changes the tab reports. watchFile() also drops the previous
+    // path, which is the whole of "switching documents stops watching the old
+    // one" -- a reload calls open() with the same path and gets a fresh watch.
+    watchFile(path);
+    // And a new document has no change to be told about: an old bar here would
+    // sit above a page it was never about. This also clears a refusal that the
+    // bar might be showing from the last time the button was pressed.
+    hideFileChangeNotice();
 
     Q_EMIT titleChanged(title());
     Q_EMIT pageChanged(pageView->currentPage(), count);
@@ -1235,12 +1312,41 @@ bool DocumentTab::reload(QString *error)
     if (!QFileInfo::exists(path))
         return refuse(tr("%1 不在了，所以没有可以重新加载的东西。").arg(QFileInfo(path).fileName()));
 
+    // The key this document was opened with: the probe below has to open the
+    // same encrypted bytes the reload will.
+    const QString password = documentPassword;
+
+    // Read the new bytes once before open() takes this tab apart.
+    //
+    // backend->load() closes the document it is holding when the new bytes are
+    // not a usable PDF, and open() empties the view on a failure. Both are
+    // right for "open this other file" and wrong for "read this one again":
+    // a file caught halfway through being rewritten would take the page the
+    // reader was looking at off the screen, and the only way back would be to
+    // open it again. The probe reads the same bytes and is thrown away; if it
+    // says no, the reader keeps the document they had and gets the sentence.
+    //
+    // The price is a second read of the file on every reload -- F5 and the
+    // change bar alike. The gap between this read and the one open() does
+    // could let the file change again; then open() fails and empties the tab.
+    // Closing that window would mean loading into a second backend and
+    // swapping it in, which is a change to how the tab owns its document
+    // rather than a line in this function.
+    {
+        QtPdfBackend probe;
+        if (probe.load(path, password) != Document::Status::Ready) {
+            const QString why = probe.lastError();
+            return refuse(why.isEmpty()
+                              ? tr("重新加载 %1 失败。").arg(QFileInfo(path).fileName())
+                              : why);
+        }
+    }
+
     const int page = pageView->currentPage();
     const double zoom = pageView->zoom();
     const ZoomController::Mode mode = pageView->zoomMode();
     const PageLayout::Mode layout = pageView->layoutMode();
     const int rotation = pageView->rotation();
-    const QString password = documentPassword;
 
     if (open(path, password) != Document::Status::Ready) {
         const QString why = lastError();
@@ -1258,6 +1364,137 @@ bool DocumentTab::reload(QString *error)
     if (page > 0)
         pageView->goToPage(qMin(page, pageCount() - 1));
     return true;
+}
+
+bool DocumentTab::fileChangeNoticeVisible() const
+{
+    return fileChangeBar && fileChangeBar->isVisible();
+}
+
+QString DocumentTab::fileChangeNoticeText() const
+{
+    return fileChangeLabel ? fileChangeLabel->text() : QString();
+}
+
+void DocumentTab::watchFile(const QString &path)
+{
+    unwatchFile();
+    if (path.isEmpty())
+        return;
+    watchedPath = path;
+    if (!fileWatcher->addPath(path)) {
+        // Not a failure worth a sentence: the file the reader opened has just
+        // been read, and F5 still works. But without a watch there is nothing
+        // to notice, so the tab must not believe it is watching anything --
+        // otherwise the next change is compared against a path that was never
+        // in the list.
+        watchedPath.clear();
+    }
+}
+
+void DocumentTab::unwatchFile()
+{
+    if (fileChangeTimer)
+        fileChangeTimer->stop();
+    fileChangeSize = -1;
+    if (!watchedPath.isEmpty()) {
+        fileWatcher->removePath(watchedPath);
+        watchedPath.clear();
+    }
+}
+
+void DocumentTab::onWatchedFileChanged(const QString &path)
+{
+    if (path != watchedPath)
+        return;
+
+    // (a) Windows drops a file from a watcher's list when the file is deleted
+    // or renamed. An editor that saves by writing a temporary file and moving
+    // it over the original therefore delivers one change and then goes silent
+    // -- unless the path is put back. This attempt often fails, because the
+    // first signal can be the removal itself and there is no file to add at
+    // that instant; onFileChangeSettled() tries again once the writing has
+    // stopped, and that is the attempt an atomic save needs.
+    if (QFileInfo::exists(path) && !fileWatcher->files().contains(path))
+        fileWatcher->addPath(path);
+
+    // (b) One save is not one signal: a writer flushes the file in pieces and
+    // every piece can raise fileChanged. Showing the bar on the first would
+    // put it on screen while the file was still being written, and a reload
+    // pressed then would read half a document. Restarting the timer turns the
+    // several signals into one wait.
+    fileChangeSize = -1;
+    fileChangeTimer->start();
+}
+
+void DocumentTab::onFileChangeSettled()
+{
+    if (watchedPath.isEmpty())
+        return;
+
+    if (!QFileInfo::exists(watchedPath)) {
+        // Between the two renames of an atomic save, or gone for good. The
+        // watcher has nothing more to report; 重新加载 is still the honest
+        // answer, and reload() is where the sentence about a missing file
+        // lives.
+        showFileChangeNotice();
+        return;
+    }
+
+    // The second half of (a). If the path was not there when the signal
+    // arrived, this is the first moment it can be watched again; a tab that
+    // loses the watch here never hears the next save.
+    if (!fileWatcher->files().contains(watchedPath))
+        fileWatcher->addPath(watchedPath);
+
+    const qint64 size = QFileInfo(watchedPath).size();
+    if (fileChangeSize != size) {
+        // Still moving. The first fire records the size; the next one that
+        // agrees with it is the file the reader would reload. Two equal reads
+        // 400 ms apart is not proof the writer has stopped, but it is the only
+        // evidence available without watching the writer instead of the file.
+        fileChangeSize = size;
+        fileChangeTimer->start();
+        return;
+    }
+
+    showFileChangeNotice();
+}
+
+void DocumentTab::showFileChangeNotice()
+{
+    // Set again for every change: the bar may still be carrying the reason a
+    // previous 重新加载 refused, and that reason is about a file that has
+    // changed once more -- keeping it would describe bytes that are no longer
+    // there.
+    fileChangeLabel->setText(tr("这个文件在磁盘上改过了。"));
+    fileChangeBar->show();
+}
+
+void DocumentTab::hideFileChangeNotice()
+{
+    fileChangeBar->hide();
+    fileChangeLabel->setText(tr("这个文件在磁盘上改过了。"));
+}
+
+void DocumentTab::reloadFromFileChangeNotice()
+{
+    QString error;
+    if (reload(&error))
+        return; // open() hid the bar and started a fresh watch
+
+    if (error.isEmpty()) {
+        // Empty means the reader said no to losing their pending edits. They
+        // have answered the question; the bar stays as it was.
+        return;
+    }
+
+    // Where the button was pressed, and on screen: reload() refused before it
+    // touched the document (the probe in reload() is why a file that is not a
+    // PDF gets here with the page still showing), so this sentence is all that
+    // changes.
+    fileChangeLabel->setText(error);
+    fileChangeBar->show();
 }
 
 void DocumentTab::refreshThumbnailRows()

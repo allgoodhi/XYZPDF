@@ -758,17 +758,17 @@ The parser says: %1</translation>
         <translation>Thumbnails</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="695"/>
+        <location filename="../../documenttab.cpp" line="696"/>
         <source>（空标签）</source>
         <translation>(no document)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1060"/>
+        <location filename="../../documenttab.cpp" line="1061"/>
         <source>打开链接</source>
         <translation>Open Link</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1061"/>
+        <location filename="../../documenttab.cpp" line="1062"/>
         <source>要在浏览器中打开这个地址：
 %1
 
@@ -779,113 +779,113 @@ The parser says: %1</translation>
 Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1092"/>
+        <location filename="../../documenttab.cpp" line="1093"/>
         <source>正在打印…</source>
         <translation>Printing…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1092"/>
-        <location filename="../../documenttab.cpp" line="1142"/>
+        <location filename="../../documenttab.cpp" line="1093"/>
+        <location filename="../../documenttab.cpp" line="1143"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1110"/>
+        <location filename="../../documenttab.cpp" line="1111"/>
         <source>打印</source>
         <translation>Print</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1128"/>
-        <location filename="../../documenttab.cpp" line="1133"/>
-        <location filename="../../documenttab.cpp" line="1162"/>
+        <location filename="../../documenttab.cpp" line="1129"/>
+        <location filename="../../documenttab.cpp" line="1134"/>
+        <location filename="../../documenttab.cpp" line="1163"/>
         <source>导出为图片</source>
         <translation>Export as Images</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1128"/>
+        <location filename="../../documenttab.cpp" line="1129"/>
         <source>请先选择保存文件夹。</source>
         <translation>Choose a folder to save into first.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1133"/>
+        <location filename="../../documenttab.cpp" line="1134"/>
         <source>页码范围里没有可导出的页面。</source>
         <translation>The page range has no pages to export.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1142"/>
+        <location filename="../../documenttab.cpp" line="1143"/>
         <source>正在导出为图片…</source>
         <translation>Exporting images…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1180"/>
+        <location filename="../../documenttab.cpp" line="1181"/>
         <source>修改这份文档</source>
         <translation>Editing this document</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1245"/>
+        <location filename="../../documenttab.cpp" line="1246"/>
         <source>旋转页面</source>
         <translation>Rotate Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1264"/>
+        <location filename="../../documenttab.cpp" line="1265"/>
         <source>移动页面</source>
         <translation>Move Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1304"/>
+        <location filename="../../documenttab.cpp" line="1305"/>
         <source>合并文件进来</source>
         <translation>Merge Files In</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1319"/>
-        <location filename="../../documenttab.cpp" line="1331"/>
+        <location filename="../../documenttab.cpp" line="1320"/>
+        <location filename="../../documenttab.cpp" line="1332"/>
         <source>拆分文件</source>
         <translation>Split Files</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1357"/>
+        <location filename="../../documenttab.cpp" line="1358"/>
         <location filename="../../tests/i18n_smoke.cpp" line="542"/>
         <source>加密 / 去掉口令</source>
         <translation>Encrypt / Remove Password</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1378"/>
+        <location filename="../../documenttab.cpp" line="1379"/>
         <location filename="../../tests/i18n_smoke.cpp" line="568"/>
         <source>加水印</source>
         <translation>Add Watermark</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1405"/>
+        <location filename="../../documenttab.cpp" line="1406"/>
         <source>编辑书签</source>
         <translation>Edit Bookmarks</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1463"/>
+        <location filename="../../documenttab.cpp" line="1464"/>
         <source>%1 已修改.pdf</source>
         <translation>%1 modified.pdf</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1468"/>
+        <location filename="../../documenttab.cpp" line="1469"/>
         <source>把这些修改存成一个新文件</source>
         <translation>Save these changes into a new file</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1485"/>
+        <location filename="../../documenttab.cpp" line="1486"/>
         <source>保存修改</source>
         <translation>Save Changes</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1468"/>
+        <location filename="../../documenttab.cpp" line="1469"/>
         <source>PDF 文档 (*.pdf)</source>
         <translation>PDF documents (*.pdf)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1227"/>
+        <location filename="../../documenttab.cpp" line="1228"/>
         <source>删除页面</source>
         <translation>Delete Pages</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1303"/>
+        <location filename="../../documenttab.cpp" line="1304"/>
         <source>
 
 列表里前面 %n 个文件已经记下了，要退回去用撤销。</source>
@@ -899,7 +899,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1320"/>
+        <location filename="../../documenttab.cpp" line="1321"/>
         <source>这份要写出的文档只有 %n 页，拆不出第二个文件来。</source>
         <translation>
             <numerusform>The document this would write has only %n page, so there is no second file to split off.</numerusform>
@@ -925,42 +925,52 @@ The first %n files in the list have been recorded; use Undo to take them back.</
         <translation>Match case</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="41"/>
+        <location filename="../../src/ui/findbar.cpp" line="33"/>
+        <source>全词匹配</source>
+        <translation>Whole words</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/findbar.cpp" line="39"/>
+        <source>只找独立的词；中文、日文没有词边界，这个选项对它们不起作用</source>
+        <translation>Match only standalone words. Chinese and Japanese have no word boundaries, so this has no effect on them.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/findbar.cpp" line="50"/>
         <source>上一个</source>
         <translation>Previous</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="42"/>
+        <location filename="../../src/ui/findbar.cpp" line="51"/>
         <source>上一个匹配（Shift+Enter）</source>
         <translation>Previous match (Shift+Enter)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="46"/>
+        <location filename="../../src/ui/findbar.cpp" line="55"/>
         <source>下一个</source>
         <translation>Next</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="47"/>
+        <location filename="../../src/ui/findbar.cpp" line="56"/>
         <source>下一个匹配（Enter）</source>
         <translation>Next match (Enter)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="52"/>
+        <location filename="../../src/ui/findbar.cpp" line="61"/>
         <source>关闭查找栏（Esc）</source>
         <translation>Close the find bar (Esc)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="109"/>
+        <location filename="../../src/ui/findbar.cpp" line="123"/>
         <source>搜索中…</source>
         <translation>Searching…</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="113"/>
+        <location filename="../../src/ui/findbar.cpp" line="127"/>
         <source>没有找到</source>
         <translation>No matches</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="116"/>
+        <location filename="../../src/ui/findbar.cpp" line="130"/>
         <source>第 %1 / %2 个</source>
         <translation>%1 of %2</translation>
     </message>
@@ -2300,12 +2310,12 @@ The original file is not touched. This step only records the change; a save is s
 <context>
     <name>PageView</name>
     <message>
-        <location filename="../../src/view/pageview.cpp" line="986"/>
+        <location filename="../../src/view/pageview.cpp" line="989"/>
         <source>复制(&amp;C)</source>
         <translation>&amp;Copy</translation>
     </message>
     <message>
-        <location filename="../../src/view/pageview.cpp" line="987"/>
+        <location filename="../../src/view/pageview.cpp" line="990"/>
         <source>翻译(&amp;T)</source>
         <translation>&amp;Translate</translation>
     </message>

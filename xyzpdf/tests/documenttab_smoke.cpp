@@ -1200,6 +1200,42 @@ int main(int argc, char **argv)
               QStringLiteral("one hit for the word on the second line (found %1)")
                   .arg(tab.searchMatchCount()));
 
+        // ---- whole words, through the box a reader ticks ----
+        //
+        // The rule itself is textsearch_smoke's; what is checked here is that
+        // the box reaches the scan at all. docs/review-03.md §3.2: PLAN M2 asks
+        // for 大小写与全词选项 and only the first of the two existed.
+        {
+            tab.startSearch(QStringLiteral("secon"), false, false);
+            check(waitFor([&tab] { return !tab.isSearching() && tab.searchMatchCount() == 1; }),
+                  QStringLiteral("part of a word is found when whole words are not asked for "
+                                 "(found %1)").arg(tab.searchMatchCount()));
+            tab.startSearch(QStringLiteral("secon"), false, true);
+            check(waitFor([&tab] { return !tab.isSearching(); }), "and the same with the option on");
+            check(tab.searchMatchCount() == 0,
+                  QStringLiteral("finds nothing, because it is part of \"second\" (found %1)")
+                      .arg(tab.searchMatchCount()));
+            check(tab.searchWholeWord(), "and the tab remembers which it was asked for");
+
+            // The box itself, since that is the thing that is new on screen: it
+            // starts clear, and ticking it is what asks again.
+            auto *whole = tab.findBarWidget()
+                              ? tab.findBarWidget()->findChild<QCheckBox *>(
+                                    QStringLiteral("findWholeBox"))
+                              : nullptr;
+            check(whole != nullptr, "the find bar has a whole-word box");
+            if (whole) {
+                check(!whole->isChecked(), "which starts clear, like every other reader's");
+                whole->setChecked(true);
+                check(waitFor([&tab] { return tab.searchWholeWord(); }),
+                      "and ticking it is what asks the tab again");
+                whole->setChecked(false);
+                check(waitFor([&tab] { return !tab.searchWholeWord(); }), "and clearing it, back");
+            }
+            tab.startSearch(QStringLiteral("second"), false, false);
+            check(waitFor([&tab] { return !tab.isSearching(); }), "and the state is put back");
+        }
+
         // ---- and a search does not outlive its document ----
         check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
               "another document opens");

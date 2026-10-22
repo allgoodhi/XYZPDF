@@ -170,13 +170,14 @@ public:
     // renderer, so a five-hundred-page document searched on the thread that
     // draws is a window that does not repaint for as long as it takes. See
     // document.h's note about which calls may sit on that thread.
-    void startSearch(const QString &needle, bool caseSensitive);
+    void startSearch(const QString &needle, bool caseSensitive, bool wholeWord = false);
     void clearSearch();
     // What is being searched for, and whether case matters. Two views of one
     // search -- the bar in this tab and the box in the window's toolbar -- are
     // told by these what the other one is showing, so that neither can drift.
     QString searchText() const { return searchNeedle; }
     bool searchCaseSensitive() const { return searchCase; }
+    bool searchWholeWord() const { return searchWhole; }
     // Moves to the next (+1) or previous (-1) match, wrapping round. Doing
     // nothing when there is nothing to move to.
     void stepSearch(int delta);
@@ -487,6 +488,7 @@ private:
     // of either control: the toolbar box has no checkbox of its own, so it
     // searches the way the bar was last set.
     bool searchCase = false;
+    bool searchWhole = false;
     // The flag the running scan checks between pages, and the identity of the
     // scan it belongs to: a scan whose flag is no longer `searchCancel` is
     // answering a question this tab has stopped asking, and its answer is

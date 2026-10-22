@@ -9,6 +9,7 @@
 // runs (and how it is stopped) is the caller's business.
 #pragma once
 
+#include <QChar>
 #include <QString>
 #include <QVector>
 
@@ -23,6 +24,18 @@ struct Match
     int to = 0;
 };
 
+// Whether a character is one that a word is made of, for the "whole word"
+// option below.
+//
+// Letters, digits and the underscore, as everywhere else -- *except* that Han
+// characters and Japanese kana are not. That exception is the whole of what
+// "whole word" can honestly mean in CJK: Chinese and Japanese are written
+// without spaces, so there is no boundary to find, and a rule that asked for
+// one would make the option silently answer "no matches" on a Chinese document
+// -- which is the language this program is mostly read in. Hangul is left as a
+// word character because Korean does put spaces between its words.
+bool isWordCharacter(QChar character);
+
 // Every occurrence of `needle` in `text`, in order, as matches on `page`.
 //
 // Case-insensitive unless asked otherwise, which is what every other reader
@@ -34,7 +47,13 @@ struct Match
 // other look like one, and a count that says two while the reader can see one
 // is a count nobody trusts afterwards. The search resumes at the end of the
 // match, so both "aa" in "aaaa" are found.
+// `wholeWord` asks for occurrences that are not part of a longer word: "cat"
+// then finds the one in "the cat sat" and not the one in "catalogue". The test
+// is applied at each end of the needle and only where the needle's own
+// character there is a word character, so a needle that begins or ends in
+// punctuation -- or in Chinese -- is matched as it would be with the option
+// off. See isWordCharacter().
 QVector<Match> matchesInPage(int page, const QString &text, const QString &needle,
-                             bool caseSensitive);
+                             bool caseSensitive, bool wholeWord = false);
 
 } // namespace TextSearch

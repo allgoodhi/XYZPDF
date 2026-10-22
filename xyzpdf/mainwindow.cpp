@@ -1240,7 +1240,7 @@ void MainWindow::buildToolBar()
         if (updatingControls)
             return;
         if (DocumentTab *tab = currentTab())
-            tab->startSearch(needle, tab->searchCaseSensitive());
+            tab->startSearch(needle, tab->searchCaseSensitive(), tab->searchWholeWord());
     });
     connect(searchBox, &QLineEdit::returnPressed, this, [this] {
         // Shift is read from the keyboard rather than from an event: the field

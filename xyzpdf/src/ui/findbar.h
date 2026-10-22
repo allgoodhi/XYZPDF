@@ -28,6 +28,7 @@ public:
     void focusField();
     QString text() const;
     bool caseSensitive() const;
+    bool wholeWord() const;
     // Shows a needle the user did not type here -- the window's toolbar box is
     // the other place a search can be typed, and this is how the two stay one
     // search rather than two. Deliberately not a signal: nothing is being asked
@@ -39,8 +40,8 @@ public:
     void setResultCount(int current, int total, bool searching);
 
 Q_SIGNALS:
-    // The needle changed (typing), or the case box was ticked.
-    void searchRequested(const QString &needle, bool caseSensitive);
+    // The needle changed (typing), or one of the two boxes was ticked.
+    void searchRequested(const QString &needle, bool caseSensitive, bool wholeWord);
     // Next (+1) or previous (-1). Wraps, which is the tab's business.
     void stepRequested(int delta);
     // Escape, or the close button.
@@ -55,5 +56,6 @@ protected:
 private:
     QLineEdit *field = nullptr;
     QCheckBox *caseBox = nullptr;
+    QCheckBox *wholeBox = nullptr;
     QLabel *count = nullptr;
 };

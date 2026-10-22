@@ -41,6 +41,14 @@ QVector<TextSearch::Match> find(const QString &text, const QString &needle,
     return TextSearch::matchesInPage(7, text, needle, caseSensitive);
 }
 
+// The same with "whole word" asked for, which is the other half of the options
+// a reader has (docs/PLAN.md M2: 大小写与全词选项).
+QVector<TextSearch::Match> findWhole(const QString &text, const QString &needle,
+                                     bool caseSensitive = false)
+{
+    return TextSearch::matchesInPage(7, text, needle, caseSensitive, true);
+}
+
 } // namespace
 
 int main()
@@ -119,6 +127,64 @@ int main()
         const auto both = find(QStringLiteral("前说明前面的说明"), QStringLiteral("说明"));
         check(both.size() == 2, QStringLiteral("and every occurrence is found (got %1)")
                                     .arg(both.size()));
+    }
+
+    // ---- whole words ----
+    //
+    // The option every reader has and this one did not (docs/review-03.md
+    // §3.2). What makes it worth a test of its own is not "cat is not in
+    // catalogue" -- it is what the rule does to a language that has no word
+    // boundaries at all, which is the language this program is mostly read in.
+    {
+        const QString line = QStringLiteral("the cat, a catalogue and a bobcat");
+        check(find(line, QStringLiteral("cat")).size() == 3,
+              "without the option, cat is found three times in cat/catalogue/bobcat");
+        const auto whole = findWhole(line, QStringLiteral("cat"));
+        check(whole.size() == 1, QStringLiteral("with it, once (got %1: %2)")
+                                     .arg(whole.size()).arg(describe(whole)));
+        check(!whole.isEmpty() && whole.first().from == 4,
+              "and it is the standalone one, the comma after it being a boundary");
+
+        check(findWhole(QStringLiteral("cat"), QStringLiteral("cat")).size() == 1,
+              "the start and the end of the page are boundaries too");
+        check(findWhole(QStringLiteral("cat_1"), QStringLiteral("cat")).isEmpty(),
+              "an underscore is part of a word, as everywhere else");
+        check(findWhole(QStringLiteral("cat2"), QStringLiteral("cat")).isEmpty(),
+              "and so is a digit");
+        check(findWhole(QStringLiteral("CAT sat"), QStringLiteral("cat")).size() == 1,
+              "the option does not quietly turn case sensitivity on");
+        check(findWhole(QStringLiteral("CAT sat"), QStringLiteral("cat"), true).isEmpty(),
+              "nor off");
+
+        // The needle's own ends decide which boundaries are asked for: nothing
+        // precedes a bracket in "(c" that could make it part of a longer word.
+        check(findWhole(QStringLiteral("f(cat)"), QStringLiteral("(cat)")).size() == 1,
+              "a needle wrapped in punctuation is matched as it would be without the option");
+    }
+
+    // ---- whole words in a language that has none ----
+    //
+    // Chinese and Japanese are written without spaces, so there is no boundary
+    // to find. The rule is therefore written in terms of the characters rather
+    // than of the option: Han and kana are not word characters, so a Chinese
+    // needle asks for no boundaries and the option changes nothing. The
+    // alternative -- treating them as letters, which QChar does -- would make
+    // this box answer "no matches" on every Chinese document.
+    {
+        const QString page = QStringLiteral("前说明前面的说明");
+        check(find(page, QStringLiteral("说明")).size() == 2, "two occurrences without the option");
+        check(findWhole(page, QStringLiteral("说明")).size() == 2,
+              "and the same two with it -- there are no word boundaries to fail");
+
+        check(TextSearch::isWordCharacter(QLatin1Char('a')), "a letter is a word character");
+        check(TextSearch::isWordCharacter(QLatin1Char('7')), "and a digit");
+        check(TextSearch::isWordCharacter(QLatin1Char('_')), "and an underscore");
+        check(!TextSearch::isWordCharacter(QLatin1Char(' ')), "a space is not");
+        check(!TextSearch::isWordCharacter(QLatin1Char(',')), "nor is punctuation");
+        check(!TextSearch::isWordCharacter(QChar(0x8bf4)), "nor a Han character");
+        check(!TextSearch::isWordCharacter(QChar(0x30a2)), "nor katakana");
+        check(TextSearch::isWordCharacter(QChar(0xd55c)),
+              "but Hangul is, because Korean puts spaces between its words");
     }
 
     // ---- a match that spans a line break ----

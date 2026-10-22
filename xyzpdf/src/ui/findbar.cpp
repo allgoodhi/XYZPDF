@@ -30,6 +30,15 @@ FindBar::FindBar(QWidget *parent)
     caseBox->setObjectName(QStringLiteral("findCaseBox"));
     layout->addWidget(caseBox);
 
+    wholeBox = new QCheckBox(tr("全词匹配"), this);
+    wholeBox->setObjectName(QStringLiteral("findWholeBox"));
+    // What it does in Chinese, said where the reader will ask: nothing. There
+    // are no spaces to find a boundary at, so the box is left working rather
+    // than being hidden on a Chinese document -- a box that disappears is a
+    // worse answer than one that says what it is for.
+    wholeBox->setToolTip(tr("只找独立的词；中文、日文没有词边界，这个选项对它们不起作用"));
+    layout->addWidget(wholeBox);
+
     count = new QLabel(this);
     count->setObjectName(QStringLiteral("findCount"));
     // Room for the longest thing it ever says ("第 9999 / 9999 个"), so that the
@@ -54,12 +63,12 @@ FindBar::FindBar(QWidget *parent)
 
     // Typing searches: the scan is off the UI thread and a page of text is
     // cheap, so waiting for Enter would be waiting for nothing.
-    connect(field, &QLineEdit::textChanged, this, [this] {
-        Q_EMIT searchRequested(field->text(), caseBox->isChecked());
-    });
-    connect(caseBox, &QCheckBox::toggled, this, [this] {
-        Q_EMIT searchRequested(field->text(), caseBox->isChecked());
-    });
+    const auto askAgain = [this] {
+        Q_EMIT searchRequested(field->text(), caseBox->isChecked(), wholeBox->isChecked());
+    };
+    connect(field, &QLineEdit::textChanged, this, askAgain);
+    connect(caseBox, &QCheckBox::toggled, this, askAgain);
+    connect(wholeBox, &QCheckBox::toggled, this, askAgain);
     connect(next, &QToolButton::clicked, this, [this] { Q_EMIT stepRequested(1); });
     connect(previous, &QToolButton::clicked, this, [this] { Q_EMIT stepRequested(-1); });
     connect(close, &QToolButton::clicked, this, &FindBar::closed);
@@ -85,6 +94,11 @@ void FindBar::focusField()
 QString FindBar::text() const
 {
     return field->text();
+}
+
+bool FindBar::wholeWord() const
+{
+    return wholeBox->isChecked();
 }
 
 bool FindBar::caseSensitive() const

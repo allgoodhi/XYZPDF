@@ -226,9 +226,10 @@ DocumentTab::~DocumentTab()
         thumbnailPanel->cancelAndDrain();
 }
 
-void DocumentTab::startSearch(const QString &needle, bool caseSensitive)
+void DocumentTab::startSearch(const QString &needle, bool caseSensitive, bool wholeWord)
 {
     searchCase = caseSensitive;
+    searchWhole = wholeWord;
 
     // What is being searched for, kept here rather than in either of the two
     // controls that can type it: this is the answer searchText() gives, and
@@ -285,13 +286,13 @@ void DocumentTab::startSearch(const QString &needle, bool caseSensitive)
             });
 
     QFuture<QVector<TextSearch::Match>> task =
-        QtConcurrent::run([backendPointer, cancel, needle, caseSensitive, pages] {
+        QtConcurrent::run([backendPointer, cancel, needle, caseSensitive, wholeWord, pages] {
             QVector<TextSearch::Match> found;
             for (int page = 0; page < pages; ++page) {
                 if (cancel->loadRelaxed())
                     return found; // abandoned: the page after this one is not worth reading
                 found += TextSearch::matchesInPage(page, backendPointer->text(page), needle,
-                                                   caseSensitive);
+                                                   caseSensitive, wholeWord);
             }
             return found;
         });

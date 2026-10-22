@@ -50,8 +50,23 @@ endif()
 # Sources carry Chinese literals, and so do the comments. Without this MSVC
 # reads them as the system ANSI codepage and mangles every wide literal and
 # every string that reaches tr().
+#
+# /Brepro is the other half of "the hash of xyzpdf.exe is not a content
+# fingerprint" (docs/PLAN.md §82): by default the linker writes the wall clock
+# into the COFF header and copies it into the debug directory, so two builds of
+# one source differ by four bytes and no comparison of hashes can ever answer
+# "is the installed copy these bytes?".
+#
+# Given to the compiler and the linker because they are two separate claims and
+# only one of them was measured here: with the flag on link.exe alone the image
+# was byte-identical across runs, while with the flag on cl.exe alone the .obj
+# still changed between runs. That is not a reason to drop either one --
+# /Brepro replaces the timestamp field with a checksum of the content, so an
+# object that embeds its own build path (which these do) carries that path into
+# the checksum, and an archive rebuilt somewhere else would differ again.
 if(MSVC)
-    add_compile_options(/utf-8)
+    add_compile_options(/utf-8 /Brepro)
+    add_link_options(/Brepro)
 endif()
 
 # Network is for QLocalServer/QLocalSocket, which is how a second launch hands
@@ -123,6 +138,61 @@ endif()
 
 qt_standard_project_setup()
 set(CMAKE_AUTORCC ON)
+
+# A fixed date for every resource timestamp rcc writes.
+#
+# rcc records the modification time of each file in a .qrc inside the resource
+# tree, and qt_add_translations compiles xyzpdf_en.qm during the build -- so the
+# time it records is the time this build ran. Two clean builds of one source
+# differed by three bytes in the executable for that one reason, and because
+# /Brepro replaces the image's timestamp field with a digest of its content,
+# those three bytes came back as forty-four more. tools/check_reproducible.py is
+# the check that says whether any of this still holds.
+#
+# It is not only the generated file: running rcc over one .qrc twice, touching a
+# resource file between the runs, gives two different blobs -- which is another
+# way of saying that a fresh clone, where every file's time is the checkout's,
+# would not build to these bytes. Pinning the date covers those files too, for
+# the same price.
+#
+# There is no command-line option for it: rcc reads QT_RCC_SOURCE_DATE_OVERRIDE
+# (or SOURCE_DATE_EPOCH, the same number in the same unit) from its environment
+# and gives every entry in the tree that value. Zero is read as "not set", which
+# is why the pinned value is an ordinary date rather than 0.
+#
+# Both rcc paths are covered because they are two different mechanisms: the
+# generated translations .qrc is compiled by a custom command that runs the
+# imported target Qt6::rcc, while resources.qrc is compiled by CMake's AUTORCC,
+# which takes its binary from CMAKE_AUTORCC_EXECUTABLE. The wrapper forwards
+# every argument and propagates the exit code -- a resource that failed to
+# compile quietly would be a build that passes and lies.
+#
+# Windows only, because the wrapper is a .cmd and this is the platform the
+# program ships on; elsewhere the resources keep their build-time date.
+if(WIN32)
+    set(XYZPDF_RCC_SOURCE_DATE 1577836800) # 2020-01-01T00:00:00Z
+    get_target_property(XYZPDF_RCC_REAL Qt6::rcc IMPORTED_LOCATION)
+    if(NOT XYZPDF_RCC_REAL)
+        message(FATAL_ERROR
+            "Qt6::rcc has no IMPORTED_LOCATION, so the resource timestamps cannot "
+            "be pinned; the build would be reproducible only by accident.")
+    endif()
+    set(XYZPDF_RCC_WRAPPER "${CMAKE_BINARY_DIR}/cmake/rcc-deterministic.cmd")
+    configure_file(cmake/rcc-deterministic.cmd.in "${XYZPDF_RCC_WRAPPER}" @ONLY)
+    # Every configuration the package declares, not the one this build happens to
+    # use: Qt's rcc import carries RELWITHDEBINFO, RELEASE and MINSIZEREL, and a
+    # config-specific location wins over the plain one, so overriding only the
+    # plain one leaves a RelWithDebInfo build calling the real rcc and writing
+    # the clock -- silently, and reproducibility is not something anyone notices
+    # until two builds disagree.
+    set_property(TARGET Qt6::rcc PROPERTY IMPORTED_LOCATION "${XYZPDF_RCC_WRAPPER}")
+    get_target_property(XYZPDF_RCC_CONFIGS Qt6::rcc IMPORTED_CONFIGURATIONS)
+    foreach(config IN LISTS XYZPDF_RCC_CONFIGS)
+        set_property(TARGET Qt6::rcc PROPERTY IMPORTED_LOCATION_${config}
+                                             "${XYZPDF_RCC_WRAPPER}")
+    endforeach()
+    set(CMAKE_AUTORCC_EXECUTABLE "${XYZPDF_RCC_WRAPPER}")
+endif()
 
 # C++20, not the C++17 Qt defaults to. The recognition feature is written
 # against C++/WinRT, whose headers decide between <coroutine> and

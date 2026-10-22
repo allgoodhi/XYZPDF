@@ -1430,15 +1430,20 @@ QVector<DocumentEditor::ReplyLink> replyLinksOf(QPDF &qpdf)
 // AcroForm fields the packet was standing in front of. With the packet gone both of them see the
 // same thing, which is the fallback PDF 2.0 settled on when it removed XFA altogether.
 //
-// Only the packet goes. /NeedsRendering stays where the source wrote it, because it is a statement
-// about generating field appearances rather than about XFA, and this program cannot know whether
-// the fields that survive still need it.
+// The catalog's /NeedsRendering goes with it. It is a key of the document catalog, not of
+// /AcroForm (PDF 32000-1, table 28), and it exists only for XFA: "regenerate the document from
+// the XFA when it is first opened". Left behind it would ask a reader to build the pages from a
+// packet this file no longer has. (Its look-alike /NeedAppearances is the AcroForm key about
+// field appearances, and that one stays.)
 void dropXfaForThisDocument(QPDF &qpdf)
 {
     QPDFObjectHandle form = qpdf.getRoot().getKey("/AcroForm");
     if (!form.isDictionary() || !form.hasKey("/XFA"))
         return; // no form, or a form that never had a packet: nothing to say and nothing to write
     form.removeKey("/XFA");
+    QPDFObjectHandle root = qpdf.getRoot();
+    if (root.hasKey("/NeedsRendering"))
+        root.removeKey("/NeedsRendering");
 }
 
 } // namespace
@@ -1754,9 +1759,11 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
                                                             : QPDFObjectHandle::newNull();
         sourceHasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
 
-        // The same two keys, one dictionary further along: XFA is the form's second copy, kept as
-        // a stream or as an array of (subtype, stream) pairs, and the flag beside it says whether
-        // a reader has to build the pages themselves. Nothing here reads the packet -- qpdf has no
+        // Two more keys: XFA, the form's second copy, kept in /AcroForm as a stream or as an
+        // array of (subtype, stream) pairs, and /NeedsRendering, which says whether a reader has
+        // to build the pages themselves -- that one is the catalog's (PDF 32000-1, table 28), not
+        // the form's, and the first version of this read it from /AcroForm, where a conforming
+        // file never puts it. Nothing here reads the packet -- qpdf has no
         // XFA facility, which is what §55 measured four directions of -- so what these two answers
         // are for is saying what this program is not showing, and dropping a packet that would
         // otherwise describe pages a save is taking out.
@@ -1767,9 +1774,7 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
         const QPDFObjectHandle xfa = form.isDictionary() ? form.getKey("/XFA")
                                                         : QPDFObjectHandle::newNull();
         sourceHasXfa = xfa.isStream() || (xfa.isArray() && xfa.getArrayNItems() > 0);
-        const QPDFObjectHandle needsRendering = form.isDictionary()
-            ? form.getKey("/NeedsRendering")
-            : QPDFObjectHandle::newNull();
+        const QPDFObjectHandle needsRendering = document->getRoot().getKey("/NeedsRendering");
         sourceDynamicXfa = sourceHasXfa
             && ((needsRendering.isBool() && needsRendering.getBoolValue()) || !sourceHasFormFields);
     }

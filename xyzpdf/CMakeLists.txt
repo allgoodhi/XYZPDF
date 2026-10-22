@@ -52,7 +52,7 @@ endif()
 # every string that reaches tr().
 #
 # /Brepro is the other half of "the hash of xyzpdf.exe is not a content
-# fingerprint" (docs/PLAN.md §82): by default the linker writes the wall clock
+# fingerprint" (docs/store-submission.md §82): by default the linker writes the wall clock
 # into the COFF header and copies it into the debug directory, so two builds of
 # one source differ by four bytes and no comparison of hashes can ever answer
 # "is the installed copy these bytes?".

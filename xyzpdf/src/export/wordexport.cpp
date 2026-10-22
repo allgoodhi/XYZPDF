@@ -196,6 +196,9 @@ void appendLine(Paragraph &paragraph, const TextLine &line)
     paragraph.spans.append({line.text, line.color});
 }
 
+// Call sites wrap the literal in QT_TRANSLATE_NOOP("WordExport", ...): lupdate does
+// not know the name `translated`, so without the wrapping these sentences never
+// reached the catalogue (the same defect as the Ocr module's `sentence`).
 QString translated(const char *text)
 {
     return QCoreApplication::translate("WordExport", text);
@@ -1007,7 +1010,7 @@ WordExportReport exportToWord(Document &document, const QString &path,
     report.path = path;
 
     if (path.isEmpty()) {
-        report.error = translated("没有指定要写入的文件。");
+        report.error = translated(QT_TRANSLATE_NOOP("WordExport", "没有指定要写入的文件。"));
         return report;
     }
 
@@ -1030,7 +1033,7 @@ WordExportReport exportToWord(Document &document, const QString &path,
     const auto abandoned = [&cancel] { return cancel && cancel->loadRelaxed(); };
     const auto stop = [&report] {
         report.cancelled = true;
-        report.error = translated("导出已取消。");
+        report.error = translated(QT_TRANSLATE_NOOP("WordExport", "导出已取消。"));
         return report;
     };
 
@@ -1315,7 +1318,7 @@ WordExportReport exportToWord(Document &document, const QString &path,
 
     if (report.pages == 0) {
         report.error = translated(
-            "这份 PDF 没有可导出的内容：既没有文字层，也没有渲染得出来的页面。");
+            QT_TRANSLATE_NOOP("WordExport", "这份 PDF 没有可导出的内容：既没有文字层，也没有渲染得出来的页面。"));
         return report;
     }
 
@@ -1327,7 +1330,7 @@ WordExportReport exportToWord(Document &document, const QString &path,
 
     QString error;
     if (!writer.save(path, &error)) {
-        report.error = translated("写入文件失败：%1").arg(error);
+        report.error = translated(QT_TRANSLATE_NOOP("WordExport", "写入文件失败：%1")).arg(error);
         return report;
     }
     report.ok = true;

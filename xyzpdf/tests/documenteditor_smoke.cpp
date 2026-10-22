@@ -1548,11 +1548,13 @@ QString writeXfaFieldCopy(const QString &source, const QString &destination,
         // fields are not registered in /AcroForm /Fields at all (the packet is the only list), and
         // /NeedsRendering set to ask the reader to draw the pages itself. Either one is enough for
         // DocumentEditor::hasDynamicXfa(), so the two flags are separate arguments here and the
-        // tests below set one at a time.
+        // tests below set one at a time. /NeedsRendering is the catalog's key (PDF 32000-1,
+        // table 28), not the form's: the first version wrote it into /AcroForm, and the editor,
+        // reading it from the same wrong place, agreed with it.
         if (withAcroFormFields)
             form.replaceKey("/Fields", fields);
         if (needsRendering)
-            form.replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
+            qpdf.getRoot().replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
 
         const QString templateXml =
             QStringLiteral("<?xml version=\"1.0\"?><xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xfdf/"
@@ -4522,6 +4524,48 @@ int main(int argc, char **argv)
                                  "a packet to drop, and a page copy cannot bring one")
                       .arg(arrived.present)
                       .arg(arrivedFields.fields));
+        }
+
+        // ---- /NeedsRendering goes with the packet, and stays when the packet does ----
+        //
+        // The flag means "build this document from its XFA when it is opened" and lives in the
+        // catalog. A save that drops the packet and leaves the flag asks a reader to build pages
+        // from XML the file no longer has; a save that keeps the packet keeps the flag with it.
+        {
+            const QString flagged = scratch.filePath(QStringLiteral("xfa-needs-rendering.pdf"));
+            error.clear();
+            check(!writeXfaFieldCopy(source, flagged, QStringLiteral("xfaField"),
+                                     QStringLiteral("typed on page 1"), &error,
+                                     /*withAcroFormFields=*/true, /*needsRendering=*/true)
+                       .isEmpty(),
+                  QStringLiteral("setup: a packet document with /NeedsRendering: %1").arg(error));
+            const auto catalogFlag = [](const QString &path) {
+                QPDF pdf;
+                pdf.processFile(path.toUtf8().constData());
+                const QPDFObjectHandle flag = pdf.getRoot().getKey("/NeedsRendering");
+                return flag.isBool() && flag.getBoolValue();
+            };
+            check(catalogFlag(flagged), "setup: and the flag is in the catalog");
+
+            DocumentEditor deleting;
+            check(deleting.open(flagged, QString(), &error) && deleting.deletePages({0}, &error),
+                  QStringLiteral("setup: the flagged document loses its first page: %1").arg(error));
+            const QString deletedOut = scratch.filePath(QStringLiteral("xfa-needs-rendering-deleted.pdf"));
+            error.clear();
+            check(deleting.saveAs(deletedOut, &error),
+                  QStringLiteral("setup: the deletion is written: %1").arg(error));
+            check(!readXfa(deletedOut).present && !catalogFlag(deletedOut),
+                  "a save that drops the packet drops the catalog's /NeedsRendering with it");
+
+            DocumentEditor turning;
+            check(turning.open(flagged, QString(), &error) && turning.rotatePages({1}, 1, &error),
+                  QStringLiteral("setup: the flagged document has a page turned: %1").arg(error));
+            const QString turnedOut = scratch.filePath(QStringLiteral("xfa-needs-rendering-turned.pdf"));
+            error.clear();
+            check(turning.saveAs(turnedOut, &error),
+                  QStringLiteral("setup: the rotation is written: %1").arg(error));
+            check(readXfa(turnedOut).present && catalogFlag(turnedOut),
+                  "and a save that keeps the packet keeps the flag");
         }
 
         // ---- the four operations that leave the page collection alone keep the packet ----

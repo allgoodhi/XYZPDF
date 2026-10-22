@@ -3057,8 +3057,8 @@ int main(int argc, char **argv)
                     fields.appendItem(field);
                     form.replaceKey("/Fields", fields);
                 }
-                if (needsRendering)
-                    form.replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
+                if (needsRendering) // the catalog's key, not the form's (PDF 32000-1, table 28)
+                    qpdf.getRoot().replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
 
                 const QString templateXml = QStringLiteral(
                     "<?xml version=\"1.0\"?><xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xfdf/\">"

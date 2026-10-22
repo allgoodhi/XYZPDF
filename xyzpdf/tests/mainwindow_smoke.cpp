@@ -420,8 +420,8 @@ int main(int argc, char **argv)
                         fields.appendItem(page.getKey("/Annots").getArrayItem(0));
                         form.replaceKey("/Fields", fields);
                     }
-                    if (needsRendering)
-                        form.replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
+                    if (needsRendering) // the catalog's key, not the form's (PDF 32000-1, table 28)
+                        qpdf.getRoot().replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
                     if (withPacket) {
                         const QString xml = QStringLiteral(
                             "<?xml version=\"1.0\"?><xdp:xdp><template/></xdp:xdp>");

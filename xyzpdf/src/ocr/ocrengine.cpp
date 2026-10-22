@@ -31,6 +31,12 @@ using winrt::Windows::Media::Ocr::OcrEngine;
 using winrt::Windows::Storage::Streams::DataWriter;
 using winrt::Windows::Storage::Streams::InMemoryRandomAccessStream;
 
+// Every call site wraps its literal in QT_TRANSLATE_NOOP("Ocr", ...), and that is
+// the load-bearing part: lupdate finds translatable text by the NAME a call goes
+// through, and `sentence` is not a name it knows -- so until the wrapping, every
+// sentence in this file was in the code, in the right context at run time, and
+// absent from the catalogue, which showed them in Chinese under an English
+// interface. translator.cpp met the same thing with a helper called `said`.
 QString sentence(const char *text)
 {
     return QCoreApplication::translate("Ocr", text);
@@ -142,7 +148,7 @@ Ocr::Result recognizeWorker(QImage image)
         const OcrEngine engine = pickEngine();
         if (!engine)
             return {false, {},
-                    sentence("这台 Windows 没有安装文字识别的语言包，无法识别文字。")};
+                    sentence(QT_TRANSLATE_NOOP("Ocr", "这台 Windows 没有安装文字识别的语言包，无法识别文字。"))};
 
         // The service refuses images larger than this outright. Rather than
         // fail on a huge crop, bring it down to a size it accepts: the text
@@ -166,9 +172,16 @@ Ocr::Result recognizeWorker(QImage image)
         return {true, lines.join(QLatin1Char('\n')), {}};
     } catch (const winrt::hresult_error &error) {
         return {false, {},
-                sentence("识别时出错：%1").arg(QString::fromWCharArray(error.message().c_str()))};
+                sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错：%1")).arg(QString::fromWCharArray(error.message().c_str()))};
     } catch (const std::exception &error) {
-        return {false, {}, sentence("识别时出错：%1").arg(QString::fromLocal8Bit(error.what()))};
+        return {false, {}, sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错：%1")).arg(QString::fromLocal8Bit(error.what()))};
+    } catch (...) {
+        // Anything else, rather than letting it leave the pool thread. QtConcurrent
+        // would wrap it as a QUnhandledException and the tab's finished handler would
+        // rethrow it on the UI thread, where nothing catches it -- the process dies
+        // for a picture the engine could not read (handoff-02 F4 caught that shape
+        // with a debugger: QUnhandledException, what=[Unknown exception]).
+        return {false, {}, sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错了。"))};
     }
 }
 
@@ -188,7 +201,7 @@ bool Ocr::isAvailable()
 Ocr::Result Ocr::recognize(const QImage &image)
 {
     if (image.isNull() || image.width() <= 0 || image.height() <= 0)
-        return {false, {}, sentence("框选的区域里没有可以识别的内容。")};
+        return {false, {}, sentence(QT_TRANSLATE_NOOP("Ocr", "框选的区域里没有可以识别的内容。"))};
 
     // Moved in, so the caller's copy is untouched and no second full image is
     // made. QImage is explicitly shared across threads; the detach happens

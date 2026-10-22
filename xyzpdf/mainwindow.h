@@ -135,7 +135,7 @@ private:
     bool promptForPassword(DocumentTab *tab, const QString &path);
 
     void changeLanguage(const QString &code);
-    void showSettings();
+    void showSettings(bool focusTranslate = false);
     void showAbout();
     void showThirdParty();
 

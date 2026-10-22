@@ -1111,7 +1111,7 @@ void MainWindow::buildMenus()
     QMenu *helpMenu = menuBar()->addMenu(tr("帮助(&H)"));
 
     QAction *settingsAction = makeAction(tr("设置(&P)…"), QKeySequence(QStringLiteral("Ctrl+,")));
-    connect(settingsAction, &QAction::triggered, this, &MainWindow::showSettings);
+    connect(settingsAction, &QAction::triggered, this, [this] { showSettings(); });
     helpMenu->addAction(settingsAction);
 
     helpMenu->addSeparator();
@@ -1408,6 +1408,11 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         if (tab == currentTab())
             updateForCurrentTab();
     });
+
+    // 「去设置」 in the box that appears when translation has no service or key.
+    // The window owns the settings dialog; the tab only asks for it.
+    connect(tab, &DocumentTab::translationSetupRequested, this,
+            [this] { showSettings(/*focusTranslate=*/true); });
 
     // Fullscreen needs to know where the pointer is even when it is over nothing
     // that would otherwise report a move, and presentation needs the page's own
@@ -2418,9 +2423,11 @@ void MainWindow::changeLanguage(const QString &code)
                                tr("语言更改将在下次启动时生效。"));
 }
 
-void MainWindow::showSettings()
+void MainWindow::showSettings(bool focusTranslate)
 {
     SettingsDialog dialog(this);
+    if (focusTranslate)
+        dialog.focusTranslateSection();
     connect(&dialog, &SettingsDialog::settingsChanged, this, [this] {
         // The cache limit belongs to each tab, and there is no signal that
         // reaches them -- so the window applies it to the ones that exist.

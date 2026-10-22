@@ -178,13 +178,14 @@ inline void setRenderCacheBytes(qint64 bytes)
     valueStore.sync();
 }
 
-// Which translation service "划线翻译" asks, and its key.
+// Which translation service "划线翻译" asks.
 //
-// "google" (the free, no-key endpoint) is the default so the feature works out
-// of the box; "deepl" is offered for those who have a key and want better
-// quality. The key is stored in plain text like every other desktop preference
-// -- there is no secret in this program worth a keystore, and the alternative is
-// a preference the user cannot read back.
+// Empty is the default and a real state: nothing is asked anywhere until the
+// reader picks a service and gives it a key, because both services this program
+// talks to are documented APIs that need one. The key itself is not here -- it
+// is a credential and lives in the Windows credential manager (see
+// src/translate/keystore.h). Settings hold only which service was chosen and
+// whether the reader agreed to send text to it.
 inline QString translateProviderKey()
 {
     return QStringLiteral("translate/provider");
@@ -192,7 +193,7 @@ inline QString translateProviderKey()
 
 inline QString translateProvider()
 {
-    return settings().value(translateProviderKey(), QStringLiteral("google")).toString();
+    return settings().value(translateProviderKey()).toString();
 }
 
 inline void setTranslateProvider(const QString &provider)
@@ -202,20 +203,27 @@ inline void setTranslateProvider(const QString &provider)
     valueStore.sync();
 }
 
-inline QString translateApiKeyKey()
+// Whether the reader has agreed to send selected text to one particular
+// service. Per provider on purpose: agreeing to DeepL is not agreeing to
+// Google, and switching services asks again. Revocable in the settings dialog.
+inline QString translateConsentKey(const QString &provider)
 {
-    return QStringLiteral("translate/apiKey");
+    return QStringLiteral("translate/consent/") + provider;
 }
 
-inline QString translateApiKey()
+inline bool translateConsentGiven(const QString &provider)
 {
-    return settings().value(translateApiKeyKey()).toString();
+    if (provider.isEmpty())
+        return false;
+    return settings().value(translateConsentKey(provider), false).toBool();
 }
 
-inline void setTranslateApiKey(const QString &key)
+inline void setTranslateConsent(const QString &provider, bool given)
 {
+    if (provider.isEmpty())
+        return;
     QSettings valueStore = settings();
-    valueStore.setValue(translateApiKeyKey(), key);
+    valueStore.setValue(translateConsentKey(provider), given);
     valueStore.sync();
 }
 

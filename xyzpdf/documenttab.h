@@ -20,6 +20,8 @@
 #include "src/export/wordexport.h"
 #include "src/ocr/ocrengine.h"
 #include "src/render/rendercache.h"
+#include "src/translate/keystore.h"
+#include "src/translate/translator.h"
 #include "src/ui/propertiesdialog.h"
 #include "src/view/pagelayout.h"
 #include "src/view/pageview.h"
@@ -166,7 +168,19 @@ public:
     // Translate an explicit piece of text -- the words just recognized from a
     // box, or a selection. The shared path behind translateSelection(); public so
     // the recognition window's "翻译" button can reach it.
+    //
+    // Before any byte leaves the machine this checks the two things the reader
+    // must have done: chosen a service with a key, and agreed to send selected
+    // text to it. Neither is a silent default -- an unconfigured program says so
+    // and offers the settings page, and a configured service is asked about once
+    // per provider. See Translate::requestGate.
     void translateText(const QString &text);
+
+    // Test seam only: the store the translation path reads its key from. The
+    // program installs nothing here and uses the Windows credential manager; a
+    // test installs an in-memory store so it can neither read a real key nor
+    // write to the machine it runs on. See src/translate/keystore.h.
+    void setTranslateKeyStoreForTesting(std::unique_ptr<Translate::KeyStore> store);
 
     // ---- search ----
     //
@@ -429,6 +443,11 @@ Q_SIGNALS:
     // The list of pending edits changed: something to undo, or nothing left to
     // undo. What the window redraws the 文档 menu and the tab's title from.
     void editStateChanged();
+    // The reader asked to be taken to the translation settings -- the
+    // 「去设置」 button in the box that appears when translation has no service or
+    // key yet. The window owns the settings dialog, so the tab asks rather than
+    // opening one of its own.
+    void translationSetupRequested();
 
 protected:
     // Theming: the page surface paints itself, so the application stylesheet
@@ -480,8 +499,22 @@ private:
 
     // The same for a translation: the request runs off the UI thread (a round
     // trip is a second or more), and the window is watched so a result nobody is
-    // waiting for is dropped. `text` is copied into the worker.
-    void startTranslation(const QString &text, QPointer<TranslateDialog> dialog);
+    // waiting for is dropped. `text` is copied into the worker, and so are the
+    // service and key: the consent check belongs on the thread with the window,
+    // and the worker must not reach into settings or the credential manager.
+    void startTranslation(const QString &text, Translate::Provider provider, const QString &key,
+                          QPointer<TranslateDialog> dialog);
+
+    // The two boxes translateText can raise before a request: one explains that a
+    // key is needed and offers the settings page, the other asks whether the
+    // selected text may be sent to this service. Split out so the consent rule is
+    // one place rather than a condition threaded through the translation path.
+    void askForTranslationSetup();
+    bool askForTranslationConsent(Translate::Provider provider, const QString &key);
+
+    // Created on first use: a tab that never translates never touches the
+    // credential manager.
+    Translate::KeyStore *translateKeyStore();
 
     // Emits the progress signal, and only ever runs on this object's thread: the
     // export reports from a worker, and this is how the report gets here.
@@ -617,6 +650,10 @@ private:
     // already given is a worse trade than holding it for as long as the document
     // is open -- where it is already held anyway, by the renderer.
     QString documentPassword;
+    // The key store translation reads from. Null until the first translation,
+    // then the Windows credential manager -- or, in a test, the in-memory store
+    // handed in through setTranslateKeyStoreForTesting().
+    std::unique_ptr<Translate::KeyStore> translateStore;
     // Set while open() is draining renders, so that a stray event delivered from
     // inside that wait cannot start a second open on this tab.
     bool opening = false;

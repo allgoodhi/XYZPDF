@@ -5,6 +5,7 @@
 #include "src/core/languages.h"
 #include "src/core/tempmanager.h"
 #include "src/theme/thememanager.h"
+#include "src/translate/keystore.h"
 
 #include <QApplication>
 #include <QDir>
@@ -13,6 +14,8 @@
 #include <QTimer>
 #include <QTranslator>
 #include <QWidget>
+
+#include <memory>
 
 namespace {
 
@@ -42,6 +45,18 @@ int main(int argc, char *argv[])
     // to migrate and no older store to look for.
     QCoreApplication::setOrganizationName(QStringLiteral("xyzpdf"));
     QCoreApplication::setApplicationName(QStringLiteral("xyzpdf"));
+
+    // Versions before the credential manager kept the translation key in plain
+    // text in QSettings. Move it once, before any window can read it; a failure
+    // leaves the old value in place so the next launch can try again instead of
+    // losing the key. With nothing stored -- every install that never had a key,
+    // and every launch after the first -- this is one settings read.
+    {
+        const std::unique_ptr<Translate::KeyStore> keyStore = Translate::makeSystemKeyStore();
+        QString migrationError;
+        if (!Translate::migrateLegacyApiKey(*keyStore, &migrationError))
+            qWarning() << "[translate]" << migrationError;
+    }
 
     // Every window takes this unless it says otherwise. Rendered from the SVG
     // rather than loaded from the .ico so each size is drawn rather than scaled

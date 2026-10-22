@@ -22,6 +22,7 @@
 #include "src/render/rendercache.h"
 #include "src/services/filechangenotice.h"
 #include "src/services/searchsession.h"
+#include "src/services/wordexportsession.h"
 #include "src/translate/keystore.h"
 #include "src/translate/translator.h"
 #include "src/ui/propertiesdialog.h"
@@ -393,14 +394,11 @@ public:
 
     // ---- 导出 ----
     //
-    // Writes the whole document's text out as a Word file, off the UI thread:
-    // every page of it is a text call and a selection under the same lock the
-    // renderer takes, so an export on the thread that draws is a window that
-    // stops repainting until it is done. The answer arrives in the signal below,
+    // The reading itself is WordExportSession's -- why it is not on the thread
+    // that draws, and why a second one is refused rather than queued, is written
+    // at the top of src/services/wordexportsession.h. These are the tab's three
+    // handles on it: start, ask, stop. The answer arrives in the signals below,
     // which the window is what words and shows.
-    //
-    // One at a time: a second export while one is running is refused rather than
-    // queued, because they would be writing the same file.
     void exportToWord(const QString &path);
     bool isExporting() const;
     // The reader has asked for it to stop, through the window's progress box.
@@ -426,11 +424,10 @@ Q_SIGNALS:
     void sidebarWantedChanged();
     // The render cache's used bytes, for the status bar's honesty about memory.
     void cacheChanged(qint64 usedBytes, qint64 limitBytes);
-    // How far the export has got: pages written of pages in the document. Sent
-    // from the worker thread, once per page -- a page with a picture on it is a
-    // render, and a scanned document is minutes of work nobody can see.
+    // The Word export's two answers, relayed from WordExportSession: how far it
+    // has got (pages written of pages in the document), and what it wrote or why
+    // it did not. The window is what words them.
     void wordExportProgress(int done, int total);
-    // What an export wrote, or why it did not.
     void wordExportFinished(const WordExportReport &report);
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
@@ -518,10 +515,6 @@ private:
     // credential manager.
     Translate::KeyStore *translateKeyStore();
 
-    // Emits the progress signal, and only ever runs on this object's thread: the
-    // export reports from a worker, and this is how the report gets here.
-    void notifyExportProgress(int done, int total);
-
     // The editor for this document, opening it on the first call. Null when the
     // document cannot be edited -- and the reason has already been said to the
     // reader, because every caller of this is a menu item they just pressed.
@@ -593,9 +586,8 @@ private:
     // The export, for the same reason and by the same means: it reads the
     // document page by page, and a reload under it is the crash drainRenders()
     // exists to prevent. Its flag is set first, so that the wait is one page
-    // rather than a whole document.
-    QFuture<WordExportReport> wordExportTask;
-    QSharedPointer<QAtomicInt> exportCancel;
+    // rather than a whole document -- both of those live with the session.
+    std::unique_ptr<WordExportSession> wordExport;
 
     Document::Status status = Document::Status::FileError;
     bool opened = false;

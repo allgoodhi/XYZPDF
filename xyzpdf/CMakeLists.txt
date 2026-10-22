@@ -314,6 +314,8 @@ set(XYZPDF_SOURCES
     src/services/filechangenotice.cpp
     src/services/searchsession.h
     src/services/searchsession.cpp
+    src/services/wordexportsession.h
+    src/services/wordexportsession.cpp
 
     src/settings/settingsdialog.h
     src/settings/settingsdialog.cpp
@@ -792,6 +794,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/render/rendercache.cpp
                 src/services/filechangenotice.cpp
                 src/services/searchsession.cpp
+                src/services/wordexportsession.cpp
                 src/theme/thememanager.cpp
         LIBRARIES ${XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES})
 endif()
@@ -839,6 +842,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/render/rendercache.cpp
                 src/services/filechangenotice.cpp
                 src/services/searchsession.cpp
+                src/services/wordexportsession.cpp
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/documenttabbar.cpp

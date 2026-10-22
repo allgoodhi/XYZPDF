@@ -174,13 +174,25 @@ DocumentTab::DocumentTab(QWidget *parent)
 
     // The search: the scan, the matches and the two lists they fill live in
     // SearchSession, which is handed the bar, the sidebar's results tab and the
-    // view to draw on. It reads the document through this question rather than
-    // holding one, because a document is replaced by open() and a search must
-    // never outlive the one it started against -- see drainRenders().
-    search = std::make_unique<SearchSession>(
-        findBar, searchPanel, pageView, sidebar,
-        [this] { return opened ? static_cast<Document *>(backend.get()) : nullptr; });
+    // view to draw on.
+    //
+    // Every service asks this one question for the document instead of holding
+    // one, because a document is replaced by open() -- and a job that outlived
+    // the document it started against is the crash drainRenders() exists to
+    // prevent. Null is the same answer `opened` used to give.
+    const auto openDocument = [this] {
+        return opened ? static_cast<Document *>(backend.get()) : nullptr;
+    };
+    search = std::make_unique<SearchSession>(findBar, searchPanel, pageView, sidebar,
+                                             openDocument);
     connect(search.get(), &SearchSession::changed, this, &DocumentTab::searchChanged);
+
+    // The Word export is the same job with a different reading loop, so it is
+    // assembled the same way and reports through the tab's own two signals.
+    wordExport = std::make_unique<WordExportSession>(openDocument);
+    connect(wordExport.get(), &WordExportSession::progress, this, &DocumentTab::wordExportProgress);
+    connect(wordExport.get(), &WordExportSession::reportFinished, this,
+            &DocumentTab::wordExportFinished);
 
     connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
     connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
@@ -272,10 +284,8 @@ DocumentTab::~DocumentTab()
     // The export reads the same document by the same means, so it is cancelled
     // and waited for here for the same reason -- and it is the one that would
     // take longest to notice, because a document is a lot of pages to read.
-    if (exportCancel)
-        exportCancel->storeRelaxed(1);
-    if (wordExportTask.isRunning())
-        wordExportTask.waitForFinished();
+    wordExport->cancelPending();
+    wordExport->waitUntilFinished();
 
     // The thumbnails render through the same backend on their own worker, so the
     // same wait applies: it must finish before the document it is reading is
@@ -311,66 +321,17 @@ bool DocumentTab::searchRunning() const
 
 void DocumentTab::exportToWord(const QString &path)
 {
-    if (!opened || path.isEmpty() || wordExportTask.isRunning())
-        return;
-
-    // A flag of its own, handed to the worker. When this tab's document is about
-    // to be replaced -- open(), and the destructor -- it is set, and the export
-    // stops at the page it is on rather than reading a document that is being
-    // torn down under it. The same arrangement the search uses, for the same
-    // reason; see drainRenders().
-    exportCancel = QSharedPointer<QAtomicInt>::create(0);
-    const QSharedPointer<QAtomicInt> cancel = exportCancel;
-
-    auto *watcher = new QFutureWatcher<WordExportReport>(this);
-    connect(watcher, &QFutureWatcher<WordExportReport>::finished, this, [this, watcher] {
-        const WordExportReport report = watcher->result();
-        watcher->deleteLater();
-        Q_EMIT wordExportFinished(report);
-    });
-
-    WordExportOptions options;
-    options.cancel = cancel;
-    // Progress comes from the worker thread, so it is handed to this object's
-    // thread rather than run where it is called: a page image is a render, a
-    // scanned document is minutes of them, and the window has to keep painting
-    // while they happen. Queued through a QPointer, because by the time the
-    // message arrives the tab may be gone.
-    QPointer<DocumentTab> alive(this);
-    options.progress = [alive](int done, int total) {
-        if (!alive)
-            return;
-        QMetaObject::invokeMethod(
-            alive.data(),
-            [alive, done, total] {
-                if (alive)
-                    alive->notifyExportProgress(done, total);
-            },
-            Qt::QueuedConnection);
-    };
-
-    // Qualified: this class has a method of the same name, which is the one the
-    // window calls, and the free function is the one that does the reading.
-    auto *document = backend.get();
-    wordExportTask = QtConcurrent::run(
-        [document, path, options] { return ::exportToWord(*document, path, options); });
-    watcher->setFuture(wordExportTask);
-}
-
-void DocumentTab::notifyExportProgress(int done, int total)
-{
-    Q_EMIT wordExportProgress(done, total);
+    wordExport->exportToWord(path);
 }
 
 bool DocumentTab::isExporting() const
 {
-    return wordExportTask.isRunning();
+    return wordExport->isRunning();
 }
 
 void DocumentTab::cancelWordExport()
 {
-    if (exportCancel)
-        exportCancel->storeRelaxed(1);
+    wordExport->cancel();
 }
 
 void DocumentTab::showFindBar()
@@ -469,8 +430,7 @@ void DocumentTab::drainRenders()
     // And the export, which reads the document the same way a search does and is
     // waited for below on the same grounds. Told to stop here rather than left to
     // run out: a search of one page is quick, an export of five hundred is not.
-    if (exportCancel)
-        exportCancel->storeRelaxed(1);
+    wordExport->cancelPending();
 
     // Pumping the event loop is how the renders arrive -- they are queued
     // signals -- and it is bounded, because work that never comes back must not

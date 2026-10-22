@@ -311,7 +311,7 @@ This document&apos;s only page came in from another file: the screen has no page
     </message>
     <message>
         <location filename="../../src/edit/documenteditor.cpp" line="671"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="539"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="545"/>
         <source>去掉口令</source>
         <translation>Remove password</translation>
     </message>
@@ -540,7 +540,7 @@ The parser says: %2</translation>
     </message>
     <message>
         <location filename="../../src/edit/documenteditor.cpp" line="2274"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="530"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="536"/>
         <source>，</source>
         <translation>, </translation>
     </message>
@@ -680,8 +680,8 @@ The parser says: %1</translation>
     </message>
     <message numerus="yes">
         <location filename="../../src/edit/documenteditor.cpp" line="1787"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="553"/>
         <location filename="../../tests/i18n_smoke.cpp" line="559"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="565"/>
         <source>这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。</source>
         <translation>
             <numerusform>This document has already been told to split into pieces of %n page. Undo that step before merging a file in.</numerusform>
@@ -748,28 +748,33 @@ The parser says: %1</translation>
 <context>
     <name>DocumentTab</name>
     <message>
-        <location filename="../../documenttab.cpp" line="114"/>
+        <location filename="../../documenttab.cpp" line="118"/>
         <source>大纲</source>
         <translation>Outline</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="115"/>
-        <location filename="../../documenttab.cpp" line="1316"/>
+        <location filename="../../documenttab.cpp" line="119"/>
+        <location filename="../../documenttab.cpp" line="1357"/>
         <source>缩略图</source>
         <translation>Thumbnails</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="699"/>
+        <location filename="../../documenttab.cpp" line="120"/>
+        <source>搜索</source>
+        <translation>Search</translation>
+    </message>
+    <message>
+        <location filename="../../documenttab.cpp" line="737"/>
         <source>（空标签）</source>
         <translation>(no document)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1075"/>
+        <location filename="../../documenttab.cpp" line="1116"/>
         <source>打开链接</source>
         <translation>Open Link</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1076"/>
+        <location filename="../../documenttab.cpp" line="1117"/>
         <source>要在浏览器中打开这个地址：
 %1
 
@@ -780,65 +785,65 @@ The parser says: %1</translation>
 Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1107"/>
+        <location filename="../../documenttab.cpp" line="1148"/>
         <source>正在打印…</source>
         <translation>Printing…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1107"/>
-        <location filename="../../documenttab.cpp" line="1157"/>
+        <location filename="../../documenttab.cpp" line="1148"/>
+        <location filename="../../documenttab.cpp" line="1198"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1125"/>
+        <location filename="../../documenttab.cpp" line="1166"/>
         <source>打印</source>
         <translation>Print</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1143"/>
-        <location filename="../../documenttab.cpp" line="1148"/>
-        <location filename="../../documenttab.cpp" line="1177"/>
+        <location filename="../../documenttab.cpp" line="1184"/>
+        <location filename="../../documenttab.cpp" line="1189"/>
+        <location filename="../../documenttab.cpp" line="1218"/>
         <source>导出为图片</source>
         <translation>Export as Images</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1143"/>
+        <location filename="../../documenttab.cpp" line="1184"/>
         <source>请先选择保存文件夹。</source>
         <translation>Choose a folder to save into first.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1148"/>
+        <location filename="../../documenttab.cpp" line="1189"/>
         <source>页码范围里没有可导出的页面。</source>
         <translation>The page range has no pages to export.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1157"/>
+        <location filename="../../documenttab.cpp" line="1198"/>
         <source>正在导出为图片…</source>
         <translation>Exporting images…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1195"/>
+        <location filename="../../documenttab.cpp" line="1236"/>
         <source>修改这份文档</source>
         <translation>Editing this document</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1212"/>
+        <location filename="../../documenttab.cpp" line="1253"/>
         <source>这个标签里没有打开的文档。</source>
         <translation>There is no document open in this tab.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1214"/>
+        <location filename="../../documenttab.cpp" line="1255"/>
         <source>这个标签正在打印或导出，完成之后才能重新加载。</source>
         <translation>This tab is printing or exporting; it can be reloaded once that has finished.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1220"/>
+        <location filename="../../documenttab.cpp" line="1261"/>
         <source>重新加载</source>
         <translation>Reload</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1221"/>
+        <location filename="../../documenttab.cpp" line="1262"/>
         <source>「%1」还带着没有写进任何文件的修改：%2。
 
 重新加载会把这些修改丢掉。要继续吗？</source>
@@ -847,105 +852,105 @@ Continue?</translation>
 Reloading will throw those changes away. Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1235"/>
+        <location filename="../../documenttab.cpp" line="1276"/>
         <source>%1 不在了，所以没有可以重新加载的东西。</source>
         <translation>%1 is no longer there, so there is nothing to reload.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1246"/>
+        <location filename="../../documenttab.cpp" line="1287"/>
         <source>重新加载 %1 失败。</source>
         <translation>Could not reload %1.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1292"/>
+        <location filename="../../documenttab.cpp" line="1333"/>
         <source>原第 %1 页</source>
         <translation>Page %1 of the file</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1302"/>
+        <location filename="../../documenttab.cpp" line="1343"/>
         <source>%1（合并）</source>
         <translation>%1 (merged)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1303"/>
+        <location filename="../../documenttab.cpp" line="1344"/>
         <source>来自 %1 的第 %2 页</source>
         <translation>Page %2 of %1</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1316"/>
+        <location filename="../../documenttab.cpp" line="1357"/>
         <source>缩略图（修改预览）</source>
         <translation>Thumbnails (preview of changes)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1318"/>
+        <location filename="../../documenttab.cpp" line="1359"/>
         <source>这里显示的是保存之后的页面顺序和朝向；正在读的文件本身没有变</source>
         <translation>These show the pages in the order and orientation a save would write; the file you are reading has not changed</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1382"/>
+        <location filename="../../documenttab.cpp" line="1423"/>
         <source>旋转页面</source>
         <translation>Rotate Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1401"/>
+        <location filename="../../documenttab.cpp" line="1442"/>
         <source>移动页面</source>
         <translation>Move Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1441"/>
+        <location filename="../../documenttab.cpp" line="1482"/>
         <source>合并文件进来</source>
         <translation>Merge Files In</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1456"/>
-        <location filename="../../documenttab.cpp" line="1468"/>
+        <location filename="../../documenttab.cpp" line="1497"/>
+        <location filename="../../documenttab.cpp" line="1509"/>
         <source>拆分文件</source>
         <translation>Split Files</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1494"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="542"/>
+        <location filename="../../documenttab.cpp" line="1535"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="548"/>
         <source>加密 / 去掉口令</source>
         <translation>Encrypt / Remove Password</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1515"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="568"/>
+        <location filename="../../documenttab.cpp" line="1556"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="574"/>
         <source>加水印</source>
         <translation>Add Watermark</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1542"/>
+        <location filename="../../documenttab.cpp" line="1583"/>
         <source>编辑书签</source>
         <translation>Edit Bookmarks</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1600"/>
+        <location filename="../../documenttab.cpp" line="1641"/>
         <source>%1 已修改.pdf</source>
         <translation>%1 modified.pdf</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1605"/>
+        <location filename="../../documenttab.cpp" line="1646"/>
         <source>把这些修改存成一个新文件</source>
         <translation>Save these changes into a new file</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1622"/>
+        <location filename="../../documenttab.cpp" line="1663"/>
         <source>保存修改</source>
         <translation>Save Changes</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1605"/>
+        <location filename="../../documenttab.cpp" line="1646"/>
         <source>PDF 文档 (*.pdf)</source>
         <translation>PDF documents (*.pdf)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1364"/>
+        <location filename="../../documenttab.cpp" line="1405"/>
         <source>删除页面</source>
         <translation>Delete Pages</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1440"/>
+        <location filename="../../documenttab.cpp" line="1481"/>
         <source>
 
 列表里前面 %n 个文件已经记下了，要退回去用撤销。</source>
@@ -959,7 +964,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1457"/>
+        <location filename="../../documenttab.cpp" line="1498"/>
         <source>这份要写出的文档只有 %n 页，拆不出第二个文件来。</source>
         <translation>
             <numerusform>The document this would write has only %n page, so there is no second file to split off.</numerusform>
@@ -1016,21 +1021,31 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     </message>
     <message>
         <location filename="../../src/ui/findbar.cpp" line="61"/>
+        <source>列出全部</source>
+        <translation>List All</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/findbar.cpp" line="62"/>
+        <source>在侧栏里列出全部匹配</source>
+        <translation>List every match in the sidebar</translation>
+    </message>
+    <message>
+        <location filename="../../src/ui/findbar.cpp" line="67"/>
         <source>关闭查找栏（Esc）</source>
         <translation>Close the find bar (Esc)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="123"/>
+        <location filename="../../src/ui/findbar.cpp" line="130"/>
         <source>搜索中…</source>
         <translation>Searching…</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="127"/>
+        <location filename="../../src/ui/findbar.cpp" line="134"/>
         <source>没有找到</source>
         <translation>No matches</translation>
     </message>
     <message>
-        <location filename="../../src/ui/findbar.cpp" line="130"/>
+        <location filename="../../src/ui/findbar.cpp" line="137"/>
         <source>第 %1 / %2 个</source>
         <translation>%1 of %2</translation>
     </message>
@@ -1552,8 +1567,8 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="1201"/>
-        <location filename="../../mainwindow.cpp" line="2325"/>
-        <location filename="../../mainwindow.cpp" line="2352"/>
+        <location filename="../../mainwindow.cpp" line="2332"/>
+        <location filename="../../mainwindow.cpp" line="2359"/>
         <source>%1%</source>
         <translation>%1%</translation>
     </message>
@@ -1718,7 +1733,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="1445"/>
-        <location filename="../../mainwindow.cpp" line="1747"/>
+        <location filename="../../mainwindow.cpp" line="1754"/>
         <source>正在导出为 Word…（%1 / %2 页）</source>
         <translation>Exporting to Word… (page %1 of %2)</translation>
     </message>
@@ -1733,17 +1748,17 @@ The first %n files in the list have been recorded; use Undo to take them back.</
         <translation>Wrote %1 new files (%2 pages in all): %3</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1574"/>
+        <location filename="../../mainwindow.cpp" line="1581"/>
         <source>已打开 %1 —— 这份文档含表单字段，本版不显示字段里填的内容（屏幕、导出和打印都一样）。</source>
         <translation>Opened %1 — this document has form fields, and this version does not show what is filled into them, on screen, in exports or in print.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1578"/>
+        <location filename="../../mainwindow.cpp" line="1585"/>
         <source>已打开 %1</source>
         <translation>Opened %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1593"/>
+        <location filename="../../mainwindow.cpp" line="1600"/>
         <source>无法打开 %1。
 
 %2</source>
@@ -1752,92 +1767,92 @@ The first %n files in the list have been recorded; use Undo to take them back.</
 %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1614"/>
+        <location filename="../../mainwindow.cpp" line="1621"/>
         <source>需要密码</source>
         <translation>Password required</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1615"/>
+        <location filename="../../mainwindow.cpp" line="1622"/>
         <source>%1 已加密，请输入打开密码：</source>
         <translation>%1 is encrypted. Enter the password it opens with:</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1626"/>
+        <location filename="../../mainwindow.cpp" line="1633"/>
         <source>密码不正确，已放弃打开。</source>
         <translation>The password was not correct, so the document was left closed.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1636"/>
+        <location filename="../../mainwindow.cpp" line="1643"/>
         <source>打开 PDF</source>
         <translation>Open PDF</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1636"/>
+        <location filename="../../mainwindow.cpp" line="1643"/>
         <source>PDF 文档 (*.pdf);;所有文件 (*)</source>
         <translation>PDF documents (*.pdf);;All files (*)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1655"/>
-        <location filename="../../mainwindow.cpp" line="1780"/>
-        <location filename="../../mainwindow.cpp" line="1824"/>
+        <location filename="../../mainwindow.cpp" line="1662"/>
+        <location filename="../../mainwindow.cpp" line="1787"/>
+        <location filename="../../mainwindow.cpp" line="1831"/>
         <source>导出为 Word</source>
         <translation>Export to Word</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1656"/>
+        <location filename="../../mainwindow.cpp" line="1663"/>
         <source>Word 文档 (*.docx)</source>
         <translation>Word document (*.docx)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1662"/>
+        <location filename="../../mainwindow.cpp" line="1669"/>
         <source>正在导出为 Word…</source>
         <translation>Exporting to Word…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1678"/>
+        <location filename="../../mainwindow.cpp" line="1685"/>
         <source>导出为 Word — %1</source>
         <translation>Export to Word — %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1679"/>
+        <location filename="../../mainwindow.cpp" line="1686"/>
         <source>取消</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1714"/>
+        <location filename="../../mainwindow.cpp" line="1721"/>
         <source>正在停止…</source>
         <translation>Stopping…</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1774"/>
+        <location filename="../../mainwindow.cpp" line="1781"/>
         <source>导出已取消</source>
         <translation>Export cancelled</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1779"/>
+        <location filename="../../mainwindow.cpp" line="1786"/>
         <source>导出失败</source>
         <translation>Export failed</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1784"/>
+        <location filename="../../mainwindow.cpp" line="1791"/>
         <source>已导出 %1 页、%2 个段落到：
 %3</source>
         <translation>Exported %1 pages and %2 paragraphs to:
 %3</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1823"/>
+        <location filename="../../mainwindow.cpp" line="1830"/>
         <source>已导出为 Word</source>
         <translation>Exported to Word</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1841"/>
-        <location filename="../../mainwindow.cpp" line="1863"/>
+        <location filename="../../mainwindow.cpp" line="1848"/>
+        <location filename="../../mainwindow.cpp" line="1870"/>
         <source>还有没保存的修改</source>
         <translation>Changes have not been written</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1842"/>
+        <location filename="../../mainwindow.cpp" line="1849"/>
         <source>「%1」还带着没有写进任何文件的修改：%2。
 
 关掉这个标签就会把这些修改丢掉。要关掉吗？</source>
@@ -1846,94 +1861,94 @@ The first %n files in the list have been recorded; use Undo to take them back.</
 Closing this tab throws those changes away. Close it anyway?</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1884"/>
+        <location filename="../../mainwindow.cpp" line="1891"/>
         <source>还有标签正在打印或导出，完成之后才能关闭窗口。</source>
         <translation>A tab is still printing or exporting; the window can close once that has finished.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="1909"/>
+        <location filename="../../mainwindow.cpp" line="1916"/>
         <source>这个标签正在打印或导出，完成之后才能关闭。</source>
         <translation>This tab is printing or exporting; it can close once that has finished.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2077"/>
+        <location filename="../../mainwindow.cpp" line="2084"/>
         <source>没有其他窗口可以合并</source>
         <translation>There are no other windows to merge</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2093"/>
+        <location filename="../../mainwindow.cpp" line="2100"/>
         <source>已把 %1 个窗口的 %2 个标签并入当前窗口</source>
         <translation>Merged %2 tabs from %1 windows into this window</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2256"/>
+        <location filename="../../mainwindow.cpp" line="2263"/>
         <source>撤销(&amp;U)</source>
         <translation>&amp;Undo</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2256"/>
+        <location filename="../../mainwindow.cpp" line="2263"/>
         <source>撤销 %1(&amp;U)</source>
         <translation>&amp;Undo %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2262"/>
+        <location filename="../../mainwindow.cpp" line="2269"/>
         <source>重做(&amp;O)</source>
         <translation>&amp;Redo</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2262"/>
+        <location filename="../../mainwindow.cpp" line="2269"/>
         <source>重做 %1(&amp;O)</source>
         <translation>&amp;Redo %1</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2351"/>
+        <location filename="../../mainwindow.cpp" line="2358"/>
         <location filename="../../tests/i18n_smoke.cpp" line="140"/>
         <source>%1 / %2</source>
         <translation>%1 / %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2370"/>
+        <location filename="../../mainwindow.cpp" line="2377"/>
         <source>%1 — %2</source>
         <translation>%1 — %2</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2389"/>
+        <location filename="../../mainwindow.cpp" line="2396"/>
         <source>（没有）</source>
         <translation>(none)</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2395"/>
+        <location filename="../../mainwindow.cpp" line="2402"/>
         <source>清除列表</source>
         <translation>Clear the list</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2411"/>
+        <location filename="../../mainwindow.cpp" line="2418"/>
         <source>语言更改将在下次启动时生效。</source>
         <translation>The language change takes effect the next time the program starts.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2511"/>
-        <location filename="../../mainwindow.cpp" line="2519"/>
+        <location filename="../../mainwindow.cpp" line="2518"/>
+        <location filename="../../mainwindow.cpp" line="2526"/>
         <source>跳转到页码</source>
         <translation>Go to Page</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2512"/>
+        <location filename="../../mainwindow.cpp" line="2519"/>
         <source>页码（1 - %1）：</source>
         <translation>Page number (1 - %1):</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2520"/>
+        <location filename="../../mainwindow.cpp" line="2527"/>
         <source>页码要在 1 到 %1 之间。</source>
         <translation>The page number has to be between 1 and %1.</translation>
     </message>
     <message>
-        <location filename="../../mainwindow.cpp" line="2550"/>
+        <location filename="../../mainwindow.cpp" line="2557"/>
         <source>打印将在后续版本中提供。</source>
         <translation>Printing arrives in a later version.</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../mainwindow.cpp" line="1791"/>
+        <location filename="../../mainwindow.cpp" line="1798"/>
         <source>其中 %n 个带网格的表格已转换为可编辑 Word 表格。</source>
         <translation>
             <numerusform>Of these, %n ruled table was converted into an editable Word table.</numerusform>
@@ -1941,7 +1956,7 @@ Closing this tab throws those changes away. Close it anyway?</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../mainwindow.cpp" line="1798"/>
+        <location filename="../../mainwindow.cpp" line="1805"/>
         <source>其中 %n 处图形（图表、框图、照片等）已按图片插入，其所在页面的文字仍是可以编辑的。</source>
         <translation>
             <numerusform>%n figure (a chart, a diagram, a photograph) was inserted as an image; the text on its page stays editable.</numerusform>
@@ -1949,7 +1964,7 @@ Closing this tab throws those changes away. Close it anyway?</translation>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../mainwindow.cpp" line="1864"/>
+        <location filename="../../mainwindow.cpp" line="1871"/>
         <source>这个窗口里有 %n 个标签带着没有写进任何文件的修改。
 
 关掉窗口就会把这些修改丢掉。要关掉吗？</source>
@@ -1971,7 +1986,7 @@ Closing the window throws those changes away. Close it anyway?</numerusform>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../mainwindow.cpp" line="1748"/>
+        <location filename="../../mainwindow.cpp" line="1755"/>
         <source>正在导出为 Word…（共 %n 页）</source>
         <translation>
             <numerusform>Exporting to Word… (%n page)</numerusform>
@@ -1979,7 +1994,7 @@ Closing the window throws those changes away. Close it anyway?</numerusform>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../mainwindow.cpp" line="1819"/>
+        <location filename="../../mainwindow.cpp" line="1826"/>
         <source>另有 %n 页既没有文字，也没有渲染出内容，已跳过。</source>
         <translation>
             <numerusform>Another %n page had neither text nor any rendered content, and was skipped.</numerusform>
@@ -1987,7 +2002,7 @@ Closing the window throws those changes away. Close it anyway?</numerusform>
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../mainwindow.cpp" line="1809"/>
+        <location filename="../../mainwindow.cpp" line="1816"/>
         <source>其中 %n 页没有文字层或包含复杂图表/表格，已按整页图片还原以保持原貌，但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。</source>
         <translation>
             <numerusform>%n page had no text layer, or held a chart or table too involved to rebuild; it was reproduced as a full-page image to keep its appearance, so the text in it cannot be edited directly. To get editable text out of it, run the Recognize tool first.</numerusform>
@@ -2187,8 +2202,8 @@ This document already has %n pages merged in from another file.</numerusform>
     </message>
     <message numerus="yes">
         <location filename="../../src/ui/mergepagesdialog.cpp" line="411"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="550"/>
         <location filename="../../tests/i18n_smoke.cpp" line="556"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="562"/>
         <source>这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。</source>
         <translation>
             <numerusform>This document has already been told to split into pieces of %n page. Undo that step before merging a file in.</numerusform>
@@ -2614,7 +2629,7 @@ The original file is not touched. This step only records the change; a save is s
     <name>ProtectPagesDialog</name>
     <message>
         <location filename="../../src/ui/protectpagesdialog.cpp" line="22"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="541"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="547"/>
         <source>加密 / 去掉口令</source>
         <translation>Encrypt / Remove Password</translation>
     </message>
@@ -2823,7 +2838,7 @@ The original file is not touched, and this step writes nothing either: the file 
     </message>
     <message>
         <location filename="../../src/ui/protectpagesdialog.cpp" line="232"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="538"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="544"/>
         <source>去掉口令</source>
         <translation>Remove password</translation>
     </message>
@@ -3042,6 +3057,22 @@ The original file is not touched. This step only records the change; a save is s
         <translation>
             <numerusform>%1: %n page.</numerusform>
             <numerusform>%1: %n pages.</numerusform>
+        </translation>
+    </message>
+</context>
+<context>
+    <name>SearchPanel</name>
+    <message>
+        <location filename="../../src/ui/searchpanel.cpp" line="163"/>
+        <source>第 %1 页</source>
+        <translation>Page %1</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../../src/ui/searchpanel.cpp" line="172"/>
+        <source>还有 %n 处没有列出</source>
+        <translation>
+            <numerusform>1 more match is not listed</numerusform>
+            <numerusform>%n more matches are not listed</numerusform>
         </translation>
     </message>
 </context>
@@ -3268,7 +3299,7 @@ The original file is not touched. This step only records the change; a save is s
     </message>
     <message>
         <location filename="../../src/ui/splitpagesdialog.cpp" line="100"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="528"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="534"/>
         <source>、</source>
         <translation>, </translation>
     </message>
@@ -3481,7 +3512,7 @@ Each component’s licence and source address are listed below, and the full tex
     <name>WatermarkDialog</name>
     <message>
         <location filename="../../src/ui/watermarkdialog.cpp" line="24"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="569"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="575"/>
         <source>加水印</source>
         <translation>Add Watermark</translation>
     </message>

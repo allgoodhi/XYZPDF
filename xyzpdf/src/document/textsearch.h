@@ -15,6 +15,24 @@
 
 namespace TextSearch {
 
+// A match's surroundings, folded onto one line for the results list.
+//
+// `text` is the page's own characters around the match -- not a paraphrase --
+// with line breaks turned into single spaces so that one row of a list can hold
+// what was several lines of the page. An ellipsis (U+2026) is put at either end
+// that the cut left out, so that a row starting in the middle of a sentence does
+// not read as the start of one.
+//
+// `from`/`to` are the match inside `text`, half-open like every other range
+// here, for whoever draws it in bold. They are positions in `text`, not in the
+// page: folding and the two ellipses move every character after them.
+struct Snippet
+{
+    QString text;
+    int from = 0;
+    int to = 0;
+};
+
 struct Match
 {
     int page = -1;
@@ -22,7 +40,22 @@ struct Match
     // to) is the text that matched.
     int from = 0;
     int to = 0;
+    // The text around the match, cut down to one row. Filled by matchesInPage()
+    // while the page's text is already in hand -- a caller never has to ask the
+    // document for the page a second time, which matters because reading a page
+    // is a PDFium call behind the same global lock as rendering.
+    Snippet snippet;
 };
+
+// The characters of `text` from `context` before `from` to `context` after `to`,
+// folded onto one line and marked so the match can be found again. Both ends
+// are clamped to the page, and an ellipsis is added only where something was
+// actually left out -- so a hit at the very start of a page has none in front of
+// it, and that is a fact a test can tell apart from a cut.
+//
+// `from`/`to` are clamped too, and an empty or backwards range answers with an
+// empty snippet rather than with text no match belongs to.
+Snippet snippetAround(const QString &text, int from, int to, int context = 20);
 
 // Whether a character is one that a word is made of, for the "whole word"
 // option below.

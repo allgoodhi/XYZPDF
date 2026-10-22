@@ -30,6 +30,7 @@
 #include "../src/ui/protectpagesdialog.h"
 #include "../src/ui/propertiesdialog.h"
 #include "../src/ui/rotatepagesdialog.h"
+#include "../src/ui/searchpanel.h"
 #include "../src/ui/splitpagesdialog.h"
 #include "../src/ui/thumbnailpanel.h"
 #include "../src/ui/watermarkdialog.h"
@@ -64,6 +65,7 @@
 #include <QThreadPool>
 #include <QTabWidget>
 #include <QTimer>
+#include <QToolButton>
 
 // The overwrite measurement asks the same question the save's last step does, and that is a Win32
 // call rather than a Qt one.
@@ -1436,6 +1438,158 @@ int main(int argc, char **argv)
         tab.startSearch(QString(), false);
         check(waitFor([&tab] { return !tab.isSearching(); }), "an empty needle finishes");
         check(tab.searchMatchCount() == 0, "and matches nothing rather than everything");
+
+        // ---- the hits, as a list in the reading sidebar ----
+        //
+        // The find bar says how many there are; the sidebar's third tab says
+        // where they are, one row per hit, and a row pressed is that hit. Driven
+        // through the tab's own search, so the list is fed by the scan that
+        // found the hits rather than by a test's copy of them.
+        {
+            SearchPanel *panel = tab.searchPanelWidget();
+            auto *sidebar = tab.findChild<QTabWidget *>(QStringLiteral("readingSidebar"));
+            check(panel != nullptr && sidebar != nullptr, "the tab has a search list and a sidebar");
+            if (!panel || !sidebar)
+                return 1;
+            check(sidebar->count() == 3 && sidebar->tabText(2) == QStringLiteral("搜索"),
+                  QStringLiteral("the sidebar's third tab is 搜索 (%1 tabs)").arg(sidebar->count()));
+            check(!tab.sidebarVisible(), "the sidebar is shut before any of this");
+            check(panel->count() == 0, "and the list is empty");
+
+            // A search does not open a closed sidebar. The list is filled all
+            // the same, so 列出全部 has something to show when it is pressed.
+            tab.startSearch(QStringLiteral("XYZPDF"), false);
+            check(waitFor([&tab] { return !tab.isSearching() && tab.searchMatchCount() == 2; }),
+                  "the two hits are back");
+            check(panel->count() == 2,
+                  QStringLiteral("and both are listed (%1 rows)").arg(panel->count()));
+            check(!tab.sidebarVisible() && !sidebar->isVisible(),
+                  "a search typed with the sidebar shut leaves it shut");
+
+            check(panel->rowText(0).startsWith(QStringLiteral("第 1 页"))
+                      && panel->rowText(1).startsWith(QStringLiteral("第 2 页")),
+                  QStringLiteral("each row leads with its page (\"%1\" / \"%2\")")
+                      .arg(panel->rowText(0), panel->rowText(1)));
+            check(panel->rowText(0).contains(QStringLiteral("XYZPDF one"))
+                      && panel->rowText(1).contains(QStringLiteral("XYZPDF two")),
+                  QStringLiteral("and carries the page's own words around the hit"));
+            for (int row = 0; row < 2; ++row) {
+                check(panel->rowText(row).mid(panel->boldFromOfRow(row),
+                                              panel->boldToOfRow(row)
+                                                  - panel->boldFromOfRow(row))
+                          == QStringLiteral("XYZPDF"),
+                      QStringLiteral("with the hit in bold (row %1: \"%2\")")
+                          .arg(row)
+                          .arg(panel->rowText(row).mid(panel->boldFromOfRow(row),
+                                                       panel->boldToOfRow(row)
+                                                           - panel->boldFromOfRow(row))));
+            }
+
+            // ---- the button that asks for the list ----
+            QToolButton *listAll = tab.findBarWidget()
+                                       ? tab.findBarWidget()->findChild<QToolButton *>(
+                                             QStringLiteral("findListAll"))
+                                       : nullptr;
+            check(listAll != nullptr, "the find bar has a 列出全部 button");
+            if (listAll) {
+                listAll->click();
+                check(tab.sidebarVisible() && sidebar->isVisible(),
+                      "pressing it opens the sidebar");
+                check(sidebar->currentWidget() == panel,
+                      "on the 搜索 tab, because the list is what was asked for");
+            }
+
+            // ---- an open sidebar follows a new search ----
+            sidebar->setCurrentIndex(1); // the thumbnails, as if the reader were there
+            tab.startSearch(QStringLiteral("XYZPDF"), false);
+            check(sidebar->currentWidget() == panel,
+                  "a search with the sidebar already open switches to its list");
+            check(waitFor([&tab] { return !tab.isSearching() && tab.searchMatchCount() == 2; }),
+                  "and the scan finishes");
+
+            // ---- a row pressed is that hit ----
+            //
+            // The view is on page 2 here, so the scan has already put the second
+            // hit in front. The row pressed is therefore the *first* one: pressing
+            // the row that is already current would pass with the connection
+            // broken, which is exactly what the first version of this block did
+            // (the control run stayed green and found it).
+            check(tab.currentSearchMatch() == 1,
+                  "before the press, the hit on the page being read is in front");
+            Q_EMIT panel->clicked(panel->model()->index(0, 0));
+            check(tab.currentSearchMatch() == 0,
+                  QStringLiteral("pressing the first row puts the first hit in front (%1)")
+                      .arg(tab.currentSearchMatch()));
+            check(panel->currentRow() == 0, "and that row is the selected one");
+            check(view->currentPage() == 0, "the view went to the page the row names");
+            if (tab.findBarWidget()) {
+                auto *count = tab.findBarWidget()->findChild<QLabel *>(QStringLiteral("findCount"));
+                check(count && count->text().contains(QStringLiteral("1 / 2")),
+                      QStringLiteral("and the bar counts it as the first of two (got \"%1\")")
+                          .arg(count ? count->text() : QString()));
+            }
+            // And the other way, so what is shown is a row followed rather than a
+            // page the press happened to land on.
+            Q_EMIT panel->clicked(panel->model()->index(1, 0));
+            check(tab.currentSearchMatch() == 1 && panel->currentRow() == 1
+                      && view->currentPage() == 1,
+                  "pressing the second row moves the index, the row and the page to the second hit");
+
+            // ---- stepping moves the highlight in the list too ----
+            tab.stepSearch(-1);
+            check(tab.currentSearchMatch() == 0 && panel->currentRow() == 0,
+                  "the previous hit is marked in the list");
+            tab.stepSearch(-1);
+            check(tab.currentSearchMatch() == 1 && panel->currentRow() == 1,
+                  "and wrapping back marks the row it wrapped to");
+
+            // ---- emptied the two ways it can be ----
+            tab.startSearch(QString(), false);
+            check(panel->count() == 0 && panel->omittedCount() == 0,
+                  "clearing the needle clears the list");
+
+            tab.startSearch(QStringLiteral("XYZPDF"), false);
+            check(waitFor([&tab, panel] { return !tab.isSearching() && panel->count() == 2; }),
+                  "another search fills it again");
+            check(tab.open(path) == Document::Status::Ready,
+                  "opening a document again is asked for");
+            check(panel->count() == 0,
+                  "and a new document starts with no list, whatever was searched before");
+
+            // ---- the thousandth-and-one hit ----
+            //
+            // A common word in a long document can have more hits than rows worth
+            // building. The panel's own contract is what is checked here: the
+            // first thousand get rows, and one last row counts the rest -- a
+            // number, so "there are more" is not left to be guessed.
+            QVector<TextSearch::Match> many;
+            many.reserve(SearchPanel::MaximumRows + 5);
+            for (int at = 0; at < SearchPanel::MaximumRows + 5; ++at) {
+                TextSearch::Match match;
+                match.page = at % 40;
+                match.from = 0;
+                match.to = 6;
+                match.snippet.text = QStringLiteral("XYZPDF and more");
+                match.snippet.from = 0;
+                match.snippet.to = 6;
+                many.append(match);
+            }
+            panel->setMatches(many, 0);
+            check(panel->count() == SearchPanel::MaximumRows + 1,
+                  QStringLiteral("a thousand hits get rows, and the count goes on one more (%1)")
+                      .arg(panel->count()));
+            check(panel->omittedCount() == 5,
+                  QStringLiteral("the last row counts the five not listed (%1)")
+                      .arg(panel->omittedCount()));
+            check(panel->matchIndexOfRow(panel->count() - 1) == -1,
+                  "and it is not itself a hit");
+            check(panel->rowText(panel->count() - 1).contains(QStringLiteral("5")),
+                  QStringLiteral("its words say how many (got \"%1\")")
+                      .arg(panel->rowText(panel->count() - 1)));
+
+            panel->clearMatches();
+            tab.setSidebarVisible(false);
+        }
 
         // ---- the same thing on a document with more than one line per page ----
         //

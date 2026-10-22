@@ -23,6 +23,7 @@
 #include "src/ui/propertiesdialog.h"
 #include "src/ui/protectpagesdialog.h"
 #include "src/ui/rotatepagesdialog.h"
+#include "src/ui/searchpanel.h"
 #include "src/ui/splitpagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
 #include "src/ui/translatedialog.h"
@@ -104,15 +105,19 @@ DocumentTab::DocumentTab(QWidget *parent)
     pageView = new PageView(this);
     outlinePanel = new OutlinePanel(this);
     thumbnailPanel = new ThumbnailPanel(this);
+    searchPanel = new SearchPanel(this);
 
-    // The reading sidebar is one panel with two tabs -- the document's bookmarks
-    // and a column of page thumbnails -- because both are "get me to a page", and
-    // a reader switches between them, not looks at both at once. It sits beside
+    // The reading sidebar is one panel with three tabs -- the document's
+    // bookmarks, a column of page thumbnails and the hits of the current search
+    // -- because all three are "get me to a place in this document", and a
+    // reader switches between them, not looks at them at once. It sits beside
     // the page, hidden until opened (see sidebarWanted).
     sidebar = new QTabWidget(this);
+    sidebar->setObjectName(QStringLiteral("readingSidebar"));
     sidebar->setTabPosition(QTabWidget::North);
     sidebar->addTab(outlinePanel, tr("大纲"));
     sidebar->addTab(thumbnailPanel, tr("缩略图"));
+    sidebar->addTab(searchPanel, tr("搜索"));
     sidebar->hide();
 
     auto *readingSplit = new QSplitter(Qt::Horizontal, this);
@@ -138,8 +143,25 @@ DocumentTab::DocumentTab(QWidget *parent)
     // of them, and the strip has to follow all of them, undo and redo included.
     connect(this, &DocumentTab::editStateChanged, this, &DocumentTab::refreshThumbnailRows);
 
+    connect(searchPanel, &SearchPanel::matchChosen, this, [this](int index) {
+        if (index < 0 || index >= searchMatches.size())
+            return;
+        // One way round for every route into a match: the index moves here, and
+        // everything that reads it -- the page's highlight, the bar's count, the
+        // list's own selected row -- is filled from updateSearchHighlights().
+        currentMatchIndex = index;
+        updateSearchHighlights();
+        pageView->showRange(rangeOf(index));
+    });
+
     connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
     connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
+    connect(findBar, &FindBar::listAllRequested, this, [this] {
+        // The one route that opens a closed sidebar: the reader asked for the
+        // list itself, so the list is what is put in front of them.
+        setSidebarVisible(true);
+        sidebar->setCurrentWidget(searchPanel);
+    });
     connect(findBar, &FindBar::closed, this, [this] {
         findBar->hide();
         // The highlights go with the bar: a page covered in amber with nothing
@@ -262,11 +284,22 @@ void DocumentTab::startSearch(const QString &needle, bool caseSensitive, bool wh
 
     searchMatches.clear();
     currentMatchIndex = -1;
+    // New question, new answer: rows from the last scan belong to the last
+    // needle, and would otherwise sit under "搜索中…" as if they still counted.
+    searchPanel->clearMatches();
 
     if (needle.isEmpty() || !opened) {
         updateSearchHighlights();
         return;
     }
+
+    // If the sidebar is already open, a search is the reason to look at its
+    // third tab. A closed sidebar is left closed: taking a third of the window
+    // because something was typed is what 列出全部 exists to avoid. Asked as
+    // "not hidden" rather than isVisible(), which is also false while this tab
+    // is not the one in front -- the sidebar is still open for when it is.
+    if (!sidebar->isHidden())
+        sidebar->setCurrentWidget(searchPanel);
 
     const auto cancel = QSharedPointer<QAtomicInt>::create(0);
     searchCancel = cancel;
@@ -321,6 +354,7 @@ void DocumentTab::applySearchResults(const QVector<TextSearch::Match> &matches)
     if (currentMatchIndex < 0 && !searchMatches.isEmpty())
         currentMatchIndex = 0; // the hit is behind them: wrap round to the beginning
 
+    searchPanel->setMatches(searchMatches, currentMatchIndex);
     updateSearchHighlights();
     if (currentMatchIndex >= 0)
         pageView->showRange(rangeOf(currentMatchIndex));
@@ -351,6 +385,9 @@ void DocumentTab::updateSearchHighlights()
     // tab's own API, which is not where a reader looks for it.
     if (findBar)
         findBar->setResultCount(currentMatchIndex, int(searchMatches.size()), isSearching());
+    // The row in front follows the match in front, whichever way it moved --
+    // the bar's buttons, the window's keys, or a press on another row.
+    searchPanel->setCurrentMatch(currentMatchIndex);
     Q_EMIT searchChanged(currentMatchIndex, int(searchMatches.size()), isSearching());
 }
 
@@ -379,6 +416,7 @@ void DocumentTab::clearSearch()
     searchMatches.clear();
     currentMatchIndex = -1;
     searchNeedle.clear();
+    searchPanel->clearMatches();
     updateSearchHighlights();
 }
 
@@ -1047,8 +1085,11 @@ void DocumentTab::translateText(const QString &raw)
 
 void DocumentTab::setSidebarVisible(bool visible)
 {
+    if (sidebarWanted == visible)
+        return;
     sidebarWanted = visible;
     applySidebarVisibility();
+    Q_EMIT sidebarWantedChanged();
 }
 
 void DocumentTab::applySidebarVisibility()

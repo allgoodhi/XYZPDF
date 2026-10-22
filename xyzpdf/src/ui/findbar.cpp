@@ -56,6 +56,12 @@ FindBar::FindBar(QWidget *parent)
     next->setToolTip(tr("下一个匹配（Enter）"));
     layout->addWidget(next);
 
+    auto *listAll = new QToolButton(this);
+    listAll->setObjectName(QStringLiteral("findListAll"));
+    listAll->setText(tr("列出全部"));
+    listAll->setToolTip(tr("在侧栏里列出全部匹配"));
+    layout->addWidget(listAll);
+
     auto *close = new QToolButton(this);
     close->setText(QStringLiteral("✕"));
     close->setToolTip(tr("关闭查找栏（Esc）"));
@@ -71,6 +77,7 @@ FindBar::FindBar(QWidget *parent)
     connect(wholeBox, &QCheckBox::toggled, this, askAgain);
     connect(next, &QToolButton::clicked, this, [this] { Q_EMIT stepRequested(1); });
     connect(previous, &QToolButton::clicked, this, [this] { Q_EMIT stepRequested(-1); });
+    connect(listAll, &QToolButton::clicked, this, &FindBar::listAllRequested);
     connect(close, &QToolButton::clicked, this, &FindBar::closed);
 
     // Enter inside the field, which is where the caret is: the field consumes

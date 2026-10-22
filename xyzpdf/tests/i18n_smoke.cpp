@@ -406,6 +406,12 @@ int main(int argc, char **argv)
               "\n\n其中 %n 条书签指着页面内的某个位置，而这一次它们对不上文件里原来的条目："
               "那几条写出去会变成整页适配。没被改动的书签，位置照旧带走。",
               1 },
+            // The search list's last row: the first thousand hits get a row each,
+            // and this one says how many were left out. A count sentence like the
+            // rest of these -- the catalogue checks its shape, but only this probe
+            // asks for the singular as well and compares the two with the digits
+            // masked, which is what catches an English plural of one.
+            { "SearchPanel", "还有 %n 处没有列出", 1 },
         };
 
         for (const Probe &probe : probes) {

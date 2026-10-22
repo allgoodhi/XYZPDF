@@ -44,6 +44,9 @@ Q_SIGNALS:
     void searchRequested(const QString &needle, bool caseSensitive, bool wholeWord);
     // Next (+1) or previous (-1). Wraps, which is the tab's business.
     void stepRequested(int delta);
+    // "List them all" was pressed: the reader wants the hits as rows, wherever
+    // the sidebar is now. Opening it is the tab's business, not the bar's.
+    void listAllRequested();
     // Escape, or the close button.
     void closed();
 

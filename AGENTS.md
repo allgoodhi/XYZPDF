@@ -53,9 +53,16 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   `print()` 的那个 `DocumentTab` 当场析构。护栏是 `DocumentTab::ForegroundJob`（RAII）加
   `MainWindow::closeTab()` / `closeEvent()` 两处拒绝；框是窗口模态这件事只挡键盘和鼠标，
   **不是规则**。再写类似的前台循环就拿一个 `ForegroundJob`。
-- 临时文件走 `TempManager`；**永不写用户的 PDF 文件**（v1 只读）
+- 临时文件走 `TempManager`；**除了「保存」这一条路，永不写用户的 PDF 文件**（§112 起；原来是"v1 只读"）。
+  那一条路的写法定在 `docs/handoff-03.md` F8：同目录临时文件 → 用 qpdf 重开验证 → 等读文档的工作结束、
+  释放句柄 → `ReplaceFileW` → 重新打开；失败时原文件逐字节不变。任何别的代码路径一个字节都不许写用户的文件。
 - 测试：`python tools/build_all_tests.py`（配置+构建+运行，缺一不可；它还会跑 `tools/check_translations.py`
   对一遍目录——代码里改了用户可见的话，就靠这一步发现目录没跟上）
+- **lupdate 只认名字**（§112）：翻译助手叫 `said()`、`sentence()`、`translated()` 时对 lupdate 是隐形的 ——
+  句子在代码里、运行时上下文也对，目录里就是没有，英文界面下显示中文（`Translate`、`Ocr`、`WordExport`
+  三个上下文都这样空过，`check_translations.py` 看不见：它比的是目录与 lupdate 找到的，而 lupdate 什么都没找到）。
+  新助手要么叫 `tr`，要么调用处包 `QT_TRANSLATE_NOOP("上下文", "…")`。查法：
+  `grep -rn 'translate("[A-Za-z]*", *[a-z]'` 找出每个助手，再看目录里那个 `<name>` 有没有。
 - **`update_translations` 会替你填词，而它填的是别的上下文那一条**（§100 实测）：lupdate 的
   same-text heuristic 按**源文完全相等**套用已有译文，于是属性框里的「主题」（PDF 的
   `/Subject`）直接拿到了外观设置里那个「主题」的 `Theme`。这条在目录里是**已完成、
@@ -159,6 +166,13 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   代价写在代码里：同名同页的两条只有一条能带走。框里那句代价要用**按下之前**的纯查询
   `positionalAtRiskFor(rows)`，不要存"上一次请求"的数 —— 存过，于是那句话在屏幕上永远不会出现。
   **侧栏点击仍只跳页号**（位置进文件了，我们自己不读它）；§70/§80 那条路没动。
+- **测试进程自己的护栏**（§112，F4）：`mainwindow_smoke` 有看门狗，`XYZPDF_SMOKE_TIMEOUT_MS`（默认 120000）
+  到点印 FAIL 再 `_Exit(1)` —— §100 那条级联"重新引入时不是变红，是不再结束"，现在不结束也会红。
+  `documenttab_smoke` 设了 `XYZPDF_TEST_CRASH_DUMP` 才装进程内的崩溃转储（`XYZPDF_TEST_CRASH_DUMP_DIR`，
+  默认 TEMP），并印出异常码、出错地址落在哪颗镜像、指令字节与帧链；**不动系统的 Windows 错误报告设置**。
+- **PDF 的键在哪个字典，按规范的表号查，不凭名字**（§112）：F3 把 `/NeedsRendering`（文档目录的键，
+  PDF 32000-1 表 28）当成 `/AcroForm` 的，读和测试样本写在同一个错地方，于是代码与测试互相作证、全绿。
+  自己造样本测自己的读法时，**样本的形状要从规范来，不要从被测代码来**。
 - **控制必须能改变结果**（§99 又踩一次）：`if (const char *kind = false ? nullptr : f(x); …)` 看着像把
   分支关掉了，三目仍然求值了 `f(x)`，于是那趟"控制"26/0 全绿，而它什么都没测。判据是**结果变了**：
   控制跑要么让新钉的那条红，要么先证明它自己跑了（§86/§90/§95/§97 那族）。
@@ -184,10 +198,13 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   在这一层天生 0 像素**：同一份 `/AP /N` 挂到 `/Square` 上画满 6000 格、挂到 `/Widget` 上一格不画，
   注册与否、`/NeedAppearances` 与否都不改变（§82）—— Qt 这版只供 `RenderFlag::Annotations` 一个相关
   开关，别去找第二个。
-- **`build-local-release/xyzpdf.exe` 的哈希不是内容指纹**（§82 逐字节量过）：不是可重现链接，同一份源码
-  重链只差 4 个字节 —— COFF 头与 debug directory 里各一份链接时间戳。所以**哈希变了不说明代码变了**
-  （只 `touch` 一下也换），哈希相同也不说明源码相同；别拿重建后的哈希互相比，要问"装上的那份是不是
-  这次构建的字节"就查打包复制那条链（§16 的"三处相同"因此仍然有效）。
+- **构建是可重现的**（§112，F2；§82 量到的那 4 个字节已消掉）：MSVC 全目标 `/Brepro`（编译与链接），
+  rcc 经 `cmake/rcc-deterministic.cmd` 把资源时间戳钉在 2020-01-01（它写的是每个资源文件的 mtime，
+  而 `.qm` 是构建时生成的）。同一份源码两次全新构建，四颗产物逐字节相同，两种目录根路径也相同；
+  判据是 `python xyzpdf/tools/check_reproducible.py`（两次完整构建，慢，不进门禁）。所以现在
+  **"改了代码哈希却没变"是真信号**，值得停下来查；反过来哈希相同仍只说明"同一份源码 + 同一套工具链"，
+  换了 Qt/MSVC/vcpkg 依赖也会变。"装上的那份是不是这次构建的字节"照旧查打包复制那条链（§16 的四列）。
+  新加一个会把时间、路径或随机数写进产物的构建步骤，就会把这条打破 —— 加完跑一次那个脚本。
 - **比字节的每一行要带上大小与"文件在不在"**（§83 实测）：`Get-FileHash` 对不存在的路径返回 null，而
   PowerShell 的循环变量留着上一轮的值，于是名字记错的两颗 DLL 照样印出 `same=True size=0`。三处比对
   先各自 `isfile` / `Test-Path`，再把字节数印进同一行；`same=True` 单独一句不算比过。

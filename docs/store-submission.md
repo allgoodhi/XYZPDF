@@ -7363,3 +7363,107 @@ FAIL: the find bar is as tall as it asks to be, not a share of the window (350 p
 否则残留实例会喂给下一轮"那一族，只是这次截断的是调用方。收掉、不截断重跑，才是上面那个 exit 0。
 
 产品代码 +0/−0。**§16 现在对到 §110。**
+
+## 112. 第二批第一阶段：五个分支交给另一个模型做完，合进 main；合并时又抓到三处（2026-10-22）
+
+他一句"现在还没上架，全部都以长期方式做，然后并行给出 AI 提示词，做完后你再检查"。我写了 `docs/handoff-02.md`
+（三个阶段；第一阶段五件并行），给了五段提示词，他交出去，回来一句"五项已做完"。
+
+### 合并之前先查
+
+- **规矩守住了**：五个分支都没碰日志、`AGENTS.md`、`review-03`、`handoff-*`；工作区都干净；报告都在各自最后一个提交的说明里。
+  F5 下载 PDFium 之前停下来问过他（"下载最新固定版本"），库本体在仓库外 `H:\test\XYZPDF-wt\third-party\pdfium-8111`。
+- 读了关键改动：F1 的密钥只进请求头（DeepL `Authorization: DeepL-Auth-Key`，Google `X-goog-api-key`），设置框的确定会先
+  提交还在编辑的密钥、取消把动过的每一条密钥与同意放回去；F2 的 rcc 包装同时盖住 AUTORCC 与 `Qt6::rcc` 的每个 config；
+  F3 的写出只在"改了页面集合"时丢 XFA；F4 只改测试；F5 的探针目标默认不建、默认构建里 pdfium 规则 0 处。
+- **英文目录先抽、后合**（§109 的做法）：F1 新增 24 条、F3 9 条，都已填好。
+
+### 合并（F2 → F5 → F4 → F3 → F1）
+
+只有英文目录冲突了一次（F1），取 main 的、重生成、按抽出的对照填回。`CMakeLists.txt` 三个分支都改了（F1 加 keystore、
+F2 加 /Brepro 与 rcc 包装、F5 加探针目标），自动合并干净；`documenttab.cpp` / `mainwindow.cpp` F1 与 F3 都改了，也干净。
+测试块照旧零冲突（handoff 给每件指定了不同锚点）。
+
+### 合并时抓到的三处（都修了，一个提交 9a69edd）
+
+1. **`/NeedsRendering` 放错了字典**。F3 把它当 `/AcroForm` 的键：判定"动态 XFA"从那儿读，测试样本也写在那儿 ——
+   代码与测试互相作证，全绿。PDF 32000-1 表 28 写的是**文档目录**的键，只为 XFA 存在（"打开时按 XFA 重新生成"）；
+   F3 注释里说它"关于生成字段外观"，那是 `/NeedAppearances`。而我的 handoff 写的是"目录里 `/NeedsRendering true`"，
+   被读成了表单字典。改：从 catalog 读；丢掉 XFA 包的保存同时去掉 catalog 的这个旗标（留着就是叫阅读器从一份已经没有的
+   XML 造页面）；三处样本改写到 catalog；新加一对断言（删页的保存去掉旗标、只旋转的保存留着）。
+   **控制**：只改产品、样本仍写在 `/AcroForm` → `documenteditor_smoke` 红 1 条
+   （`needs-rendering-with-fields: hasDynamicXfa() answers 1`）。
+2. **lupdate 只认名字，又两处**。F1 发现 `translator.cpp` 的 `said()` 让 `Translate` 上下文在目录里是 0 条；我顺着查了全仓
+   七个同形助手：`ocrengine.cpp` 的 `sentence()` 与 `wordexport.cpp` 的 `translated()` 一样隐形 —— **识别与 Word 导出的
+   失败话在英文界面下一直是中文**，`check_translations.py` 看不见（它比的是目录与 lupdate 找到的，lupdate 什么都没找到）。
+   调用处包 `QT_TRANSLATE_NOOP`，7 条第一次进目录。其余五个助手都叫 `tr`，目录里都在。写进 AGENTS.md。
+3. **识别失败会让进程死**：F4 用调试构建量到一种形状 —— 识别工作线程抛出非标准异常，QtConcurrent 包成
+   `QUnhandledException` 带回 UI 线程，在 `startRecognition` 的 `finished` 里重抛，没人接。`recognizeWorker` 加了
+   `catch (...)`，现在是一句"识别时出错了。"（第 8 条新句子）。**另一种形状没解释**：门禁那颗 exe 在工作线程里
+   `call [rax+0x50]` 到一个不在任何已映射镜像里的地址 —— 最像"DLL 已卸载还在被调"。交给 handoff-03 的 F10。
+
+另：F2 的 CMake 注释把 §82 记成 `docs/PLAN.md` 的，改成本文件。
+
+**目录** 668 条（631 + F3 9 + F1 24 − F1 淘汰 4 + Ocr/WordExport 8），numerus **52**，0 unfinished。
+「导出已取消。」是 same-text heuristic 给的 `The export was cancelled.`，核过合适。
+**合并后门禁 26 passed / 0 failed**，构建目标 33（F1 的 `keystoreprobe`、F5 的探针目标只在给了 PDFium 目录时才有）。
+
+### 各分支自己报的读数（摘自提交说明，没有重跑）
+
+- **F1 翻译**：gtx 端点整条删；DeepL（`:fx` 走 api-free）与 Google Cloud Translation v2；默认不翻译，没服务/没密钥给说明框与
+  「去设置」；第一次向某个服务发请求前问一次、按服务记住、设置里可撤销；密钥进 Windows 凭据管理器
+  （`XYZPDF/translate/<provider>`），老明文首启迁移后删掉。顺手抓到 `QUrlQuery` 不编码值里的 `?`。控制：去掉同意那道门
+  → 两支测试共红 11 条且进程挂住（真请求放出去了，发的是假密钥）；密钥拼回 URL → 红 6 条。凭据管理器真实现只由探针手动跑过
+  一次，跑前跑后 `cmdkey /list` 里 XYZPDF 条目都是 0。**没测**：设置框本身没有自动测试（它会碰真凭据管理器）、
+  33 条新句子没上过屏幕、真网络请求一次没发过。隐私政策要写的五句在 F1 的提交说明里（上架元数据那一份要抄过去）。
+- **F2 可重现构建**：改前两次全新构建 exe 差 7 字节、壳 DLL 各 4 字节；`/Brepro` 之后 DLL 相同、exe 差 47 字节，根因是 rcc
+  写进去的 3 字节资源时间戳（= 那次构建里 `xyzpdf_en.qm` 的 mtime），其余 44 字节是摘要派生；钉住 rcc 日期之后六次构建、
+  两种根路径、四颗逐字节相同。`/pathmap` 不需要（Release 镜像里没有 CODEVIEW 条目）。控制：工具对改前那对目录 exit 1、
+  对"有 /Brepro 无包装"那对只点名 exe。
+- **F3 XFA 与 §47**：打开时读 XFA 与动态 XFA（同一次 qpdf 开档，600 页 24 ms），状态栏按 动态 XFA > XFA > 表单字段 说一句；
+  改了页面集合（删除、移动、合并、拆分）的保存不写 `/XFA`，旋转、水印、书签、加密逐字节带走；四个框按下之前就说 XFA 那句，
+  删除/拆分/合并三个框按 `%n` 说"这几条回答会失去它回答的那条批注"（纯查询，不存上一次的数）。三条控制各自红过；
+  它自己记下一处覆盖不到：documenttab_smoke 的动态样本两个条件同时成立，看不出少了哪一半。
+- **F4 测试欠账**：看门狗（坏 `fittingZoom` → 2 秒 58,290 次 resize、看门狗 20 秒红）；进程内崩溃转储，§103 那次崩溃
+  5/5 复现、拿到两种形状（见上面第 3 条）；§109 D 的五个屏幕模式在合并后的 main 上中英各一遍、正例 10/10 exit 0、
+  控制 10/10 exit 1，`mnemonics` 那一族 Alt+字母现在中英各按过一遍。44 份转储留在 `H:\test\XYZPDF-wt\tmp-test-debts`。
+- **F5 PDFium**：`docs/pdfium-plan.md`。PDFium（`chromium/8111`，`pdfium.dll` 7,586,816 字节）加
+  `FPDFDOC_InitFormFillEnvironment` + `FPDF_FFLDraw` 后带 `/AP` 的字段画满整框（页面视图 26271 像素、300 dpi 104250），
+  Qt PDF 同一格六档全是 0（§94 复现）；没有 `/AP` 它也自己造面皮。保真：合成件差 2–3/255，真书 4.6% 像素、最大 69/255
+  （必须用眼睛对图）。建议**取代**（未压缩 +2.97 MB）而不是并存（+7.59 MB）；表单第一步只画；锁照 Qt 的模型。
+  九次故意改坏，八条控制各自红过；一次改坏没让任何控制变红，它据此否证了自己先前的一个归因并改了文档。
+
+### 拍板与下一步
+
+F5 方案里留给主会话的几件，我拍了，写进 `docs/handoff-03.md`：取代不并存（开关只在开发期）；PDFium 二进制钉版本 + sha256，
+由 `tools/fetch_pdfium.py` 放进一个 gitignore 的目录；**文件句柄用 `FPDF_LoadCustomDocument` + 我们自己带
+`FILE_SHARE_DELETE` 开的句柄**（方案 R7，也是就地保存用 `ReplaceFileW` 的前提）；表单只画、打印与导出走同一条渲染路、
+不做 flatten。**规矩改了一条**：AGENTS.md "永不写用户的 PDF 文件（v1 只读）"改成"除了「保存」这一条路"，写法定在
+handoff-03 的 F8。第二阶段：F6 拆分 + F9 新句子上屏幕（只改 gui-probe）；第三阶段：F7 PDFium、F8 就地保存、F10 识别线程崩溃。
+
+产品代码（本节我自己的提交）：`documenteditor.cpp` +14/−9、`ocrengine.cpp` +15/−6、`wordexport.cpp` +7/−4、CMake 注释 1 行；
+测试 +48/−8。
+
+## 113. 重打包并重装：§112 送进装上的那一份，§16 对到 §112（2026-10-22）
+
+同一套顺序、同一个打包环境（`WindowsSdkDir` 空，PATH 里 SDK 只有 `Windows Performance Toolkit`）。
+
+- 打包前快照：`xyzpdf.exe` `b54d0c0f85d2…` / **1,490,944**（比 §111 大 52,736 字节：翻译重写、密钥库、XFA 与回答对、
+  `/Brepro` 的 REPRO 记录）；`xyzpdfpreview.dll` `c97918e2793a…` / 135,680、`xyzpdfthumbnail.dll` `58043f4e67c3…` / 92,160、
+  `xyzpdfshell.dll` `5a957cae7979…` / 37,888 —— **三颗壳 DLL 都换了字节、尺寸没变**，这一次原因是 `/Brepro`
+  （时间戳字段换成内容摘要），不是代码；qpdf 三颗与 §83 以来逐字节相同。
+- 包 18,425,385 字节（17.6 MB），67 个文件，`verify-package -Package …` exit 0，payload 与 §111 那张清单相同（名字层面）。
+- **四列全等**（打包前构建树 / 打包后构建树 / 包内 / `WindowsApps\…\bin`），七颗 `same=True`。
+  打包那一步重新调了构建，而 exe 的哈希一个字节没动 —— 可重现构建在这条链上的第一个读数（这一次构建树本来就是新的，
+  所以它只说明"没有重编"或"重编出同一份"之一，不单独当 F2 的证据）。
+- 装上的那份 `-Mode inventory -Installed`：起得来、26 个非空名字、exit 0、清场后 `xyzpdf` 进程 0。
+  F1/F3 的新句子都要带文档或要触发翻译才看得见，这一遍没读 —— 那是 handoff-03 F9 的活。
+
+**25,684,592 那颗 DLL，按"查不回来"结案**：§83 包里那颗 `dxcompiler.dll`（`4b8da3c8d211…`）是谁，§97 之后仍然没有名字 ——
+§83 那趟的 `.msix` 早被 §84 的控制包覆盖，八个根按尺寸重扫是 0 个，**这一份字节已经不存在于任何能查的地方**。
+能说的是机制（§97 量到底的：打包 shell 的 PATH 里任何一个叫 `dxcompiler.dll` 的文件都会被收进包，连是不是 DLL 都不问）
+与防线（`build-package.ps1` 的 strip 清单 + `verify-package` 的 payload 对照会把多出来的文件点名）。最近四次打包
+（§106/§108/§111/§113）都是 67 个文件、payload 清单相同、没有这两个名字。**机制有了、防线有了，
+那一份没有名字，也不会再有** —— 不再列为欠账。
+
+**§16 现在对到 §112。**

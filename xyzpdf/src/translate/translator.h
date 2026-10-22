@@ -17,6 +17,23 @@
 // network, and the one thing that actually opens a socket is behind an interface
 // with more than one way to fill it.
 //
+// ---- why there is no "free" endpoint ----
+//
+// Through 2026-10 the default was Google's web endpoint
+// (translate.googleapis.com/translate_a/single?client=gtx): no key, no contract,
+// and no promise it would answer tomorrow. A store application cannot stand on
+// that -- it may disappear, it is not licensed for this use, and there is nobody
+// to ask when it changes shape. Both services this program talks to now are the
+// documented, key-bearing APIs, and the key is the user's own. That is also why
+// an unconfigured program says so instead of quietly translating through a
+// back door.
+//
+// ---- where the key lives ----
+//
+// Not in QSettings. The key is a credential, so it goes to the Windows credential
+// manager through the KeyStore interface in keystore.h; what settings hold is
+// which service the reader chose and whether they agreed to send text to it.
+//
 // ---- why the call blocks, and where it runs ----
 //
 // translate() blocks until the answer comes back or the request fails. That is
@@ -28,13 +45,45 @@
 #pragma once
 
 #include <QByteArray>
+#include <QList>
+#include <QPair>
 #include <QString>
+#include <QUrl>
 
 #include <memory>
 
-class QJsonDocument;
-
 namespace Translate {
+
+// The services this program can ask. None is a real state -- a fresh install --
+// and not an error: the translate commands stay clickable and say what to do.
+enum class Provider {
+    None,
+    DeepL,
+    GoogleCloud,
+};
+
+// The id stored in QSettings ("", "deepl", "google"), and the names a reader
+// sees. The names are product names and are not translated.
+Provider providerFromId(const QString &id);
+QString providerId(Provider provider);
+QString providerName(Provider provider);
+// Where the bytes actually go, for the consent sentence. DeepL's free keys
+// (ending in ":fx") use a different host from its paid ones.
+QString endpointHost(Provider provider, const QString &key);
+
+// Why a translation did not happen, as a kind rather than only as a sentence.
+// The sentence is what the window shows; the kind is what a test can assert
+// without depending on the catalogue's wording.
+enum class ErrorKind {
+    None,
+    Network,
+    InvalidKey,
+    Quota,
+    Service, // an HTTP answer that was neither an auth nor a quota failure
+    MalformedResponse,
+    EmptyText,
+    NotConfigured,
+};
 
 // What came back from a translation, whatever service produced it.
 struct Result
@@ -42,6 +91,7 @@ struct Result
     // False means nothing usable came out, and error says why -- as a sentence
     // to show the user.
     bool ok = false;
+    ErrorKind kind = ErrorKind::None;
     // The words that were asked about, echoed back so a window can show the
     // original beside the translation without the caller keeping it.
     QString source;
@@ -63,21 +113,60 @@ struct Result
 QString googleTargetFor(const QString &uiOrLocaleCode);
 QString deeplTargetFor(const QString &uiOrLocaleCode);
 
-// The request URL for the free, no-key Google endpoint. Kept a pure function of
-// its inputs so that the escaping -- the part that breaks silently on a question
-// mark or a Chinese character -- is a thing a test can check.
-QString googleRequestUrl(const QString &text, const QString &targetLang);
+// One request to one service: where it goes, what is sent, and with which
+// headers. Kept a value with no socket in it so the parts that break silently --
+// escaping, and where the key is allowed to appear -- are things a test can pin.
+//
+// The key is never in the URL and never in the body. DeepL takes it in
+// "Authorization: DeepL-Auth-Key <key>", Google Cloud in "X-goog-api-key"; a key
+// in a URL ends up in logs, proxies and crash reports.
+struct ApiRequest
+{
+    QUrl url;
+    QList<QPair<QByteArray, QByteArray>> headers;
+    QByteArray body; // form-encoded, sent as POST by both services
+};
+ApiRequest buildRequest(Provider provider, const QString &text, const QString &targetLang,
+                        const QString &key);
 
-// The body and the endpoint for a DeepL request, which is a form POST rather than
-// a URL, and needs the caller's key.
-QByteArray deeplRequestBody(const QString &text, const QString &targetLang, const QString &key);
-
-// The answers read back. parseGoogleResponse understands the nested-array shape
-// the translate_a endpoint returns; parseDeeplResponse the object DeepL returns.
-// A malformed or unexpected body comes back as ok == false with an error, not as
-// a crash and not as an empty success.
-Result parseGoogleResponse(const QByteArray &body);
+// The answers read back. A malformed or unexpected body comes back as ok ==
+// false with an error, not as a crash and not as an empty success.
 Result parseDeeplResponse(const QByteArray &body);
+Result parseGoogleResponse(const QByteArray &body);
+
+// Google returns the translation HTML-escaped even when format=text is asked
+// for (`&#39;` for an apostrophe), so the entities are put back before the
+// reader sees them. Exposed because it is arithmetic, and because the failure it
+// prevents -- a translation full of `&#39;` -- is one a reader would see and a
+// test should not have to guess at.
+QString unescapeHtml(const QString &text);
+
+// What an HTTP failure means, split into the three cases the reader can act on:
+// a key that does not work, an allowance that is used up, and everything else.
+// The body is consulted because Google reports a quota failure as a plain 403,
+// indistinguishable from a bad key by the status alone.
+Result httpErrorResult(Provider provider, int status, const QByteArray &body);
+Result networkErrorResult();
+
+// The two failures that are nobody's fault but the reader's: nothing was
+// selected, and nothing is configured. They are free functions rather than
+// sentences written inside the translator classes because of how the catalogue
+// is built: lupdate takes a `tr()` row's context from the scope the call sits in,
+// so a sentence typed inside a class lands in "Translate::HttpTranslator" -- a
+// context no call at runtime ever asks for, and the English interface answers in
+// Chinese. Kept at namespace scope, they land in "Translate" where they are read.
+Result emptyTextResult();
+Result notConfiguredResult();
+
+// Whether a request may be sent at all. The pure half of the consent rule:
+// unconfigured means "no provider or no key", and a configured service is still
+// asked once per provider before the first byte leaves the machine.
+enum class Gate {
+    NotConfigured,
+    NeedsConsent,
+    Ready,
+};
+Gate requestGate(Provider provider, const QString &key, bool consented);
 
 // ---- the pluggable interface ----
 //
@@ -92,9 +181,12 @@ public:
     virtual Result translate(const QString &text) = 0;
 };
 
-// The translator the user's settings ask for: the free endpoint by default, or
-// DeepL when a key has been filled in. Reading the settings is the only reason
-// this is a function rather than a class the caller picks.
-std::unique_ptr<Translator> makeTranslator();
+// A translator for a service and a key the caller has already read and been
+// allowed to use. The settings are read by the caller -- the consent check has
+// to happen on the thread with the window on it, and the key must not be fetched
+// a second time from the worker. Never null: an unconfigured pair produces a
+// translator whose answer is an honest failure, so a caller that got the gate
+// wrong gets a sentence rather than a crash.
+std::unique_ptr<Translator> makeTranslator(Provider provider, const QString &key);
 
 } // namespace Translate

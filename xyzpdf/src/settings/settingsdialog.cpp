@@ -6,6 +6,7 @@
 #include "../core/windowdialogs.h"
 #include "../render/rendercache.h"
 #include "../theme/thememanager.h"
+#include "../translate/translator.h"
 #include "../ui/languagedialog.h"
 #include "../windows/shellintegration.h"
 
@@ -19,6 +20,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QShowEvent>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -43,8 +45,8 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     originalShell = AppSettings::shellIntegrationEnabled();
     originalCache = AppSettings::renderCacheBytes(RenderCache::DefaultMaximumBytes);
     originalProvider = AppSettings::translateProvider();
-    originalKey = AppSettings::translateApiKey();
     originalTrigger = AppSettings::translateTrigger();
+    translateKeys = Translate::makeSystemKeyStore();
 
     auto *layout = new QVBoxLayout(this);
 
@@ -104,17 +106,24 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         auto *form = new QFormLayout(group);
 
         translateProviderBox = new QComboBox(group);
-        translateProviderBox->addItem(tr("谷歌（免费，无需密钥）"), QStringLiteral("google"));
-        translateProviderBox->addItem(tr("DeepL（需密钥）"), QStringLiteral("deepl"));
+        // Empty is a real choice: both services below need a key, so there is no
+        // "works out of the box" option any more. The old free Google endpoint
+        // was removed -- see translator.h.
+        translateProviderBox->addItem(tr("未选择"), QString());
+        translateProviderBox->addItem(Translate::providerName(Translate::Provider::DeepL),
+                                      QStringLiteral("deepl"));
+        translateProviderBox->addItem(Translate::providerName(Translate::Provider::GoogleCloud),
+                                      QStringLiteral("google"));
         translateProviderBox->setCurrentIndex(
             qMax(0, translateProviderBox->findData(originalProvider)));
         form->addRow(tr("翻译服务"), translateProviderBox);
 
         translateKeyEdit = new QLineEdit(group);
         translateKeyEdit->setEchoMode(QLineEdit::Password);
-        translateKeyEdit->setText(originalKey);
-        translateKeyEdit->setPlaceholderText(tr("仅 DeepL 需要"));
         form->addRow(tr("API 密钥"), translateKeyEdit);
+
+        translateConsentBox = new QCheckBox(group);
+        form->addRow(QString(), translateConsentBox);
 
         translateTriggerBox = new QComboBox(group);
         translateTriggerBox->addItem(tr("选中后手动（右键菜单 / 工具栏）"), QStringLiteral("menu"));
@@ -124,7 +133,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         form->addRow(tr("触发方式"), translateTriggerBox);
 
         auto *note = new QLabel(
-            tr("翻译会把选中的文字发送到所选服务。密钥以明文保存在本机设置中。"), group);
+            tr("翻译只在你主动触发时进行。密钥保存在 Windows 凭据管理器中，不会写进设置文件。"), group);
         note->setWordWrap(true);
         note->setEnabled(false);
         form->addRow(QString(), note);
@@ -132,20 +141,35 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         layout->addWidget(group);
 
         connect(translateProviderBox, &QComboBox::currentIndexChanged, this, [this] {
-            AppSettings::setTranslateProvider(translateProviderBox->currentData().toString());
+            // Finish the key edit for the service that is being left before the
+            // field is repurposed for the next one.
+            commitKeyEdit();
+            const QString chosen = translateProviderBox->currentData().toString();
+            AppSettings::setTranslateProvider(chosen);
+            loadKeyFor(chosen);
+            updateConsentControls(chosen);
             Q_EMIT settingsChanged();
         });
         // The key is written when focus leaves the field rather than on every
         // keystroke: a password box typed one character at a time would otherwise
-        // rewrite the settings file a dozen times for one paste.
-        connect(translateKeyEdit, &QLineEdit::editingFinished, this, [this] {
-            AppSettings::setTranslateApiKey(translateKeyEdit->text());
+        // rewrite the credential a dozen times for one paste.
+        connect(translateKeyEdit, &QLineEdit::textChanged, this, [this] { keyDirty = true; });
+        connect(translateKeyEdit, &QLineEdit::editingFinished, this, &SettingsDialog::commitKeyEdit);
+        connect(translateConsentBox, &QCheckBox::toggled, this, [this](bool checked) {
+            const QString provider = translateProviderBox->currentData().toString();
+            if (provider.isEmpty())
+                return;
+            rememberConsent(provider);
+            AppSettings::setTranslateConsent(provider, checked);
             Q_EMIT settingsChanged();
         });
         connect(translateTriggerBox, &QComboBox::currentIndexChanged, this, [this] {
             AppSettings::setTranslateTrigger(translateTriggerBox->currentData().toString());
             Q_EMIT settingsChanged();
         });
+
+        loadKeyFor(originalProvider);
+        updateConsentControls(originalProvider);
     }
 
     // ---- 最近文件 ----
@@ -221,7 +245,13 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     buttons->button(QDialogButtonBox::Cancel)->setText(tr("取消"));
     layout->addWidget(buttons);
 
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this] {
+        // The field may still have focus, in which case editingFinished has not
+        // run yet. A key the credential manager refused must not be followed by
+        // an accepting dialog.
+        if (commitKeyEdit())
+            accept();
+    });
     connect(buttons, &QDialogButtonBox::rejected, this, &SettingsDialog::reject);
 
     // Cancel puts back what was there. The theme is the one that matters: it
@@ -233,8 +263,18 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         AppSettings::setRenderCacheBytes(originalCache);
         RecentDocuments::setEnabled(originalRecent);
         AppSettings::setTranslateProvider(originalProvider);
-        AppSettings::setTranslateApiKey(originalKey);
         AppSettings::setTranslateTrigger(originalTrigger);
+        // Every key and consent the dialog touched, not only the selected
+        // service's: switching the combo and typing a key for the other service
+        // is a change too, and Cancel has to mean all of it.
+        for (auto it = originalKeys.constBegin(); it != originalKeys.constEnd(); ++it) {
+            if (it.value().isEmpty())
+                translateKeys->remove(it.key(), nullptr);
+            else
+                translateKeys->write(it.key(), it.value(), nullptr);
+        }
+        for (auto it = originalConsents.constBegin(); it != originalConsents.constEnd(); ++it)
+            AppSettings::setTranslateConsent(it.key(), it.value());
         if (AppSettings::shellIntegrationEnabled() != originalShell) {
             QString error;
             const QString classesRoot = ShellIntegration::defaultClassesRoot();
@@ -293,4 +333,89 @@ void SettingsDialog::refreshRecentControls()
         recentBox->setChecked(enabled);
     }
     clearRecentButton->setEnabled(enabled && !RecentDocuments::all().isEmpty());
+}
+
+void SettingsDialog::focusTranslateSection()
+{
+    // The wish, not the focus: the 「去设置」 request reaches the window before this
+    // dialog has ever been on a screen, and focus asked for then lands on
+    // whichever widget the tab order picks when it appears.
+    focusTranslateOnShow = true;
+}
+
+void SettingsDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    if (!focusTranslateOnShow)
+        return;
+    focusTranslateOnShow = false;
+    translateProviderBox->setFocus(Qt::OtherFocusReason);
+}
+
+void SettingsDialog::loadKeyFor(const QString &providerId)
+{
+    QString key;
+    if (!providerId.isEmpty())
+        translateKeys->read(providerId, &key, nullptr);
+    {
+        // setText would otherwise count as an edit and write the key back on the
+        // next focus change -- which is harmless, but makes "dirty" meaningless.
+        const QSignalBlocker blocker(translateKeyEdit);
+        translateKeyEdit->setText(key);
+    }
+    keyFieldProvider = providerId;
+    keyDirty = false;
+    translateKeyEdit->setEnabled(!providerId.isEmpty());
+    translateKeyEdit->setPlaceholderText(providerId.isEmpty()
+                                             ? tr("先选择翻译服务")
+                                             : tr("填写所选服务的 API 密钥"));
+}
+
+bool SettingsDialog::commitKeyEdit()
+{
+    if (!keyDirty || keyFieldProvider.isEmpty())
+        return true;
+    rememberKey(keyFieldProvider);
+    QString error;
+    if (!translateKeys->write(keyFieldProvider, translateKeyEdit->text().trimmed(), &error)) {
+        // The field is left as typed and still dirty: the reader can retry or
+        // cancel, and Cancel restores the key that was there.
+        WindowDialogs::warning(this, tr("翻译"), error);
+        return false;
+    }
+    keyDirty = false;
+    Q_EMIT settingsChanged();
+    return true;
+}
+
+void SettingsDialog::updateConsentControls(const QString &providerId)
+{
+    const bool configured = !providerId.isEmpty();
+    {
+        const QSignalBlocker blocker(translateConsentBox);
+        translateConsentBox->setChecked(configured
+                                        && AppSettings::translateConsentGiven(providerId));
+    }
+    translateConsentBox->setEnabled(configured);
+    translateConsentBox->setText(
+        configured
+            ? tr("允许把选中的文字发送给 %1")
+                  .arg(Translate::providerName(Translate::providerFromId(providerId)))
+            : tr("允许把选中的文字发送给所选的翻译服务"));
+}
+
+void SettingsDialog::rememberKey(const QString &providerId)
+{
+    if (providerId.isEmpty() || originalKeys.contains(providerId))
+        return;
+    QString key;
+    translateKeys->read(providerId, &key, nullptr);
+    originalKeys.insert(providerId, key);
+}
+
+void SettingsDialog::rememberConsent(const QString &providerId)
+{
+    if (providerId.isEmpty() || originalConsents.contains(providerId))
+        return;
+    originalConsents.insert(providerId, AppSettings::translateConsentGiven(providerId));
 }

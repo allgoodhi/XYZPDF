@@ -19,8 +19,10 @@
 // appearing on somebody's desktop while their tests run is not.
 
 #include "../documenttab.h"
+#include "../src/core/appsettings.h"
 #include "../src/edit/documenteditor.h"
 #include "../src/theme/thememanager.h"
+#include "../src/translate/keystore.h"
 #include "../src/ui/bookmarkdialog.h"
 #include "../src/ui/deletepagesdialog.h"
 #include "../src/ui/findbar.h"
@@ -35,11 +37,13 @@
 #include "../src/ui/searchpanel.h"
 #include "../src/ui/splitpagesdialog.h"
 #include "../src/ui/thumbnailpanel.h"
+#include "../src/ui/translatedialog.h"
 #include "../src/ui/watermarkdialog.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
 
 #include <QAccessible>
+#include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -54,6 +58,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -2363,6 +2368,150 @@ int main(int argc, char **argv)
         check(!tab.isExporting(), "and the tab is no longer busy");
 
         QObject::disconnect(listening);
+    }
+
+    // ---- 划线翻译：nothing leaves this machine before the reader says so ----
+    //
+    // The two things this feature must never do are ask a service nobody
+    // configured, and send the selected words to a service the reader has not
+    // agreed to. Both are asserted on the real path -- DocumentTab::translateText,
+    // the window's own -- because the rule lives in that function, and a test of
+    // the arithmetic alone (translate_smoke) would still pass if the window forgot
+    // to ask. What "did not send" is read off is the absence of the translation
+    // window: it is created only after both gates open.
+    //
+    // The key store is the in-memory one installed below. An automated test must
+    // not use the Windows credential manager -- it would leave an entry on the
+    // machine running the suite, and could read back a real key and send a real
+    // request -- so the real store is verified by hand once instead, and the
+    // accepted-consent branch, which necessarily starts a request, is left out of
+    // this file on purpose rather than run against a service.
+    {
+        struct BoxReading
+        {
+            bool seen = false;
+            QString text;
+            QString informative;
+            QString acceptText;
+        };
+
+        // The boxes are window-modal and run their own event loop, so the answer
+        // has to be pressed from a timer that fires inside it. A timer that finds
+        // no box leaves `seen` false, which is what makes "the box did not appear"
+        // a red assertion rather than a hang.
+        auto pressWhenBoxOpens = [](BoxReading *reading, bool accept) {
+            QTimer::singleShot(0, [reading, accept] {
+                auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+                if (!box)
+                    return;
+                reading->seen = true;
+                reading->text = box->text();
+                reading->informative = box->informativeText();
+                QAbstractButton *target = box->button(QMessageBox::Cancel);
+                for (QAbstractButton *button : box->buttons()) {
+                    if (box->buttonRole(button) != QMessageBox::AcceptRole)
+                        continue;
+                    reading->acceptText = button->text();
+                    if (accept)
+                        target = button;
+                }
+                if (target)
+                    target->click();
+                else
+                    box->reject();
+            });
+        };
+
+        std::unique_ptr<Translate::KeyStore> store = Translate::makeMemoryKeyStore();
+        Translate::KeyStore *keys = store.get();
+        tab.setTranslateKeyStoreForTesting(std::move(store));
+
+        int setupAsks = 0;
+        const QMetaObject::Connection setup =
+            QObject::connect(&tab, &DocumentTab::translationSetupRequested, &tab,
+                             [&setupAsks] { ++setupAsks; });
+
+        // ---- no service chosen ----
+        {
+            AppSettings::setTranslateProvider(QString());
+            BoxReading reading;
+            pressWhenBoxOpens(&reading, true);
+            tab.translateText(QStringLiteral("hello"));
+            check(reading.seen, "an unconfigured translate asks rather than sending");
+            check(reading.text.contains(QStringLiteral("API 密钥")),
+                  QStringLiteral("and says what is missing (%1)").arg(reading.text));
+            check(!reading.acceptText.isEmpty(), "the box offers a way to the settings");
+            check(reading.acceptText == QStringLiteral("去设置"),
+                  QStringLiteral("named as the thing it does (%1)").arg(reading.acceptText));
+            check(setupAsks == 1, QStringLiteral("「去设置」 asks the window for the settings (%1)")
+                                       .arg(setupAsks));
+            check(tab.findChildren<TranslateDialog *>().isEmpty(),
+                  "and no translation window was opened, so nothing was asked of a service");
+        }
+
+        // ---- a service chosen, no key for it ----
+        {
+            AppSettings::setTranslateProvider(QStringLiteral("deepl"));
+            keys->remove(QStringLiteral("deepl"), nullptr);
+            BoxReading reading;
+            pressWhenBoxOpens(&reading, false);
+            tab.translateText(QStringLiteral("hello"));
+            check(reading.seen, "a service without a key is still unconfigured, not a request");
+            check(reading.text.contains(QStringLiteral("API 密钥")),
+                  QStringLiteral("and the same sentence says so (%1)").arg(reading.text));
+            check(setupAsks == 1, "choosing 取消 does not ask for the settings");
+            check(tab.findChildren<TranslateDialog *>().isEmpty(),
+                  "and nothing was sent");
+        }
+
+        // ---- a key, but no agreement to talk to that service ----
+        {
+            QString ignored;
+            keys->write(QStringLiteral("deepl"), QStringLiteral("probe-key-not-a-real-key"), &ignored);
+            AppSettings::setTranslateConsent(QStringLiteral("deepl"), false);
+            BoxReading reading;
+            pressWhenBoxOpens(&reading, false);
+            tab.translateText(QStringLiteral("hello"));
+            check(reading.seen, "a configured service is asked about before its first request");
+            check(reading.text.contains(QStringLiteral("DeepL")),
+                  QStringLiteral("naming the service the words would go to (%1)").arg(reading.text));
+            check(reading.text.contains(QStringLiteral("api.deepl.com")),
+                  QStringLiteral("and the host it would go to (%1)").arg(reading.text));
+            check(!reading.informative.isEmpty(), "and what it says will not be sent");
+            check(!reading.acceptText.isEmpty(), "with a button that means yes");
+            check(!AppSettings::translateConsentGiven(QStringLiteral("deepl")),
+                  "declining records no agreement");
+            check(tab.findChildren<TranslateDialog *>().isEmpty(), "and sends nothing");
+        }
+
+        // ---- agreement belongs to one service ----
+        {
+            keys->write(QStringLiteral("google"), QStringLiteral("probe-google-key"), nullptr);
+            AppSettings::setTranslateConsent(QStringLiteral("deepl"), true);
+            AppSettings::setTranslateProvider(QStringLiteral("google"));
+            BoxReading reading;
+            pressWhenBoxOpens(&reading, false);
+            tab.translateText(QStringLiteral("hello"));
+            check(reading.seen,
+                  "agreeing to DeepL is not agreement to send the same words to Google");
+            check(reading.text.contains(QStringLiteral("Google Cloud Translation")),
+                  QStringLiteral("and the new service is named (%1)").arg(reading.text));
+            check(reading.text.contains(QStringLiteral("translation.googleapis.com")),
+                  QStringLiteral("with its own host (%1)").arg(reading.text));
+            check(!AppSettings::translateConsentGiven(QStringLiteral("google")),
+                  "declining leaves Google un-agreed, while DeepL keeps its agreement");
+            check(AppSettings::translateConsentGiven(QStringLiteral("deepl")),
+                  "which is what per-service consent means");
+
+            // Back to the state the rest of the file (and the next run) expects: no
+            // agreement on file for either service, and no service chosen.
+            AppSettings::setTranslateConsent(QStringLiteral("deepl"), false);
+            keys->remove(QStringLiteral("deepl"), nullptr);
+            keys->remove(QStringLiteral("google"), nullptr);
+            AppSettings::setTranslateProvider(QString());
+        }
+
+        QObject::disconnect(setup);
     }
 
     // ---- night reading ----

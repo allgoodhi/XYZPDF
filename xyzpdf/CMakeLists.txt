@@ -319,6 +319,9 @@ set(XYZPDF_SOURCES
 
     src/translate/translator.h
     src/translate/translator.cpp
+    src/translate/keystore.h
+    src/translate/keystore.cpp
+    src/translate/keystore_windows.cpp
 
     src/ui/bookmarkdialog.h
     src/ui/bookmarkdialog.cpp
@@ -430,6 +433,9 @@ if(WIN32)
     # windowsapp.lib provides. Nothing is redistributed from it, which is why
     # it is not in the third-party notices.
     target_link_libraries(xyzpdf PRIVATE windowsapp)
+    # CredWriteW / CredReadW / CredDeleteW: the translation key's storage. See
+    # src/translate/keystore_windows.cpp.
+    target_link_libraries(xyzpdf PRIVATE advapi32)
 
     # Deploy the Qt runtime next to the executable, so that it can be run by
     # double-clicking it in the build directory.
@@ -736,7 +742,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     # performs below.
     set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
     if(WIN32)
-        list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp)
+        list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp advapi32)
     endif()
     xyzpdf_add_test(documenttab_smoke
         SOURCES documenttab.cpp
@@ -757,6 +763,8 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
                 src/print/printjob.cpp
+                src/translate/keystore.cpp
+                src/translate/keystore_windows.cpp
                 src/translate/translator.cpp
                 src/ui/bookmarkdialog.cpp
                 src/ui/deletepagesdialog.cpp
@@ -792,7 +800,7 @@ option(XYZPDF_BUILD_MAINWINDOW_SMOKE "Build the window drag-and-drop smoke test"
 if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
     set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
     if(WIN32)
-        list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp)
+        list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp advapi32)
     endif()
     xyzpdf_add_test(mainwindow_smoke
         SOURCES mainwindow.cpp
@@ -817,6 +825,8 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/export/zipwriter.cpp
                 src/ocr/ocrengine.cpp
                 src/print/printjob.cpp
+                src/translate/keystore.cpp
+                src/translate/keystore_windows.cpp
                 src/translate/translator.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
@@ -896,7 +906,23 @@ option(XYZPDF_BUILD_TRANSLATE_SMOKE "Build the translation smoke test" OFF)
 if(XYZPDF_BUILD_TRANSLATE_SMOKE)
     xyzpdf_add_test(translate_smoke
         SOURCES src/translate/translator.cpp
+                src/translate/keystore.cpp
         LIBRARIES Qt6::Network)
+endif()
+
+# The one claim about key storage that no in-process test can make: that
+# CredWriteW / CredReadW / CredDeleteW behave the way the translate path assumes they
+# do, on a real credential manager. Run by hand once -- the header of
+# tests/keystoreprobe.cpp says how, and what it printed is in the commit that added
+# it. The gate builds it and never runs it (build_all_tests.py skips any target whose
+# name says "probe"), because an automated test that writes to the machine it runs on
+# is a test that changes the user's credentials.
+option(XYZPDF_BUILD_KEYSTORE_PROBE "Build the Windows credential manager probe" OFF)
+if(XYZPDF_BUILD_KEYSTORE_PROBE)
+    xyzpdf_add_test(keystoreprobe
+        SOURCES src/translate/keystore.cpp
+                src/translate/keystore_windows.cpp
+        LIBRARIES advapi32)
 endif()
 
 # The arithmetic of a print job: which pages a typed range names, and how an

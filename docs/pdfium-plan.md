@@ -12,8 +12,11 @@
 | `xyzpdf/tools/pdfium_probe_run.py` | 61（新） | 按门禁的方式跑它（先写样本，再跑） |
 | `xyzpdf/tools/pdfium_probe_control.py` | 193（新） | 九次"故意改坏"的控制跑，跑完按 sha256 还原 |
 
-（这一支不写本文档自己的行数——写下去的那一刻它就旧了。报告提交里那个 485 是补完"私有 TEMP
-那次假红灯"一段之前的数，订正在紧随其后的那条提交信息里；表里其余几个数核过。）
+（这一支不写本文档自己的行数——写下去的那一刻它就旧了。**提交信息里出现过的两个文档行数都算错**
+（485、507，现读 `wc -l docs/pdfium-plan.md` 为准），因为补一句话进去就会让那句话自己变旧：
+这是同一族毛病，本项目在 §78 记过"上一片记的 0 WARNING 是读数不是愿望"。
+表里其余行数核过且不会再动：pdfiumprobe.cpp 1574、CMakeLists +79/−0、
+pdfium_probe_build.py 62、pdfium_probe_run.py 61、pdfium_probe_control.py 193。）
 
 `git diff HEAD -- xyzpdf/src/ xyzpdf/documenttab.* xyzpdf/mainwindow.* xyzpdf/Resources/` **为空**：产品代码、目录、打包脚本一行没动。
 默认构建不依赖 PDFium（量法见 §2 末尾）。

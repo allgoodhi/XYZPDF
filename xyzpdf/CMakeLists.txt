@@ -936,6 +936,85 @@ if(XYZPDF_BUILD_PDFPROBE)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
 
+# PDFium asked directly, with Qt PDF printed beside it: the measurement docs/pdfium-plan.md stands on.
+#
+# Two things here are load-bearing, and both fail in a way that reads as caution:
+#
+#   * The option being OFF by default is NOT what protects the gate. tools/build_all_tests.py turns
+#     every XYZPDF_BUILD_* option on -- it reads the list out of this file so the list cannot go
+#     stale -- so the protection is that the target is only created when XYZPDF_PDFIUM_DIR names a
+#     real extracted release. Without that guard, a gate run on a machine that never downloaded
+#     anything would stop configuring, and the program's own build would depend on a library the
+#     program does not use.
+#   * PDFium is linked into this one target and into nothing else. Not into xyzpdf, not into the two
+#     shell handler DLLs, not into any test the gate runs. F5 is a measurement of a decision that has
+#     not been taken; F7 is where it would be taken.
+#
+# The library itself is not in the repository (it is 7.6 MB of DLL and 20 headers). It comes from
+# bblanchon/pdfium-binaries; where to put it and which version, with hashes, is in
+# docs/pdfium-plan.md. Nothing here downloads it: an absent path is a skip, not a fetch.
+option(XYZPDF_BUILD_PDFIUM_PROBE "Build the direct-PDFium measurement" OFF)
+set(XYZPDF_PDFIUM_DIR "" CACHE PATH
+    "An extracted pdfium-binaries release (include/, lib/, bin/). Empty means do not build the probe.")
+if(XYZPDF_BUILD_PDFIUM_PROBE AND NOT XYZPDF_PDFIUM_DIR STREQUAL "")
+    file(TO_CMAKE_PATH "${XYZPDF_PDFIUM_DIR}" XYZPDF_PDFIUM_ROOT)
+    if(NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/include/fpdfview.h"
+       OR NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/lib/pdfium.dll.lib"
+       OR NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll")
+        # Said out loud rather than left to the linker: a path that was typed with a typo is the only
+        # way this branch is reached, and CMake's own message would be about a missing target.
+        message(FATAL_ERROR
+            "XYZPDF_PDFIUM_DIR is set to '${XYZPDF_PDFIUM_DIR}', which is not an extracted PDFium "
+            "release: include/fpdfview.h, lib/pdfium.dll.lib and bin/pdfium.dll all have to be there.")
+    endif()
+
+    add_library(xyzpdf_pdfium SHARED IMPORTED)
+    set_target_properties(xyzpdf_pdfium PROPERTIES
+        IMPORTED_IMPLIB "${XYZPDF_PDFIUM_ROOT}/lib/pdfium.dll.lib"
+        IMPORTED_LOCATION "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${XYZPDF_PDFIUM_ROOT}/include")
+
+    # The release's own version string, compiled in, so the log says which bytes it was measured
+    # against instead of leaving that to whoever ran it to remember (sec.97's rule about identity).
+    set(XYZPDF_PDFIUM_VERSION "unknown")
+    if(EXISTS "${XYZPDF_PDFIUM_ROOT}/VERSION")
+        file(STRINGS "${XYZPDF_PDFIUM_ROOT}/VERSION" XYZPDF_PDFIUM_VERSION_LINES)
+        set(XYZPDF_PDFIUM_VERSION "")
+        foreach(component MAJOR MINOR BUILD PATCH)
+            foreach(line ${XYZPDF_PDFIUM_VERSION_LINES})
+                if(line MATCHES "^${component}=([0-9]+)$")
+                    string(APPEND XYZPDF_PDFIUM_VERSION "${CMAKE_MATCH_1}.")
+                endif()
+            endforeach()
+        endforeach()
+        # Four components, four dots appended: crop the one past the patch number. Counted rather
+        # than regexed, because a regex for "one character at the end" has to survive CMake's own
+        # escape rules on the way to the regex engine.
+        string(LENGTH "${XYZPDF_PDFIUM_VERSION}" XYZPDF_PDFIUM_VERSION_LENGTH)
+        math(EXPR XYZPDF_PDFIUM_VERSION_CROP "${XYZPDF_PDFIUM_VERSION_LENGTH} - 1")
+        string(SUBSTRING "${XYZPDF_PDFIUM_VERSION}" 0 ${XYZPDF_PDFIUM_VERSION_CROP}
+               XYZPDF_PDFIUM_VERSION)
+    endif()
+
+    xyzpdf_add_test(pdfiumprobe
+        SOURCES src/document/qtpdfbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES Qt6::Pdf xyzpdf_pdfium)
+    target_compile_definitions(xyzpdf_pdfiumprobe PRIVATE
+        XYZPDF_PDFIUM_VERSION="${XYZPDF_PDFIUM_VERSION}")
+
+    # The loader looks beside the executable, and tools/build_all_tests.py gives a test only Qt's bin
+    # on PATH -- so without this copy the probe builds and then refuses to start, which is the same
+    # complaint the vcpkg-DLL copy above exists to prevent for qpdf30.dll.
+    if(WIN32)
+        add_custom_command(TARGET xyzpdf_pdfiumprobe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "${CMAKE_BINARY_DIR}/tests"
+            VERBATIM)
+    endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # Packaging
 # ---------------------------------------------------------------------------

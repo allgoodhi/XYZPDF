@@ -7159,12 +7159,12 @@ review-03 §1.3。七样结构编辑过去在屏幕上**一个像素都不变**�
 2. **打包之前**先记构建树的七颗（`threeway.py snapshot`），每行带"在不在"与字节数（§83 那条）。
 3. `packaging/build-package.ps1 -Sign -Cert 221C6B38…0A83 -Install`。
 4. `packaging/verify-package.ps1 -Package …`。
-5. 四列比对：打包前的构建树 / 打包后的构建树 / 包内（把 .msix 当 zip 解开）/ `WindowsApps\…in`。
+5. 四列比对：打包前的构建树 / 打包后的构建树 / 包内（把 .msix 当 zip 解开）/ `WindowsApps\…\bin`。
 6. 装上的那份起两次窗口读菜单。
 
 **打包 shell 的环境**（§97 那条：决定 dx 两颗来不来的就是这两个变量）：`WindowsSdkDir` **空**，
-PATH 里含 `Windows Kits` 的只有 `E:\Windows Kits\Windows Performance Toolkit`，**不含**
-SDK 的 `bin\<ver>d`。
+PATH 里含 `Windows Kits` 的只有 `E:\Windows Kits\10\Windows Performance Toolkit`，**不含**
+SDK 的 `bin\<ver>\x64`。
 
 ### 读数
 

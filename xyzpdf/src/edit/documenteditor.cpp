@@ -801,6 +801,106 @@ bool DocumentEditor::hasFormFields() const
     return false;
 }
 
+int DocumentEditor::repliesAtRiskForDelete(const QVector<int> &pages) const
+{
+    // Only the links this request cuts. A thread whose target page an earlier unsaved delete
+    // already took out is not counted again here (the box that asked for that delete said it, and
+    // the save's repair handles it either way), and a reply on a page that goes with its target is
+    // not counted either -- nothing survives that write to be standalone about.
+    QSet<int> removing;
+    for (int page : pages) {
+        if (page >= 0 && live.contains({0, page}))
+            removing.insert(page);
+    }
+    int atRisk = 0;
+    for (const ReplyLink &link : sourceReplyLinks) {
+        if (!removing.contains(link.targetPage))
+            continue;
+        if (removing.contains(link.replyPage))
+            continue;
+        if (!live.contains({0, link.replyPage}))
+            continue;
+        ++atRisk;
+    }
+    return atRisk;
+}
+
+int DocumentEditor::repliesAtRiskForSplit(int pagesPerPiece) const
+{
+    if (pagesPerPiece <= 0)
+        return 0;
+    // Which file each of the document's own pages would be written into. The position in `live`
+    // rather than the original number, because that is what a piece is cut from -- and a page an
+    // earlier delete took out has no piece to be in, so its threads are not this request's to cut.
+    // A split that is reached has no merged pages in it (splitInto() and mergeFile() each refuse
+    // the pairing), but the lookup answers -1 for those anyway rather than counting a page that is
+    // in no piece at all.
+    auto pieceOf = [this, pagesPerPiece](int page) {
+        const int at = live.indexOf({0, page});
+        return at < 0 ? -1 : at / pagesPerPiece;
+    };
+    int atRisk = 0;
+    for (const ReplyLink &link : sourceReplyLinks) {
+        const int reply = pieceOf(link.replyPage);
+        const int target = pieceOf(link.targetPage);
+        if (reply < 0 || target < 0)
+            continue;
+        if (reply != target)
+            ++atRisk;
+    }
+    return atRisk;
+}
+
+int DocumentEditor::repliesAtRiskForImport(const QVector<ReplyLink> &links,
+                                           const QVector<int> &pages)
+{
+    // Every reply on a page that comes over. The target's page is not consulted: qpdf copies the
+    // annotation and leaves /IRT naming an object of the file it came out of, which is what §78's
+    // merged-twice sample measured (two copies of a note, its popup and its reply, each coming out
+    // with threads=0 -- including the reply that was on the very same page as its target).
+    QSet<int> named;
+    for (int page : pages) {
+        if (page >= 0)
+            named.insert(page);
+    }
+    int atRisk = 0;
+    for (const ReplyLink &link : links) {
+        if (named.contains(link.replyPage))
+            ++atRisk;
+    }
+    return atRisk;
+}
+
+bool DocumentEditor::changesPageCollection() const
+{
+    // Which of the eight kinds say what a save writes: 删除页面, 移动页面, 合并文件进来 and
+    // 拆分文件. A split changes no page's contents and moves none -- it changes how many files the
+    // pages are written into -- and that is enough: each piece holds part of the collection, so a
+    // packet that described the whole of it describes neither piece.
+    //
+    // 移动页面 is here with the other three even though nothing is added or taken away, because
+    // the packet names its template fields by page (P1, P2 … in order) and a reordered document
+    // makes those names point somewhere else.
+    //
+    // The four that are not -- 旋转, 加密 / 去掉口令, 水印, 书签 -- leave the collection alone, and
+    // their saves write the XFA exactly as the source had it.
+    for (const Operation &op : pending) {
+        switch (op.kind) {
+        case Operation::Kind::DeletePages:
+        case Operation::Kind::MovePages:
+        case Operation::Kind::MergeFile:
+        case Operation::Kind::SplitBySize:
+            return true;
+        case Operation::Kind::RotatePages:
+        case Operation::Kind::Protect:
+        case Operation::Kind::Watermark:
+        case Operation::Kind::SetOutline:
+            break;
+        }
+    }
+    return false;
+}
+
 DocumentEditor::Landing DocumentEditor::landingSpot(const QVector<PageRef> &without, MoveTarget to,
                                                    int anchor)
 {
@@ -1277,6 +1377,70 @@ LinkTidy tidyAnnotationLinksForThisDocument(QPDF &qpdf)
     return done;
 }
 
+// The same map the pass above builds, read as page numbers instead of object identities -- which
+// is all of it that survives the trip, since this class keeps no QPDF open after open() and a
+// QPDFObjGen means nothing in a document read again later (qpdf renumbers on every write, §78).
+//
+// Deliberately the *same criterion* as tidyAnnotationLinksForThisDocument() uses, down to asking
+// which pages show an annotation rather than reading each annotation's /P: this is what a dialog
+// promises before the press, and that pass is what the save does. If the two disagreed about
+// which threads count as resolvable, the sentence would be about a cost the write path never
+// charges. A reply naming something no page shows is left out for the reason §78 gives -- that
+// thread is already dead, and nothing this request does can kill it again.
+QVector<DocumentEditor::ReplyLink> replyLinksOf(QPDF &qpdf)
+{
+    QVector<DocumentEditor::ReplyLink> links;
+    const std::vector<QPDFPageObjectHelper> pages = QPDFPageDocumentHelper(qpdf).getAllPages();
+    std::map<QPDFObjGen, size_t> shownOn;
+    for (size_t index = 0; index < pages.size(); ++index) {
+        QPDFObjectHandle annots = pages.at(index).getObjectHandle().getKey("/Annots");
+        if (!annots.isArray())
+            continue;
+        for (QPDFObjectHandle item : annots.aitems())
+            shownOn.insert(std::make_pair(item.getObjGen(), index));
+    }
+    for (size_t index = 0; index < pages.size(); ++index) {
+        QPDFObjectHandle annots = pages.at(index).getObjectHandle().getKey("/Annots");
+        if (!annots.isArray())
+            continue;
+        for (QPDFObjectHandle owner : annots.aitems()) {
+            if (!owner.hasKey("/IRT"))
+                continue;
+            const auto target = shownOn.find(owner.getKey("/IRT").getObjGen());
+            if (target == shownOn.end())
+                continue;
+            DocumentEditor::ReplyLink link;
+            link.replyPage = int(index);
+            link.targetPage = int(target->second);
+            links.append(link);
+        }
+    }
+    return links;
+}
+
+// Take the XFA packet out of the document about to be written.
+//
+// Why this is the write path's job rather than something done to the file when it is opened: the
+// packet describes the whole form of a document -- which pages exist, which template fields sit on
+// them, and every answer typed into it -- and nothing in qpdf reads it. §55 measured all four
+// directions: a 删除页面 carried the packet through byte for byte and left it describing a page the
+// output no longer had, a 拆分 gave both halves the entire form of the original, and a field merged
+// in grew /AcroForm /Fields while the XML stayed exactly the size it was. A reader with an
+// XFA-capable viewer then gets a form that is not this document's; a reader without one gets the
+// AcroForm fields the packet was standing in front of. With the packet gone both of them see the
+// same thing, which is the fallback PDF 2.0 settled on when it removed XFA altogether.
+//
+// Only the packet goes. /NeedsRendering stays where the source wrote it, because it is a statement
+// about generating field appearances rather than about XFA, and this program cannot know whether
+// the fields that survive still need it.
+void dropXfaForThisDocument(QPDF &qpdf)
+{
+    QPDFObjectHandle form = qpdf.getRoot().getKey("/AcroForm");
+    if (!form.isDictionary() || !form.hasKey("/XFA"))
+        return; // no form, or a form that never had a packet: nothing to say and nothing to write
+    form.removeKey("/XFA");
+}
+
 } // namespace
 
 bool DocumentEditor::writeOutline(QPDF &qpdf, const QVector<OutlineRow> &rows, QString *error)
@@ -1522,6 +1686,9 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     sourceEncrypted = false;
     sourceProtect = Protection();
     sourceHasFormFields = false;
+    sourceHasXfa = false;
+    sourceDynamicXfa = false;
+    sourceReplyLinks.clear();
     sourcePositionalBookmarkCount = 0;
 
     // Parsed, counted, and let go. Holding on to the QPDF is what the alternative
@@ -1586,7 +1753,30 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
         const QPDFObjectHandle fields = form.isDictionary() ? form.getKey("/Fields")
                                                             : QPDFObjectHandle::newNull();
         sourceHasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
+
+        // The same two keys, one dictionary further along: XFA is the form's second copy, kept as
+        // a stream or as an array of (subtype, stream) pairs, and the flag beside it says whether
+        // a reader has to build the pages themselves. Nothing here reads the packet -- qpdf has no
+        // XFA facility, which is what §55 measured four directions of -- so what these two answers
+        // are for is saying what this program is not showing, and dropping a packet that would
+        // otherwise describe pages a save is taking out.
+        //
+        // /NeedsRendering is read even when there is no packet: a document that asks for the flag
+        // and carries no XFA is not a dynamic one, and calling it one would put the stronger of
+        // the two sentences on a file that only has an ordinary form.
+        const QPDFObjectHandle xfa = form.isDictionary() ? form.getKey("/XFA")
+                                                        : QPDFObjectHandle::newNull();
+        sourceHasXfa = xfa.isStream() || (xfa.isArray() && xfa.getArrayNItems() > 0);
+        const QPDFObjectHandle needsRendering = form.isDictionary()
+            ? form.getKey("/NeedsRendering")
+            : QPDFObjectHandle::newNull();
+        sourceDynamicXfa = sourceHasXfa
+            && ((needsRendering.isBool() && needsRendering.getBoolValue()) || !sourceHasFormFields);
     }
+    // And the threads between annotations, while the parser still has them: 删除页面 and 拆分文件
+    // ask what a request would cost them on every keystroke (§47), and this class keeps no QPDF
+    // open afterwards to answer that. Page numbers, not objects -- see replyLinksOf().
+    sourceReplyLinks = replyLinksOf(*document);
     // And the tree itself, while the parser still has the file: the destinations it carries are the
     // only place a position can come from (§75), and this class keeps no QPDF open afterwards, so a
     // save that wants them has to have been given them here. The count the 编辑书签 box says out loud
@@ -1597,12 +1787,14 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
 }
 
 bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString *error,
-                                   bool *hasFormFields)
+                                   bool *hasFormFields, QVector<ReplyLink> *replyLinks)
 {
     if (pageCount)
         *pageCount = 0;
     if (hasFormFields)
         *hasFormFields = false;
+    if (replyLinks)
+        replyLinks->clear();
     QString reason;
     int pages = 0;
     try {
@@ -1618,6 +1810,11 @@ bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString 
                                                                 : QPDFObjectHandle::newNull();
             *hasFormFields = fields.isArray() && fields.getArrayNItems() > 0;
         }
+        // Read on this pass rather than by a second call, because the merge box wants it while the
+        // reader is typing a range into that row -- and a file looked over twice is a file that can
+        // answer differently between the two looks.
+        if (replyLinks)
+            *replyLinks = replyLinksOf(document);
     } catch (const QPDFExc &e) {
         // QPDF answers a wrong or missing user password the same way it answers a
         // broken file -- by throwing -- so which of the two this is has to be read off
@@ -2733,6 +2930,20 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
             // file, for the reason above: this is the first point at which the page list is the one
             // this file will have.
             tidyAnnotationLinksForThisDocument(*document);
+
+            // §55's half of the same argument, one level up: an /AcroForm /XFA packet is the form's
+            // second copy, and it describes the *whole* document -- which pages there are, which
+            // template fields sit on them, and every answer typed into it. Nothing in qpdf reads
+            // it, so until now a save replayed the pages and let the packet say whatever it had
+            // said about a document that no longer exists. Here the page list is final, so this is
+            // where "the packet no longer describes this file" can be answered -- and the answer is
+            // to write no packet, which sends every reader to the AcroForm fields that are still
+            // tidied above for this file's own pages.
+            //
+            // Said per output file rather than once for the save, because that is what the other two
+            // tidies do and what a split makes true: each piece holds part of the collection.
+            if (changesPageCollection())
+                dropXfaForThisDocument(*document);
 
             // The bookmarks, after the cut and before any writer exists, because this is the one
             // place that knows both which pages made it into *this* file and in what order. Under

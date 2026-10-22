@@ -1576,7 +1576,25 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         // warning. Said here rather than in a box because it is not a question
         // and there is nothing to decide; said for longer than "已打开" because
         // it is the only chance they get.
-        if (tab->hasFormFields()) {
+        //
+        // XFA is the same kind of news and larger: the form's second copy is XML that this
+        // program neither reads nor writes, and qpdf has no facility for it at all (§55). The
+        // dynamic case says more than "the contents are not shown" -- a dynamic document has no
+        // static page contents anywhere, so what another reader opens is one "please wait" page
+        // (§55's reading of exactly that shape) -- and so it is the sentence a reader of one gets.
+        if (tab->hasDynamicXfa()) {
+            statusBar()->showMessage(
+                tr("已打开 %1 —— 这是一份动态 XFA 文档：正文要由支持 XFA 的阅读器现画，本版既不显示"
+                   "也不编辑它的内容；不含 XFA 的阅读器打开它，一般只看到一页「请稍候」之类的话。")
+                    .arg(info.fileName()),
+                12000);
+        } else if (tab->hasXfa()) {
+            statusBar()->showMessage(
+                tr("已打开 %1 —— 这份文档的表单还有一份 XFA 写法，本版既不显示也不编辑它的内容"
+                   "（屏幕上看的是字段那份）。")
+                    .arg(info.fileName()),
+                12000);
+        } else if (tab->hasFormFields()) {
             statusBar()->showMessage(
                 tr("已打开 %1 —— 这份文档含表单字段，本版不显示字段里填的内容（屏幕、导出和打印都一样）。")
                     .arg(info.fileName()),

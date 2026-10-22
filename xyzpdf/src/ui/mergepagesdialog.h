@@ -34,6 +34,7 @@
 #include "../edit/documenteditor.h"
 
 #include <QDialog>
+#include <QHash>
 #include <QString>
 #include <QVector>
 
@@ -55,6 +56,10 @@ public:
         int pageCount = 0;
         // Zero-based numbers within this file, as its own page count bounds them.
         QVector<int> pages;
+        // The threads between annotations this file can resolve, read when the row was made.
+        // Carried here because the summary counts the ones this row would cut, and the counting
+        // happens against the rows as they stand rather than against the last one accepted (§47).
+        QVector<DocumentEditor::ReplyLink> replyLinks;
     };
 
     MergePagesDialog(QWidget *parent, const DocumentEditor *document);
@@ -102,6 +107,12 @@ private:
     // is pending -- see the header.
     int pageTotal = 0;
     const DocumentEditor *editor = nullptr;
+
+    // What each file on the list was when its row was made, as the replies it carries. Keyed by
+    // path, because a row can be moved up or down and two rows can be the same file -- the facts
+    // belong to the file, and a merge of one page of it and a merge of nine cut the same threads.
+    // Read once per added file, in the same pass that bounds the range box (inspectImport).
+    QHash<QString, QVector<DocumentEditor::ReplyLink>> replyLinksByPath;
 
     QTableWidget *table = nullptr;
     QPushButton *addButton = nullptr;

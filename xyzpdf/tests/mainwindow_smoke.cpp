@@ -57,6 +57,14 @@
 #include <functional>
 #include <iostream>
 
+// To build the three form shapes the status line branches on. The window itself reaches qpdf only
+// through DocumentEditor, which is compiled into this test for that reason, so the include is not
+// a new dependency of the target -- it is the same one documenteditor.cpp carries.
+#include <qpdf/QPDF.hh>
+#include <qpdf/QPDFObjectHandle.hh>
+#include <qpdf/QPDFPageDocumentHelper.hh>
+#include <qpdf/QPDFWriter.hh>
+
 namespace {
 
 int failures = 0;
@@ -299,6 +307,165 @@ int main(int argc, char **argv)
         check(!outcome.accepted, "and refused again if it is dropped anyway");
         QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
         check(openTabs(window) == before, "so nothing was opened and nothing was moved");
+    }
+
+    // ---- what the status bar says about a form the reader cannot see ----
+    //
+    // The three sentences 打开 puts on the bar for a document whose form this version does not
+    // draw: the ordinary AcroForm one (§94's, already shipped), the XFA one, and the dynamic XFA
+    // one. Only one of the three can be said for a given file, so what is being pinned here is as
+    // much the order as the words -- and the plain file beside them is the control: a bar that
+    // says "已打开" for a document with nothing in it is what makes the other three mean anything.
+    //
+    // The tab is closed after every reading, so the count the blocks below expect is undisturbed.
+    {
+        QTemporaryDir samples;
+        check(samples.isValid(), "setup: a scratch folder for the form-bearing copies");
+        const QString book = directory + QStringLiteral("/many-pages.pdf");
+        const QString plain = samples.filePath(QStringLiteral("plain-form.pdf"));
+        const QString packeted = samples.filePath(QStringLiteral("with-xfa.pdf"));
+        const QString dynamic = samples.filePath(QStringLiteral("dynamic-xfa.pdf"));
+
+        // One generator, three shapes: no form at all, an AcroForm with a field, and the same with
+        // a packet bolted on (/NeedsRendering and no /Fields turns it dynamic).
+        const auto build = [&book](const QString &file, bool withFields, bool withPacket,
+                                   bool needsRendering, QString *why) -> bool {
+            const auto rect = [](QPDF &qpdf, double left, double top, double right,
+                                 double bottom) {
+                QPDFObjectHandle value = QPDFObjectHandle::newArray();
+                value.appendItem(QPDFObjectHandle::newReal(left));
+                value.appendItem(QPDFObjectHandle::newReal(top));
+                value.appendItem(QPDFObjectHandle::newReal(right));
+                value.appendItem(QPDFObjectHandle::newReal(bottom));
+                return value;
+            };
+            try {
+                QPDF qpdf;
+                qpdf.processFile(book.toUtf8().constData());
+                QPDFObjectHandle page =
+                    QPDFPageDocumentHelper(qpdf).getAllPages().front().getObjectHandle();
+                if (withFields) {
+                    QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+                    field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+                    field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+                    field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+                    field.replaceKey("/T", QPDFObjectHandle::newString("onOne"));
+                    field.replaceKey("/V", QPDFObjectHandle::newString("typed on page 1"));
+                    field.replaceKey("/Rect", rect(qpdf, 60, 600, 260, 630));
+                    field = qpdf.makeIndirectObject(field);
+                    field.replaceKey("/P", page);
+                    QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+                    annots.appendItem(field);
+                    page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+                }
+                if (withFields || withPacket) {
+                    QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+                    if (withFields) {
+                        QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+                        fields.appendItem(page.getKey("/Annots").getArrayItem(0));
+                        form.replaceKey("/Fields", fields);
+                    }
+                    if (needsRendering)
+                        form.replaceKey("/NeedsRendering", QPDFObjectHandle::newBool(true));
+                    if (withPacket) {
+                        const QString xml = QStringLiteral(
+                            "<?xml version=\"1.0\"?><xdp:xdp><template/></xdp:xdp>");
+                        QPDFObjectHandle stream
+                            = QPDFObjectHandle::newStream(&qpdf, xml.toUtf8().constData());
+                        stream.getDict().replaceKey("/Subtype",
+                                                    QPDFObjectHandle::newName("/XML"));
+                        QPDFObjectHandle xfa = QPDFObjectHandle::newArray();
+                        xfa.appendItem(QPDFObjectHandle::newString(""));
+                        xfa.appendItem(stream);
+                        form.replaceKey("/XFA", xfa);
+                    }
+                    qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+                }
+                QPDFWriter writer(qpdf, file.toUtf8().constData());
+                writer.write();
+            } catch (const std::exception &e) {
+                *why = QString::fromUtf8(e.what());
+                return false;
+            }
+            return true;
+        };
+        QString made;
+        check(build(plain, false, false, false, &made),
+              QStringLiteral("setup: a copy of the book with no form in it: %1").arg(made));
+        check(build(packeted, true, true, false, &made),
+              QStringLiteral("setup: a copy carrying an XFA packet: %1").arg(made));
+        check(build(dynamic, false, true, true, &made),
+              QStringLiteral("setup: and a dynamic one: %1").arg(made));
+
+        auto *closer = window.findChild<QAction *>(QStringLiteral("closeTabAction"));
+        check(closer != nullptr, "setup: the tab can be closed again");
+        const int tabsBefore = openTabs(window);
+        // Closing a tab is a deleteLater(), and processEvents() does not flush deferred deletes
+        // -- so a count taken right after 关闭标签 still says the tab is there. This is the same
+        // three steps the window itself needs to let go of one: run the loop, send the deferred
+        // deletes, run it again for whatever those set off.
+        const auto closeOneTab = [&window, &closer] {
+            if (!closer)
+                return;
+            closer->trigger();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        };
+        // Each reading opens its own tab and leaves it up: the status message is set by
+        // openDocument() as that document arrives, so the newest tab is the newest sentence and no
+        // closing is needed between them. The tabs are let go of at the end of the block.
+        int count = tabsBefore;
+        const auto saidFor = [&window, &count](const QString &file) {
+            dropFiles(window, {QUrl::fromLocalFile(file).toString()}, Qt::CopyAction);
+            if (!waitFor([&window, &count] { return openTabs(window) == count + 1; }, 20000))
+                return QStringLiteral("<no tab opened>");
+            ++count;
+            // Read in the same breath the tab lands: 12 s is the shorter of the two notices asked
+            // for here, and waiting past it would answer "no message" about a file the bar did
+            // describe.
+            return window.statusBar()->currentMessage();
+        };
+        const QString packetSaid = saidFor(packeted);
+        std::cout << "MEASURE status xfa: [" << packetSaid.toStdString() << "]\n";
+        check(packetSaid.contains(QStringLiteral("XFA")),
+              QStringLiteral("a packet document is named on the bar as one: %1").arg(packetSaid));
+        check(!packetSaid.contains(QStringLiteral("动态 XFA")),
+              QStringLiteral("and not as a dynamic one, which is the stronger of the two: %1")
+                  .arg(packetSaid));
+
+        const QString dynamicSaid = saidFor(dynamic);
+        std::cout << "MEASURE status dynamic: [" << dynamicSaid.toStdString() << "]\n";
+        check(dynamicSaid.contains(QStringLiteral("动态 XFA")),
+              QStringLiteral("the dynamic copy gets its own sentence: %1").arg(dynamicSaid));
+        check(dynamicSaid.contains(QStringLiteral("请稍候")),
+              QStringLiteral("which says what another reader would show: %1").arg(dynamicSaid));
+
+        const QString plainSaid = saidFor(plain);
+        std::cout << "MEASURE status plain: [" << plainSaid.toStdString() << "]\n";
+        check(!plainSaid.contains(QStringLiteral("XFA")) && !plainSaid.contains(QStringLiteral("表单")),
+              QStringLiteral("a document with neither gets no notice at all: %1").arg(plainSaid));
+
+        // The §94 sentence, and the order the three are tried in: a file with fields and a packet
+        // says the packet, because that is the copy a reader without XFA falls back to once the
+        // page collection moves -- and the form sentence is what a document with only fields gets.
+        const QString withFields = samples.filePath(QStringLiteral("only-fields.pdf"));
+        check(build(withFields, true, false, false, &made),
+              QStringLiteral("setup: a copy with fields and no packet: %1").arg(made));
+        const QString fieldsSaid = saidFor(withFields);
+        std::cout << "MEASURE status fields: [" << fieldsSaid.toStdString() << "]\n";
+        check(fieldsSaid.contains(QStringLiteral("表单字段"))
+                  && !fieldsSaid.contains(QStringLiteral("XFA")),
+              QStringLiteral("fields alone are said as fields, which is the sentence §94 shipped: %1")
+                  .arg(fieldsSaid));
+
+        while (count > tabsBefore) {
+            closeOneTab();
+            --count;
+        }
+        check(waitFor([&window, tabsBefore] { return openTabs(window) == tabsBefore; }, 8000),
+              QStringLiteral("and the window is left with the tabs it had (%1 now)")
+                  .arg(openTabs(window)));
     }
 
     // ---- a second document joins the first ----

@@ -219,6 +219,20 @@ public:
         bool hasFormFields = false;
     };
 
+    // One reply annotation and the annotation it answers, both named by the page each of them
+    // is shown on. Read out of a document by open() (and by inspectImport() for a file a merge
+    // is about to draw pages from) and kept as page numbers only, because this class holds no
+    // QPDF after the reading -- and because the question these answer ("does this request take
+    // the page that holds the thing being replied to?") is a question about pages.
+    //
+    // A reply whose /IRT names an annotation no page of that file shows is not in this list:
+    // that thread is already dead, and the save's repair (§78) has already nothing left to keep.
+    struct ReplyLink
+    {
+        int replyPage = -1;
+        int targetPage = -1;
+    };
+
     // What a save should do about protection. Plain data on purpose: the dialog fills one
     // of these from its boxes, the pending list holds it, and the save is the only place a
     // number in it reaches a QPDFWriter. The six flags are the ones PDF writes into /P --
@@ -656,6 +670,49 @@ public:
     // worth saying before the press -- and only when there is a form to say it about.
     bool hasFormFields() const;
 
+    // Whether this document carries a second copy of its form as XFA -- an /AcroForm /XFA that
+    // is a stream or a non-empty array. Read once, in open(), beside the form-field probe the
+    // same catalogue lookup already makes.
+    //
+    // Asked because qpdf has no XFA facility at all, and this program neither draws nor edits
+    // form contents: docs/store-submission.md §55 measured the packet travelling byte-for-byte
+    // through a 删除页面 and through a 拆分, so what came out was a file whose XML still
+    // described pages the file no longer has. PDF 2.0 removed XFA for that reason. A save whose
+    // pages changed therefore writes no /XFA (see changesPageCollection()); one whose pages did
+    // not move keeps the document exactly as it was.
+    bool hasXfa() const { return sourceHasXfa; }
+
+    // Whether that XFA is the dynamic kind: /NeedsRendering set, or an XFA packet with no
+    // AcroForm fields standing under it. A dynamic document has no static picture of itself at
+    // all -- what a non-XFA reader shows is one "please wait" page, measured in docs §55 -- so
+    // this is the case where the page collection is not even the whole story, and the sentence
+    // a reader gets on the way in has to be the stronger of the two.
+    bool hasDynamicXfa() const { return sourceDynamicXfa; }
+
+    // ---- what a request would cost the threads between annotations (§47) ----
+    //
+    // Three questions, all of them asked *before the press*, and all of them answered off the
+    // links read at open plus the request that is currently in the boxes -- never off the last
+    // operation this list accepted. That is §80's rule restated (see positionalAtRiskFor()): a
+    // number that describes somebody else's request is a sentence the reader can check and find
+    // wrong, and the 删除页面 box retakes its plan on every keystroke.
+    //
+    // What they count is a reply whose target page this request takes out of the file while the
+    // reply's own page stays: the save drops the dead /IRT (§78) and the reply becomes a note of
+    // its own -- the words always stay, only the thread goes.
+
+    // `pages` are original page numbers, the same numbering deletePages() and 删除页面 use.
+    int repliesAtRiskForDelete(const QVector<int> &pages) const;
+    // The same question for 拆分文件: the links a save would cut in half by sending the reply and
+    // the annotation it answers to two different files. `pagesPerPiece` is the number in the box.
+    int repliesAtRiskForSplit(int pagesPerPiece) const;
+    // And for 合并文件进来: a page copied out of another file brings its annotations but not the
+    // objects they point at, so *every* reply on the pages being merged comes out standalone --
+    // which page the target was on makes no difference (§78's merged sample: two copies, no
+    // thread either way). `links` is what inspectImport() read out of the donor; `pages` are page
+    // numbers inside it, the numbering that row of the list shows.
+    static int repliesAtRiskForImport(const QVector<ReplyLink> &links, const QVector<int> &pages);
+
     // The pages a save would write, in the order it would write them. Read-only, and
     // here because one dialog needs more than the counts above: 合并文件进来 can be
     // asked for several files at once, and the summary it shows has to say where the
@@ -680,8 +737,15 @@ public:
     // guesses -- and because a document that needs a password to open is refused here,
     // in front of the reader who still has time to go and type that password
     // somewhere else, rather than after they have chosen a destination for the merge.
+    //
+    // The two extra answers are read on the same pass, for the same reason open() reads
+    // its own: the merge box asks them while the reader is typing a range, and nothing
+    // here holds the file open to ask a second time. `hasFormFields` is §77's, and
+    // `replyLinks` feeds repliesAtRiskForImport() -- the count 合并文件进来 says before the
+    // press (§47).
     static bool inspectImport(const QString &path, int *pageCount, QString *error,
-                              bool *hasFormFields = nullptr);
+                              bool *hasFormFields = nullptr,
+                              QVector<ReplyLink> *replyLinks = nullptr);
 
     // ---- the operations ----
     //
@@ -1011,6 +1075,12 @@ private:
     // operation -- owns the lifetime; see the note in saveAs().
     void apply(const Operation &op, QPDF &document, QVector<PageRef> &present,
                QPDF *mergeSource);
+    // Whether the pending list, as it stands, changes which pages a save writes or how they are
+    // ordered -- the four kinds 删除 / 移动 / 合并 / 拆分 against the four that leave the collection
+    // alone. Asked once per output file, and the only thing that decides whether an /AcroForm /XFA
+    // packet is written: the packet describes the whole document's form, so a file whose page
+    // collection is not the one it was written for must not carry it (§55, and dropXfaForThisDocument()).
+    bool changesPageCollection() const;
     // Which of `pages` are in `present`, as positions within `present`.
     static QVector<int> positionsOf(const QVector<PageRef> &present, const QVector<int> &pages);
     // A few words for one operation: "删除 3 页". A member rather than a helper in
@@ -1031,6 +1101,15 @@ private:
     // the same reason as the two lines above and below it: this class keeps no QPDF open, and the
     // 删除页面 / 拆分文件 boxes ask on every keystroke whether to mention form answers (§77).
     bool sourceHasFormFields = false;
+    // The same one reading for XFA: whether /AcroForm carries a /XFA packet at all, and whether
+    // that packet is the dynamic kind. hasXfa() / hasDynamicXfa() answer off these, and saveAs()
+    // decides what to do with the packet from hasXfa() alone.
+    bool sourceHasXfa = false;
+    bool sourceDynamicXfa = false;
+    // The threads between annotations that the file on disk can resolve, as page pairs. Read in
+    // open() for the same reason the four lines above are read there, and asked again by
+    // repliesAtRiskForDelete() / repliesAtRiskForSplit() on every keystroke (§47).
+    QVector<ReplyLink> sourceReplyLinks;
     // How many /Dest entries in the file on disk name a place inside a page. §75: our writer emits
     // /Fit for every bookmark it is given, so each one of these is information a save takes away.
     // Since §99 that sentence is only true of rows the reader moved -- the count is still what the

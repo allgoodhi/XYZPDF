@@ -209,10 +209,14 @@ QStringList MergePagesDialog::addPaths(const QStringList &paths)
     for (const QString &path : paths) {
         int pageCount = 0;
         QString error;
-        if (!DocumentEditor::inspectImport(path, &pageCount, &error)) {
+        QVector<DocumentEditor::ReplyLink> links;
+        if (!DocumentEditor::inspectImport(path, &pageCount, &error, nullptr, &links)) {
             refused.append(error);
             continue;
         }
+        // Kept for the row's own count of what merging it would cost (§47). Same pass, same file:
+        // a second look would be a second chance for the file to answer differently.
+        replyLinksByPath.insert(path, links);
         const int row = table->rowCount();
         table->insertRow(row);
         fillingTable = true;
@@ -323,6 +327,7 @@ QVector<MergePagesDialog::Entry> MergePagesDialog::rows() const
         entry.path = file->data(pathRole()).toString();
         entry.pageCount = file->data(pageCountRole()).toInt();
         entry.pages = pagesOfRow(row);
+        entry.replyLinks = replyLinksByPath.value(entry.path);
         out.append(entry);
     }
     return out;
@@ -458,6 +463,26 @@ void MergePagesDialog::updateSummary()
         // not after.
         line += tr("\n\n合并进来的页没有屏幕上的页码：要改它们或把它们取回去，只能撤销"
                    "那次合并。");
+        // §47, counted against the rows as they stand right now rather than against a merge this
+        // dialog already made. A page copy carries the annotations printed on it and not the
+        // objects they point at, so every reply among the pages coming in lands as a note of its
+        // own -- including one that answered a note on the very page beside it (§78 measured two
+        // copies of exactly that shape, both with no thread left).
+        int severed = 0;
+        for (const Entry &entry : rows())
+            severed += DocumentEditor::repliesAtRiskForImport(entry.replyLinks, entry.pages);
+        if (severed > 0) {
+            line += tr("\n\n这些页上有 %n 条是对另一条批注的回答：合并只把页上的批注带进来，带不进"
+                       "它们之间的联系，保存出来每一条都成了各自独立的批注（写的字都还在）。",
+                       nullptr, severed);
+        }
+        // The form's second copy, and the reason a merge is one of the operations that has to drop
+        // it: the packet describes the pages of the document it was written for, and this save
+        // writes a document with more of them than that (§55).
+        if (editor && editor->hasXfa()) {
+            line += tr("\n\n这份文档还带着一份 XFA 表单：合进过页面的文件里不会再有它，别的阅读器会"
+                       "改用表单字段那一份。");
+        }
     }
     // Same sentence the other three edit dialogs end with, for the same reason.
     summaryLabel->setText(tr("%1\n\n原来那份文件不会改动。这一步只是记下修改，"

@@ -1470,8 +1470,13 @@ if ($script:saveModes -contains $Mode) {
   if ($Installed) {
     # A packaged instance opens its own document through the picker, so the only way it can reach a
     # file is the row or path the caller names. Under a save mode that has to be the copy made above.
+    # The copy's name is drawn fresh on every run, so no caller can name it in advance: when
+    # -OpenViaPicker is not given, the picker is handed the copy itself (sec.118 -- the first version
+    # refused instead, which made every packaged save run Bail before it started).
     if (-not $OpenViaPicker) {
-      Bail ('  a packaged save run must hand the picker the copy this guard made: -OpenViaPicker ' + $script:guardCopy)
+      $script:OpenViaPicker = $script:guardCopy
+      $OpenViaPicker = $script:guardCopy
+      Say ('  packaged save run: the picker gets the copy [' + $script:guardCopy + ']')
     }
     if ([System.IO.Path]::GetFileName($OpenViaPicker) -ne $script:guardCopyLeaf) {
       Bail ('  -OpenViaPicker names [' + [System.IO.Path]::GetFileName($OpenViaPicker) +
@@ -2032,6 +2037,12 @@ switch ($Mode) {
     $app3 = Restart-ProbeApp $Language
     if (-not $app3) { Bail '  the relaunch produced no window for the Save round' }
     Say ('  relaunched [' + (Window $app3.Id).Current.Name + '] for the Save answer')
+    # A packaged instance cannot be started on a file, so the relaunch opens the copy through its own
+    # picker again -- the same route the first launch took (sec.118: without this the Save round ran
+    # against an empty window and found Rotate Pages grey).
+    if ($Installed -and $OpenViaPicker) {
+      if (-not (Open-PackagedDocument $app3 $OpenViaPicker)) { Bail '  no document reached the relaunched packaged instance' }
+    }
     Rotate-CurrentPage $app3.Id
     if (-not (Wait-Star $app3.Id $true)) { Bail '  the caption never grew the star in the Save round' }
     $hashBeforeSave = Copy-Hash

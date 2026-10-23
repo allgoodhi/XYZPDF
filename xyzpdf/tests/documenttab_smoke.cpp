@@ -1934,6 +1934,74 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- a second recognition after the pool has been idle ----
+    //
+    // handoff-03 F10. The recognizer runs on a pool of its own, and those are
+    // the process's only MTA threads (the GUI thread is an STA). QThreadPool's
+    // default expiry is thirty seconds of idleness: when the last idle worker
+    // exits, the apartment goes with it and Windows unloads
+    // Windows.Media.Ocr.dll. C++/WinRT's activation-factory cache still hands
+    // back the factory it kept, and its vtable is then in unmapped memory --
+    // measured from a dump: the second recognition after an idle gap died with
+    // 0xC0000005 at `call [rax+0x50]`, with the module absent from the process.
+    // The pool now keeps its threads for the life of the process, so this pair
+    // of boxes -- the second drawn after the default expiry has passed -- is
+    // the whole user-facing shape of the bug.
+    {
+        check(tab.open(directory + QStringLiteral("/text.pdf")) == Document::Status::Ready,
+              "the text fixture is open for a recognition left idle");
+        view->goToPage(0);
+        check(waitFor([view] { return view->isRendered(0); }), "and drawn for it");
+
+        view->setTool(PageView::Tool::Recognize);
+        view->clearSelection();
+
+        auto readBox = [&](const QString &when) {
+            const int before = tab.findChildren<OcrDialog *>().size();
+            const QRectF page = view->pageRectInViewport(0);
+            // The same box as the test above: around the fixture's line of text.
+            const QPointF from(page.left() + page.width() * 0.05,
+                               page.top() + page.height() * 0.05);
+            const QPointF to(page.left() + page.width() * 0.45,
+                             page.top() + page.height() * 0.13);
+            sendMouse(view->viewport(), QEvent::MouseButtonPress, from, true);
+            sendMouse(view->viewport(), QEvent::MouseMove, to, true);
+            sendMouse(view->viewport(), QEvent::MouseButtonRelease, to);
+
+            OcrDialog *dialog = nullptr;
+            check(waitFor([&tab, before, &dialog] {
+                      const QList<OcrDialog *> dialogs = tab.findChildren<OcrDialog *>();
+                      if (dialogs.size() <= before)
+                          return false;
+                      dialog = dialogs.last();
+                      return true;
+                  }),
+                  when + QStringLiteral(": the box opens a recognition window"));
+            QPlainTextEdit *field = dialog ? dialog->findChild<QPlainTextEdit *>() : nullptr;
+            check(field != nullptr, when + QStringLiteral(": which has somewhere to show the text"));
+            if (!field)
+                return QString();
+            check(waitFor([field] { return field->isEnabled(); }, 30000),
+                  when + QStringLiteral(": and the recognition finishes"));
+            return field->toPlainText().simplified();
+        };
+
+        const QString first = readBox(QStringLiteral("the first recognition"));
+        check(first.contains(QStringLiteral("XYZPDF")),
+              QStringLiteral("the first box reads its text (got \"%1\")").arg(first));
+
+        // Past QThreadPool's thirty-second idle expiry, with the clock room for
+        // the expiry itself. A failing waitFor here would report the timeout;
+        // the control (fix removed) never gets the chance, because the second
+        // recognition takes the process down.
+        waitFor([] { return false; }, 32000);
+
+        const QString second = readBox(QStringLiteral("the recognition after the wait"));
+        check(second.contains(QStringLiteral("XYZPDF")),
+              QStringLiteral("a box drawn after the idle gap still reads its text (got \"%1\")")
+                  .arg(second));
+    }
+
     // ---- searching the document ----
     //
     // The whole way round: a needle typed into the bar, a scan that runs off the

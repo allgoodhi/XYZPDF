@@ -60,6 +60,22 @@ QThreadPool &winrtPool()
         // queue behind the first while a caller waits for it, which is the same
         // starvation one level down.
         pool.setMaxThreadCount(qMax(2, QThread::idealThreadCount() / 2));
+        // These threads must not expire, and the reason was measured the hard
+        // way (handoff-03 F10). QThreadPool's default expiry is thirty seconds
+        // of idleness; these are the process's only MTA threads (the GUI thread
+        // is an STA), so when the last idle one exits the apartment is torn
+        // down and Windows unloads the WinRT server DLLs -- Windows.Media.Ocr.dll
+        // among them. C++/WinRT's process-wide activation-factory cache still
+        // holds the factory it handed back, but that reference does not keep
+        // the implementation DLL loaded: the next recognition picked the cached
+        // factory and called through a vtable in unmapped memory -- 0xC0000005,
+        // `call [rax+0x50]` into a vtable whose page had been released. So a
+        // reader who recognizes one region and then, more than thirty seconds
+        // later, another, killed the process. -1 is forever, and the pool is a
+        // function-local static: its threads live exactly as long as the cache
+        // they are keeping alive, and its destructor still waits for any work
+        // in flight before they go.
+        pool.setExpiryTimeout(-1);
         return true;
     }();
     Q_UNUSED(sized)

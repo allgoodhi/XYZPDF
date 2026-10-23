@@ -1457,15 +1457,14 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
             });
     connect(tab, &DocumentTab::imageExportFinished, this, [this](const QString &directory,
                                                                  int pages) {
-        statusBar()->showMessage(tr("已导出 %n 张图片到 %1", nullptr, pages).arg(directory),
-                                 6000);
+        setStatusMessage(tr("已导出 %n 张图片到 %1", nullptr, pages).arg(directory), 6000);
     });
 
     // The clipboard changed and nothing on screen did, so this line is the
     // whole receipt. The size is in it because it is the one thing a reader
     // checks about a crop they are about to paste somewhere.
     connect(tab, &DocumentTab::regionCopied, this, [this](int width, int height) {
-        statusBar()->showMessage(tr("已复制 %1 × %2 的图片").arg(width).arg(height), 5000);
+        setStatusMessage(tr("已复制 %1 × %2 的图片").arg(width).arg(height), 5000);
     });
 
     connect(tab, &DocumentTab::documentSavedAs, this,
@@ -1487,7 +1486,7 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         // says less than this does. The two wordings are apart because a split's
         // page count is the whole document's, not the file that just opened: saying
         // "40 页" beside one 5-page piece would be a number with no referent.
-        statusBar()->showMessage(
+        setStatusMessage(
             fileCount > 1
                 ? tr("已写成 %1 个新文件（整份 %2 页）：%3").arg(fileCount).arg(pages).arg(changes)
                 : tr("已写成一个新文件（%n 页）：%1", nullptr, pages).arg(changes),
@@ -1588,24 +1587,24 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         // static page contents anywhere, so what another reader opens is one "please wait" page
         // (§55's reading of exactly that shape) -- and so it is the sentence a reader of one gets.
         if (tab->hasDynamicXfa()) {
-            statusBar()->showMessage(
+            setStatusMessage(
                 tr("已打开 %1 —— 这是一份动态 XFA 文档：正文要由支持 XFA 的阅读器现画，本版既不显示"
                    "也不编辑它的内容；不含 XFA 的阅读器打开它，一般只看到一页「请稍候」之类的话。")
                     .arg(info.fileName()),
                 12000);
         } else if (tab->hasXfa()) {
-            statusBar()->showMessage(
+            setStatusMessage(
                 tr("已打开 %1 —— 这份文档的表单还有一份 XFA 写法，本版既不显示也不编辑它的内容"
                    "（屏幕上看的是字段那份）。")
                     .arg(info.fileName()),
                 12000);
         } else if (tab->hasFormFields()) {
-            statusBar()->showMessage(
+            setStatusMessage(
                 tr("已打开 %1 —— 这份文档含表单字段，本版不显示字段里填的内容（屏幕、导出和打印都一样）。")
                     .arg(info.fileName()),
                 12000);
         } else {
-            statusBar()->showMessage(tr("已打开 %1").arg(info.fileName()), 4000);
+            setStatusMessage(tr("已打开 %1").arg(info.fileName()), 4000);
         }
         updateForCurrentTab();
         // A page number on the command line is a jump, so it happens here
@@ -2557,7 +2556,38 @@ void MainWindow::goToPageDialog()
 
 void MainWindow::setStatusMessage(const QString &message, int timeoutMilliseconds)
 {
+    if (timeoutMilliseconds > 0) {
+        notice = message;
+        noticeDeadline.setRemainingTime(timeoutMilliseconds);
+    } else {
+        notice.clear();
+    }
+    noticeLeft = -1;
     statusBar()->showMessage(message, timeoutMilliseconds);
+}
+
+bool MainWindow::event(QEvent *event)
+{
+    if (event->type() == QEvent::StatusTip && !notice.isEmpty()) {
+        const QString tip = static_cast<QStatusTipEvent *>(event)->tip();
+        if (!tip.isEmpty()) {
+            // Covered: remember what it had left, once -- a second tip arriving
+            // while the first is still up must not read the clock again.
+            if (noticeLeft < 0) {
+                noticeLeft = noticeDeadline.remainingTime();
+                if (noticeLeft <= 0)
+                    notice.clear(); // it had run out before anything covered it
+            }
+        } else if (noticeLeft > 0) {
+            // Uncovered: the notice comes back with the time it had left.
+            const qint64 left = noticeLeft;
+            noticeLeft = -1;
+            noticeDeadline.setRemainingTime(left);
+            statusBar()->showMessage(notice, int(left));
+            return true;
+        }
+    }
+    return QMainWindow::event(event);
 }
 
 bool MainWindow::applyStartupCommandLine(const CommandLine::Request &request)

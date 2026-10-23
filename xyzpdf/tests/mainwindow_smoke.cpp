@@ -44,6 +44,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QStatusBar>
+#include <QStatusTipEvent>
 #include <QTemporaryDir>
 #include <QPointF>
 #include <QString>
@@ -495,6 +496,26 @@ int main(int argc, char **argv)
               QStringLiteral("the dynamic copy gets its own sentence: %1").arg(dynamicSaid));
         check(dynamicSaid.contains(QStringLiteral("请稍候")),
               QStringLiteral("which says what another reader would show: %1").arg(dynamicSaid));
+
+        // ---- and the pointer crossing the toolbar does not take the sentence away ----
+        //
+        // Found on screen (handoff-03 F9), not by any test here: a status tip -- the pointer
+        // over a toolbar button -- replaced this sentence and stopped its timer, and the empty
+        // tip that follows when the pointer leaves cleared the bar. So a reader who moved the
+        // mouse over the toolbar never saw why their document looks the way it does. Sent to the
+        // window, which is where a tip propagates to and where QMainWindow puts it on the bar.
+        {
+            QStatusTipEvent covering(QStringLiteral("a toolbar button's tip"));
+            QApplication::sendEvent(&window, &covering);
+            check(window.statusBar()->currentMessage() == QStringLiteral("a toolbar button's tip"),
+                  QStringLiteral("setup: the tip shows while the pointer is over the button (%1)")
+                      .arg(window.statusBar()->currentMessage()));
+            QStatusTipEvent leaving{QString()};
+            QApplication::sendEvent(&window, &leaving);
+            check(window.statusBar()->currentMessage() == dynamicSaid,
+                  QStringLiteral("and when the pointer leaves, the document's sentence is back (%1)")
+                      .arg(window.statusBar()->currentMessage()));
+        }
 
         const QString plainSaid = saidFor(plain);
         std::cout << "MEASURE status plain: [" << plainSaid.toStdString() << "]\n";

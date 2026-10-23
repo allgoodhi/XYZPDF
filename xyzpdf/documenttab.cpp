@@ -9,7 +9,6 @@
 #include "src/theme/thememanager.h"
 #include "src/ui/bookmarkdialog.h"
 #include "src/ui/deletepagesdialog.h"
-#include "src/ui/bookmarkdialog.h"
 #include "src/ui/findbar.h"
 #include "src/ui/mergepagesdialog.h"
 #include "src/ui/movepagesdialog.h"

@@ -17,6 +17,7 @@ struct WordExportReport;
 #include <QList>
 #include <QMainWindow>
 #include <QPair>
+#include <QDeadlineTimer>
 #include <QPointer>
 #include <QTimer>
 
@@ -75,6 +76,8 @@ private:
     void retranslateUi();
     void updateForCurrentTab();
     void updateWindowTitle();
+    // Every timed line on the status bar goes through here, because a timed line
+    // is a notice and has to survive the pointer crossing a toolbar -- see event().
     void setStatusMessage(const QString &message, int timeoutMilliseconds = 0);
 
     // Both return the tab, or nullptr when the document could not be opened --
@@ -176,6 +179,17 @@ private:
     void revealToolBars(bool reveal);
 
 protected:
+    // A status tip (the pointer over a toolbar button or a menu item) replaces the
+    // status bar's message and stops its timer, and the empty tip that follows
+    // when the pointer leaves clears the bar -- so a notice set by
+    // setStatusMessage() was gone for good the moment the pointer crossed the
+    // toolbar. Found on screen (handoff-03 F9): the open-time sentence about a
+    // document's XFA form read as the recognize tool's tip, because the pointer
+    // happened to rest on the toolbar when the window appeared. Here the notice's
+    // clock is paused while a tip is up and the notice comes back, with the time
+    // it had left, when the tip goes.
+    bool event(QEvent *event) override;
+
     // One filter, one job: the tab strip does not get the wheel. See
     // buildCentralWidget() for why.
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -322,4 +336,11 @@ private:
     // deletes itself on close, and it has no single-instance gateway (that stays
     // with the first window) -- so it is just another top-level of the process.
     bool detachedWindow = false;
+
+    // The timed notice on the status bar, kept so that event() can put it back
+    // after a status tip has covered it. noticeLeft holds the time it still had
+    // when a tip came up; the clock is not running while it is covered.
+    QString notice;
+    QDeadlineTimer noticeDeadline;
+    qint64 noticeLeft = -1;
 };

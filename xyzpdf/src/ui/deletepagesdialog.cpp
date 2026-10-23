@@ -124,8 +124,7 @@ void DeletePagesDialog::updateSummary()
     // standing as a note of their own. That is a thing the reader is about to cause, so it is said
     // while the range box still has time to answer.
     if (const int lost = editor ? editor->repliesAtRiskForDelete(pages) : 0; lost > 0) {
-        line += tr("\n\n这 %n 条回答会失去它们所回答的那条批注，保存出来就成了各自独立的批注"
-                   "（写的字都还在）。",
+        line += tr("\n\n这 %n 条回答会失去所回答的批注，保存出来成为独立的批注（写的字都还在）。",
                    nullptr, lost);
     }
     // XFA is the form's second copy, kept as XML that describes this document's pages by number.

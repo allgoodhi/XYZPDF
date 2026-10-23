@@ -144,8 +144,8 @@ void SplitPagesDialog::updateSummary()
     // the two pages are written as two files. Counted from the number in the box, so changing it
     // changes the sentence before anything is pressed (§80's rule).
     if (const int severed = editor ? editor->repliesAtRiskForSplit(size) : 0; severed > 0) {
-        line += tr("\n\n这 %n 条回答跟它们所回答的那条批注会被拆到两个文件里去，所以在每一份里都只成"
-                   "一条独立的批注（写的字都还在）。",
+        line += tr("\n\n这 %n 条回答和所回答的批注会被拆到两个文件里去，在各自的文件里都成为"
+                   "独立的批注（写的字都还在）。",
                    nullptr, severed);
     }
     // The packet describes the whole document's form, and no piece is the whole document: each of

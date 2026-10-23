@@ -472,8 +472,8 @@ void MergePagesDialog::updateSummary()
         for (const Entry &entry : rows())
             severed += DocumentEditor::repliesAtRiskForImport(entry.replyLinks, entry.pages);
         if (severed > 0) {
-            line += tr("\n\n这些页上有 %n 条是对另一条批注的回答：合并只把页上的批注带进来，带不进"
-                       "它们之间的联系，保存出来每一条都成了各自独立的批注（写的字都还在）。",
+            line += tr("\n\n这些页上有 %n 条是对另一条批注的回答：合并只把页上的批注带进来，带不"
+                       "进回答与被回答之间的联系，保存出来成为独立的批注（写的字都还在）。",
                        nullptr, severed);
         }
         // The form's second copy, and the reason a merge is one of the operations that has to drop

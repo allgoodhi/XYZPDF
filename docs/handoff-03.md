@@ -144,9 +144,11 @@
 
 ## F10. 识别线程的那次 0xC0000005　分支：`ocr-worker-crash`（第三阶段）
 
-**背景**：F4 用测试进程内的崩溃转储拿到了 §103 那次崩溃的形状（`test-debts` 分支的提交说明全文，§112 摘要）：
+> F6 之后：识别的工作线程与结果回调都在 `src/services/ocrsession.cpp`，工作线程里调的是 `src/ocr/ocrengine.cpp`（`onMtaThread` + 函数内静态的 `winrtPool()`）。
+
+**背景**：F4 用测试进程内的崩溃转储拿到了 §103 那次崩溃的形状（提交 `7bcd19b` 与 `8c948b4` 的说明全文，`git show 7bcd19b` 可读；§112 有摘要）：
 - 门禁那颗 exe：**识别任务的工作线程**里一次虚调用 `call [rax+0x50]`，目标地址**不在任何已映射的镜像里**；
-- 带调试信息那颗：同一处变成 `QUnhandledException` 被带回 UI 线程，在 `startRecognition` 的 `finished` 里重抛，没人接。
+- 带调试信息那颗：同一处变成 `QUnhandledException` 被带回 UI 线程，在 `startRecognition`（F6 之后是 `src/services/ocrsession.cpp` 的 `OcrSession::recognize`）的 `finished` 里重抛，没人接。
 主会话合并时补了半截（`ocrengine.cpp` 的 `recognizeWorker` 加了 `catch (...)`，把第二种形状变成一句"识别时出错了。"），
 **第一种没解释**。"地址不在任何镜像里"最像的是**某颗 DLL 已经卸载了还在被调用** —— 例如进程或测试块结束时识别还在跑。
 

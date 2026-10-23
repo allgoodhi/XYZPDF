@@ -420,15 +420,14 @@ int main(int argc, char **argv)
             // the merge one counts the annotations on the pages coming in. Each is probed in its own
             // context, which is the only place the pairing of wording and box is recorded.
             { "DeletePagesDialog",
-              "\n\n这 %n 条回答会失去它们所回答的那条批注，保存出来就成了各自独立的批注（写的字都还"
-              "在）。",
+              "\n\n这 %n 条回答会失去所回答的批注，保存出来成为独立的批注（写的字都还在）。",
               1 },
             { "MergePagesDialog",
-              "\n\n这些页上有 %n 条是对另一条批注的回答：合并只把页上的批注带进来，带不进它们之间的"
-              "联系，保存出来每一条都成了各自独立的批注（写的字都还在）。",
+              "\n\n这些页上有 %n 条是对另一条批注的回答：合并只把页上的批注带进来，带不"
+              "进回答与被回答之间的联系，保存出来成为独立的批注（写的字都还在）。",
               1 },
             { "SplitPagesDialog",
-              "\n\n这 %n 条回答跟它们所回答的那条批注会被拆到两个文件里去，所以在每一份里都只成一条"
+              "\n\n这 %n 条回答和所回答的批注会被拆到两个文件里去，在各自的文件里都成为"
               "独立的批注（写的字都还在）。",
               1 },
             // And the five that say the same thing about XFA without a number in them: the two the

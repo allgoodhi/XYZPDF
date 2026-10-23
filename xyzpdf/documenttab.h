@@ -12,11 +12,29 @@
 // it later means moving every one of those members: they are all set from menu
 // actions today, and the actions would each have to grow "and apply it to the
 // right tab". See docs/PLAN.md §7.1.
+//
+// ---- what is left in this class ----
+//
+// The view, the document's own state, the edit session, and the assembly of the
+// services that take the document and do a job with it (docs/review-03.md §1.2):
+//
+//   searchsession.h       the scan, the matches, the bar's label and the hits list
+//   wordexportsession.h   the document's text out as a Word file
+//   documentoutput.h      printing and a folder of images, both foreground
+//   ocrsession.h          the box dragged on a page, and reading what is in it
+//   translatesession.h    the two questions before a request, and the request
+//   filechangenotice.h    the watcher, the debounce and the bar above the page
+//   foregroundjobs.h      how many jobs are standing on this tab's stack
+//
+// all in src/services/. The rule they share is the one this class keeps: nothing
+// that reads the document may still be doing it when open() replaces that
+// document, or when the tab is taken apart -- which is what drainRenders() and
+// ~DocumentTab wait for. Two of them have no part in that wait, and each says
+// why at its own top.
 #pragma once
 
 #include "src/document/document.h"
 #include "src/document/outline.h"
-#include "src/document/textsearch.h"
 #include "src/export/wordexport.h"
 #include "src/render/rendercache.h"
 #include "src/services/documentoutput.h"
@@ -32,10 +50,6 @@
 #include "src/view/pageview.h"
 #include "src/view/zoomcontroller.h"
 
-#include <QFuture>
-#include <QPointer>
-#include <QRectF>
-#include <QSharedPointer>
 #include <QVector>
 #include <QWidget>
 
@@ -50,7 +64,6 @@ class QtPdfBackend;
 class QTabWidget;
 class SearchPanel;
 class ThumbnailPanel;
-class QAtomicInt;
 
 class DocumentTab : public QWidget
 {

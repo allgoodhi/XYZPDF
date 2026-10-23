@@ -100,8 +100,74 @@ auto onMtaThread(Function &&function) -> decltype(function())
         return future.result();
 }
 
+// The two kinds of writing a recognizer here can be built for.
+//
+// Windows.Media.Ocr's packs split cleanly: the ones for Chinese, Japanese and
+// Korean carry the thousand-glyph tables, and every other pack it ships reads a
+// Latin alphabet. Which one a picture wants is not a guess -- measured on this
+// machine (tests/ocrprobe.cpp, one crop of text.pdf's first line and one of
+// Chinese characters, against every installed engine and fourteen preprocessings):
+// en-US read the Latin line exactly in 14 of 14 pictures, zh-Hans in 4 of 14
+// (the X comes back as ")(" in the other ten), and the picture of Chinese
+// characters came back correctly spaced out from zh-Hans and *empty* from en-US.
+// So the script of the answer says which engine should have been asked, and
+// that is what the second pass below acts on.
+enum class Family { Latin, Cjk };
+
+Family familyOf(const QString &languageTag)
+{
+    // The tag's own prefix is all this needs: BCP-47 puts the script's language
+    // first, so "zh-Hans-CN", "zh-Hant" and "zh" are the same family, and no
+    // other pack Windows.Media.Ocr ships starts with these three letters.
+    const QString prefix = languageTag.left(2).toLower();
+    return prefix == QStringLiteral("zh") || prefix == QStringLiteral("ja")
+            || prefix == QStringLiteral("ko")
+        ? Family::Cjk
+        : Family::Latin;
+}
+
+// Whether any character in the answer is one that only a CJK pack writes.
+//
+// The ranges are the blocks those scripts occupy: CJK and the kana and Hangul
+// that share them, the compatibility ideographs, Hangul syllables, and the
+// fullwidth punctuation a Chinese answer is sprinkled with. A surrogate pair --
+// the rare extension-B ideographs -- is not looked through, so an answer made
+// only of those reads as "no CJK here"; that costs one extra engine pass on a
+// page almost nobody boxes, and it does not change what comes back.
+bool hasCjkCharacter(const QString &text)
+{
+    for (const QChar character : text) {
+        const ushort code = character.unicode();
+        if ((code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF)
+            || (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFF00 && code <= 0xFFEF))
+            return true;
+    }
+    return false;
+}
+
+// An engine, with the two things about it the second pass needs to know: which
+// pack it is, and which family that pack reads.
+struct Engine
+{
+    // `{nullptr}` rather than nothing: a C++/WinRT interface has no default
+    // constructor of its own, so a bare member here would make the struct have
+    // no default constructor either -- and `return {};` in pickEngine() is the
+    // honest way of saying "this machine has no language packs".
+    OcrEngine handle{nullptr};
+    Family family = Family::Latin;
+};
+
+Engine describe(const OcrEngine &engine)
+{
+    Engine described;
+    described.handle = engine;
+    const auto language = engine.RecognizerLanguage();
+    described.family = familyOf(QString::fromWCharArray(language.LanguageTag().c_str()));
+    return described;
+}
+
 // The engine, or a null one when this machine has no language packs.
-OcrEngine pickEngine()
+Engine pickEngine()
 {
     // The languages the user's Windows is set up with, in the order they set
     // them up in -- which is the only opinion about which script a screenshot
@@ -109,11 +175,43 @@ OcrEngine pickEngine()
     // pack covers the case of a pack that can recognize but is not in the
     // profile's list.
     if (OcrEngine engine = OcrEngine::TryCreateFromUserProfileLanguages())
-        return engine;
+        return describe(engine);
     const auto available = OcrEngine::AvailableRecognizerLanguages();
     if (available.Size() > 0)
-        return OcrEngine::TryCreateFromLanguage(available.GetAt(0));
+        if (OcrEngine engine = OcrEngine::TryCreateFromLanguage(available.GetAt(0)))
+            return describe(engine);
+    return {};
+}
+
+// An engine that reads the other family of script, or a null one when this
+// machine has only one family installed.
+//
+// The installed list rather than the profile's, because the profile has already
+// had its say: it chose the first engine, and it has no opinion about a second
+// one for a picture the first could not read.
+OcrEngine engineOf(Family wanted)
+{
+    const auto available = OcrEngine::AvailableRecognizerLanguages();
+    for (unsigned index = 0; index < available.Size(); ++index) {
+        const auto language = available.GetAt(index);
+        if (familyOf(QString::fromWCharArray(language.LanguageTag().c_str())) != wanted)
+            continue;
+        if (OcrEngine engine = OcrEngine::TryCreateFromLanguage(language))
+            return engine;
+    }
     return nullptr;
+}
+
+// One engine, one picture, the words it found -- line by line, not Text(): the
+// whole-picture string joins with \r\n, and the lines are also what keeps the
+// caller free to reflow them.
+QString recognizeLines(const OcrEngine &engine, const SoftwareBitmap &bitmap)
+{
+    const auto recognized = engine.RecognizeAsync(bitmap).get();
+    QStringList lines;
+    for (const auto &line : recognized.Lines())
+        lines.append(QString::fromWCharArray(line.Text().c_str()));
+    return lines.join(QLatin1Char('\n'));
 }
 
 // The image as a SoftwareBitmap, by way of PNG.
@@ -161,8 +259,8 @@ Ocr::Result recognizeWorker(QImage image)
     }
 
     try {
-        const OcrEngine engine = pickEngine();
-        if (!engine)
+        const Engine engine = pickEngine();
+        if (!engine.handle)
             return {false, {},
                     sentence(QT_TRANSLATE_NOOP("Ocr", "这台 Windows 没有安装文字识别的语言包，无法识别文字。"))};
 
@@ -178,14 +276,39 @@ Ocr::Result recognizeWorker(QImage image)
         }
 
         const auto bitmap = toSoftwareBitmap(image);
-        const auto recognized = engine.RecognizeAsync(bitmap).get();
+        QString text = recognizeLines(engine.handle, bitmap);
 
-        // Line by line, not Text(): the whole-picture string joins with \r\n,
-        // and the lines are also what keeps the caller free to reflow them.
-        QStringList lines;
-        for (const auto &line : recognized.Lines())
-            lines.append(QString::fromWCharArray(line.Text().c_str()));
-        return {true, lines.join(QLatin1Char('\n')), {}};
+        // The second pass, asked only of a picture the first engine's own answer
+        // says it was the wrong tool for. Two shapes say that, and both are in
+        // the measurement above: it said *nothing* at all, which is what en-US
+        // answers for Chinese characters, and a CJK engine said something with
+        // not one CJK character in it, which is what zh-Hans answers for a line
+        // of Latin words -- and that answer is the one that spells X as ")(".
+        //
+        // What is deliberately not here: a search for the best of several
+        // engines. One extra pass is the whole cost, and on this machine the
+        // second engine is the only other family there is. A reader whose Windows
+        // has one pack installed gets exactly the answer this feature gave before,
+        // because there is nobody else to ask.
+        const bool saidNothing = text.trimmed().isEmpty();
+        const bool wrongScript = engine.family == Family::Cjk && !hasCjkCharacter(text);
+        if (saidNothing || wrongScript) {
+            const Family wanted = engine.family == Family::Cjk ? Family::Latin : Family::Cjk;
+            if (const OcrEngine other = engineOf(wanted)) {
+                const QString again = recognizeLines(other, bitmap);
+                // An empty second answer never replaces one that said something.
+                //
+                // Measured, and the honest half of that: on this machine the
+                // trigger above already keeps a picture of Chinese from ever
+                // reaching this line, so deleting only this condition reddens no
+                // test at all. What it covers is the other shape -- a first
+                // engine that guessed something and a second that found nothing.
+                if (!again.trimmed().isEmpty())
+                    text = again;
+            }
+        }
+
+        return {true, text, {}};
     } catch (const winrt::hresult_error &error) {
         return {false, {},
                 sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错：%1")).arg(QString::fromWCharArray(error.message().c_str()))};
@@ -207,7 +330,7 @@ bool Ocr::isAvailable()
 {
     return onMtaThread([] {
         try {
-            return static_cast<bool>(pickEngine());
+            return static_cast<bool>(pickEngine().handle);
         } catch (...) {
             return false;
         }

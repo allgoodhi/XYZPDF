@@ -9,21 +9,22 @@
 // Hand-run, never in the gate: like the other two probes every line it prints is another
 // library's answer. The questions, in the order below:
 //
-//   A. 一棵七种形状的大纲，三个读者各读一遍 —— qpdf、Qt 的 bookmark model、我们自己的
-//      QtPdfBackend::outline()。第三个是重点：侧栏画的是那棵树，不是 Qt 的 model。
+//   A. 一棵七种形状的大纲，两个读者各读一遍 —— qpdf、我们自己的 PdfiumBackend::outline()
+//      （F7-E 之前这里是三个读者，中间那一个是 Qt 的 bookmark model；Qt 那条读路已经不在这个
+//      构建里了，所以那一列跟着没了）。第二个是重点：侧栏画的是那棵树，不是库给的平表。
 //   B. 四处故意写坏（父项 /Count 的符号、断掉的 /Next、指错处的 /Parent、根上缺 /First /Last），
 //      每处单独一个文件：哪个读者还看得见，决定哪些一致性是承重的。
-//   C. 页出去的那一遍：删掉书签指着的那一页、把那一页挪到末尾，再三个读者各读一遍。§51 在表单层
+//   C. 页出去的那一遍：删掉书签指着的那一页、把那一页挪到末尾，再两个读者各读一遍。§51 在表单层
 //      量到的"页没了、注册还在"在大纲层是不是同一回事。
-//   D. 一份真书而不是手造样本：184 条书签里，侧栏今天看得见几条（它的整条读路就是第 A 段那三个
-//      读者）。Location/Zoom 那一问不在这一段里，它在 A 的每一行上 —— 两条读路都把 loc 与 zoom
-//      打出来，所以"点书签跳到页顶"到底是设计还是丢数据，在 A 就能读出答案。
+//   D. 一份真书而不是手造样本：184 条书签里，侧栏今天看得见几条（它的整条读路就是第 A 段那两个
+//      读者）。Location/Zoom 那一问不在这一段里，它在 A 的每一行上 —— 两条读路都把 loc 打出来，
+//      所以"点书签跳到页顶"到底是设计还是丢数据，在 A 就能读出答案。
 //
 // 输出走 stdout；GBK 控制台下中文会花，所以按项目老规矩写文件再看：
 //   build-local-release\tests\xyzpdf_outlineprobe.exe > H:\tmp\outline.txt 2>&1
 
 #include "../src/document/outline.h"
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 #include "../src/edit/documenteditor.h"
 
 #include <QCoreApplication>
@@ -44,9 +45,6 @@
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
-
-#include <QtPdf/QPdfDocument>
-#include <QtPdf/QPdfBookmarkModel>
 
 #include <functional>
 #include <iostream>
@@ -401,63 +399,11 @@ void readWithQpdf(const QString &path)
     }
 }
 
-// ---- reader 2: Qt's bookmark model, i.e. what PDFium builds from the same bytes. ----
-
-void readWithQt(const QString &path)
-{
-    QPdfDocument document;
-    if (document.load(path) != QPdfDocument::Error::None) {
-        say("  qt: the document did not open");
-        return;
-    }
-    QPdfBookmarkModel model;
-    model.setDocument(&document);
-    // Read it BOTH ways. Our backend walks `rowCount(QModelIndex())` and trusts a Level column,
-    // on the assumption recorded in outline.h that the model is flat. Whether that assumption is
-    // what the model does is the whole question behind the sidebar's indentation, so the walk
-    // here also asks each row how many children the model itself reports -- and prints the
-    // /Outlines row count with and without descending. If those two disagree, a flat read is
-    // dropping bookmarks, and the drop is silent.
-    const int rootRows = model.rowCount(QModelIndex());
-    say(QStringLiteral("  qt: %1 row(s) under the root; Level values seen below").arg(rootRows));
-    int visited = 0;
-    std::function<void(const QModelIndex &, int)> walk = [&](const QModelIndex &parent, int depth) {
-        const int rows = model.rowCount(parent);
-        for (int row = 0; row < rows; ++row) {
-            const QModelIndex index = model.index(row, 0, parent);
-            if (!index.isValid())
-                continue;
-            ++visited;
-            const QString title =
-                model.data(index, static_cast<int>(QPdfBookmarkModel::Role::Title)).toString();
-            const int level =
-                model.data(index, static_cast<int>(QPdfBookmarkModel::Role::Level)).toInt();
-            const int page =
-                model.data(index, static_cast<int>(QPdfBookmarkModel::Role::Page)).toInt();
-            const QPointF location =
-                model.data(index, static_cast<int>(QPdfBookmarkModel::Role::Location)).toPointF();
-            const double zoom =
-                model.data(index, static_cast<int>(QPdfBookmarkModel::Role::Zoom)).toDouble();
-            const int kids = model.rowCount(index);
-            say(QStringLiteral("    %1%2 | level=%3 page=%4 loc=%5,%6 zoom=%7 children=%8")
-                    .arg(QString(depth * 2 - 2, QChar(' ')), title)
-                    .arg(level).arg(page).arg(location.x()).arg(location.y()).arg(zoom).arg(kids));
-            if (depth < 4)
-                walk(index, depth + 1);
-        }
-    };
-    walk(QModelIndex(), 1);
-    say(QStringLiteral("  qt: %1 row(s) counted through the hierarchy (%2 under the root)")
-            .arg(visited).arg(rootRows));
-    if (visited > rootRows)
-        say("  qt: THE MODEL IS NOT FLAT -- a root-only read loses rows");
-}
-
-// ---- reader 3: our own backend, which is the tree the sidebar actually draws. ----
+// ---- reader 2: our own backend, which is the tree the sidebar actually draws. ----
 
 void readWithOurBackend(const QString &path)
 {
-    QtPdfBackend backend;
+    PdfiumBackend backend;
     if (backend.load(path, QString()) != Document::Status::Ready) {
         say("  our backend: would not open it");
         return;
@@ -482,11 +428,10 @@ void readWithOurBackend(const QString &path)
             .arg(tree.nodes.size()));
 }
 
-void readAllThree(const QString &label, const QString &path)
+void readBothWays(const QString &label, const QString &path)
 {
     say(QStringLiteral("--- %1 (%2) ---").arg(label, QFileInfo(path).fileName()));
     readWithQpdf(path);
-    readWithQt(path);
     readWithOurBackend(path);
 }
 
@@ -520,13 +465,13 @@ int main(int argc, char **argv)
 
     say("");
     say("=== A. one hand-built outline, three readers ===");
-    readAllThree("nothing broken", whole);
+    readBothWays("nothing broken", whole);
 
     const QString plain = scratch.filePath(QStringLiteral("outline-plain-nested.pdf"));
     error.clear();
     check(!buildPlainNestedSample(source, plain, &error).isEmpty(),
           QStringLiteral("setup: the same nesting without any awkward shape: %1").arg(error));
-    readAllThree("nesting only: nothing malformed", plain);
+    readBothWays("nesting only: nothing malformed", plain);
 
     say("");
     say("=== B. which consistencies are load-bearing ===");
@@ -543,7 +488,7 @@ int main(int argc, char **argv)
             say(QStringLiteral("  control %1 could not be built: %2").arg(broken).arg(error));
             continue;
         }
-        readAllThree(labels.at(broken - 1), path);
+        readBothWays(labels.at(broken - 1), path);
     }
 
     say("");
@@ -556,7 +501,7 @@ int main(int argc, char **argv)
         const QString goneOut = scratch.filePath(QStringLiteral("outline-page-deleted.pdf"));
         error.clear();
         check(gone.saveAs(goneOut, &error), QStringLiteral("and that deletion is written: %1").arg(error));
-        readAllThree("page 6 of 40 deleted", goneOut);
+        readBothWays("page 6 of 40 deleted", goneOut);
 
         DocumentEditor moved;
         error.clear();
@@ -566,7 +511,7 @@ int main(int argc, char **argv)
         const QString movedOut = scratch.filePath(QStringLiteral("outline-page-moved.pdf"));
         error.clear();
         check(moved.saveAs(movedOut, &error), QStringLiteral("and that move is written: %1").arg(error));
-        readAllThree("first page moved to the end", movedOut);
+        readBothWays("first page moved to the end", movedOut);
     }
 
     say("");
@@ -578,23 +523,23 @@ int main(int argc, char **argv)
         else {
             say(QStringLiteral("  file: %1").arg(QFileInfo(real).fileName()));
             tallyDestinations("real book, as it came", real);
-            readAllThree("real document, nothing done to it", real);
+            readBothWays("real document, nothing done to it", real);
         }
     }
 
     say("");
     say("=== E. what a save through our own writer leaves on a destination ===");
     {
-        // §71 wrote this down as an inferred consequence and never tested it: the read path asks Qt's
-        // model for Title and Page and nothing else (qtpdfbackend.cpp:527-534 -- no Location role, no
-        // Zoom role, although both exist), and the writer emits /Fit for every row
-        // (documenteditor.cpp:713-719). If that is right, a bookmark naming a spot halfway down a page
-        // loses that spot on the way through the sidebar and one save. The sample's "Top xyz" row is
-        // the case: /XYZ 0 700 0 on an 842-point-tall page, which Qt itself reads back as loc=0,142
-        // (top-left origin -- the number a writer would have to convert back).
+        // What §71 wrote down as an inferred consequence, and what §99 then closed: the reader the
+        // sidebar draws from asks the engine for a title and a page and nothing else, while the
+        // destinations that decide "where inside the page" are read off the file by the editor
+        // (DocumentEditor::outlineFromSource) and joined to the rows by title and page. So a save
+        // asked for the tree exactly as read carries the file's destinations -- and this line says
+        // which half of that came from the engine read (none of the positions) and which came from
+        // the file. The sample's "Top xyz" row is the case: /XYZ 0 700 0 on an 842-point-tall page.
         tallyDestinations("before, as built", whole);
 
-        QtPdfBackend backend;
+        PdfiumBackend backend;
         check(backend.load(whole, QString()) == Document::Status::Ready,
               "setup: the sample opens through our own backend");
         const QVector<OutlineRow> asSeen = outlineRowsOf(backend.outline());

@@ -94,8 +94,10 @@ FARPROC WINAPI loadFromOurOwnDirectory(unsigned reason, DelayLoadInfo *info)
         name += static_cast<wchar_t>(static_cast<unsigned char>(*at));
 
     // LOAD_WITH_ALTERED_SEARCH_PATH so that what this library imports in turn
-    // -- Qt6Pdf.dll wants what sits beside it too -- is looked for beside it
-    // rather than beside DllHost.exe, which is the same trap one level down.
+    // -- Qt6Gui.dll wants Qt6Core.dll beside it -- is looked for beside it rather
+    // than beside DllHost.exe, which is the same trap one level down. The engine
+    // is pdfium.dll, which brings only itself (docs/pdfium-plan.md sec.6.1), so
+    // the same line is harmless there.
     const HMODULE loaded = LoadLibraryExW((directory + name).c_str(),
                                           nullptr,
                                           LOAD_WITH_ALTERED_SEARCH_PATH);

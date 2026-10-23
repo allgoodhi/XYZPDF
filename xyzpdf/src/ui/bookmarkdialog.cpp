@@ -110,8 +110,8 @@ Problem firstProblem(QTableWidget *box, const QVector<OutlineRow> &rows, int pag
 }
 
 // Is the table still showing exactly what the box opened with? Compared on the three columns and
-// nothing else: `location` has no column here, and our reader never fills it in (qtpdfbackend.cpp
-// reads the Title, Page and Level roles and stops), so a comparison that included it would report
+// nothing else: `location` has no column here, and the engine's bookmark read gives a title and a
+// page and stops, so a comparison that included it would report
 // "you changed something" on a box nobody touched, the moment a read ever does carry a position.
 // What that leaves unsaid -- a bookmark aiming at a spot halfway down a page comes back out of this
 // box aimed at the page's top -- is recorded in docs/store-submission.md §71 as an open consequence,

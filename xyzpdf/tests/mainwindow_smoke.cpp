@@ -522,18 +522,22 @@ int main(int argc, char **argv)
         check(!plainSaid.contains(QStringLiteral("XFA")) && !plainSaid.contains(QStringLiteral("表单")),
               QStringLiteral("a document with neither gets no notice at all: %1").arg(plainSaid));
 
-        // The §94 sentence, and the order the three are tried in: a file with fields and a packet
-        // says the packet, because that is the copy a reader without XFA falls back to once the
-        // page collection moves -- and the form sentence is what a document with only fields gets.
+        // The order the three are tried in still matters for what is left of them: a file with
+        // fields and a packet says the packet, because that is the copy a reader without XFA falls
+        // back to once the page collection moves. What does not get said any more is 表单字段 on
+        // its own -- §94's sentence described an engine that drew no field contents anywhere, and
+        // F7-C drew them (formpage measured 24,705 pixels inside a field's rectangle, 0 with the
+        // form layer switched off). A document with only fields now gets the ordinary 已打开, and
+        // this is the line that goes red if the notice comes back.
         const QString withFields = samples.filePath(QStringLiteral("only-fields.pdf"));
         check(build(withFields, true, false, false, &made),
               QStringLiteral("setup: a copy with fields and no packet: %1").arg(made));
         const QString fieldsSaid = saidFor(withFields);
         std::cout << "MEASURE status fields: [" << fieldsSaid.toStdString() << "]\n";
-        check(fieldsSaid.contains(QStringLiteral("表单字段"))
-                  && !fieldsSaid.contains(QStringLiteral("XFA")),
-              QStringLiteral("fields alone are said as fields, which is the sentence §94 shipped: %1")
-                  .arg(fieldsSaid));
+        check(!fieldsSaid.contains(QStringLiteral("表单")) && !fieldsSaid.contains(QStringLiteral("XFA")),
+              QStringLiteral("fields alone get no notice: %1").arg(fieldsSaid));
+        check(fieldsSaid.startsWith(QStringLiteral("已打开")),
+              QStringLiteral("and are opened with the ordinary sentence: %1").arg(fieldsSaid));
 
         while (count > tabsBefore) {
             closeOneTab();
@@ -1023,19 +1027,28 @@ int main(int argc, char **argv)
 
             // ---- the box, on a document that takes long enough to need one ----
             //
-            // The page below takes a second or more to read (two character queries
-            // per line, seventy lines), which is the shape of the manual this was
-            // reported from: nine seconds a page. A stop that is only noticed
-            // between pages leaves the reader watching the box for all nine.
-            const QString densePath = directory + QStringLiteral("/dense.pdf");
-            dropFiles(window, {QUrl::fromLocalFile(densePath).toString()}, Qt::CopyAction);
-            check(waitFor([&window, &densePath] {
+            // The shape this is here for is the manual a reader reported: nine
+            // seconds a page, and a stop only noticed between pages leaves them
+            // watching. It used to be driven by dense.pdf, whose seventy-line page
+            // took seconds through the old wrapper; the same page now reads in about
+            // a millisecond, so a two-page document is over before a box can be
+            // offered and the test would be asserting a race. What makes a job long
+            // now is pages rather than lines, so this is huge.pdf: six hundred pages
+            // of one line each, which is a second or so of export and long enough
+            // that the box, its numbers and its button can all be read.
+            const QString slowPath = directory + QStringLiteral("/huge.pdf");
+            dropFiles(window, {QUrl::fromLocalFile(slowPath).toString()}, Qt::CopyAction);
+            check(waitFor([&window, &slowPath] {
                       DocumentTab *front = currentDocumentTab(window);
-                      return front && sameFile(front->documentPath(), densePath);
+                      return front && sameFile(front->documentPath(), slowPath);
                   }),
-                  "the page of seventy lines is in front");
+                  "the six-hundred-page document is in front");
             if (DocumentTab *dense = currentDocumentTab(window)) {
-                const QString unwritten = output.filePath(QStringLiteral("dense.docx"));
+                const QString unwritten = output.filePath(QStringLiteral("huge.docx"));
+                const int pages = dense->pageCount();
+                check(pages == 600,
+                      QStringLiteral("setup: and it has the pages the box will count (%1)")
+                          .arg(pages));
                 dense->exportToWord(unwritten);
                 QProgressDialog *third = nullptr;
                 check(waitFor([&window, &third] {
@@ -1043,19 +1056,19 @@ int main(int argc, char **argv)
                               QStringLiteral("exportProgress"));
                           return third && third->isVisible();
                       }),
-                      "its export offers the box before the first page is done");
+                      "its export offers the box while the document is still being read");
                 if (third) {
-                    check(third->maximum() == 2,
-                          QStringLiteral("with the whole document in it (%1 pages)")
-                              .arg(third->maximum()));
-                    // The first report is the one that says the export has started
-                    // -- page nought of two -- because the point of it is to offer
-                    // a way out while there is still time to take it.
+                    check(third->maximum() == pages,
+                          QStringLiteral("with the whole document in it (%1 of %2 pages)")
+                              .arg(third->maximum())
+                              .arg(pages));
+                    // The first report is the one that says the export has started,
+                    // with a way out still ahead of it.
                     check(third->value() < third->maximum(),
                           QStringLiteral("and how far it has got (%1 of %2)")
                               .arg(third->value())
                               .arg(third->maximum()));
-                    check(third->labelText().contains(QStringLiteral("2")),
+                    check(third->labelText().contains(QString::number(pages)),
                           QStringLiteral("naming the size of the job (\"%1\")")
                               .arg(third->labelText()));
                     check(third->windowModality() == Qt::WindowModal,
@@ -1070,8 +1083,8 @@ int main(int argc, char **argv)
                         check(waitFor([dense] { return !dense->isExporting(); }, 8000),
                               "clicking it stops the export");
                         check(clock.elapsed() < 1500,
-                              QStringLiteral("in the middle of the page it was reading (%1 ms; a "
-                                             "page of that document is seconds)")
+                              QStringLiteral("within one page of where it was (%1 ms; this "
+                                             "fixture's page is a few)")
                                   .arg(clock.elapsed()));
                         check(!QFileInfo::exists(unwritten),
                               QStringLiteral("and leaves no half-written file behind (%1 bytes)")

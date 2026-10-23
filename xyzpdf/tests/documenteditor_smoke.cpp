@@ -9,7 +9,7 @@
 // and a write that cannot land leaves a whole file the reader can find, never a
 // truncated one at the path they pointed at.
 //
-// The round trip is checked through Qt PDF rather than through QPDF alone, for the
+// The round trip is checked through PDFium rather than through QPDF alone, for the
 // same reason tests/qpdf_smoke.cpp links both: the claim is the handoff between the
 // library that writes and the library this program reads with, and one engine
 // agreeing with itself proves nothing.
@@ -41,7 +41,7 @@
 // fonts and belongs to tests/watermarkprobe.cpp, which is run under the windows platform by
 // hand for exactly that reason.
 
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 #include "../src/edit/documenteditor.h"
 
 #include <QCoreApplication>
@@ -60,10 +60,6 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVector>
-
-#include <QPdfBookmarkModel>
-#include <QPdfDocument>
-#include <QModelIndex>
 
 #include <qpdf/Buffer.hh>
 #include <qpdf/QPDF.hh>
@@ -114,12 +110,12 @@ QString hashOfFile(const QString &path)
     return QString::fromLatin1(hash.result().toHex());
 }
 
-// How many pages Qt PDF counts in a file, or -1 for "it would not open". The two
+// How many pages PDFium counts in a file, or -1 for "it would not open". The two
 // failures are kept apart because "no pages" and "unreadable" are different
 // sentences, and only one of them means the editor wrote a broken file.
 int pagesAsReadByTheReader(const QString &path, const QString &password = QString())
 {
-    QtPdfBackend document;
+    PdfiumBackend document;
     if (document.load(path, password) != Document::Status::Ready)
         return -1;
     return document.pageCount();
@@ -236,14 +232,14 @@ QVector<int> rotationsInFile(const QString &path)
 //
 // The only way the reorder can be checked at all: a page count cannot tell a moved
 // document from an untouched one, and the whole failure mode of a move is "every
-// page is there, in the wrong place". Read through Qt PDF rather than QPDF because
+// page is there, in the wrong place". Read through PDFium rather than QPDF because
 // the claim is about the file a reader would open, not about what the writer thinks
 // it wrote. -1 for a page whose number could not be read, so a silent mismatch
 // cannot come from the parsing.
 QVector<int> orderInFile(const QString &path)
 {
     QVector<int> numbers;
-    QtPdfBackend document;
+    PdfiumBackend document;
     if (document.load(path, QString()) != Document::Status::Ready) {
         std::cerr << "FAIL: the reader would not open " << path.toStdString() << '\n';
         ++failures;
@@ -1985,8 +1981,9 @@ QString writeDirectiveFieldCopy(const QString &source, const QString &destinatio
 // read-only (its constructors are private and it has no setter), so writing bookmarks means the
 // seven keys by hand -- /Title /Parent /First /Last /Prev /Next /Count plus /Dest. The shapes and
 // the four deliberate breakages are measured in tests/outlineprobe.cpp; what this file needs is the
-// one healthy tree that the read path can be checked against, because that check runs through Qt's
-// bookmark model, and the model alone decides whether the nesting survives.
+// one healthy tree that the read path can be checked against, because that check runs through the
+// engine's bookmark read (PdfiumBackend::outline), and that read alone decides whether the
+// nesting survives.
 bool writeNestedOutlineSample(const QString &source, const QString &destination, QString *error)
 {
     try {
@@ -2055,12 +2052,15 @@ bool writeNestedOutlineSample(const QString &source, const QString &destination,
 // Four bookmarks whose destinations are not the page's top: one /XYZ naming a spot, one /FitH
 // naming a height, one plain /Fit, one with no destination at all.
 //
-// Nothing else in this file can produce this shape, because our writer only ever emits /Fit (§68).
-// So the input §75 asks about -- a file whose bookmarks name a place *inside* a page -- has to be
-// hand-built. And the two positional shapes are not decoration: tests/outlineprobe.cpp measured
-// that a real book's 184 bookmarks are all /FitH with a top coordinate, so /FitH is what the wild
-// looks like while /XYZ is the shape Qt's own model reports a position for. A fix that only asks
-// Qt would save one and flatten the other, and that distinction is why this sample carries both.
+// Nothing else in this file can produce this shape, because a sample this test does not hand-build
+// goes through the writer, and the writer only emits what the read handed it (§68 was the version
+// of that sentence that said /Fit for every row; §99 is the one that says "verbatim, from the
+// file"). So the input §75 asks about -- a file whose bookmarks name a place *inside* a page -- has
+// to be hand-built. And the two positional shapes are not decoration: tests/outlineprobe.cpp
+// measured that a real book's 184 bookmarks are all /FitH with a top coordinate, so /FitH is what
+// the wild looks like, and /XYZ is the shape with two coordinates and a zoom that may be null --
+// the one that shows why a plain QPointF is not a destination. Both are why this sample carries
+// both.
 bool writePositionalOutlineSample(const QString &source, const QString &destination, QString *error)
 {
     try {
@@ -2306,7 +2306,7 @@ QString bookmarksAsText(const QVector<BookmarkRead> &seen)
 // beside the assertion that reads it.
 QString bookmarksShownInFile(const QString &path)
 {
-    QtPdfBackend reader;
+    PdfiumBackend reader;
     if (reader.load(path, QString()) != Document::Status::Ready)
         return QStringLiteral("(the file would not open)");
     return bookmarksAsText(bookmarksAsTheSidebarSees(reader.outline()));
@@ -3035,7 +3035,7 @@ int main(int argc, char **argv)
 
         check(pagesAsReadByTheReader(result) == pagesBefore - 2,
               "the reader counts the same number of pages in the file the editor wrote");
-        QtPdfBackend written;
+        PdfiumBackend written;
         if (written.load(result, QString()) == Document::Status::Ready) {
             const QImage image = written.render(0, QSize(300, 400), RenderOptions{});
             check(!image.isNull() && paintsAnything(image),
@@ -3077,7 +3077,7 @@ int main(int argc, char **argv)
         check(editor.saveAs(out, &error),
             QStringLiteral("the whole list is written in one go: %1").arg(error));
 
-        QtPdfBackend written;
+        PdfiumBackend written;
         check(written.load(out, QString()) == Document::Status::Ready, "and the result opens");
         check(written.pageCount() == pagesBefore - 3,
               "three pages went out of the forty, and no more");
@@ -3093,7 +3093,7 @@ int main(int argc, char **argv)
               "and the third page of the result is the sixth of the original, which was "
               "numbered against the screen it was named on, not against the list");
 
-        // Qt PDF folds a page's own /Rotate into the size it reports (see
+        // PDFium folds a page's own /Rotate into the size it reports (see
         // pageSize()'s note), so a turned page comes back landscape and this needs
         // no second parser to tell which way the file says the page is.
         check(written.pageSize(0).width() > written.pageSize(0).height(),
@@ -4327,7 +4327,7 @@ int main(int argc, char **argv)
                                  "carries %2")
                       .arg(mixedTree.addresses.value(0), mixedTree.aliases.value(0)));
             check(pagesAsReadByTheReader(mixedOut) == pagesBefore + 1,
-                  QStringLiteral("and Qt PDF opens the file with the alias in it: %1 pages, "
+                  QStringLiteral("and PDFium opens the file with the alias in it: %1 pages, "
                                  "asked for %2")
                       .arg(pagesAsReadByTheReader(mixedOut))
                       .arg(pagesBefore + 1));
@@ -4500,7 +4500,7 @@ int main(int argc, char **argv)
                       .arg(mergedFields.fields)
                       .arg(built.text.toUtf8().size()));
             check(pagesAsReadByTheReader(joinedOut) == pagesBefore + 1,
-                  "and Qt PDF opens the file whose form is now said once");
+                  "and PDFium opens the file whose form is now said once");
 
             // D. a page merged OUT of the packet document: unchanged from §55, and for the same
             //    reason -- XFA belongs to the document, not to the page.
@@ -5480,7 +5480,7 @@ int main(int argc, char **argv)
                 check(pagesAsReadByTheReader(out, QStringLiteral("hunter2")) == pagesBefore - 1,
                       "and with the password it is the document that was asked for");
 
-                // "Still encrypted" above only says Qt PDF could not open it without a
+                // "Still encrypted" above only says PDFium could not open it without a
                 // key, which a copy re-encrypted under some *other* key would satisfy
                 // too. So the protection is compared as numbers. The raw read is there
                 // because both files are parsed by the same library: a writer that
@@ -6440,7 +6440,7 @@ int main(int argc, char **argv)
                       "R6, which is the only thing this program offers, and the dialog has to "
                       "say what that locks out");
                 check(got.rawPFound, "the /Encrypt dictionary is in the file's own bytes");
-                QtPdfBackend written;
+                PdfiumBackend written;
                 if (written.load(out, key) == Document::Status::Ready) {
                     const QImage image = written.render(0, QSize(300, 400), RenderOptions{});
                     check(!image.isNull() && paintsAnything(image),
@@ -7024,7 +7024,7 @@ int main(int argc, char **argv)
             // The pages this request did not name must not have lost anything either: the
             // same text, the same count, read through the renderer.
             check(pagesAsReadByTheReader(result) == pagesBefore,
-                  "and Qt PDF opens the inked file");
+                  "and PDFium opens the inked file");
         }
 
         // ---- a rotated page, in the file rather than in the arithmetic ----
@@ -7111,7 +7111,7 @@ int main(int argc, char **argv)
             DocumentEditor editor;
             check(editor.open(literal, QString(), &error),
                   QStringLiteral("and the document still opens -- reading a page like that is "
-                                 "Qt PDF's business, not this one: %1").arg(error));
+                                 "PDFium's business, not this one: %1").arg(error));
             check(editor.addWatermark(request("机密", 20, {1}), &error),
                   QStringLiteral("setup: the damaged page is the one the reader named: %1")
                       .arg(error));
@@ -7303,7 +7303,7 @@ int main(int argc, char **argv)
             // §63 measured what the sidebar used to lose on this very file: 14 of 184 bookmarks.
             // A note rather than a check, because the number belongs to a file that is not in the
             // repository and another machine's book will disagree.
-            QtPdfBackend realReader;
+            PdfiumBackend realReader;
             if (realReader.load(real, QString()) == Document::Status::Ready) {
                 const Outline realTree = realReader.outline();
                 note(QStringLiteral("%1 holds %2 bookmarks, %3 of them at the top level")
@@ -7330,18 +7330,18 @@ int main(int argc, char **argv)
     // ---- the sidebar's read path: a tree rather than the top level of one (§63) ----
     //
     // The two counting checks are written as a pair on purpose, because the two ways this went
-    // wrong have the same symptom. Reading Qt's model as a flat list (which is what
-    // qtpdfbackend.cpp used to do, on the strength of a comment claiming the model was flat) hands
-    // back only the rows under the root -- 14 of a real book's 184 bookmarks. And Qt's Level role
-    // counts from 0 while outlineFromRows assembles against levels counting from 1, so a tree that
-    // *was* walked correctly still lands every chapter and every section at the top. Either half
-    // alone leaves "the top level has two roots" green; only the total alongside it goes red.
+    // wrong have the same symptom and both are still ways to get a bookmark walk wrong. Reading the
+    // tree as a flat list -- one pass over the top level, no descent -- hands back 14 of a real
+    // book's 184 bookmarks, which is what outlineprobe measured on the file behind §64; and a level
+    // that counts from 0 while outlineFromRows assembles against levels counting from 1 lands every
+    // chapter and every section at the top even when the walk itself was right. Either half alone
+    // leaves "the top level has two roots" green; only the total alongside it goes red.
     {
         const QString outlineFile = scratch.filePath(QStringLiteral("nested-outline.pdf"));
         QString outlineError;
         check(writeNestedOutlineSample(source, outlineFile, &outlineError),
               QStringLiteral("a bookmark tree can be written by hand: %1").arg(outlineError));
-        QtPdfBackend withBookmarks;
+        PdfiumBackend withBookmarks;
         const bool opened = withBookmarks.load(outlineFile, QString()) == Document::Status::Ready;
         check(opened, "and the file carrying it opens in the reader");
         const Outline tree = opened ? withBookmarks.outline() : Outline();
@@ -7402,7 +7402,7 @@ int main(int argc, char **argv)
               QStringLiteral("and depth-first, the order a sidebar draws them (%1)")
                   .arg(walked.titles.join(QStringLiteral(", "))));
 
-        QtPdfBackend reader;
+        PdfiumBackend reader;
         check(reader.load(written, QString()) == Document::Status::Ready,
               "the written file opens in the reader");
         const Outline tree = reader.outline();
@@ -7583,7 +7583,7 @@ int main(int argc, char **argv)
               QStringLiteral("depth-first, in the order a sidebar draws them (%1)")
                   .arg(walked.titles.join(QStringLiteral(", "))));
 
-        QtPdfBackend pane;
+        PdfiumBackend pane;
         check(pane.load(asAsked, QString()) == Document::Status::Ready,
               "the file a reader asked for opens in the reader");
         const QString asShown = bookmarksAsText(bookmarksAsTheSidebarSees(pane.outline()));
@@ -7640,7 +7640,7 @@ int main(int argc, char **argv)
                                   .arg(error));
             check(pagesAsReadByTheReader(afterDelete) == pagesBefore - 1,
                   "setup: that save really did take a page out");
-            QtPdfBackend movedReader;
+            PdfiumBackend movedReader;
             check(movedReader.load(afterDelete, QString()) == Document::Status::Ready,
                   "and the file opens");
             const QVector<BookmarkRead> seen = bookmarksAsTheSidebarSees(movedReader.outline());
@@ -7680,7 +7680,7 @@ int main(int argc, char **argv)
             check(headingBack && headingWalk.total == 2,
                   QStringLiteral("qpdf walks both items, the one with no destination included (%1)")
                       .arg(headingWalk.total));
-            QtPdfBackend headingReader;
+            PdfiumBackend headingReader;
             check(headingReader.load(headingFile, QString()) == Document::Status::Ready,
                   "and the file opens");
             const QString headingText = bookmarksAsText(bookmarksAsTheSidebarSees(headingReader.outline()));
@@ -7719,7 +7719,7 @@ int main(int argc, char **argv)
             check(carriedWalked && still.total == 5,
                   QStringLiteral("the document's own tree comes through untouched, all %1 items")
                       .arg(still.total));
-            QtPdfBackend carriedReader;
+            PdfiumBackend carriedReader;
             check(carriedReader.load(carried, QString()) == Document::Status::Ready,
                   "and the copy opens in the reader");
             const QString carriedText = bookmarksAsText(bookmarksAsTheSidebarSees(carriedReader.outline()));
@@ -7734,13 +7734,12 @@ int main(int argc, char **argv)
 
         // ---- §75: does a bookmark naming a spot *inside* a page survive the round trip? ----
         //
-        // §71 recorded this as an inferred consequence and never tested it. The inference holds, and
-        // the test adds something the inference did not have: which of the two candidate fixes would
-        // actually work. The read path asks Qt's model for Title and Page and nothing else
-        // (qtpdfbackend.cpp:527-534), and the writer emits /Fit for every row
-        // (documenteditor.cpp:713-719) -- so both halves are pinned below. The second is a KNOWN GAP
-        // in §47's sense: it says what the product does today, not what it should do, so a real fix
-        // reddens it on purpose.
+        // §71 recorded this as an inferred consequence and never tested it; §99 closed it. The tree
+        // the sidebar draws carries a title and a page and no place inside the page -- that is what
+        // the engine read asks for, and outlineprobe had measured the reason it is not enough: a
+        // real book's 184 bookmarks are all /FitH, which is the one shape a position-in-page answer
+        // cannot give. So the destination comes off the file instead (DocumentEditor::outlineFromSource)
+        // and goes back verbatim, and the two halves pinned below are that read and that write.
         {
             const QString positional = scratch.filePath(QStringLiteral("positional-outline.pdf"));
             error.clear();
@@ -7759,34 +7758,7 @@ int main(int argc, char **argv)
                                  "(parent before its child): %1")
                       .arg(before.destinations.join(QStringLiteral(", "))));
 
-            // What Qt's own model sees, because that decides the cost of a fix. It reports a
-            // position for /XYZ and none for /FitH -- and outlineprobe measured that a real book's
-            // 184 bookmarks are all /FitH. So "just ask the model for its Location role" would
-            // rescue one row out of four here, and nothing in that book.
-            QPdfDocument qtDocument;
-            check(qtDocument.load(positional) == QPdfDocument::Error::None,
-                  "and Qt opens the same file");
-            QPdfBookmarkModel qtBookmarks;
-            qtBookmarks.setDocument(&qtDocument);
-            const auto qtLocationOf = [&qtBookmarks](int row) {
-                const QModelIndex index = qtBookmarks.index(row, 0, QModelIndex());
-                if (!index.isValid())
-                    return QPointF(-1, -1);
-                return qtBookmarks.data(index, static_cast<int>(QPdfBookmarkModel::Role::Location))
-                    .toPointF();
-            };
-            const QPointF xyzSeen = qtLocationOf(0);
-            const QPointF fitHorizontalSeen = qtLocationOf(1);
-            check(xyzSeen.y() > 0.0,
-                  QStringLiteral("Qt reports the /XYZ bookmark's position at (%1,%2) -- in "
-                                 "top-left origin, so a writer has to convert it back")
-                      .arg(xyzSeen.x()).arg(xyzSeen.y()));
-            check(fitHorizontalSeen.isNull(),
-                  QStringLiteral("and no position at all for the /FitH one, at (%1,%2) -- the "
-                                 "shape real books use")
-                      .arg(fitHorizontalSeen.x()).arg(fitHorizontalSeen.y()));
-
-            QtPdfBackend ours;
+            PdfiumBackend ours;
             check(ours.load(positional, QString()) == Document::Status::Ready,
                   "our reader opens it too");
             const QVector<OutlineRow> asSeen = outlineRowsOf(ours.outline());
@@ -7794,10 +7766,9 @@ int main(int argc, char **argv)
                   QStringLiteral("five rows reach the flat list the box would show (%1)")
                       .arg(asSeen.size()));
             // Still true, and now harmless: the sidebar's own reading carries no place inside the
-            // page (§75's cause), which is exactly why route (b) -- ask Qt for one more role -- was
-            // recorded as a false fix. §99 takes the destinations from the file instead, so this
-            // costs nothing; it stays pinned because it is the reason the position cannot come from
-            // this list.
+            // page, which is exactly why §99 reads destinations off the file. A QPointF cannot say
+            // `/FitH 650` (one number, no horizontal position) in the first place, so this is not
+            // the half that would ever have rescued that book.
             check(asSeen.at(0).location.isNull() && asSeen.at(1).location.isNull(),
                   QStringLiteral("the sidebar's read still carries no position for either of them "
                                  "(%1 / %2) -- which is why §99 reads destinations off the file")
@@ -8251,7 +8222,7 @@ int main(int argc, char **argv)
     // stream. PDF 2.0 §12.5.3 is explicit that a viewer has to generate the appearance of an
     // annotation that has none -- a highlight paints its quad points, a square strokes its border,
     // a note draws an icon -- so "no /AP" is not "nothing to draw". This block pins that premise;
-    // the pixel answer is read below, off `QtPdfBackend::render`.
+    // the pixel answer is read below, off `PdfiumBackend::render`.
     //
     // Not off the screen. The channel §54 and §57 used for the form-field question -- gui-probe's
     // -Mode formpage, which grabs the screen with CopyFromScreen -- was tried first here and gave
@@ -8317,7 +8288,7 @@ int main(int argc, char **argv)
         // column is the one that keeps the first from being read as "annotations are drawn" when the
         // pixels actually come from something else in the page.
         const auto renderFirstPage = [](const QString &path, bool withAnnotations) {
-            QtPdfBackend document;
+            PdfiumBackend document;
             if (document.load(path, QString()) != Document::Status::Ready)
                 return QImage();
             RenderOptions options;
@@ -8439,9 +8410,15 @@ int main(int argc, char **argv)
         // And the claim §54/§57 reached on the screen -- that a form field draws nothing -- asked of
         // this instrument instead. It matters which way it goes: §57's zero was read off a screen
         // crop, and the same crop in §81 turned out to be able to show a third-party window instead
-        // of the page. A zero here keeps the earlier round standing (on a channel that has since
-        // been shown to be fallible); a non-zero would mean the "表单层不可见" sentence had to be
-        // retracted rather than cited.
+        // of the page.
+        //
+        // It goes the other way now, and that is the whole of why F7 was done. The field is drawn
+        // because the reader initialises PDFium's form layer per document and draws the widgets
+        // after the page (FPDFDOC_InitFormFillEnvironment + FPDF_FFLDraw, pdfiumbackend.cpp); this
+        // file has the row plan sec.4.1 measured as 5058 pixels at page-view size. A widget with no
+        // /AP is not "nothing to draw with" any more -- PDFium makes its own face for it. The
+        // control that says this row is the form layer and not the annotation flag is the row below
+        // it, which moves by 0 when that flag is pulled.
         {
             const QString fieldPath = scratch.filePath(QStringLiteral("field-flat-copy.pdf"));
             QString fieldError;
@@ -8459,13 +8436,9 @@ int main(int argc, char **argv)
                                     .arg(field.box.y())
                                     .arg(field.box.width())
                                     .arg(field.box.height())));
-            // This field carries no /AP, which is the shape §54 used (not §57's, which brought its
-            // own drawing). So a difference here would be the renderer inventing a box for a widget
-            // that brought nothing to draw with.
-            check(field.pixels == 0,
-                  QStringLiteral("a /Widget with no /AP draws nothing -- the §54 sentence, now "
-                                 "measured off the render path rather than off a screen crop: %1 "
-                                 "pixels differ")
+            check(field.pixels > 0,
+                  QStringLiteral("a /Widget with no /AP draws something now -- §54's sentence is "
+                                 "retired with the engine it described: %1 pixels differ")
                       .arg(field.pixels));
         }
 
@@ -8477,33 +8450,46 @@ int main(int argc, char **argv)
         // off the render path the app actually uses. The four variants are not four chances to be
         // right: each isolates one of the explanations the sentence could have, and they are only
         // separable because everything but one key changes between them.
+        //
+        // What §82 concluded from this table -- that the /Subtype name is what hides the widget, and
+        // that no lever this layer has would bring it back -- is now half retracted, and the table is
+        // what says which half. The rows still separate, but the line between them moved: what
+        // decides whether a widget draws is whether the form knows it, and the lever is the form
+        // layer rather than the annotation flag. Under Qt's wrapper every widget row read 0 because
+        // there was no second lever to pull at all, and that is what made F7 worth doing.
         {
             const QString painted = QStringLiteral("APPEARS-HERE");
             // Each row's expectation is written down next to its shape rather than derived from it:
-            // the point of the table is that the subtype name is the only thing separating the two
-            // groups, and that claim only exists if the rows say which group they were measured in.
+            // the point of the table is which lever puts the mark on the page, and that claim only
+            // exists if the rows say which group they were measured in.
+            enum class Lever
+            {
+                AnnotFlag, // a plain annotation: drawn when FPDF_ANNOT is set, and not otherwise
+                FormLayer, // a registered widget: drawn by the form pass, which ignores that flag
+                Nothing    // a widget the form does not know: no lever draws it
+            };
             struct Shape
             {
                 QString name;
                 AppearanceProbe probe;
-                bool draws;
+                Lever lever;
             };
             const QList<Shape> shapes
                 = {{QStringLiteral("square-carries-the-painting"),
                     AppearanceProbe{"/Square", false, false, false},
-                    true},
+                    Lever::AnnotFlag},
                    {QStringLiteral("square-with-field-keys"),
                     AppearanceProbe{"/Square", false, false, true},
-                    true},
+                    Lever::AnnotFlag},
                    {QStringLiteral("widget-unregistered"),
                     AppearanceProbe{"/Widget", false, false, false},
-                    false},
+                    Lever::Nothing},
                    {QStringLiteral("widget-in-acroform"),
                     AppearanceProbe{"/Widget", true, false, true},
-                    false},
+                    Lever::FormLayer},
                    {QStringLiteral("widget-need-appearance"),
                     AppearanceProbe{"/Widget", true, true, true},
-                    false}};
+                    Lever::FormLayer}};
             const QRect paintBox(60, 842 - 630, 200, 30);
             const auto describe = [](const QRect &area) {
                 return area.isNull()
@@ -8546,7 +8532,7 @@ int main(int argc, char **argv)
                          .arg(describe(drawn.box))
                          .arg(describe(paintBox))
                          .arg(flag.pixels));
-                if (shape.draws) {
+                if (shape.lever == Lever::AnnotFlag) {
                     check(drawn.pixels > 0,
                           QStringLiteral("%1: an appearance stream this page carries reaches the "
                                          "image -- %2 pixels -- so the blank rows below are not a "
@@ -8564,18 +8550,35 @@ int main(int argc, char **argv)
                                          "with it")
                               .arg(shape.name)
                               .arg(flag.pixels));
-                } else {
-                    check(drawn.pixels == 0,
-                          QStringLiteral("%1: the same stream on a /Widget draws nothing -- %2 "
-                                         "pixels differ")
+                } else if (shape.lever == Lever::FormLayer) {
+                    check(drawn.pixels > 0,
+                          QStringLiteral("%1: the same stream on a registered /Widget now draws -- "
+                                         "%2 pixels, where §82 read 0")
                               .arg(shape.name)
                               .arg(drawn.pixels));
-                    // Not "and the flag was never on": pulling the one lever this API has moves
-                    // nothing here either, which is what turns the row from an observation into the
-                    // statement that there is no lever we are failing to pull.
+                    // The widget rows move by nothing when the flag is pulled -- not because the
+                    // mark was never there, which the row above rules out, but because the form
+                    // layer draws widgets on its own pass. fpdf_formfill.h says as much, and
+                    // plan sec.4.1's row "pdfium-page+ffl（不给注释开关）" measured it: the widget
+                    // keeps its pixels and the square loses all of its.
                     check(flag.pixels == 0,
-                          QStringLiteral("%1: and the Annotations flag moves nothing for it either "
-                                         "-- %2 pixels")
+                          QStringLiteral("%1: and the Annotations flag moves nothing for the widget "
+                                         "-- the form layer put it there, not that flag (%2 pixels)")
+                              .arg(shape.name)
+                              .arg(flag.pixels));
+                } else {
+                    // §51's finding, still standing and now measured on the render path: a widget
+                    // that is not in /AcroForm /Fields is not in the form either, and the form is
+                    // what draws widgets. Registration is the thing that makes a widget, not the
+                    // /Subtype name.
+                    check(drawn.pixels == 0,
+                          QStringLiteral("%1: a /Widget the form does not know draws nothing -- %2 "
+                                         "pixels, and the file does carry the stream")
+                              .arg(shape.name)
+                              .arg(drawn.pixels));
+                    check(flag.pixels == 0,
+                          QStringLiteral("%1: and neither lever reaches it -- %2 pixels move with "
+                                         "the annotation flag")
                               .arg(shape.name)
                               .arg(flag.pixels));
                 }
@@ -8603,17 +8606,17 @@ int main(int argc, char **argv)
                                      "page (%1 / %2), so the number below is the renderer's")
                           .arg(registered)
                           .arg(onThePage));
-                // §57's conclusion was reached off a screen crop that §81 later showed can show
-                // something else entirely -- and §58 escalated it to "表单层整层不可见". This says the
-                // first part was right after all, and the second part was too wide: what is
-                // invisible is the widget subtype, not the annotation layer.
-                check(drawn.pixels == 0,
-                      QStringLiteral("§57's 0 pixels reproduces off the render path, not only off "
-                                     "a screen: %1 differ").arg(drawn.pixels));
+                // §57 printed 0 here, and §58 escalated that to "表单层整层不可见". Both readings
+                // were of the engine that never initialised a form layer. On the one the program
+                // now uses, §57's own sample draws: what was invisible was the widget subtype under
+                // that wrapper, not the annotation layer, and not a law of the file format.
+                check(drawn.pixels > 0,
+                      QStringLiteral("§57's sample, which used to read 0 off the render path, draws "
+                                     "%1 pixels now").arg(drawn.pixels));
             }
         }
 
-        // ---- §94: does that 0 reach the four paths that are not the page view? ----
+        // ---- §94: does the mark reach the four paths that are not the page view? ----
         //
         // §82 closed with an inference -- print, image export, the thumbnail strip and the preview
         // pane all ask for the same drawing, so they must lose the same thing. §58's lesson is that an
@@ -8625,10 +8628,16 @@ int main(int argc, char **argv)
         //   src/export/imageexport.cpp:82         annotations=true, optimizedForLcd=false, by DPI
         //   src/print/printjob.cpp:190            annotations=true, optimizedForLcd=false, by sheet
         // What these rows do NOT measure: the printer driver, the file the exporter writes, and the
-        // shell's compositing. They measure the one place the /Subtype decision can be made --
-        // QtPdfBackend::render() -- with each path's own options and size. If a call site's option set
+        // shell's compositing. They measure the one place the decision is made --
+        // PdfiumBackend::render() -- with each path's own options and size. If a call site's option set
         // changes later, this table will not notice, which is why every row names the file and line it
         // copies and why the default itself is asserted once below rather than assumed four times.
+        //
+        // §94 read all six rows as widget=0 with square>0, and that is what the Qt wrapper did: it
+        // never initialised a form layer, so a field's answer was lost on paper, in the exported
+        // image and in both shell surfaces as well as on screen. The form layer is per document and
+        // the pass is per render, so the fix reaches every row at once -- which is what the numbers
+        // below are now required to show.
         {
             struct RenderPath
             {
@@ -8645,7 +8654,7 @@ int main(int argc, char **argv)
                    {"print-a4-300dpi", QSize(2480, 3508), false}};
 
             const auto renderAt = [](const QString &path, const QSize &pixels, bool lcd) {
-                QtPdfBackend document;
+                PdfiumBackend document;
                 if (document.load(path, QString()) != Document::Status::Ready)
                     return QImage();
                 RenderOptions options;
@@ -8726,12 +8735,54 @@ int main(int argc, char **argv)
                                      "layer at all")
                           .arg(QString::fromLatin1(p.name))
                           .arg(square));
-                check(widget == 0,
-                      QStringLiteral("%1: the same mark on a /Widget contributes %2 pixels at this "
-                                     "size -- the print/export/thumbnail/preview paths lose the "
-                                     "field's answer the same way the page view does")
+                check(widget > 0,
+                      QStringLiteral("%1: the same mark on a /Widget reaches %2 pixels at this size "
+                                     "-- the print, export, thumbnail and preview paths draw the "
+                                     "field's answer, not only the page view")
                           .arg(QString::fromLatin1(p.name))
                           .arg(widget));
+            }
+
+            // ---- the printing flag, pinned as inert ----
+            //
+            // src/print/printjob.cpp sets RenderOptions::printing since F7-F,
+            // because that is the flag the library names for paper. What it does
+            // here is nothing, and that is measured rather than assumed: the same
+            // page at A4/300 dpi, with and without it, is pixel for pixel the same
+            // picture on every fixture this table walks. The row exists for the
+            // other direction -- a future PDFium that starts honouring the flag
+            // would change what paper looks like without changing any code in this
+            // program, and this is the line that says so.
+            {
+                const QSize printSize(2480, 3508);
+                const auto renderPrinted = [&](const QString &path, bool printing) {
+                    PdfiumBackend document;
+                    if (document.load(path, QString()) != Document::Status::Ready)
+                        return QImage();
+                    RenderOptions options;
+                    options.optimizedForLcd = false;
+                    options.printing = printing;
+                    return document.render(0, printSize, options);
+                };
+                const QImage asScreen = renderPrinted(widgetPath, false);
+                const QImage asPaper = renderPrinted(widgetPath, true);
+                check(!asScreen.isNull() && !asPaper.isNull()
+                          && asScreen.size() == printSize && asPaper.size() == printSize,
+                      "the print size renders with and without the printing flag");
+                const QRect whole(QPoint(0, 0), printSize);
+                const int moved = differingWithin(asScreen, asPaper, whole);
+                check(moved == 0,
+                      QStringLiteral("the printing flag changes no pixels at all on paper (%1 of %2 "
+                                     "differ) -- if this ever goes red, every print number in this "
+                                     "file describes a different render")
+                          .arg(moved)
+                          .arg(printSize.width() * printSize.height()));
+                const QImage plainPrint = renderPrinted(source, true);
+                const QRect printBox(250, 883, 834, 125); // paintPoints at 2480/595
+                check(differingWithin(plainPrint, asPaper, printBox) > 0,
+                      QStringLiteral("and the field is still drawn under it, so the flag did not "
+                                     "trade the form layer for nothing (%1 pixels)")
+                          .arg(differingWithin(plainPrint, asPaper, printBox)));
             }
         }
     }
@@ -8739,12 +8790,20 @@ int main(int argc, char **argv)
     // ---- a name that is readable but not replaceable ----
     //
     // §79. The last step of a save is one MoveFileExW per file with MOVEFILE_REPLACE_EXISTING, and
-    // while a program holds a PDF open -- including this one, in another tab or another window --
-    // Windows withholds the delete right that step needs. Measured first in
-    // tests/documenttab_smoke.cpp, on a name a tab of this program was reading: error 5, arriving
-    // *after* the whole document had been rebuilt and written under a staged name, with the reader
-    // told a name this program itself was holding might be "locked by another program". So the save
-    // now asks the same question before it stages anything.
+    // while a program holds a PDF open Windows withholds the delete right that step needs. Measured
+    // first in tests/documenttab_smoke.cpp, on a name a tab of this program was reading: error 5,
+    // arriving *after* the whole document had been rebuilt and written under a staged name, with the
+    // reader told a name this program itself was holding might be "locked by another program". So the
+    // save now asks the same question before it stages anything.
+    //
+    // F7 changed who that reader can still be. This program's own document read goes through a
+    // handle that shares DELETE (docs/pdfium-plan.md R7), so another tab showing the file no longer
+    // withholds the right -- pdfiumbackend_smoke measures the delete and the replace, and the reload
+    // block in documenttab_smoke now pins the flipped half of §104. What does block is a reader that
+    // does not share DELETE: another program, or qpdf holding a merge's input file open. That is the
+    // case the guard exists for, so the name is held here by an ordinary file handle rather than by
+    // a PDF parser -- which is the shape that was measured in §79 in the first place, and the one
+    // that survived the engine swap.
     //
     // Both halves are pinned because §70's rule is that a contract with two halves needs one
     // assertion each: a block that only exercises the locked name would keep passing if the probe
@@ -8759,10 +8818,10 @@ int main(int argc, char **argv)
         const int victimPages = pagesAsReadByTheReader(victim);
 
         {
-            QPdfDocument reader;
-            check(reader.load(victim) == QPdfDocument::Error::None,
-                  QStringLiteral("setup: and a reader has it open the way another tab does (%1)")
-                      .arg(int(reader.error())));
+            QFile holder(victim);
+            check(holder.open(QIODevice::ReadOnly),
+                  QStringLiteral("setup: and somebody has the name open for reading (%1)")
+                      .arg(holder.errorString()));
 
             DocumentEditor guarded;
             check(guarded.open(source, QString(), &error),
@@ -8771,7 +8830,7 @@ int main(int argc, char **argv)
                   QStringLiteral("setup: one page is taken out: %1").arg(error));
             error.clear();
             check(!guarded.saveAs(victim, &error),
-                  QStringLiteral("a save aimed at a name this program is reading refuses instead "
+                  QStringLiteral("a save aimed at a name that cannot be replaced refuses instead "
                                  "of pretending it wrote: %1")
                       .arg(error));
             check(error.contains(QStringLiteral("盖不掉")),

@@ -19,14 +19,12 @@
 #include <QSharedPointer>
 
 DocumentOutput::DocumentOutput(QWidget *host, PageView *view, ForegroundJobs *jobs,
-                               std::function<Document *()> document,
-                               std::function<bool()> formFields)
+                               std::function<Document *()> document)
     : QObject(host)
     , host(host)
     , pageView(view)
     , jobs(jobs)
     , documentProvider(std::move(document))
-    , formFieldsInSource(std::move(formFields))
 {
 }
 
@@ -45,8 +43,11 @@ void DocumentOutput::print()
     const ForegroundJobs::Scope scope(jobs);
 
     QPrinter printer(QPrinter::HighResolution);
-    PrintDialog dialog(host->window(), &printer, pageView->currentPage(), document->pageCount(),
-                       formFieldsInSource ? formFieldsInSource() : false);
+    // No warning about empty fields here: the form layer draws a field's
+    // appearance into every page image this path renders, print included
+    // (docs/pdfium-plan.md sec.7's first step, shipped in F7-C).
+    PrintDialog dialog(host->window(), &printer, pageView->currentPage(),
+                       document->pageCount());
     if (dialog.exec() != QDialog::Accepted)
         return;
     const Print::Settings settings = dialog.settings();

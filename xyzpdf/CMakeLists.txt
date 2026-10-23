@@ -82,11 +82,14 @@ endif()
 # business, but the recognition itself is seconds of work and goes to the
 # global pool rather than the thread that draws.
 find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets Network Svg Concurrent PrintSupport LinguistTools)
-# Qt PDF is PDFium behind a Qt-shaped API and is LGPLv3, so it stays a DLL of
-# its own like every other LGPL dependency here -- linked, never absorbed.
-# PdfWidgets is deliberately NOT required: the plan rules out QPdfView, and
-# asking for the module would make it tempting.
-find_package(Qt6 6.7 REQUIRED COMPONENTS Pdf)
+# Qt PDF is deliberately absent. It was PDFium behind a Qt-shaped API, and that
+# wrapper is the reason a filled form field painted nothing at all
+# (docs/pdfium-plan.md sec.4): it never initialises the form-fill environment and
+# gives no way to ask it to. F7 replaced it with the library itself; the payload
+# carries pdfium.dll and no Qt6Pdf.dll, which is also why windeployqt is told to
+# leave Qt's PDF image-format plugin out below.
+# PdfWidgets stays out for the same reason it always was: the plan rules out
+# QPdfView, and asking for the module would make it tempting.
 
 # vcpkg installs into ../vcpkg_installed/<triplet> from the repository root, and
 # Qt Creator does not receive the vcpkg toolchain file from a normal Desktop
@@ -240,6 +243,85 @@ configure_file(src/core/packageconfig.h.in
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 # ---------------------------------------------------------------------------
+# The document engine
+# ---------------------------------------------------------------------------
+
+# PDFium, called directly. docs/pdfium-plan.md sec.10 F7 replaced Qt PDF with
+# this, slice by slice, and F7-E took the development switch and the second
+# implementation out at the end: a build has one engine and it is this one,
+# because the point of the exercise was that a package carries exactly one thing
+# that can read a PDF (sec.8: the alternative was +7.59 MB of both).
+#
+# Where the release is. tools/fetch_pdfium.py puts it in <repo>/pdfium_installed
+# (gitignored); XYZPDF_PDFIUM_DIR points at an extracted release somewhere else.
+# Nothing here downloads anything, and a build without one stops here with the
+# command to run -- the same treatment vcpkg's absence gets above.
+set(XYZPDF_PDFIUM_DIR "" CACHE PATH
+    "An extracted pdfium-binaries release (include/, lib/, bin/). Empty means pdfium_installed/ if present.")
+set(XYZPDF_PDFIUM_ROOT "")
+if(NOT XYZPDF_PDFIUM_DIR STREQUAL "")
+    file(TO_CMAKE_PATH "${XYZPDF_PDFIUM_DIR}" XYZPDF_PDFIUM_ROOT)
+else()
+    set(XYZPDF_PDFIUM_DEFAULT "${CMAKE_CURRENT_LIST_DIR}/../pdfium_installed")
+    if(EXISTS "${XYZPDF_PDFIUM_DEFAULT}")
+        file(TO_CMAKE_PATH "${XYZPDF_PDFIUM_DEFAULT}" XYZPDF_PDFIUM_ROOT)
+    endif()
+endif()
+
+if(XYZPDF_PDFIUM_ROOT STREQUAL ""
+   OR NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/include/fpdfview.h"
+   OR NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/lib/pdfium.dll.lib"
+   OR NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll")
+    message(FATAL_ERROR
+        "No PDFium release was found. Run `python tools/fetch_pdfium.py` (it verifies the pinned "
+        "sha256) from this directory, or pass -DXYZPDF_PDFIUM_DIR=<extracted release>. "
+        "XYZPDF_PDFIUM_DIR is '${XYZPDF_PDFIUM_DIR}'; include/fpdfview.h, lib/pdfium.dll.lib and "
+        "bin/pdfium.dll all have to be under it.")
+endif()
+
+# One imported target, so that every consumer below links the same bytes and
+# nobody has to remember which of the three paths the include directory was.
+add_library(xyzpdf_pdfium SHARED IMPORTED)
+set_target_properties(xyzpdf_pdfium PROPERTIES
+    IMPORTED_IMPLIB "${XYZPDF_PDFIUM_ROOT}/lib/pdfium.dll.lib"
+    IMPORTED_LOCATION "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll"
+    INTERFACE_INCLUDE_DIRECTORIES "${XYZPDF_PDFIUM_ROOT}/include")
+
+# The release's own version string, compiled in, so the log says which bytes it was measured
+# against instead of leaving that to whoever ran it to remember (sec.97's rule about identity).
+set(XYZPDF_PDFIUM_VERSION "unknown")
+if(EXISTS "${XYZPDF_PDFIUM_ROOT}/VERSION")
+    file(STRINGS "${XYZPDF_PDFIUM_ROOT}/VERSION" XYZPDF_PDFIUM_VERSION_LINES)
+    set(XYZPDF_PDFIUM_VERSION "")
+    foreach(component MAJOR MINOR BUILD PATCH)
+        foreach(line ${XYZPDF_PDFIUM_VERSION_LINES})
+            if(line MATCHES "^${component}=([0-9]+)$")
+                string(APPEND XYZPDF_PDFIUM_VERSION "${CMAKE_MATCH_1}.")
+            endif()
+        endforeach()
+    endforeach()
+    # Four components, four dots appended: crop the one past the patch number. Counted rather
+    # than regexed, because a regex for "one character at the end" has to survive CMake's own
+    # escape rules on the way to the regex engine.
+    string(LENGTH "${XYZPDF_PDFIUM_VERSION}" XYZPDF_PDFIUM_VERSION_LENGTH)
+    math(EXPR XYZPDF_PDFIUM_VERSION_CROP "${XYZPDF_PDFIUM_VERSION_LENGTH} - 1")
+    string(SUBSTRING "${XYZPDF_PDFIUM_VERSION}" 0 ${XYZPDF_PDFIUM_VERSION_CROP}
+           XYZPDF_PDFIUM_VERSION)
+endif()
+message(STATUS "PDFium ${XYZPDF_PDFIUM_VERSION} from ${XYZPDF_PDFIUM_ROOT}")
+
+# Compiles the engine into TARGET. Used by the program, by pdfprobe, by both
+# shell handlers and by every test that opens a document -- that is, by every
+# target that exists in the package and so has to answer with the engine the
+# reader uses.
+function(xyzpdf_use_document_backend TARGET)
+    target_sources(${TARGET} PRIVATE
+        src/document/pdfiumbackend.h
+        src/document/pdfiumbackend.cpp)
+    target_link_libraries(${TARGET} PRIVATE xyzpdf_pdfium)
+endfunction()
+
+# ---------------------------------------------------------------------------
 # The program
 # ---------------------------------------------------------------------------
 
@@ -274,13 +356,13 @@ set(XYZPDF_SOURCES
     src/document/bookmarkposition.h
     src/document/bookmarkposition.cpp
     src/document/document.h
+    src/document/documentfactory.h
+    src/document/documentfactory.cpp
     src/document/docmetadata.h
     src/document/outline.h
     src/document/outline.cpp
     src/document/pagemetrics.h
     src/document/pagemetrics.cpp
-    src/document/qtpdfbackend.h
-    src/document/qtpdfbackend.cpp
     src/document/textlayer.h
     src/document/textlayer.cpp
     src/document/textsearch.h
@@ -390,13 +472,16 @@ set(XYZPDF_SOURCES
 
 qt_add_executable(xyzpdf WIN32 MACOSX_BUNDLE ${XYZPDF_SOURCES})
 
+# The engine, chosen above. This is the whole of the program's backend decision:
+# the factory includes the header this compiles and no other one.
+xyzpdf_use_document_backend(xyzpdf)
+
 target_link_libraries(xyzpdf PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
     Qt6::Svg
-    Qt6::Pdf
     Qt6::Concurrent
     Qt6::PrintSupport
     # From src/edit, which is the only place it is named: the structural editor
@@ -482,6 +567,13 @@ if(WIN32)
         find_program(XYZPDF_WINDEPLOYQT NAMES windeployqt
                      HINTS "${QT6_INSTALL_PREFIX}/bin")
     endif()
+    # windeployqt's imageformats set includes qpdf.dll -- Qt's plugin for loading
+    # a PDF through QImage -- and that plugin links Qt6Pdf.dll. This program never
+    # asks QImage for a PDF, and deploying the plugin would put a second PDF
+    # engine in the payload the whole F7 exercise is about carrying one of.
+    # Excluded by name; measured by listing the directory afterwards, not by
+    # trusting the flag (the plugin set is discovered, not declared).
+    set(XYZPDF_WINDEPLOYQT_EXCLUDES --exclude-plugins qpdf)
     if(XYZPDF_WINDEPLOYQT)
         add_custom_command(TARGET xyzpdf POST_BUILD
             COMMAND "${XYZPDF_WINDEPLOYQT}"
@@ -489,6 +581,7 @@ if(WIN32)
                     --no-compiler-runtime
                     --no-system-d3d-compiler
                     --no-opengl-sw
+                    ${XYZPDF_WINDEPLOYQT_EXCLUDES}
                     "$<TARGET_FILE:xyzpdf>"
             COMMENT "Deploying the Qt runtime beside xyzpdf.exe"
             VERBATIM)
@@ -512,6 +605,14 @@ if(WIN32)
             COMMENT "Deploying the vcpkg runtime beside xyzpdf.exe"
             VERBATIM)
     endif()
+
+    # And the engine's own DLL, by the same argument: it is not Qt's to deploy, so
+    # nothing else puts it there.
+    add_custom_command(TARGET xyzpdf POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "$<TARGET_FILE_DIR:xyzpdf>"
+        COMMENT "Deploying pdfium.dll beside xyzpdf.exe"
+        VERBATIM)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -546,6 +647,18 @@ function(xyzpdf_add_test NAME)
         add_custom_command(TARGET xyzpdf_${NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     ${XYZPDF_VCPKG_RUNTIME_DLLS} "${CMAKE_BINARY_DIR}/tests"
+            VERBATIM)
+    endif()
+    # The same argument for the engine: a test that opens a document loads
+    # pdfium.dll, the loader looks beside the executable and on PATH, and the
+    # harness gives a test only Qt's bin on PATH. Copied for every test rather
+    # than only for the ones that ask, because which those are changes with the
+    # suite and the cost of doing it for all is one file in a directory the
+    # package does not read.
+    if(WIN32)
+        add_custom_command(TARGET xyzpdf_${NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "${CMAKE_BINARY_DIR}/tests"
             VERBATIM)
     endif()
 endfunction()
@@ -584,22 +697,22 @@ endif()
 option(XYZPDF_BUILD_DOCUMENT_SMOKE "Build the document backend smoke test" OFF)
 if(XYZPDF_BUILD_DOCUMENT_SMOKE)
     xyzpdf_add_test(document_smoke
-        SOURCES src/document/qtpdfbackend.cpp
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
-        LIBRARIES Qt6::Pdf)
+        LIBRARIES xyzpdf_pdfium)
 endif()
 
 # The first native dependency, proven to work before the program uses it. Linked
-# against Qt PDF as well as qpdf because the claim being tested is the handoff
-# between them, not either one alone -- see tests/qpdf_smoke.cpp.
+# against the reader's engine as well as qpdf because the claim being tested is
+# the handoff between them, not either one alone -- see tests/qpdf_smoke.cpp.
 option(XYZPDF_BUILD_QPDF_SMOKE "Build the QPDF round-trip smoke test" OFF)
 if(XYZPDF_BUILD_QPDF_SMOKE)
     xyzpdf_add_test(qpdf_smoke
-        SOURCES src/document/qtpdfbackend.cpp
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
-        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
 endif()
 
 # The first thing the program writes with that dependency: pages taken out of a
@@ -611,10 +724,10 @@ option(XYZPDF_BUILD_DOCUMENTEDITOR_SMOKE "Build the page-deletion smoke test" OF
 if(XYZPDF_BUILD_DOCUMENTEDITOR_SMOKE)
     xyzpdf_add_test(documenteditor_smoke
         SOURCES src/edit/documenteditor.cpp
-                src/document/qtpdfbackend.cpp
+                src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
-        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
 endif()
 
 # What QPDF does with an encrypted file when only the user password is in hand. Built
@@ -627,10 +740,10 @@ endif()
 option(XYZPDF_BUILD_ENCRYPTPROBE "Build the encrypted-document measurement" OFF)
 if(XYZPDF_BUILD_ENCRYPTPROBE)
     xyzpdf_add_test(encryptprobe
-        SOURCES src/document/qtpdfbackend.cpp
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
-        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
 endif()
 
 # Whether a watermark can be a feature, and which of the two ways of drawing one the
@@ -641,10 +754,10 @@ endif()
 option(XYZPDF_BUILD_WATERMARKPROBE "Build the watermark-route measurement" OFF)
 if(XYZPDF_BUILD_WATERMARKPROBE)
     xyzpdf_add_test(watermarkprobe
-        SOURCES src/document/qtpdfbackend.cpp
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
-        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
 endif()
 
 # Whether 书签编辑 can be a feature at all, and what it would have to keep true. QPDF's outline
@@ -652,16 +765,17 @@ endif()
 # setter -- so an editor here means writing /Outlines by hand: /Title /Parent /First /Last /Prev
 # /Next /Count, over the four destination shapes a real file uses. The probe builds one outline in
 # every shape, breaks one consistency at a time in a separate file, and reads all of them back
-# through three readers: qpdf, Qt's bookmark model (what the sidebar shows), and our own
-# QtPdfBackend::outline(). See the header comment of tests/outlineprobe.cpp.
+# through two readers: qpdf, and our own PdfiumBackend::outline() -- what the sidebar draws.
+# (Until F7-E a third reader sat between them, Qt's bookmark model; it is not in this build any
+# more.) See the header comment of tests/outlineprobe.cpp.
 option(XYZPDF_BUILD_OUTLINEPROBE "Build the outline-editing measurement" OFF)
 if(XYZPDF_BUILD_OUTLINEPROBE)
     xyzpdf_add_test(outlineprobe
-        SOURCES src/document/qtpdfbackend.cpp
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/edit/documenteditor.cpp
-        LIBRARIES Qt6::Pdf qpdf::libqpdf)
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
 endif()
 
 # The performance baseline. Built with everything else and deliberately not run:
@@ -673,12 +787,17 @@ endif()
 option(XYZPDF_BUILD_PERF_BENCH "Build the performance baseline measurement" OFF)
 if(XYZPDF_BUILD_PERF_BENCH)
     xyzpdf_add_test(perf_bench
-        SOURCES src/document/qtpdfbackend.cpp
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textsearch.cpp
                 src/render/rendercache.cpp
-        LIBRARIES Qt6::Pdf)
+        LIBRARIES xyzpdf_pdfium)
+    # The table says which release produced it, the same reason the program's own
+    # PDFium version is compiled in: a number in docs/perf.md without an engine
+    # version beside it cannot be re-measured against.
+    target_compile_definitions(xyzpdf_perf_bench PRIVATE
+        XYZPDF_PDFIUM_VERSION="${XYZPDF_PDFIUM_VERSION}")
 endif()
 
 # The tree the bookmark list is turned into, with no PDF anywhere near it.
@@ -711,12 +830,12 @@ endif()
 option(XYZPDF_BUILD_RENDER_SMOKE "Build the page rendering smoke test" OFF)
 if(XYZPDF_BUILD_RENDER_SMOKE)
     xyzpdf_add_test(render_smoke
-        SOURCES src/document/qtpdfbackend.cpp
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
-        LIBRARIES Qt6::Pdf)
+        LIBRARIES xyzpdf_pdfium)
 endif()
 
 # The memory budget, and which page is evicted when it is reached.
@@ -754,7 +873,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     # The tab owns the recognition flow, so the engine comes with it -- which
     # also means this test runs real Windows OCR once, on the region drag it
     # performs below.
-    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
+    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
     if(WIN32)
         list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp advapi32)
     endif()
@@ -766,7 +885,8 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/view/pagelayout.cpp
                 src/view/zoomcontroller.cpp
                 src/document/bookmarkposition.cpp
-                src/document/qtpdfbackend.cpp
+                src/document/documentfactory.cpp
+                src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textlayer.cpp
@@ -818,7 +938,7 @@ endif()
 # call to setAcceptDrops(), and neither is visible in the handlers.
 option(XYZPDF_BUILD_MAINWINDOW_SMOKE "Build the window drag-and-drop smoke test" OFF)
 if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
-    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets Qt6::Pdf Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
+    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
     if(WIN32)
         list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp advapi32)
     endif()
@@ -833,7 +953,8 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/core/thirdpartynotices.cpp
                 src/core/windowdialogs.cpp
                 src/document/bookmarkposition.cpp
-                src/document/qtpdfbackend.cpp
+                src/document/documentfactory.cpp
+                src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textlayer.cpp
@@ -918,10 +1039,10 @@ if(XYZPDF_BUILD_WORDEXPORT_SMOKE)
         SOURCES src/export/docxwriter.cpp
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
-                src/document/qtpdfbackend.cpp
+                src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
-        LIBRARIES Qt6::Pdf)
+        LIBRARIES xyzpdf_pdfium)
 endif()
 
 # The arithmetic behind "select some words and translate them": the request URL
@@ -1005,6 +1126,9 @@ endif()
 option(XYZPDF_BUILD_PREVIEWHANDLER_SMOKE "Build the preview handler smoke test" OFF)
 if(XYZPDF_BUILD_PREVIEWHANDLER_SMOKE AND WIN32)
     xyzpdf_add_test(previewhandler_smoke LIBRARIES ole32)
+    # The test watches which engine DLL ends up in its process: pdfium.dll, and
+    # not the Qt6Pdf.dll that used to be here. A handler wired back to the other
+    # backend -- the failure F7-D exists to prevent -- reddens those two lines.
 endif()
 
 # The thumbnail provider, driven the same way and for the same reason: it is a DLL
@@ -1036,7 +1160,7 @@ endif()
 # tools/pdfprobe.cpp, which prints numbers rather than passing or failing.
 #
 # It is here as an option like the tests because it has to be built against the
-# same Qt PDF as the program, and it is built into the build directory rather
+# same engine as the program, and it is built into the build directory rather
 # than into tests/ so that the test runner never confuses it for a test --
 # though its name would have it skipped anyway.
 #
@@ -1048,93 +1172,44 @@ option(XYZPDF_BUILD_PDFPROBE "Build the document measurement tool" OFF)
 if(XYZPDF_BUILD_PDFPROBE)
     qt_add_executable(xyzpdf_pdfprobe
         tools/pdfprobe.cpp
-        src/document/qtpdfbackend.cpp
+        src/document/documentfactory.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp
         src/document/textsearch.cpp
         src/render/rendercache.cpp)
-    target_link_libraries(xyzpdf_pdfprobe PRIVATE Qt6::Core Qt6::Gui Qt6::Pdf)
+    target_link_libraries(xyzpdf_pdfprobe PRIVATE Qt6::Core Qt6::Gui)
+    # It answers "what does the shipped reader see", so it follows the program's
+    # engine rather than taking one of its own.
+    xyzpdf_use_document_backend(xyzpdf_pdfprobe)
+    add_custom_command(TARGET xyzpdf_pdfprobe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "$<TARGET_FILE_DIR:xyzpdf_pdfprobe>"
+        VERBATIM)
     set_target_properties(xyzpdf_pdfprobe PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
 
-# PDFium asked directly, with Qt PDF printed beside it: the measurement docs/pdfium-plan.md stands on.
+# The engine's own behaviour, asserted rather than compared: every page of every
+# fixture opened, sized and read through PdfiumBackend, the rotation and the band
+# geometry the view depends on, the sentences a failed load gets, and the
+# file-handle behaviour F7 changed (docs/handoff-03.md F7 item 3 /
+# docs/pdfium-plan.md R7) -- a document on screen no longer stops anybody from
+# deleting or replacing its file.
 #
-# Two things here are load-bearing, and both fail in a way that reads as caution:
-#
-#   * The option being OFF by default is NOT what protects the gate. tools/build_all_tests.py turns
-#     every XYZPDF_BUILD_* option on -- it reads the list out of this file so the list cannot go
-#     stale -- so the protection is that the target is only created when XYZPDF_PDFIUM_DIR names a
-#     real extracted release. Without that guard, a gate run on a machine that never downloaded
-#     anything would stop configuring, and the program's own build would depend on a library the
-#     program does not use.
-#   * PDFium is linked into this one target and into nothing else. Not into xyzpdf, not into the two
-#     shell handler DLLs, not into any test the gate runs. F5 is a measurement of a decision that has
-#     not been taken; F7 is where it would be taken.
-#
-# The library itself is not in the repository (it is 7.6 MB of DLL and 20 headers). It comes from
-# bblanchon/pdfium-binaries; where to put it and which version, with hashes, is in
-# docs/pdfium-plan.md. Nothing here downloads it: an absent path is a skip, not a fetch.
-option(XYZPDF_BUILD_PDFIUM_PROBE "Build the direct-PDFium measurement" OFF)
-set(XYZPDF_PDFIUM_DIR "" CACHE PATH
-    "An extracted pdfium-binaries release (include/, lib/, bin/). Empty means do not build the probe.")
-if(XYZPDF_BUILD_PDFIUM_PROBE AND NOT XYZPDF_PDFIUM_DIR STREQUAL "")
-    file(TO_CMAKE_PATH "${XYZPDF_PDFIUM_DIR}" XYZPDF_PDFIUM_ROOT)
-    if(NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/include/fpdfview.h"
-       OR NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/lib/pdfium.dll.lib"
-       OR NOT EXISTS "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll")
-        # Said out loud rather than left to the linker: a path that was typed with a typo is the only
-        # way this branch is reached, and CMake's own message would be about a missing target.
-        message(FATAL_ERROR
-            "XYZPDF_PDFIUM_DIR is set to '${XYZPDF_PDFIUM_DIR}', which is not an extracted PDFium "
-            "release: include/fpdfview.h, lib/pdfium.dll.lib and bin/pdfium.dll all have to be there.")
-    endif()
-
-    add_library(xyzpdf_pdfium SHARED IMPORTED)
-    set_target_properties(xyzpdf_pdfium PROPERTIES
-        IMPORTED_IMPLIB "${XYZPDF_PDFIUM_ROOT}/lib/pdfium.dll.lib"
-        IMPORTED_LOCATION "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll"
-        INTERFACE_INCLUDE_DIRECTORIES "${XYZPDF_PDFIUM_ROOT}/include")
-
-    # The release's own version string, compiled in, so the log says which bytes it was measured
-    # against instead of leaving that to whoever ran it to remember (sec.97's rule about identity).
-    set(XYZPDF_PDFIUM_VERSION "unknown")
-    if(EXISTS "${XYZPDF_PDFIUM_ROOT}/VERSION")
-        file(STRINGS "${XYZPDF_PDFIUM_ROOT}/VERSION" XYZPDF_PDFIUM_VERSION_LINES)
-        set(XYZPDF_PDFIUM_VERSION "")
-        foreach(component MAJOR MINOR BUILD PATCH)
-            foreach(line ${XYZPDF_PDFIUM_VERSION_LINES})
-                if(line MATCHES "^${component}=([0-9]+)$")
-                    string(APPEND XYZPDF_PDFIUM_VERSION "${CMAKE_MATCH_1}.")
-                endif()
-            endforeach()
-        endforeach()
-        # Four components, four dots appended: crop the one past the patch number. Counted rather
-        # than regexed, because a regex for "one character at the end" has to survive CMake's own
-        # escape rules on the way to the regex engine.
-        string(LENGTH "${XYZPDF_PDFIUM_VERSION}" XYZPDF_PDFIUM_VERSION_LENGTH)
-        math(EXPR XYZPDF_PDFIUM_VERSION_CROP "${XYZPDF_PDFIUM_VERSION_LENGTH} - 1")
-        string(SUBSTRING "${XYZPDF_PDFIUM_VERSION}" 0 ${XYZPDF_PDFIUM_VERSION_CROP}
-               XYZPDF_PDFIUM_VERSION)
-    endif()
-
-    xyzpdf_add_test(pdfiumprobe
-        SOURCES src/document/qtpdfbackend.cpp
+# This is where the F5 probe's side-by-side comparisons lived, and where the Qt
+# column of them went when F7-E retired the second backend. What is left is the
+# half that does not need another engine to be read against -- which is the half
+# that keeps being true now that there is only one.
+option(XYZPDF_BUILD_PDFIUMBACKEND_SMOKE "Build the PDFium backend smoke test" OFF)
+if(XYZPDF_BUILD_PDFIUMBACKEND_SMOKE)
+    xyzpdf_add_test(pdfiumbackend_smoke
+        SOURCES src/document/pdfiumbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
-        LIBRARIES Qt6::Pdf xyzpdf_pdfium)
-    target_compile_definitions(xyzpdf_pdfiumprobe PRIVATE
+                src/services/filechangenotice.cpp
+        LIBRARIES xyzpdf_pdfium Qt6::Widgets)
+    target_compile_definitions(xyzpdf_pdfiumbackend_smoke PRIVATE
         XYZPDF_PDFIUM_VERSION="${XYZPDF_PDFIUM_VERSION}")
-
-    # The loader looks beside the executable, and tools/build_all_tests.py gives a test only Qt's bin
-    # on PATH -- so without this copy the probe builds and then refuses to start, which is the same
-    # complaint the vcpkg-DLL copy above exists to prevent for qpdf30.dll.
-    if(WIN32)
-        add_custom_command(TARGET xyzpdf_pdfiumprobe POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "${CMAKE_BINARY_DIR}/tests"
-            VERBATIM)
-    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -1149,9 +1224,9 @@ endif()
 #
 # It goes through the same Document seam as the reader, so a page cannot look one
 # way in the window and another way in the pane. That is three source files of the
-# document layer, which is the cost of the seam being the only place Qt PDF is
-# named -- and the proof that it is a usable seam, being a second consumer that
-# asked for no changes to it.
+# document layer plus whichever backend the build carries -- the cost of the seam
+# being the only place an engine is named, and the proof that it is a usable seam,
+# being two more consumers that asked for no changes to it.
 #
 # QT_NO_VERSION_TAGGING: Qt's version tag is an imported *data* symbol, and a data
 # symbol cannot be delay loaded -- with it, /DELAYLOAD:Qt6Core.dll is rejected
@@ -1159,19 +1234,30 @@ endif()
 # wrong Qt; this DLL loads the Qt that sits beside it, by full path, so there is
 # no wrong Qt for it to meet. See previewdependencies.cpp for why the full path.
 if(WIN32)
+    # The engine DLL the two handlers delay-load. pdfium.dll is self-contained
+    # (docs/pdfium-plan.md sec.6.1: it loads with nothing but System32 on the
+    # search path, and brings in no other module), and the reason to delay-load it
+    # is the same one as for Qt6Core and Qt6Gui: the library lives beside our DLL,
+    # not beside DllHost.exe.
+    set(XYZPDF_ENGINE_DELAYLOAD /DELAYLOAD:pdfium.dll)
+
     add_library(xyzpdfpreview SHARED
         src/windows/previewhandler.cpp
         src/windows/previewdependencies.h
         src/windows/previewdependencies.cpp
         src/windows/previewhandler.def
-        src/document/qtpdfbackend.cpp
+        src/document/documentfactory.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp)
+    # The engine, and only it: the package carries one backend, and the pane has to
+    # show the one the window shows. Before F7-D this list named qtpdfbackend.cpp
+    # directly, which meant a PDFium-configured package still put Qt PDF in the
+    # pane.
+    xyzpdf_use_document_backend(xyzpdfpreview)
     target_link_libraries(xyzpdfpreview PRIVATE
-        Qt6::Core Qt6::Gui Qt6::Pdf
+        Qt6::Core Qt6::Gui
         ole32 shell32 user32 gdi32 delayimp)
-    target_compile_definitions(xyzpdfpreview PRIVATE QT_NO_VERSION_TAGGING
-                                                    XYZPDF_SHELL_HANDLER)
+    target_compile_definitions(xyzpdfpreview PRIVATE QT_NO_VERSION_TAGGING)
     # Every library that is ours rather than Windows', because the loader looks
     # beside the executable and DllHost.exe lives in System32. The list is what
     # "dumpbin /nologo /dependents xyzpdfpreview.dll" reports minus the system
@@ -1180,9 +1266,16 @@ if(WIN32)
     target_link_options(xyzpdfpreview PRIVATE
         /DELAYLOAD:Qt6Core.dll
         /DELAYLOAD:Qt6Gui.dll
-        /DELAYLOAD:Qt6Pdf.dll)
+        ${XYZPDF_ENGINE_DELAYLOAD})
     set_target_properties(xyzpdfpreview PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    # The delay-load hook finds the engine beside this DLL. The program's own
+    # POST_BUILD copy also puts pdfium.dll here, but a target that can be built on
+    # its own should not depend on another target having been built first.
+    add_custom_command(TARGET xyzpdfpreview POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "$<TARGET_FILE_DIR:xyzpdfpreview>"
+        VERBATIM)
     install(TARGETS xyzpdfpreview
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -1191,8 +1284,8 @@ if(WIN32)
     # Its own DLL because that is the layout docs/PLAN.md §3.3 prescribes, and
     # because COM gives each surrogate CLSID its own DllHost process -- the two are
     # never in the same process whatever the file layout, so splitting them costs
-    # nothing but the three document sources below, which is the price of the
-    # seam being the only place Qt PDF is named.
+    # nothing but the three document sources below plus the configured backend,
+    # which is the price of the seam being the only place an engine is named.
     #
     # The delay-load options and QT_NO_VERSION_TAGGING are the same argument as the
     # one recorded on the target above; previewdependencies.cpp is compiled into
@@ -1202,20 +1295,24 @@ if(WIN32)
         src/windows/previewdependencies.h
         src/windows/previewdependencies.cpp
         src/windows/thumbnailprovider.def
-        src/document/qtpdfbackend.cpp
+        src/document/documentfactory.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp)
+    xyzpdf_use_document_backend(xyzpdfthumbnail)
     target_link_libraries(xyzpdfthumbnail PRIVATE
-        Qt6::Core Qt6::Gui Qt6::Pdf
+        Qt6::Core Qt6::Gui
         ole32 gdi32 delayimp)
-    target_compile_definitions(xyzpdfthumbnail PRIVATE QT_NO_VERSION_TAGGING
-                                                       XYZPDF_SHELL_HANDLER)
+    target_compile_definitions(xyzpdfthumbnail PRIVATE QT_NO_VERSION_TAGGING)
     target_link_options(xyzpdfthumbnail PRIVATE
         /DELAYLOAD:Qt6Core.dll
         /DELAYLOAD:Qt6Gui.dll
-        /DELAYLOAD:Qt6Pdf.dll)
+        ${XYZPDF_ENGINE_DELAYLOAD})
     set_target_properties(xyzpdfthumbnail PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_custom_command(TARGET xyzpdfthumbnail POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "$<TARGET_FILE_DIR:xyzpdfthumbnail>"
+        VERBATIM)
     install(TARGETS xyzpdfthumbnail
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -1243,6 +1340,12 @@ install(TARGETS xyzpdf
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+# The engine, into the same install tree the package is staged from. The
+# POST_BUILD copy above is what lets the program be double-clicked in the build
+# directory; this is what lets `cmake --install` produce a tree that can run at
+# all. PDFium is not Qt's to deploy, so nothing else puts it anywhere.
+install(FILES "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll"
+    DESTINATION ${CMAKE_INSTALL_BINDIR})
 qt_generate_deploy_app_script(
     TARGET xyzpdf
     OUTPUT_SCRIPT deploy_script
@@ -1269,6 +1372,14 @@ set(XYZPDF_TS_FILES
     Resources/translations/xyzpdf_en.ts
 )
 
+# The document engine's own sentences.
+#
+# Until F7-E this list named both backend sources, whichever one the build
+# compiled and whichever one it did not: there is one catalogue, and -no-obsolete
+# would otherwise drop the second backend's entire context on every update, so
+# switching back would silently return Chinese sentences to an English window.
+# There is one backend now, it is a source of the program target, and lupdate
+# reads it with the rest of them.
 qt_add_translations(
     TARGETS ${XYZPDF_TRANSLATION_TARGETS}
     TS_FILES ${XYZPDF_TS_FILES}

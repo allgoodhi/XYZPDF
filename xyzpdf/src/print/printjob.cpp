@@ -190,6 +190,7 @@ Report run(Document &document, QPrinter &printer, const Settings &settings,
             RenderOptions options;
             options.annotations = true;
             options.optimizedForLcd = false; // paper, not a screen
+            options.printing = true;         // the flag the library names for this
             const QImage image = document.render(page, imageSize, options);
             if (image.isNull())
                 continue; // a page that will not render is skipped, not fatal

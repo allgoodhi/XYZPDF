@@ -319,7 +319,10 @@ int main(int argc, char **argv)
             // Naming them anyway, because a row someone reworded into a different context
             // is a row nothing else would notice.
             { "ThirdPartyNotices", "Qt 内置的第三方库" },
-            { "ThirdPartyNotices", "（编入 Qt6Pdf.dll）" },
+            { "ThirdPartyNotices", "界面框架。以动态库形式随包分发，未做修改。" },
+            { "ThirdPartyNotices",
+              "渲染引擎：页面光栅化、文本提取、书签与链接都由它完成。"
+              "以动态库形式随包分发，未做修改；它自己内含的第三方组件的许可证都在同一份文本里。" },
             { "ThirdPartyNotices", "（编入 Qt6Gui.dll、Qt6Core.dll）" },
             { "ThirdPartyNotices", "各自的原许可证，见许可证全文" },
             // 加水印: the seventh entry in 文档, and the only one of the seven whose effect is

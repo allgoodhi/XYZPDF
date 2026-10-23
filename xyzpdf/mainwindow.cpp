@@ -1573,13 +1573,15 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                     tab->setCurrentPage(saved.page);
             }
         }
-        // A form is worth a sentence of its own, and a longer one: this reader
-        // draws no field contents anywhere -- not on screen, not in an export,
-        // not on paper (docs/store-submission.md §94 measured all six paths) --
-        // so a reader who prints a filled-in form gets empty boxes and no
-        // warning. Said here rather than in a box because it is not a question
-        // and there is nothing to decide; said for longer than "已打开" because
-        // it is the only chance they get.
+        // A form gets no sentence of its own any more. §100 added one because the
+        // Qt backend drew no field contents anywhere -- not on screen, not in an
+        // export, not on paper (docs/store-submission.md §94 measured all six
+        // paths) -- and the reader who printed a filled-in form got empty boxes.
+        // F7-C put the appearances through PDFium's form layer (formpage measured
+        // 24,705 pixels inside the field's rectangle, and 0 with that call switched
+        // off) and F7-E retired the backend that could not draw them, so the
+        // sentence is now the false one and it, and the print box's copy of it, are
+        // gone. What is still true of a form is the second copy below.
         //
         // XFA is the same kind of news and larger: the form's second copy is XML that this
         // program neither reads nor writes, and qpdf has no facility for it at all (§55). The
@@ -1596,11 +1598,6 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
             setStatusMessage(
                 tr("已打开 %1 —— 这份文档的表单还有一份 XFA 写法，本版既不显示也不编辑它的内容"
                    "（屏幕上看的是字段那份）。")
-                    .arg(info.fileName()),
-                12000);
-        } else if (tab->hasFormFields()) {
-            setStatusMessage(
-                tr("已打开 %1 —— 这份文档含表单字段，本版不显示字段里填的内容（屏幕、导出和打印都一样）。")
                     .arg(info.fileName()),
                 12000);
         } else {

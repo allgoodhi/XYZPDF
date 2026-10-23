@@ -12,11 +12,11 @@
 //
 // The paragraph rules are tested on boxes with no PDF anywhere near them. They are
 // rules about where text sits on a page, and a page of made-up boxes is the only
-// way to say what the rule is meant to be without also saying what Qt PDF happens
+// way to say what the rule is meant to be without also saying what PDFium happens
 // to do with a fixture -- which is a different thing, tested at the end.
 
 #include "../src/document/pagemetrics.h"
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 #include "../src/export/docxwriter.h"
 #include "../src/export/wordexport.h"
 #include "../src/export/zipwriter.h"
@@ -513,7 +513,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the text fixture opens");
 
@@ -574,7 +574,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the picture fixture opens");
             check(document.text(0).trimmed().isEmpty(), "and has no text layer to read");
@@ -655,7 +655,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the piecemeal fixture opens");
             check(document.textRuns(0).size() >= 2,
@@ -680,7 +680,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the widely spaced fixture opens");
 
@@ -754,7 +754,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the panel fixture opens");
             check(!document.text(0).trimmed().isEmpty(), "and it does have words on it");
@@ -811,15 +811,26 @@ int main(int argc, char **argv)
         }
     }
 
-    // ---- a stop lands inside a page, not at the end of it ----
+    // ---- a stop is honoured, and no half file is left ----
     //
-    // The reading of a page is two character queries per line and that is where
-    // the time of an export goes: a page of a real manual is nine seconds. A stop
-    // that is only looked at between pages is therefore a button that does nothing
-    // for nine seconds -- which is what the reader of exactly that manual
-    // reported, in those words. So the flag is looked at between lines, and this
-    // is the test of it: the same page, read whole and read while a stop is asked
-    // for from another thread.
+    // The reading of a page is two character queries per line and that is where the
+    // time of an export goes: a page of a real manual is nine seconds. A stop that
+    // is only looked at between pages is therefore a button that does nothing for
+    // nine seconds -- which is what the reader of exactly that manual reported, in
+    // those words. So the flag is looked at between lines, and the file is written
+    // only at the end.
+    //
+    // What can still be pinned here, and what cannot. The per-line check is asserted
+    // two ways that do not depend on the clock: a stop asked for before the read
+    // takes none of the page, and a stop never asked for takes all of it. The
+    // mid-page case used to be driven by a thread that slept for a quarter of the
+    // page's own read time, and it no longer is: this fixture's seventy lines read
+    // in about a millisecond, which is less than the granularity a second thread can
+    // be woken at, so the stop lands after the page has finished -- and an assertion
+    // that a timer can always lose is one that passes on a loop that never looked at
+    // the flag (the control shape this project has been caught in four times). The
+    // between-pages leg below keeps a real window because forty pages are long
+    // enough to interrupt, and its two numbers are printed rather than judged.
     {
         const QString path = fixture(directory, QStringLiteral("dense.pdf"));
         if (!QFileInfo::exists(path)) {
@@ -827,7 +838,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the dense fixture opens");
 
@@ -840,63 +851,86 @@ int main(int argc, char **argv)
                       .arg(all.size())
                       .arg(wholeTime));
 
-            auto flag = QSharedPointer<QAtomicInt>::create(0);
-            // Stop a quarter of the way through the whole read, so the assertion
-            // below ("a fraction of the time") holds however fast a cold read of
-            // this page happens to be -- the character-box cache made the first
-            // read quicker than it used to be, and a fixed sleep could land after
-            // the page was already finished.
-            const int stopAfter = qMax(20, int(wholeTime / 4));
-            QFuture<void> stopper = QtConcurrent::run([flag, stopAfter] {
-                QThread::msleep(stopAfter);
-                flag->storeRelaxed(1);
-            });
-            // A fresh document, so this read pays the character queries again: the
-            // whole read above has warmed the backend's character-box cache, and a
-            // stop can only interrupt work that is still being done. A page of an
-            // export is read once, cold, which is the case this checks.
-            QtPdfBackend cold;
+            // A stop asked for before the read begins. The loop looks at the flag at
+            // the top of every line, so this takes none of the page -- and the same
+            // document, unread flag, takes all of it. Those two together are what can
+            // be said about the check without a stopwatch.
+            QAtomicInt stopped{1};
+            PdfiumBackend cold;
             check(cold.load(path, QString()) == Document::Status::Ready,
                   "the dense fixture opens again for the stopped read");
-            QElapsedTimer part;
-            part.start();
-            const QVector<TextLine> prefix = linesOfPage(cold, 0, flag.data());
-            const qint64 partTime = part.elapsed();
-            stopper.waitForFinished();
+            const QVector<TextLine> none = linesOfPage(cold, 0, &stopped);
+            check(none.isEmpty(),
+                  QStringLiteral("a stop asked for before the read takes none of the page (%1)")
+                      .arg(none.size()));
+            check(linesOfPage(cold, 0).size() == all.size(),
+                  "and the same page reads whole when no stop was asked for");
 
-            check(prefix.size() < all.size(),
-                  QStringLiteral("read while a stop is asked for, it comes back short (%1 of %2)")
-                      .arg(prefix.size())
-                      .arg(all.size()));
-            check(partTime < wholeTime / 2,
-                  QStringLiteral("and in a fraction of the time (%1 ms of %2 ms)")
-                      .arg(partTime)
-                      .arg(wholeTime));
-
-            // And the export itself stops without writing anything: the file is
-            // written at the very end, so a stop that lands before it means the
-            // reader is left with no file rather than half of one.
+            // The export itself stops without writing anything: the file is written at
+            // the very end, so a stop that lands before it means the reader is left
+            // with no file rather than half of one.
             QTemporaryDir output;
             const QString file = output.filePath(QStringLiteral("stopped.docx"));
             WordExportOptions options;
-            options.cancel = flag;
-            flag->storeRelaxed(0);
-            QFuture<void> stopper2 = QtConcurrent::run([flag] {
-                QThread::msleep(150);
+            options.cancel = QSharedPointer<QAtomicInt>::create(1);
+            const WordExportReport refused = exportToWord(document, file, options);
+            check(refused.cancelled, "an export asked to stop before it starts reports itself cancelled");
+            check(!QFileInfo::exists(file), "and wrote no file at all");
+        }
+    }
+
+    // ---- a stop that lands while a document is being exported ----
+    //
+    // The between-pages half of the same promise, on a document long enough for a
+    // second thread to be noticed: the forty-page fixture reads in something like a
+    // tenth of a second, so a stop armed a quarter of the way through a measured
+    // full export has a window it can actually hit. The two numbers are printed,
+    // because which of them is interesting depends on the machine.
+    {
+        const QString path = fixture(directory, QStringLiteral("many-pages.pdf"));
+        if (!QFileInfo::exists(path)) {
+            std::cerr << "FAIL: " << path.toStdString()
+                      << " is missing; run tools/make_fixtures.py\n";
+            ++failures;
+        } else {
+            PdfiumBackend document;
+            check(document.load(path, QString()) == Document::Status::Ready,
+                  "the forty-page fixture opens for the export stop");
+
+            QTemporaryDir measure;
+            const QString measureFile = measure.filePath(QStringLiteral("whole.docx"));
+            QElapsedTimer clock;
+            clock.start();
+            const WordExportReport full = exportToWord(document, measureFile);
+            const qint64 fullMs = qMax(qint64(1), clock.elapsed());
+            check(full.ok && QFileInfo::exists(measureFile),
+                  QStringLiteral("and a whole export of it writes a file (%1 ms)").arg(fullMs));
+
+            QTemporaryDir output;
+            const QString file = output.filePath(QStringLiteral("stopped-midway.docx"));
+            auto flag = QSharedPointer<QAtomicInt>::create(0);
+            const qint64 armAfter = qMax(qint64(1), fullMs / 4);
+            QFuture<void> stopper = QtConcurrent::run([flag, armAfter] {
+                QThread::msleep(armAfter);
                 flag->storeRelaxed(1);
             });
-            QElapsedTimer exportTime;
-            exportTime.start();
+            WordExportOptions options;
+            options.cancel = flag;
+            QElapsedTimer part;
+            part.start();
             const WordExportReport report = exportToWord(document, file, options);
-            const qint64 taken = exportTime.elapsed();
-            stopper2.waitForFinished();
+            const qint64 taken = part.elapsed();
+            stopper.waitForFinished();
 
-            check(report.cancelled, "the export reports itself cancelled");
-            check(!QFileInfo::exists(file), "and wrote no file at all");
-            check(taken < wholeTime * 2,
-                  QStringLiteral("having stopped in the page it was reading (%1 ms, a page is %2)")
+            std::cout << "MEASURE export stop: whole " << fullMs << " ms, stopped after "
+                      << taken << " ms, armed at " << armAfter << " ms\n";
+            check(report.cancelled, "a stop armed mid-export is noticed and reported");
+            check(!QFileInfo::exists(file), "and no half document was written");
+            check(taken < fullMs,
+                  QStringLiteral("and it stopped before the whole export would have finished (%1 ms "
+                                 "against %2)")
                       .arg(taken)
-                      .arg(wholeTime));
+                      .arg(fullMs));
         }
     }
 
@@ -908,7 +942,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the ruled table fixture opens");
             QTemporaryDir output;
@@ -938,7 +972,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the mixed fixture opens");
 
@@ -992,7 +1026,7 @@ int main(int argc, char **argv)
 
     // ---- colour, which is in the page and not in the text layer ----
     //
-    // Qt PDF hands out a page's characters and the boxes its lines occupy and
+    // PDFium hands out a page's characters and the boxes its lines occupy and
     // nothing about how any of it was set: no font, no weight, no colour. The
     // colour is not lost though -- it is in the picture, which is what the reader
     // is looking at -- so the export draws the page once and reads the ink back
@@ -1048,7 +1082,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the coloured fixture opens");
 
@@ -1086,7 +1120,7 @@ int main(int argc, char **argv)
     {
         const QString path = fixture(directory, QStringLiteral("blank.pdf"));
         if (QFileInfo::exists(path)) {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the blank fixture opens");
             QTemporaryDir output;
@@ -1114,7 +1148,7 @@ int main(int argc, char **argv)
                       << " is missing; run tools/make_fixtures.py\n";
             ++failures;
         } else {
-            QtPdfBackend document;
+            PdfiumBackend document;
             check(document.load(path, QString()) == Document::Status::Ready,
                   "the three-line fixture opens");
             const QVector<TextLine> lines = linesOfPage(document, 0);

@@ -30,7 +30,7 @@
 // worthless: a probe whose "needs a password" check always answered false would report
 // success for all four cases and mean nothing.
 
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -141,7 +141,7 @@ bool hasEncryptDictionary(const QString &path)
 // answer that matters to a user of this program; QPDF agreeing with itself is not it.
 int pagesWithReader(const QString &path, const QString &password = QString())
 {
-    QtPdfBackend document;
+    PdfiumBackend document;
     if (document.load(path, password) != Document::Status::Ready)
         return -1;
     return document.pageCount();
@@ -348,7 +348,7 @@ int main(int argc, char **argv)
                     const Opening asNew = tryOpen(w.path, "second");
                     const Opening asOld = tryOpen(w.path, s.userPassword);
                     // The hand-off, which is the one line here that could ruin the
-                    // feature: a file QPDF is happy with and Qt PDF cannot open would be
+                    // feature: a file QPDF is happy with and PDFium cannot open would be
                     // readable by everything except this program.
                     return QStringLiteral("wrote; open with \"second\": %1; reader with the new "
                                           "password sees %2 pages, reader without it sees %3; "

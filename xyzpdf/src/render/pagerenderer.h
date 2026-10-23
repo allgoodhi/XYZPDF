@@ -1,28 +1,26 @@
-// Rendering off the UI thread, through Qt PDF's own page renderer.
+// Rendering off the UI thread, one page at a time.
 //
-// ---- why not just call QPdfDocument::render() ----
+// ---- why not just call Document::render() ----
 //
 // It is synchronous. On a 500-page scan, one page is tens of milliseconds on a
 // fast machine and hundreds on a slow one, and it happens on the thread that
 // draws the window. That thread being busy is a window that does not repaint, a
 // scrollbar that does not move, and a title bar that Windows draws grey.
 //
-// ---- what MultiThreaded actually buys, and what it does not ----
+// ---- what the worker buys, and what it does not ----
 //
-// QPdfDocument is not thread safe, and Qt PDF does not fix that by giving each
-// thread its own document. It fixes it with one global recursive mutex:
-// QPdfMutexLocker, in QtPdf/private/qpdfdocument_p.h, is a
-// std::unique_lock<QRecursiveMutex> that every FPDF call goes through. There
-// is one document object and one lock, not a copy per thread.
+// The pool has one thread, so two renders do not run at once; they run off the
+// thread that draws the window, which is the point. Moving work here does not
+// make a backend safe to ask from two threads at once -- that promise belongs to
+// the backend, and is made in its own header.
 //
-// Two consequences worth having written down, because both are easy to assume
-// away:
+// The backend makes it in the shape PDFium's own header asks for: one global
+// recursive mutex that every call into the PDF library goes through, one document
+// object, not a copy per thread (pdfiumbackend.cpp, pdfiumMutex()). Two
+// consequences worth having written down, because both are easy to assume away:
 //
-//   * MultiThreaded does not run two renders at once. It moves rendering off
-//     the thread that draws the window, which is the point -- a busy UI thread
-//     is a window that does not repaint -- but inside PDFium one call runs at
-//     a time, so there is no multi-core speedup to be had here. Do not promise
-//     one.
+//   * One call runs at a time inside PDFium, so there is no multi-core speedup
+//     to be had here. Do not promise one.
 //
 //   * The UI thread can be blocked by a render in progress. pageSize(), text(),
 //     textRuns(), links() and metadata() all take that same lock. A 300 ms
@@ -31,9 +29,9 @@
 //     and search have to move off it (see the note in document.h) rather than
 //     trusting the lock to keep things responsive.
 //
-// Doing it by hand -- a worker thread calling into the same QPdfDocument -- is
-// what this class exists to avoid: it is not a crash, it is a race that shows
-// up under load and not before.
+// The worker here is not a place to fix a backend that cannot be asked from two
+// threads. A backend that cannot make the promise has to say so, not rely on
+// this pool happening to have one thread.
 #pragma once
 
 #include "rendertoken.h"
@@ -42,9 +40,9 @@
 #include <QImage>
 #include <QObject>
 
-class QPdfDocument;
-class QPdfDocumentRenderOptions;
-class QPdfPageRenderer;
+class Document;
+class QThreadPool;
+class RenderRunnable;
 
 class PageRenderer : public QObject
 {
@@ -57,9 +55,11 @@ public:
     // The document to render from. Not owned: the caller keeps it, and must
     // keep it alive for as long as this object is asked to render. In
     // DocumentTab that is arranged by declaration order -- the backend is
-    // declared first and so destroyed last.
-    void setDocument(QPdfDocument *document);
-    QPdfDocument *document() const;
+    // declared first and so destroyed last -- and the destructor below ends
+    // "asked to render" by clearing queued work and waiting for the render that
+    // is already running.
+    void setDocument(Document *document);
+    Document *document() const;
 
     // Starts a new generation and returns it.
     //
@@ -92,14 +92,20 @@ Q_SIGNALS:
     void discarded(const RenderToken &token);
 
 private:
-    void onPageRendered(int page, QSize imageSize, const QImage &image,
-                        const QPdfDocumentRenderOptions &options, quint64 requestId);
+    friend class RenderRunnable;
 
-    QPdfPageRenderer *renderer = nullptr;
-    QPdfDocument *currentDocument = nullptr;
+    // Called on this object's thread when a render comes back. The runnable
+    // posts it here rather than emitting from the worker, so that pending and
+    // the generation are only ever touched by one thread.
+    void finishRender(quint64 requestId, const RenderToken &token, const QImage &image);
+
+    QThreadPool *pool = nullptr;
+    Document *currentDocument = nullptr;
     quint64 currentGeneration = 1;
+    quint64 nextRequestId = 1;
     // Which token each outstanding request was for, so that what comes back can
-    // be told apart. Qt hands back a request id that says nothing about the
-    // generation it was asked in.
+    // be told apart. Qt PDF used to hand back an id of its own; this class hands
+    // out the number now, which is why it says nothing about the generation and
+    // the token still has to be kept.
     QHash<quint64, RenderToken> pending;
 };

@@ -11,6 +11,16 @@
 // to the record in docs/perf.md, where a regression is visible as a change in a
 // column rather than as a red build.
 //
+// ---- one engine ----
+//
+// docs/pdfium-plan.md sec.5.1/5.2 compared the two engines with a probe; sec.10
+// F7-B asked that comparison to live here instead, as a second column, and for
+// the four slices after that it was a table with two columns to read against
+// each other. F7-E retired the left-hand one: there is no second engine in the
+// build, so what used to be the PDFium column is now the only column. The row
+// names and the order are unchanged, which is what lets docs/perf.md compare a
+// number from before the swap with one after it.
+//
 // tools/build_all_tests.py builds every target whose name does not say it is
 // something else, and 'bench' is one of those names: this compiles with the
 // suite, so it cannot quietly rot the way an unrunnable script does, and it does
@@ -25,9 +35,9 @@
 // a file outside the repository is labelled as such, because nobody else can
 // reproduce it.
 //
-// Everything is single-shot on a cold cache, in one process, in the order
-// written -- which is what makes the memory figure mean something. Re-run it a
-// few times before believing a difference of a few per cent.
+// Everything is single-shot, in one process, in the order written -- which is
+// what makes the memory figure mean something. Re-run it a few times before
+// believing a difference of a few per cent.
 //
 // Run it:
 //
@@ -35,7 +45,7 @@
 //     build-local-release\tests\xyzpdf_perf_bench.exe tests/fixtures H:\pdf_test\CH340.PDF
 
 #include "../src/document/document.h"
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 #include "../src/document/textsearch.h"
 #include "../src/render/rendercache.h"
 #include "../src/render/rendertoken.h"
@@ -65,6 +75,10 @@ constexpr double kScreenZoom = 96.0 / 72.0;
 // it, and the question is what scrolling costs.
 constexpr int kRendered = 40;
 
+// Well below the program's 256 MB default on purpose: the point is to force
+// eviction on a 600-page fixture, not to fit it.
+constexpr qint64 kCacheLimitBytes = 64LL * 1024 * 1024;
+
 qint64 memoryKb(bool peak)
 {
 #ifdef Q_OS_WIN
@@ -87,7 +101,7 @@ qint64 memoryKb(bool peak)
 // table that stops being updated.
 void row(const QString &what, const QString &value, const QString &note)
 {
-    printf("| %-38s | %11s | %-40s |\n",
+    printf("| %-42s | %12s | %-34s |\n",
            qPrintable(what), qPrintable(value), qPrintable(note));
     fflush(stdout);
 }
@@ -109,103 +123,92 @@ QString ms(double value)
     return QString::number(value, 'f', value < 10.0 ? 2 : 1) + QStringLiteral(" ms");
 }
 
-// Everything that can be said about one document, as rows. Returns false when the
-// file could not be read, which the caller reports rather than tabulates.
-bool reportDocument(const QString &path, qint64 cacheLimitBytes)
+// Everything one engine said about one document.
+struct Measurements
 {
-    const QFileInfo info(path);
-    if (!info.exists()) {
-        std::fprintf(stderr, "missing %s\n", qPrintable(path));
-        return false;
-    }
+    bool opened = false;
+    int pages = 0;
+    double openMs = 0;
+    QVector<QSizeF> sizes;
+    double sizesMs = 0;
 
-    QtPdfBackend document;
+    int renderedCount = 0;
+    double renderMs = 0;
+    QSize firstPixel;
+
+    double textMs = 0;
+    qsizetype characters = 0;
+    double searchMs = 0;
+    int found = 0;
+
+    int inserted = 0;
+    double cacheMs = 0;
+    qint64 highWater = 0;
+    int kept = 0;
+};
+
+// Measures `document` on `path`. Returns false when the file could not be read,
+// which the caller reports rather than tabulates.
+bool measure(Document &document, const QString &path, qint64 cacheLimitBytes,
+             Measurements &measured)
+{
     Document::Status status = Document::Status::FileError;
-    const double opened = milliseconds([&] {
-        status = document.load(path, QString());
-    });
+    measured.openMs = milliseconds([&] { status = document.load(path, QString()); });
     if (status != Document::Status::Ready) {
         std::fprintf(stderr, "%s did not open (%d): %s\n", qPrintable(path),
                      static_cast<int>(status), qPrintable(document.lastError()));
         return false;
     }
-
-    const int pages = document.pageCount();
-    row(QStringLiteral("%1: open").arg(info.fileName()), ms(opened),
-        QStringLiteral("%1 pages, %2 KB on disk")
-            .arg(pages)
-            .arg(info.size() / 1024));
+    measured.opened = true;
+    measured.pages = document.pageCount();
 
     // Page geometry, read for every page before anything is drawn: the layout
     // needs all of it, and a per-page cost here is paid once per document rather
     // than once per repaint.
-    QVector<QSizeF> sizes;
-    const double measuredSizes = milliseconds([&] {
-        sizes.reserve(pages);
-        for (int page = 0; page < pages; ++page)
-            sizes.append(document.pageSize(page));
+    measured.sizesMs = milliseconds([&] {
+        measured.sizes.reserve(measured.pages);
+        for (int page = 0; page < measured.pages; ++page)
+            measured.sizes.append(document.pageSize(page));
     });
-    row(QStringLiteral("%1: every page size").arg(info.fileName()), ms(measuredSizes),
-        QStringLiteral("%1 ms per thousand pages").arg(measuredSizes * 1000.0 / pages, 0, 'f', 1));
 
-    const int rendered = qMin(kRendered, pages);
-    const int step = qMax(1, pages / rendered);
-    QSize firstPixel;
-    int renderedCount = 0;
-    const double renderTime = milliseconds([&] {
-        for (int page = 0; page < pages; page += step) {
-            const QSize pixels(qRound(sizes[page].width() * kScreenZoom),
-                               qRound(sizes[page].height() * kScreenZoom));
-            if (firstPixel.isEmpty())
-                firstPixel = pixels;
+    const int rendered = qMin(kRendered, measured.pages);
+    const int step = qMax(1, measured.pages / rendered);
+    measured.renderMs = milliseconds([&] {
+        for (int page = 0; page < measured.pages; page += step) {
+            const QSize pixels(qRound(measured.sizes[page].width() * kScreenZoom),
+                               qRound(measured.sizes[page].height() * kScreenZoom));
+            if (measured.firstPixel.isEmpty())
+                measured.firstPixel = pixels;
             RenderOptions options;
             options.optimizedForLcd = true;
             if (document.render(page, pixels, options).isNull())
                 return;
-            ++renderedCount;
+            ++measured.renderedCount;
         }
     });
-    if (renderedCount == 0) {
+    if (measured.renderedCount == 0) {
         std::fprintf(stderr, "%s rendered nothing\n", qPrintable(path));
         return false;
     }
-    row(QStringLiteral("%1: render %2 pages").arg(info.fileName()).arg(renderedCount),
-        ms(renderTime),
-        QStringLiteral("%1 ms/page at %2x%3 px")
-            .arg(renderTime / renderedCount, 0, 'f', 1)
-            .arg(firstPixel.width())
-            .arg(firstPixel.height()));
 
     QVector<QString> texts;
-    const double extracted = milliseconds([&] {
-        texts.reserve(pages);
-        for (int page = 0; page < pages; ++page)
+    measured.textMs = milliseconds([&] {
+        texts.reserve(measured.pages);
+        for (int page = 0; page < measured.pages; ++page)
             texts.append(document.text(page));
     });
-    row(QStringLiteral("%1: text of all pages").arg(info.fileName()), ms(extracted),
-        QStringLiteral("%1 ms/page").arg(extracted / pages, 0, 'f', 2));
-
     // Counted rather than assumed, because "this fixture is a scan" is a claim
     // about its contents and the whole reason to have the file is that it has
     // none. A number here would mean the fixture is not testing what the row
     // above appears to test.
-    qsizetype characters = 0;
     for (const QString &text : std::as_const(texts))
-        characters += text.trimmed().size();
-    row(QStringLiteral("%1: text layer").arg(info.fileName()),
-        characters == 0 ? QStringLiteral("none") : QStringLiteral("%1 chars").arg(characters),
-        QStringLiteral("a scan has to answer \"none\" here"));
+        measured.characters += text.trimmed().size();
 
-    int found = 0;
-    const double searched = milliseconds([&] {
+    measured.searchMs = milliseconds([&] {
         for (int page = 0; page < texts.size(); ++page)
-            found += TextSearch::matchesInPage(page, texts[page],
-                                               QStringLiteral("a"), false).size();
+            measured.found += TextSearch::matchesInPage(page, texts[page],
+                                                        QStringLiteral("a"), false).size();
     });
-    row(QStringLiteral("%1: search all pages").arg(info.fileName()), ms(searched),
-        QStringLiteral("%2 ms/page, %3 matches")
-            .arg(searched / pages, 0, 'f', 3)
-            .arg(found));
 
     // ---- the ceiling ----
     //
@@ -217,13 +220,11 @@ bool reportDocument(const QString &path, qint64 cacheLimitBytes)
     // empty" and the cache refuses it outright -- a bench that forgot this
     // reported a peak of 0 MB and looked like a pass.
     RenderCache cache(cacheLimitBytes);
-    int inserted = 0;
-    qint64 highWater = 0;
-    const double cached = milliseconds([&] {
+    measured.cacheMs = milliseconds([&] {
         quint64 generation = 1;
-        for (int page = 0; page < pages; ++page) {
-            const QSize pixels(qRound(sizes[page].width() * kScreenZoom),
-                               qRound(sizes[page].height() * kScreenZoom));
+        for (int page = 0; page < measured.pages; ++page) {
+            const QSize pixels(qRound(measured.sizes[page].width() * kScreenZoom),
+                               qRound(measured.sizes[page].height() * kScreenZoom));
             RenderOptions options;
             options.optimizedForLcd = true;
             const QImage image = document.render(page, pixels, options);
@@ -234,25 +235,26 @@ bool reportDocument(const QString &path, qint64 cacheLimitBytes)
             token.page = page;
             token.pixels = pixels;
             cache.insert(token, image);
-            ++inserted;
-            highWater = qMax(highWater, cache.usedBytes());
+            ++measured.inserted;
+            measured.highWater = qMax(measured.highWater, cache.usedBytes());
         }
+        measured.kept = cache.count();
     });
-    row(QStringLiteral("%1: %2 pages through a %3 MB cache")
-            .arg(info.fileName())
-            .arg(inserted)
-            .arg(cacheLimitBytes / (1024 * 1024)),
-        ms(cached),
-        QStringLiteral("peak %1 MB of %2 MB, %3 entries kept")
-            .arg(highWater / (1024.0 * 1024.0), 0, 'f', 1)
-            .arg(cacheLimitBytes / (1024.0 * 1024.0), 0, 'f', 0)
-            .arg(cache.count()));
-    row(QStringLiteral("%1: stayed inside its limit").arg(info.fileName()),
-        highWater <= cacheLimitBytes ? QStringLiteral("yes") : QStringLiteral("NO"),
-        QStringLiteral("whole render of the file cost %1 ms")
-            .arg(cached, 0, 'f', 0));
 
     return true;
+}
+
+QString pagesNote(const Measurements &measured, const QFileInfo &info)
+{
+    return QStringLiteral("%1 pages, %2 KB on disk")
+        .arg(measured.pages)
+        .arg(info.size() / 1024);
+}
+
+QString millisPerPage(double millisecondsValue, int pages)
+{
+    return QStringLiteral("%1 ms/page")
+        .arg(pages > 0 ? millisecondsValue / pages : 0.0, 0, 'f', 2);
 }
 
 } // namespace
@@ -277,15 +279,68 @@ int main(int argc, char **argv)
     SetProcessDPIAware();
 #endif
 
-    printf("| Measurement | Value | Note |\n");
-    printf("|-------------|-------|------|\n");
+    printf("Qt %s, PDFium %s\n", qVersion(), XYZPDF_PDFIUM_VERSION);
+    printf("| Measurement | PDFium | Note |\n");
+    printf("|-------------|--------|------|\n");
     row("process at start", QString::number(memoryKb(false)) + " KB",
-        "before any document is read");
+        QStringLiteral("before any document is read"));
 
     int reported = 0;
-    for (const QString &path : std::as_const(documents))
-        if (reportDocument(path, 64LL * 1024 * 1024))
-            ++reported;
+    for (const QString &path : std::as_const(documents)) {
+        const QFileInfo info(path);
+        if (!info.exists()) {
+            std::fprintf(stderr, "missing %s\n", qPrintable(path));
+            continue;
+        }
+
+        Measurements measured;
+        PdfiumBackend document;
+        if (!measure(document, path, kCacheLimitBytes, measured))
+            continue;
+
+        row(QStringLiteral("%1: open").arg(info.fileName()), ms(measured.openMs),
+            pagesNote(measured, info));
+
+        row(QStringLiteral("%1: every page size").arg(info.fileName()), ms(measured.sizesMs),
+            QStringLiteral("%1 ms per thousand pages")
+                .arg(measured.sizesMs * 1000.0 / qMax(1, measured.pages), 0, 'f', 1));
+
+        row(QStringLiteral("%1: render %2 pages").arg(info.fileName()).arg(measured.renderedCount),
+            ms(measured.renderMs),
+            QStringLiteral("%1, %2x%3 px")
+                .arg(millisPerPage(measured.renderMs, measured.renderedCount))
+                .arg(measured.firstPixel.width())
+                .arg(measured.firstPixel.height()));
+
+        row(QStringLiteral("%1: text of all pages").arg(info.fileName()), ms(measured.textMs),
+            millisPerPage(measured.textMs, measured.pages));
+
+        row(QStringLiteral("%1: text layer").arg(info.fileName()),
+            measured.characters == 0 ? QStringLiteral("none")
+                                     : QStringLiteral("%1 chars").arg(measured.characters),
+            QStringLiteral("a scan has to answer \"none\" here"));
+
+        row(QStringLiteral("%1: search all pages").arg(info.fileName()), ms(measured.searchMs),
+            QStringLiteral("%1, %2 matches")
+                .arg(millisPerPage(measured.searchMs, measured.pages))
+                .arg(measured.found));
+
+        row(QStringLiteral("%1: %2 pages through a %3 MB cache")
+                .arg(info.fileName())
+                .arg(measured.inserted)
+                .arg(kCacheLimitBytes / (1024 * 1024)),
+            ms(measured.cacheMs),
+            QStringLiteral("peak %1 MB, %2 entries kept")
+                .arg(measured.highWater / (1024.0 * 1024.0), 0, 'f', 1)
+                .arg(measured.kept));
+
+        row(QStringLiteral("%1: stayed inside its limit").arg(info.fileName()),
+            measured.highWater <= kCacheLimitBytes ? QStringLiteral("yes")
+                                                  : QStringLiteral("NO"),
+            QStringLiteral("the limit is %1 MB").arg(kCacheLimitBytes / (1024 * 1024)));
+
+        ++reported;
+    }
 
     row("peak working set, whole run", QString::number(memoryKb(true)) + " KB",
         QStringLiteral("after %1 document(s) were measured").arg(reported));

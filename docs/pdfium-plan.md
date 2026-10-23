@@ -367,9 +367,10 @@ DocumentTab"现在**已经被证伪**（两个具体类型点 + 一个句柄出�
 |---|---|---|---|
 | `load` / `lastError` / `pageCount` / `pageSize` | `QPdfDocument::load/status/Error/pageCount/pagePointSize` | `FPDF_LoadDocument(path,password)` / `FPDF_GetLastError` / `FPDF_GetPageCount` / `FPDF_GetPageSizeByIndexF` | **量了**：页数与尺寸逐档对等（C6） |
 | `render` | `QPdfDocument::render` + `QPdfDocumentRenderOptions`（`Rotation`/`RenderFlag`/`scaledClipRect`） | `FPDF_RenderPageBitmap`（rotate 0–3 + flags）+ `start_x/y`、`size_x/y` 裁局部 | **量了**：整页与注释层；**没量**：`clip`/`scaledSize` 那条分块渲染的路 |
-| `text` / `textRuns` / `characterIndexAt` / `pageSelection` / `hasTextAt` | `getAllText` / `getSelectionAtIndex` / `QPdfSelection` | `FPDFText_LoadPage` + `FPDFText_CountChars/GetUnicode/GetBBox/GetCharBBox` … | **只量了字符数**（38646 与 Qt 相同）；**选择/命中那套没量** |
-| `outline` / `links` | `QPdfBookmarkModel` / `QPdfLinkModel`（roles） | `FPDFBookmark_*` / `FPDFLink_*`（`GetDest`、`GetURIPath`、`FPDFLink_Enumerate`） | **没量** |
-| `metadata` | `QPdfDocument::metaData`，八个字段（title/author/subject/keywords/producer/creator/creation/mod，`qtpdfbackend.cpp:608-616`） | `FPDF_GetMetaText(doc, "/Title" …)` 同名八个键 | **没量**（映射看着直接） |
+| `text` / `textRuns` / `characterIndexAt` / `pageSelection` / `hasTextAt` | `getAllText` / `getSelectionAtIndex` / `QPdfSelection` | `FPDFText_LoadPage` + `FPDFText_CountChars` / `GetText` / `CountRects` / `GetRect` / `GetCharBox` | **量了**（F7-E）：字符数 38646 与 Qt 相同；行框在 PDF user space（原点左下，842 高的页上一行字答 top 779.18 / bottom 761.74），所以每个框都要翻 y；`FPDFText_GetCharIndexAtPos` 在 `text.pdf` 那一行的 9 个字缝里 **5 个答 -1**（零容差时 9 个全 -1），行上/行下/行尾之后也一样 —— 这就是点击仍要走二分的原因。断行是两个零宽字符（U+000D、U+000A），落在它所结束那行的末尾 |
+| `outline` | `QPdfBookmarkModel`（roles） | `FPDFBookmark_GetFirstChild` / `GetNextSibling` / `GetTitle`（UTF-16LE）/ `GetDest` + `FPDFDest_GetDestPageIndex` | **量了**（F7-E）：`documenteditor_smoke` 的 `nested-outline.pdf` 五条全在树里、层深按 1 起（§63 那两条钉法照旧成立——平读只拿顶层，层深从 0 起会把整棵树压平）。头文件把循环引用交给调用者，所以走的次数与深度都有上限 |
+| `links` | `QPdfLinkModel`（roles） | `FPDFLink_Enumerate` / `GetAnnotRect` / `GetDest` / **`FPDFAction_GetURIPath`**（8111 这份头文件里没有 `FPDFLink_GetURIPath` 这个调用），UTF-8 字节串 | **量了**（F7-E）：`tests/fixtures/links.pdf` 一条 URI、一条 `/XYZ 0 700 null`，页面与位置都读得回来；`/XYZ` 的 null zoom 读成 `hasZoomVal=false`，不是 0 |
+| `metadata` | `QPdfDocument::metaData`，八个字段（title/author/subject/keywords/producer/creator/creation/mod，`qtpdfbackend.cpp:608-616`） | `FPDF_GetMetaText(doc, "Title" …)` 同名八个键 | **F7-E 量了**，并且改了本表原来那一行写的 `"/Title"`：标签是**字典自己的键名，不带斜杠**。在带 `/Info` 的 `tests/fixtures/info.pdf` 上，`Title` 读回 42 字节（"XYZPDF Fixture Title"），`/Title` 对同一个文件答 2 字节（空串）。日期是 PDF 自己格式的字符串，PDFium 不解析，要自己解（§14.3.3 表 231） |
 | 加密 | `setPassword` + `Status` | `FPDF_LoadDocument` 的 password 参数；`FPDF_GetDocUserPermissions` | **没量**（`encryptprobe` 是另一套问题，问的是 qpdf） |
 | 表单 | **没有** | `FPDFDOC_InitFormFillEnvironment` / `FPDF_FFLDraw` / `FORM_On*` / `FPDFAnnot_*` / `FPDFPage_Flatten` | **量了**（§4） |
 
@@ -411,6 +412,26 @@ DocumentTab"现在**已经被证伪**（两个具体类型点 + 一个句柄出�
 
 所以：**第一步 = 画；第二步 = 填；中间还有一档 = 打印/导出前 flatten**（很便宜，
 但它是行为改变：烘进去之后别人再也改不了那些字段）。这一档要不要，等一句话。
+
+### 7.1 那一档的回答（F7-F，2026-10-23）
+
+**不做 flatten。** handoff-03 F7 第 5 条已经把这句话拍了：打印与导出走的是同一条
+`Document::render()`，表单层画在页面位图上，所以字段的答案在纸上、在导出的图里都有，
+不需要把它们烘进内容流；保存出来的文件里字段仍然是字段（填是第四阶段的事，写回是 F8 的事）。
+
+量出来支持这个决定的两件事：
+
+* `FPDFPage_Flatten` 在这台机器上返回 1，之后整页差出 26271 像素（§4.1 那格）——
+  也就是说 flatten 能做成，但它改的是**文件**，不是画面；一旦做了，别人拿这份文件
+  再也改不了那些字段。这一条不是性能问题，是"我们有没有权利替读者决定"的问题。
+* 打印路径另加了一个旗标 `FPDF_PRINTING`（`RenderOptions::printing`，F7-F 起
+  `printjob.cpp` 设它）。**量下来它在今天什么都不改变**：A4/300 dpi（2480x3508）下
+  `text.pdf`、`table.pdf`、`graphic.pdf`、`scan.pdf` 四份，加与不加**逐像素相同**
+  （差 0 个像素）。所以它不是 flatten 的替代品，只是一个名字对了的旗标；
+  "它是惰性的"这件事被钉在 `tests/documenteditor_smoke.cpp` 的 §94 那一节里，
+  两条控制都验过能红（一条把旗标变成真会改画面、一条让旗标把表单层换掉）。
+
+没量的：真打印机驱动拿到这张图之后做什么；`FPDF_PRINTING` 在别的 PDFium 版本上是否还惰性。
 
 ---
 

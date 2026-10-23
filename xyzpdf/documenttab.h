@@ -60,7 +60,6 @@ class FindBar;
 class OutlinePanel;
 class PageRenderer;
 class PageView;
-class QtPdfBackend;
 class QTabWidget;
 class SearchPanel;
 class ThumbnailPanel;
@@ -504,7 +503,7 @@ private:
     // first leaves it holding freed memory. Members are destroyed in reverse
     // order of declaration, which is the only thing making this safe -- hence
     // the comment, because reordering these two looks harmless.
-    std::unique_ptr<QtPdfBackend> backend;
+    std::unique_ptr<Document> backend;
     std::unique_ptr<PageRenderer> renderer;
 
     RenderCache cache;

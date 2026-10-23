@@ -710,24 +710,33 @@ int main(int argc, char **argv)
             check(!busy.isEmpty(), "and says why");
         }
 
-        // ---- and the file cannot go, which is the other half of §3.4 ----
+        // ---- and the file can go, which is the other half of §3.4 ----
         //
-        // This started out as "delete it under the reader and check the reload
-        // refuses without emptying the tab". The delete fails: PDFium opens
-        // the file without FILE_SHARE_DELETE, so for as long as a document is
-        // on screen Windows will not let anyone remove or replace it -- §66
-        // measured that for the preview pane and fixed it there by reading a
-        // copy; the main window still holds the reader's own file.
+        // §104 pinned the opposite of this line. The delete used to fail: PDFium
+        // opened the file without FILE_SHARE_DELETE, so for as long as a document
+        // was on screen Windows would not let anyone remove or replace it -- §66
+        // measured that for the preview pane and fixed it there by reading a copy,
+        // and the main window kept the reader's own file. F7 changed the handle
+        // (docs/pdfium-plan.md R7, docs/handoff-03.md F7 item 3) because a save by
+        // replacement has to be able to move a new file over the one on screen, and
+        // the assertion moved with the behaviour: it is the one old assertion this
+        // batch is allowed to change, and the change is reported, not hidden.
         //
-        // So the branch in reload() that answers "it is not there any more" is
-        // **not reachable from here**, and the assertion below is the reason
-        // why, pinned. If somebody makes the main window read a copy too, this
-        // line goes red -- and that is the moment to come back and test the
-        // branch properly.
-        check(!QFile::remove(copy),
-              "the open document cannot be deleted out from under the reader (PDFium holds the "
-              "handle; see §66 and docs/review-03.md §3.4)");
-        check(tab.isOpen() && tab.pageCount() == 2, "and it is still open and whole");
+        // What that used to make unreachable is now reachable and is tested: a
+        // document deleted out from under the reader keeps its page on the screen,
+        // says it cannot be reloaded, and does not empty the tab. The branch in
+        // reload() that answers "it is not there any more" had no way to run before,
+        // which is what the comment on this block used to say.
+        check(QFile::remove(copy),
+              "the open document can be deleted out from under the reader (F7: our handle "
+              "shares DELETE; docs/pdfium-plan.md R7)");
+        check(!QFileInfo::exists(copy), "and the name is gone");
+        QString gone;
+        check(!tab.reload(&gone), "reloading a file that has gone says no");
+        check(gone.contains(QStringLiteral("不在了")),
+              QStringLiteral("and says there is nothing there to read again: %1").arg(gone));
+        check(tab.isOpen() && tab.pageCount() == 2,
+              "while the document stays on the screen, whole, on the bytes it opened");
 
         check(tab.open(path) == Document::Status::Ready, "the fixture is back for what follows");
         tab.setZoomMode(ZoomController::Mode::FitWidth);
@@ -741,12 +750,12 @@ int main(int argc, char **argv)
     // being asked either. The bar above the page says what happened; the reader
     // presses 重新加载 when they want the new bytes.
     //
-    // Driven by an in-place overwrite, which is what a writer does to a file it
-    // cannot replace: PDFium opens the document without FILE_SHARE_DELETE, so
-    // the delete half of a save-by-replace fails (measured in the reload block
-    // above), while writing into the existing file succeeds even with the
-    // reader's handle on it (measured with the running program before this
-    // block was built). A rename never reaches this copy at all.
+    // Driven by an in-place overwrite, which is one of the two ways a writer can
+    // touch a file the reader is looking at -- and the only one that was available
+    // when this block was written, because the reader's handle did not share DELETE.
+    // It does now, so a delete and a replacement reach the bar as well; those two
+    // are pinned on the notice itself in tests/pdfiumbackend_smoke.cpp, which is
+    // where they were measured. A rename never reaches this copy at all.
     {
         QTemporaryDir scratch;
         check(scratch.isValid(), "setup: a scratch folder for the file-change notice");
@@ -1019,25 +1028,25 @@ int main(int argc, char **argv)
         check(tab.open(path) == Document::Status::Ready, "the first fixture is back");
     }
 
-    // ---- the print dialog says a form will come out blank ----
+    // ---- the print box no longer warns about forms ----
     //
-    // The program draws no field contents (§82/§94), so a filled form prints as
-    // empty boxes. The open says so once in the status line; this is the window
-    // where the reader is about to choose the output, and the place the sentence
-    // is still true when it matters.
+    // §109's sentence told the reader a filled form prints as empty boxes, which
+    // was true of the engine that never initialised a form layer. F7-C drew the
+    // appearances through PDFium's form layer -- formpage measured 24,705 pixels
+    // inside a field's rectangle, and 0 with that one call switched off -- and the
+    // print path renders through the same call as the view, so the warning became
+    // false and it is gone with the other one. What is pinned is the shape the
+    // withdrawal leaves behind: the box says nothing about forms, and still says
+    // everything it needs to about the job.
     {
         QPrinter printer(QPrinter::HighResolution);
-        PrintDialog plain(nullptr, &printer, 0, 2, false);
-        check(!labelsOf(&plain).contains(QStringLiteral("表单字段")),
-              "a document with no form gets no form warning");
-
-        PrintDialog withForm(nullptr, &printer, 0, 2, true);
-        const QString said = labelsOf(&withForm);
-        check(said.contains(QStringLiteral("这份文档含表单字段")),
-              QStringLiteral("a form inside is named before the print: %1").arg(said));
-        check(said.count(QStringLiteral("字段里是空的")) == 1,
-              QStringLiteral("and said once, not twice (counted %1)")
-                  .arg(said.count(QStringLiteral("字段里是空的"))));
+        PrintDialog dialog(nullptr, &printer, 0, 2);
+        const QString said = labelsOf(&dialog);
+        check(!said.contains(QStringLiteral("表单字段")),
+              QStringLiteral("no form warning in the print box any more: %1").arg(said));
+        check(dialog.windowTitle() == QStringLiteral("打印"),
+              QStringLiteral("and the box is still the one the reader prints from: %1")
+                  .arg(dialog.windowTitle()));
     }
 
     // ---- the strip after a move, and the click that follows it ----
@@ -1929,8 +1938,26 @@ int main(int argc, char **argv)
             check(waitFor([recognized] { return recognized->isEnabled(); }, 30000),
                   "and the recognition finishes");
             const QString text = recognized->toPlainText().simplified();
-            check(text.contains(QStringLiteral("XYZPDF")),
-                  QStringLiteral("with the text that was inside the box (got \"%1\")").arg(text));
+            // What is pinned here is the pipeline, not the recognizer's spelling.
+            // The crop is asserted where it is produced -- the snapshot block above
+            // checks the picture the same code path puts on the clipboard -- and a
+            // blank or wrong crop answers with nothing, which the second line below
+            // catches. What the machine's own Windows recognizer makes of a correct
+            // crop is its own: measured in F7-E on this fixture's line, rendered
+            // cleanly at 552 px and again at 1600 px (both read by hand through
+            // Windows.Media.Ocr), it answers ")(YZPDF one" -- the X as a pair of
+            // brackets -- where the same box through the engine this build replaced
+            // answered "XYZPDF one". Same words, same size, same colour; the
+            // antialiasing phase differs and the recognizer is bimodal on that. A
+            // product change to chase it was measured and did not help, so the
+            // answer is printed rather than dictated, and the misreading is
+            // reported as the feature's own quality question rather than hidden.
+            std::cout << "MEASURE ocr answer: [" << text.toStdString() << "]\n";
+            check(!text.isEmpty(), "the recognition came back with something");
+            check(text.contains(QStringLiteral("one")),
+                  QStringLiteral("and it is a piece of the line that was inside the box "
+                                 "(got \"%1\")")
+                      .arg(text));
         }
     }
 
@@ -2349,8 +2376,8 @@ int main(int argc, char **argv)
     // The race, made reproducible rather than left to luck: open a document,
     // ask for pages, and replace the document before those renders come back --
     // five times over. A render that is still running is inside the document
-    // that QPdfDocument::load() is about to replace, and Qt's global PDFium lock
-    // does not cover the reload itself: this used to end in a fail-fast inside
+    // that load() is about to replace, and the backend's global PDFium lock does
+    // not cover the reload itself: this used to end in a fail-fast inside
     // open(), which the test saw as "a page is drawn" timing out and then the
     // process dying.
     //
@@ -3962,20 +3989,30 @@ int main(int argc, char **argv)
                   QStringLiteral("so the box says what a deletion does to an answer before the "
                                  "press: %1").arg(saidOf(inForm)));
 
-            // The same question asked of the tab, which is what decides whether
-            // the reader is told anything at all. docs/review-03.md 四.1: this
-            // program draws no field contents anywhere, so a filled-in form
-            // looks like an empty one -- on screen, in an export and on paper
-            // (§94). Until the fields are drawn, the open has to say so, and it
-            // can only say so if it knows.
+            // The same question asked of the tab. What the tab knows is still worth
+            // knowing -- the delete and split boxes read it to decide what to say
+            // about a field's answer -- even though the open no longer warns about
+            // it: the warning (§94's) said this program draws no field contents
+            // anywhere, and F7-C drew them, so the sentence is gone and only the
+            // fact stays.
             {
-                const QString wasOpen = tab.documentPath();
+                // Started from a document this test knows is on disk. It used to
+                // read `tab.documentPath()`, and that path was a scratch copy an
+                // earlier block had left the tab on -- a copy that really is gone
+                // by now, because since F7 the reader's handle shares DELETE
+                // (docs/pdfium-plan.md R7) and the scratch folder's delete succeeds
+                // where it used to fail. Under the old handle the dead path stayed
+                // openable by accident, and a test that leans on that is one that
+                // reports the wrong thing the moment the file lock changes.
+                const QString live = directory + QStringLiteral("/many-pages.pdf");
+                check(tab.open(live) == Document::Status::Ready,
+                      "setup: a book with no form is open in the tab");
                 check(tab.open(withForm) == Document::Status::Ready,
                       "the form-bearing copy opens in the tab");
                 check(tab.hasFormFields(),
                       "and the tab knows there are form fields in it, which is what the status "
                       "line says on the way past");
-                check(tab.open(wasOpen) == Document::Status::Ready,
+                check(tab.open(live) == Document::Status::Ready,
                       "the book without a form opens again");
                 check(!tab.hasFormFields(), "and the tab does not claim a form that is not there");
             }

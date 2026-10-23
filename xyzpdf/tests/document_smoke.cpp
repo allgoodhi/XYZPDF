@@ -9,12 +9,14 @@
 // its parser is a reader that crashes on the first file somebody downloaded
 // badly, and "it does not crash" is a claim worth checking every time.
 
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QFile>
 #include <QString>
+#include <QTimeZone>
 
 #include <cmath>
 #include <iostream>
@@ -93,7 +95,7 @@ int main(int argc, char **argv)
 
     // ---- an ordinary document ----
     {
-        QtPdfBackend document;
+        PdfiumBackend document;
         const Document::Status status = document.load(fixture(directory, QStringLiteral("text.pdf")),
                                                      QString());
         check(status == Document::Status::Ready, "a well-formed PDF opens");
@@ -135,10 +137,10 @@ int main(int argc, char **argv)
         {
             const QRectF run = runs.first().box;
 
-            // The middle of the line. Qt PDF's own point query answers only when
-            // the point lands on the ink of a glyph -- measured, and a point in
-            // the gap between two letters comes back empty -- so the index is
-            // found by searching the characters' boxes, and this is the check
+            // The middle of the line. The engine's own point query answers -1 in
+            // most of the gaps between the characters of this very page
+            // (measured, and written up in pdfiumbackend.cpp), so the index is
+            // found by searching the characters' boxes -- and this is the check
             // that the answer is a character of the line the point is on.
             const int index = document.characterIndexAt(0, run.center());
             check(index >= 0 && index < first.length(),
@@ -231,13 +233,13 @@ int main(int argc, char **argv)
 
         // ---- a band of a page, which is what a zoomed-in page costs ----
         //
-        // Three different sizes are involved and Qt will not tell you that they
-        // are different: the page is scaled to `scaledSize`, the band is named
+        // Three different sizes are involved and nothing about the interface says
+        // they are different: the page is scaled to `scaledSize`, the band is named
         // in that scale, and the QSize asked for is the size of the image that
         // comes back. Asking for a page-sized image and a small clip gets a
         // page-sized image with the band drawn in one corner -- the whole
-        // memory the banding was for. This is measured rather than read out of
-        // the documentation, because there is no Qt source on this machine.
+        // memory the banding was for. Measured rather than read out of a
+        // specification, in both engines this program has had.
         // The band is over the line of text the fixture draws near the top left
         // of the page, and deliberately so: a band from an empty part of the
         // page is a band that compares equal to another empty one, which is how
@@ -320,7 +322,7 @@ int main(int argc, char **argv)
     // here had exactly one line per page, so the line break -- the actual cause
     // -- was in none of them.
     {
-        QtPdfBackend document;
+        PdfiumBackend document;
         const QString path = fixture(directory, QStringLiteral("lines.pdf"));
         if (!QFileInfo::exists(path)) {
             std::cerr << "FAIL: " << path.toStdString()
@@ -394,12 +396,12 @@ int main(int argc, char **argv)
     // ---- a page stored portrait and marked 90 degrees ----
     //
     // Measured rather than assumed. The fixture's MediaBox is 300x400 and its
-    // /Rotate is 90, and Qt PDF reports 400x300: the page's own rotation is
-    // already folded in. So QtPdfBackend::pageSize must not apply it again,
-    // which would turn a page marked 90 into a page marked 180 -- a mistake
+    // /Rotate is 90, and the size the engine gives back is 400x300: the page's own
+    // rotation is already folded in. So PdfiumBackend::pageSize must not apply it
+    // again, which would turn a page marked 90 into a page marked 180 -- a mistake
     // that is invisible until somebody opens a scan that was fed in sideways.
     {
-        QtPdfBackend document;
+        PdfiumBackend document;
         check(document.load(fixture(directory, QStringLiteral("rotated.pdf")), QString())
                   == Document::Status::Ready,
               "the rotated fixture opens");
@@ -411,7 +413,7 @@ int main(int argc, char **argv)
 
     // ---- a file that is not a PDF ----
     {
-        QtPdfBackend document;
+        PdfiumBackend document;
         const Document::Status status =
             document.load(fixture(directory, QStringLiteral("damaged.pdf")), QString());
         check(status != Document::Status::Ready, "a truncated PDF does not open");
@@ -433,16 +435,146 @@ int main(int argc, char **argv)
 
     // ---- a file that is not there ----
     {
-        QtPdfBackend document;
+        PdfiumBackend document;
         const Document::Status status =
             document.load(fixture(directory, QStringLiteral("no-such-file.pdf")), QString());
         check(status == Document::Status::FileError, "a missing file is a file error");
         check(!document.lastError().isEmpty(), "with a sentence about it");
     }
 
+    // ---- what the file says about itself ----
+    //
+    // Every other fixture here has an empty document information dictionary, so
+    // for two milestones the Properties dialog could only ever have shown
+    // nothing, and "the file has no title" was indistinguishable from "we never
+    // looked". info.pdf carries all eight keys, written out of PDF 32000-1
+    // §14.3.3 Table 231 rather than from this reader's parser.
+    //
+    // Two of the assertions are about the dates, and they are the reason this is
+    // not one line: one carries a zone, which makes it an instant, and one does
+    // not, which makes it the clock of wherever the file was made. A reader that
+    // read the zone as if it were local time would show the same wall clock five
+    // hours off, and a reader that invented January for "D:2026" would show a
+    // date the file never stated -- so the zoned one is compared three ways and
+    // the bare one only as the parts the file actually wrote.
+    {
+        PdfiumBackend document;
+        check(document.load(fixture(directory, QStringLiteral("info.pdf")), QString())
+                  == Document::Status::Ready,
+              "the document that describes itself opens");
+        const DocMetadata metadata = document.metadata();
+        check(metadata.title == QStringLiteral("XYZPDF Fixture Title"),
+              QStringLiteral("title: %1").arg(metadata.title));
+        check(metadata.author == QStringLiteral("XYZPDF Fixture Author"),
+              QStringLiteral("author: %1").arg(metadata.author));
+        check(metadata.subject == QStringLiteral("The subject of a fixture"),
+              QStringLiteral("subject: %1").arg(metadata.subject));
+        check(metadata.keywords == QStringLiteral("fixture, metadata, one, two"),
+              QStringLiteral("keywords: %1").arg(metadata.keywords));
+        check(metadata.creator == QStringLiteral("make_fixtures.py"),
+              QStringLiteral("creator: %1").arg(metadata.creator));
+        check(metadata.producer == QStringLiteral("XYZPDF test harness"),
+              QStringLiteral("producer: %1").arg(metadata.producer));
+        check(!metadata.encrypted, "and it is not encrypted");
+
+        // info.pdf's creation date is written with a -05:00 zone, which is not
+        // this machine's. Three things follow, and all three are asserted because
+        // the first draft of this block asserted only the middle one -- on a
+        // +08:00 machine with a +08:00 file, "read the zone" and "throw the zone
+        // away" are the same instant, and a control that deleted the zone handling
+        // passed. The wall clock, the offset and the instant are three different
+        // readings and only the last two separate the two behaviours here.
+        check(metadata.creationDate.isValid()
+                  && metadata.creationDate.date() == QDate(2026, 1, 2)
+                  && metadata.creationDate.time() == QTime(3, 4, 5),
+              QStringLiteral("the creation date keeps the wall clock the file wrote (%1)")
+                  .arg(metadata.creationDate.toString(Qt::ISODateWithMs)));
+        check(metadata.creationDate.offsetFromUtc() == -5 * 3600,
+              QStringLiteral("and the zone it wrote, rather than this machine's (%1 seconds)")
+                  .arg(metadata.creationDate.offsetFromUtc()));
+        check(metadata.creationDate.toUTC()
+                  == QDateTime(QDate(2026, 1, 2), QTime(8, 4, 5), QTimeZone::UTC),
+              QStringLiteral("so it is 08:04:05 UTC, not 03:04:05 somewhere (%1)")
+                  .arg(metadata.creationDate.toUTC().toString(Qt::ISODateWithMs)));
+        // No zone written, so the file's own clock: a local QDateTime, which is
+        // what "the wall clock of wherever this was made" means here. The timeSpec
+        // is the part that would silently come out as UTC if the parser guessed.
+        check(metadata.modificationDate.isValid()
+                  && metadata.modificationDate.timeSpec() == Qt::LocalTime
+                  && metadata.modificationDate.date() == QDate(2026, 1, 3)
+                  && metadata.modificationDate.time() == QTime(12, 0, 0),
+              QStringLiteral("the modification date has no zone, so it is the file's own clock "
+                             "rather than an invented instant (%1)")
+                  .arg(metadata.modificationDate.toString(Qt::ISODateWithMs)));
+
+        // The same eight asked of a file that carries none of them: empty
+        // sentences and no dates, and not the previous document's.
+        PdfiumBackend plain;
+        check(plain.load(fixture(directory, QStringLiteral("text.pdf")), QString())
+                  == Document::Status::Ready,
+              "a fixture with no information dictionary opens");
+        const DocMetadata nothing = plain.metadata();
+        check(nothing.isEmpty(),
+              QStringLiteral("and it answers empty (%1 / %2)").arg(nothing.title,
+                                                                   nothing.producer));
+    }
+
+    // ---- links, both kinds ----
+    //
+    // links.pdf has one annotation that goes to an address outside the document
+    // and one that goes to a place inside it, and the second is the one with two
+    // numbers in it: the page, and where on it. A hotspots layer that got the
+    // page right and the place wrong is invisible until somebody clicks a link
+    // that lands at the top of the page it meant.
+    {
+        PdfiumBackend document;
+        check(document.load(fixture(directory, QStringLiteral("links.pdf")), QString())
+                  == Document::Status::Ready,
+              "the document with two links on its first page opens");
+        const QVector<Link> links = document.links(0);
+        check(links.size() == 2,
+              QStringLiteral("both are read back (%1)").arg(links.size()));
+        if (links.size() == 2) {
+            const QRectF pageRect(QPointF(0, 0), document.pageSize(0));
+            check(links.at(0).url.toString() == QStringLiteral("https://example.com/xyzpdf"),
+                  QStringLiteral("the first goes outside the document (%1)")
+                      .arg(links.at(0).url.toString()));
+            check(links.at(0).targetPage == -1,
+                  "and names no page, because it is not an internal link");
+            // The annotation is [55 750 300 775] in PDF user space, which is 67
+            // points from the top of an 842-point page. Without the flip this box
+            // sits off the page entirely.
+            check(qAbs(links.at(0).box.top() - 67.0) < 0.01
+                      && qAbs(links.at(0).box.left() - 55.0) < 0.01
+                      && qAbs(links.at(0).box.height() - 25.0) < 0.01,
+                  QStringLiteral("and its box is on the page where it was drawn (%1)")
+                      .arg(links.at(0).box.y()));
+            check(pageRect.intersects(links.at(0).box),
+                  "which is the other way of saying the same");
+
+            check(links.at(1).url.isEmpty(),
+                  QStringLiteral("the second has no address (%1)")
+                      .arg(links.at(1).url.toString()));
+            check(links.at(1).targetPage == 1,
+                  QStringLiteral("and names page 2 of the document (%1)")
+                      .arg(links.at(1).targetPage));
+            // /XYZ 0 700 null: x 0 and y 700 in user space, and the null zoom is
+            // not a zoom of 0 -- which is why an unset point is what document.h
+            // asks for when a destination names no place, and this one does.
+            check(qAbs(links.at(1).target.x() - 0.0) < 0.01
+                      && qAbs(links.at(1).target.y() - 142.0) < 0.01,
+                  QStringLiteral("at 142 points down the page, from a /XYZ of 700 measured "
+                                 "from the bottom (%1,%2)")
+                      .arg(links.at(1).target.x())
+                      .arg(links.at(1).target.y()));
+        }
+
+        check(document.links(1).isEmpty(), "and the page with no annotations has no links");
+    }
+
     // ---- pages that are not there ----
     {
-        QtPdfBackend document;
+        PdfiumBackend document;
         document.load(fixture(directory, QStringLiteral("text.pdf")), QString());
         check(document.pageSize(-1).isEmpty(), "there is no page before the first");
         check(document.pageSize(2).isEmpty(), "and none after the last");
@@ -460,7 +592,7 @@ int main(int argc, char **argv)
     // whatever was open has to be gone, and nothing of it may be reported as
     // belonging to the new one.
     {
-        QtPdfBackend document;
+        PdfiumBackend document;
         document.load(fixture(directory, QStringLiteral("text.pdf")), QString());
         check(document.pageCount() == 2, "the first document is open");
         check(document.load(fixture(directory, QStringLiteral("rotated.pdf")), QString())

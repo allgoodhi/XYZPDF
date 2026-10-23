@@ -16,9 +16,10 @@
 // the pane is its second consumer. That is the point of using it here: a page that
 // looked different in the pane than in the reader would be a bug report nobody
 // could explain, and going through the same seam is what makes the two agree by
-// construction rather than by remembering. The one thing left out of the pane's
-// build of that file is the link model, and the reason is recorded in
-// qtpdfbackend.cpp.
+// construction rather than by remembering. The pane draws a page and has nothing
+// to click, so links() is never called here; with PDFium that costs nothing to
+// compile in, where Qt's link type used to be a data symbol a delay-loaded DLL
+// could not import.
 //
 // ---- who renders, and on which thread ----
 //
@@ -102,7 +103,7 @@
 #include <shobjidl_core.h>
 
 #include "../document/document.h"
-#include "../document/qtpdfbackend.h"
+#include "../document/documentfactory.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -748,7 +749,7 @@ private:
         // still holds that file nothing can delete it, and a leftover per document the pane glanced
         // at is a leak with a different name. Safe to drop here because DoPreview() joined the worker
         // before calling this.
-        document_ = std::make_unique<QtPdfBackend>();
+        document_ = createDocument();
 
         Document::Status status = Document::Status::FileError;
         if (stageSource()) {

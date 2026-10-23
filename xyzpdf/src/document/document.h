@@ -1,18 +1,20 @@
 // What the rest of the program is allowed to know about a PDF.
 //
-// The only place a rendering library is named is behind this interface. v1 has
-// one implementation, QtPdfBackend, and v2 will add a PDFium one for the things
-// Qt PDF does not expose -- which is the whole reason the seam exists. It is
-// deliberately narrow: it carries what v1 actually calls, not a guess at what
-// v2 will want. Editing is not here at all and must not be: v2 adds a separate
+// The only place a rendering library is named is behind this interface. There is
+// one implementation, PdfiumBackend, and it arrived in F7 by consumer: first the
+// view, then the two shell handlers, then everything Qt PDF was still answering
+// (docs/pdfium-plan.md sec.10). It is deliberately narrow: it carries what the
+// program actually calls, not a guess at what the other engine will want.
+// Editing is not here at all and must not be: v2 adds a separate
 // DocumentEditor that holds one of these, so the write path can never be
 // reached through the read-only type. See docs/PLAN.md §3.2 and §7.3.
 //
 // ---- every method here blocks, and shares one lock with the renderer ----
 //
-// Qt PDF serialises every PDFium call behind a single global recursive mutex
-// (see the note at the top of render/pagerenderer.h). So calling any of these
-// from the UI thread is a call that waits for whatever render is in progress --
+// The backend serialises every PDF library call behind a single global recursive
+// mutex (see the note at the top of render/pagerenderer.h). So calling any of
+// these from the UI thread is a call that waits for whatever render is in
+// progress --
 // hundreds of milliseconds on a scanned page, which the user sees as a frozen
 // window.
 //
@@ -55,9 +57,25 @@ struct RenderOptions
     // than printed, which is what asks the renderer for subpixel antialiasing.
     bool optimizedForLcd = false;
 
+    // True when the pixels are going on paper.
+    //
+    // This is the backend's own signal rather than a reading of `optimizedForLcd`:
+    // the two are independent in the library, and a caller that wants neither is
+    // the common case (an image export is not a screen and not a sheet).
+    //
+    // Measured, and it does nothing today: at the print size -- A4 at 300 dpi,
+    // 2480x3508 -- the four fixtures this program is tested against come back
+    // pixel-for-pixel identical with and without it (text.pdf, table.pdf,
+    // graphic.pdf, scan.pdf; 0 pixels differ on all four, and the ink fraction to
+    // three decimal places is the same). It is set because the header calls
+    // FPDF_PRINTING "render for printing" and the print path is the one place that
+    // means it, and it is pinned as inert in tests/documenteditor_smoke.cpp -- so
+    // the day a PDFium build makes this flag change the picture, that row goes red
+    // and says our print numbers are describing a different render.
+    bool printing = false;
+
     // Which part of the page to render, in the coordinate system of the whole
-    // page rendered at `scaledSize` -- the same thing QPdfDocumentRenderOptions
-    // calls the scaled rectangle. Empty means the whole page.
+    // page rendered at `scaledSize`. Empty means the whole page.
     //
     // This is what keeps one page from costing 288 MB: at 800% a page is far
     // bigger than the screen, and only the band on screen is worth having.
@@ -80,12 +98,11 @@ struct RenderOptions
 // One line-shaped box of text on a page, in points, with the origin at the
 // page's top-left corner.
 //
-// The text itself is not in here. Qt PDF hands out the page's text and its
-// boxes as two separate things with no pairing between them, and pairing them
-// by guessing would be wrong on exactly the documents where it matters --
-// columns, tables, rotated captions. src/document/textlayer (M2) is where a
-// character range becomes a box, by asking for the selection it already knows
-// the range of.
+// The text itself is not in here. The page's text and its boxes are handed out as
+// two separate things with no pairing between them, and pairing them by guessing
+// would be wrong on exactly the documents where it matters -- columns, tables,
+// rotated captions. src/document/textlayer (M2) is where a character range
+// becomes a box, by asking for the selection it already knows the range of.
 struct TextRun
 {
     QRectF box;

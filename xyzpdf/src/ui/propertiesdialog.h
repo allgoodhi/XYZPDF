@@ -4,7 +4,7 @@
 //
 // docs/PLAN.md M2 asks for it, and until this slice it was the one thing in
 // M0-M3 that was built everywhere except on screen: DocMetadata was written,
-// QtPdfBackend::metadata() filled it in, document_smoke checked it, and no
+// the backend's metadata() filled it in, document_smoke checked it, and no
 // window ever showed it to anybody (docs/review-03.md §3.1).
 //
 // Read-only, and a dialog rather than a panel: nothing here is decided, it is

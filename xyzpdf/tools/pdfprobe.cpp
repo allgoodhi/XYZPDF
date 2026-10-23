@@ -17,8 +17,9 @@
 
 // Relative, like every other include from outside the project root: the root
 // itself is not on the include path.
+#include "../src/document/document.h"
+#include "../src/document/documentfactory.h"
 #include "../src/document/pagemetrics.h"
-#include "../src/document/qtpdfbackend.h"
 #include "../src/document/textsearch.h"
 #include "../src/render/rendercache.h"
 
@@ -54,7 +55,11 @@ int main(int argc, char **argv)
     const int samples = arguments.size() > 2 ? arguments.at(2).toInt() : 12;
     const int viewportWidth = arguments.size() > 3 ? arguments.at(3).toInt() : 2500;
 
-    QtPdfBackend document;
+    // Owned through the interface and read through a reference: which backend
+    // this is belongs to the factory, and the measurements below are the same
+    // questions whichever one answers them.
+    const std::unique_ptr<Document> owned = createDocument();
+    Document &document = *owned;
     const Document::Status status = document.load(path, QString());
     if (status != Document::Status::Ready) {
         std::cerr << "could not open " << path.toStdString() << ": "

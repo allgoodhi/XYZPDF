@@ -9,7 +9,7 @@
 // This class is the same library with its own flags, which is the first step of
 // the swap docs/pdfium-plan.md lays out.
 //
-// ---- what it answers, and what it does not yet ----
+// ---- what it answers, what it draws, and what it does not yet ----
 //
 // F7-B moves the five calls a page view makes: load, pageCount, pageSize, render
 // and text. Everything below them -- textRuns, the character-range selection,
@@ -18,6 +18,16 @@
 // claim that those methods are optional: a build configured with
 // -DXYZPDF_DOCUMENT_BACKEND=pdfium shows pages and text and has no selection,
 // sidebar tree, links or properties until F7-E lands. The default build is Qt.
+//
+// F7-C adds the form layer's first half: FPDFDOC_InitFormFillEnvironment per
+// document and FPDF_FFLDraw after every page render, so a field's appearance
+// (the picture its author or PDFium generated) is now part of the page image.
+// Nothing is accepted as input and nothing is written: this is the "draw only"
+// step of pdfium-plan.md sec.7. Two limits still hold and are not bugs: the
+// value in a widget is PDFium's own face -- its font, size and alignment come
+// from its rules, not the original design -- and a document whose form is also
+// an XFA packet still shows only its field copy (sec.4.3; this build has no XFA
+// module). /NeedAppearances is not answered either.
 //
 // ---- one lock, one document, one worker thread ----
 //

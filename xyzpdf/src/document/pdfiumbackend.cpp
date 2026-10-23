@@ -14,6 +14,7 @@
 #endif
 #include <windows.h>
 
+#include <fpdf_formfill.h>
 #include <fpdf_text.h>
 #include <fpdfview.h>
 
@@ -108,6 +109,14 @@ struct PdfiumBackend::Impl
 
     PdfFileHandle file;
     FPDF_DOCUMENT document = nullptr;
+    // The form-fill environment and its interface. Both live as long as the
+    // document: fpdf_formfill.h says the FPDF_FORMFILLINFO must stay alive until
+    // the handle is closed, and the handle must be exited before the document.
+    // Zeroed means every callback is null, which is enough to draw -- the F5
+    // probe filled none of them and widgets still appeared (pdfium-plan.md
+    // sec.7).
+    FPDF_FORMFILLINFO formInfo{};
+    FPDF_FORMHANDLE form = nullptr;
     QString path;
     QString error;
     bool encrypted = false;
@@ -129,6 +138,8 @@ struct PdfiumBackend::Impl
                     if (it->lastUsed < oldest->lastUsed)
                         oldest = it;
                 }
+                if (oldest->page && form)
+                    FORM_OnBeforeClosePage(oldest->page, form);
                 if (oldest->text)
                     FPDFText_ClosePage(oldest->text);
                 if (oldest->page)
@@ -139,6 +150,10 @@ struct PdfiumBackend::Impl
             fresh.page = FPDF_LoadPage(document, index);
             if (!fresh.page)
                 return nullptr;
+            // fpdf_formfill.h pairs these with FORM_OnBeforeClosePage: the form
+            // layer is told which page it is about to draw on.
+            if (form)
+                FORM_OnAfterLoadPage(fresh.page, form);
             held = pages.insert(index, fresh);
         }
 
@@ -152,6 +167,8 @@ struct PdfiumBackend::Impl
     void close()
     {
         for (auto &held : pages) {
+            if (held.page && form)
+                FORM_OnBeforeClosePage(held.page, form);
             if (held.text)
                 FPDFText_ClosePage(held.text);
             if (held.page)
@@ -159,6 +176,10 @@ struct PdfiumBackend::Impl
         }
         pages.clear();
         useCounter = 0;
+        if (form) {
+            FPDFDOC_ExitFormFillEnvironment(form);
+            form = nullptr;
+        }
         if (document) {
             FPDF_CloseDocument(document);
             document = nullptr;
@@ -264,6 +285,14 @@ Document::Status PdfiumBackend::load(const QString &path, const QString &passwor
     }
 
     impl->path = path;
+    // The form layer is initialized for every document, not only ones with
+    // fields: asking whether there are any costs a parse, and on a document
+    // without fields this handle draws nothing. Version 1 is the stable
+    // interface, and this build of PDFium has no XFA module (pdfium-plan.md
+    // sec.4.3). Every callback stays null -- F7-C only draws, it accepts no
+    // input, and the F5 probe drew widgets with the same empty interface.
+    impl->formInfo.version = 1;
+    impl->form = FPDFDOC_InitFormFillEnvironment(impl->document, &impl->formInfo);
     // The same rule QtPdfBackend uses: a non-empty password that opened the
     // document means it was encrypted. There is no cheaper way to ask a PDF that
     // did not need one.
@@ -355,6 +384,15 @@ QImage PdfiumBackend::render(int page, QSize pixels, const RenderOptions &option
         flags |= FPDF_LCD_TEXT;
 
     FPDF_RenderPageBitmap(bitmap, handle, startX, startY, sizeX, sizeY, quarterTurns, flags);
+    // Field appearances are a second pass, with the same geometry: the form
+    // layer owns where a widget's box lands after scaling, clipping and
+    // rotation, so it has to be handed exactly what the page render was. This
+    // is the whole of F7-C -- fields are drawn, not editable; FPDF_FFLDraw's
+    // own comment says widgets are drawn whatever the annotation flag says.
+    if (impl->form) {
+        FPDF_FFLDraw(impl->form, bitmap, handle, startX, startY, sizeX, sizeY, quarterTurns,
+                     flags);
+    }
     FPDFBitmap_Destroy(bitmap);
     return image;
 }

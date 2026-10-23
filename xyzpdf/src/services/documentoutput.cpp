@@ -45,8 +45,16 @@ void DocumentOutput::print()
     const ForegroundJobs::Scope scope(jobs);
 
     QPrinter printer(QPrinter::HighResolution);
+    // F7-C: a PDFium-backed build draws field appearances into every page image,
+    // print included, so a filled form comes out with its answers and the
+    // warning §94 added would be false. The Qt build still prints empty boxes
+    // and keeps it until F7-E deletes that backend.
+    bool warnAboutBlankFields = false;
+#if !defined(XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+    warnAboutBlankFields = formFieldsInSource ? formFieldsInSource() : false;
+#endif
     PrintDialog dialog(host->window(), &printer, pageView->currentPage(), document->pageCount(),
-                       formFieldsInSource ? formFieldsInSource() : false);
+                       warnAboutBlankFields);
     if (dialog.exec() != QDialog::Accepted)
         return;
     const Print::Settings settings = dialog.settings();

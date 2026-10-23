@@ -1573,13 +1573,20 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                     tab->setCurrentPage(saved.page);
             }
         }
-        // A form is worth a sentence of its own, and a longer one: this reader
-        // draws no field contents anywhere -- not on screen, not in an export,
-        // not on paper (docs/store-submission.md §94 measured all six paths) --
-        // so a reader who prints a filled-in form gets empty boxes and no
-        // warning. Said here rather than in a box because it is not a question
-        // and there is nothing to decide; said for longer than "已打开" because
-        // it is the only chance they get.
+        // A form gets a sentence of its own only while this build cannot draw
+        // it. The Qt backend draws no field contents anywhere -- not on screen,
+        // not in an export, not on paper (docs/store-submission.md §94 measured
+        // all six paths) -- so a reader who prints a filled-in form gets empty
+        // boxes and no warning. Said here rather than in a box because it is not
+        // a question and there is nothing to decide; said for longer than
+        // "已打开" because it is the only chance they get.
+        //
+        // F7-C: a PDFium-backed build draws the appearances now (formpage read
+        // 24,705 pixels inside the field's rectangle and 0 with the form layer
+        // switched off), so the sentence would be false there and is compiled
+        // out. The Qt build keeps it until F7-E deletes that backend: removing
+        // it from both now would leave a build that prints blank boxes in
+        // silence.
         //
         // XFA is the same kind of news and larger: the form's second copy is XML that this
         // program neither reads nor writes, and qpdf has no facility for it at all (§55). The
@@ -1598,12 +1605,16 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                    "（屏幕上看的是字段那份）。")
                     .arg(info.fileName()),
                 12000);
-        } else if (tab->hasFormFields()) {
+        }
+#if !defined(XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+        else if (tab->hasFormFields()) {
             setStatusMessage(
                 tr("已打开 %1 —— 这份文档含表单字段，本版不显示字段里填的内容（屏幕、导出和打印都一样）。")
                     .arg(info.fileName()),
                 12000);
-        } else {
+        }
+#endif
+        else {
             setStatusMessage(tr("已打开 %1").arg(info.fileName()), 4000);
         }
         updateForCurrentTab();

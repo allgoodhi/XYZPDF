@@ -1,9 +1,11 @@
 // The v1 document backend: Qt PDF, which is PDFium behind a Qt-shaped API.
 //
-// Everything the program does with a page goes through here, and this is the
-// only file that includes QtPdf. v2 adds a PDFium backend of its own when the
-// editing work needs the API Qt PDF does not expose; swapping it in should be
-// a change to one line in DocumentTab.
+// Everything the program does with a page goes through the Document seam, and
+// this is one implementation of it -- the only place the reader names QtPdf.
+// The concrete type itself is named in documentfactory.cpp, which is what a
+// backend swap changes: DocumentTab, the two shell handlers and pdfprobe ask
+// the factory and never see this class. v2 adds a PDFium backend of its own
+// when the editing work needs the API Qt PDF does not expose.
 #pragma once
 
 #include "document.h"
@@ -41,17 +43,6 @@ public:
     Outline outline() const override;
     QVector<Link> links(int page) const override;
     DocMetadata metadata() const override;
-
-    // The underlying document, for render/PageRenderer.
-    //
-    // This one is deliberately not part of the Document interface: it is the
-    // Qt PDF handle, and putting it there would make every other backend
-    // pretend to have one. render/PageRenderer is Qt PDF specific in v1 and
-    // says so.
-    //
-    // Null before a successful load, and owned here: whoever takes this pointer
-    // must not outlive the backend.
-    QPdfDocument *pdfDocument() const;
 
 private:
     // A page's text and the boxes of its lines, kept for a few pages.

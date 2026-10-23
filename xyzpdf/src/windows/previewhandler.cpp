@@ -102,7 +102,7 @@
 #include <shobjidl_core.h>
 
 #include "../document/document.h"
-#include "../document/qtpdfbackend.h"
+#include "../document/documentfactory.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -748,7 +748,7 @@ private:
         // still holds that file nothing can delete it, and a leftover per document the pane glanced
         // at is a leak with a different name. Safe to drop here because DoPreview() joined the worker
         // before calling this.
-        document_ = std::make_unique<QtPdfBackend>();
+        document_ = createDocument();
 
         Document::Status status = Document::Status::FileError;
         if (stageSource()) {

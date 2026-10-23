@@ -617,8 +617,3 @@ DocMetadata QtPdfBackend::metadata() const
     result.encrypted = neededPassword;
     return result;
 }
-
-QPdfDocument *QtPdfBackend::pdfDocument() const
-{
-    return document.get();
-}

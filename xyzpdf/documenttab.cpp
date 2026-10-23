@@ -3,7 +3,7 @@
 #include "src/core/appsettings.h"
 #include "src/core/windowdialogs.h"
 #include "src/document/bookmarkposition.h"
-#include "src/document/qtpdfbackend.h"
+#include "src/document/documentfactory.h"
 #include "src/edit/documenteditor.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
@@ -57,7 +57,7 @@ qint64 prefetchAllowanceFor(qint64 cacheBytes)
 
 DocumentTab::DocumentTab(QWidget *parent)
     : QWidget(parent)
-    , backend(std::make_unique<QtPdfBackend>())
+    , backend(createDocument())
     , renderer(std::make_unique<PageRenderer>())
 {
     findBar = new FindBar(this);
@@ -142,7 +142,7 @@ DocumentTab::DocumentTab(QWidget *parent)
     // the document it started against is the crash drainRenders() exists to
     // prevent. Null is the same answer `opened` used to give.
     const auto openDocument = [this] {
-        return opened ? static_cast<Document *>(backend.get()) : nullptr;
+        return opened ? backend.get() : nullptr;
     };
     search = std::make_unique<SearchSession>(findBar, searchPanel, pageView, sidebar,
                                              openDocument);
@@ -387,15 +387,15 @@ void DocumentTab::drainRenders()
 {
     // ---- why the reload waits for the renderer ----
     //
-    // QPdfDocument::load() replaces what the document is, and a render that is
-    // still running on the renderer's thread is inside the old one. Qt
-    // serialises PDFium calls behind a single global lock and this is what fell
-    // outside it: measured while this was being written, reopening a file with a
-    // render in flight ended in a fail-fast inside the reload. It took a test
-    // that opens documents as fast as it can to hit it -- a *view* render is
-    // almost never still running when somebody opens the next file -- but
-    // "almost never" on a 500-page scan is a reader who opens a second document
-    // while the first is still painting.
+    // Document::load() replaces what the document is, and a render that is
+    // still running on the renderer's thread is inside the old one. A backend
+    // may serialise its calls behind a global lock -- Qt PDF does -- and this is
+    // what fell outside it: measured while this was being written, reopening a
+    // file with a render in flight ended in a fail-fast inside the reload. It
+    // took a test that opens documents as fast as it can to hit it -- a *view*
+    // render is almost never still running when somebody opens the next file --
+    // but "almost never" on a 500-page scan is a reader who opens a second
+    // document while the first is still painting.
     //
     // So the renders are waited for. They come back carrying a generation that
     // the load is about to supersede and are dropped, which is the point:
@@ -487,7 +487,7 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
     // The renderer is pointed at the new document first, because that is what
     // bumps the generation -- and the page sizes below make the view ask for
     // images immediately, synchronously, inside setPageSizes.
-    renderer->setDocument(backend->pdfDocument());
+    renderer->setDocument(backend.get());
     // And the view is given the document to ask its own questions of: which
     // character is under this point, and what is in this range. Borrowed only,
     // and only for text -- images still come through this class, which is what
@@ -913,9 +913,9 @@ bool DocumentTab::reload(QString *error)
     // swapping it in, which is a change to how the tab owns its document
     // rather than a line in this function.
     {
-        QtPdfBackend probe;
-        if (probe.load(path, password) != Document::Status::Ready) {
-            const QString why = probe.lastError();
+        const std::unique_ptr<Document> probe = createDocument();
+        if (probe->load(path, password) != Document::Status::Ready) {
+            const QString why = probe->lastError();
             return refuse(why.isEmpty()
                               ? tr("重新加载 %1 失败。").arg(QFileInfo(path).fileName())
                               : why);

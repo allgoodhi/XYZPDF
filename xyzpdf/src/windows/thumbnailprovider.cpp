@@ -49,7 +49,7 @@
 #include <thumbcache.h>
 
 #include "../document/document.h"
-#include "../document/qtpdfbackend.h"
+#include "../document/documentfactory.h"
 
 #include <QImage>
 #include <QPainter>
@@ -242,7 +242,7 @@ public:
             return E_FAIL;
 
         if (!document_)
-            document_ = std::make_unique<QtPdfBackend>();
+            document_ = createDocument();
         if (document_->load(path_, QString()) != Document::Status::Ready) {
             // Not a PDF, or not a readable one. No thumbnail, no dialog: the
             // icon the shell already has is the right thing to show, and this is

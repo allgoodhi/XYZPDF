@@ -93,7 +93,7 @@ int main(int argc, char **argv)
     }
 
     PageRenderer renderer;
-    renderer.setDocument(document.pdfDocument());
+    renderer.setDocument(&document);
 
     // ---- a render that is still wanted ----
     {
@@ -224,7 +224,7 @@ int main(int argc, char **argv)
                   == Document::Status::Ready,
               "the second fixture opens");
         const quint64 before = renderer.generation();
-        renderer.setDocument(other.pdfDocument());
+        renderer.setDocument(&other);
         check(renderer.generation() != before, "a new document moves the generation on");
         check(renderer.inFlight() == 0, "and there is nothing of the old one in flight");
 

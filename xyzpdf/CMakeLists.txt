@@ -274,6 +274,8 @@ set(XYZPDF_SOURCES
     src/document/bookmarkposition.h
     src/document/bookmarkposition.cpp
     src/document/document.h
+    src/document/documentfactory.h
+    src/document/documentfactory.cpp
     src/document/docmetadata.h
     src/document/outline.h
     src/document/outline.cpp
@@ -766,6 +768,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/view/pagelayout.cpp
                 src/view/zoomcontroller.cpp
                 src/document/bookmarkposition.cpp
+                src/document/documentfactory.cpp
                 src/document/qtpdfbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
@@ -833,6 +836,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/core/thirdpartynotices.cpp
                 src/core/windowdialogs.cpp
                 src/document/bookmarkposition.cpp
+                src/document/documentfactory.cpp
                 src/document/qtpdfbackend.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
@@ -1048,6 +1052,7 @@ option(XYZPDF_BUILD_PDFPROBE "Build the document measurement tool" OFF)
 if(XYZPDF_BUILD_PDFPROBE)
     qt_add_executable(xyzpdf_pdfprobe
         tools/pdfprobe.cpp
+        src/document/documentfactory.cpp
         src/document/qtpdfbackend.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp
@@ -1164,6 +1169,7 @@ if(WIN32)
         src/windows/previewdependencies.h
         src/windows/previewdependencies.cpp
         src/windows/previewhandler.def
+        src/document/documentfactory.cpp
         src/document/qtpdfbackend.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp)
@@ -1202,6 +1208,7 @@ if(WIN32)
         src/windows/previewdependencies.h
         src/windows/previewdependencies.cpp
         src/windows/thumbnailprovider.def
+        src/document/documentfactory.cpp
         src/document/qtpdfbackend.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp)

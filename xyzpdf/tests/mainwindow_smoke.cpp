@@ -20,6 +20,7 @@
 
 #include "../documenttab.h"
 #include "../mainwindow.h"
+#include "../src/core/languages.h"
 #include "../src/ui/deletepagesdialog.h"
 #include "../src/ui/documenttabbar.h"
 #include "../src/ui/findbar.h"
@@ -38,12 +39,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMap>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QScrollBar>
@@ -52,12 +55,14 @@
 #include <QTemporaryDir>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QPointer>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTranslator>
 #include <QUrl>
 
 #include <chrono>
@@ -643,6 +648,227 @@ int main(int argc, char **argv)
         check(waitFor([&window, tabsBefore] { return openTabs(window) == tabsBefore; }, 8000),
               QStringLiteral("and the window is left with the tabs it had (%1 now)")
                   .arg(openTabs(window)));
+    }
+
+    // ---- no two rows of one menu answer to the same Alt letter ----
+    //
+    // §116 merged a new 保存(&S) into 文档 while 拆分文件 was still written
+    // "&Split Files": two rows of one menu taking the letter S, so the reader who
+    // presses Alt then S gets whichever of the two Qt reaches first. The eye found
+    // it during that merge and no machine could have. check_translations.py's fourth
+    // rule judges how one English form writes *its own* letter -- `&Print…`, not the
+    // source's `Print(&P)…` -- and says nothing about its neighbours; the mnemonics
+    // screen mode opens the top-level menus and reads their row names, so it never
+    // looks inside a menu. A menu grows by one row at a time, which makes this the
+    // class of defect that arrives with every feature. That is why it is a test now
+    // rather than a review comment.
+    //
+    // Both interface languages, because the letters are chosen per catalogue: the
+    // Chinese rows put one on a pinyin initial, the English rows inside an English
+    // word, and the two sets are free to collide in only one of them. Reading a live
+    // window rather than the .ts also covers the labels composed at runtime --
+    // 撤销 %1(&U) exists only after updateForCurrentTab() has run, and the
+    // constructor calls it, so even a window with nothing open carries U and O.
+    // The menu bar counts as a menu of its own: two top-level menus sharing a letter
+    // is the same collision one level up.
+    {
+        struct Row
+        {
+            QString label;      // the row's own text, ampersand included
+            QString menu;       // which menu it sits in, for the message
+            unsigned letter = 0; // 0 for a row that takes no letter
+        };
+
+        // QKeySequence::mnemonic() answers with a key sequence rather than a key: empty when
+        // the label carries no ampersand, and one combination when it does, with the
+        // modifiers masked off by QKeyCombination::key(). Alt+f and Alt+F are one press with
+        // Shift added, so a letter is folded onto its capital before anything is compared --
+        // that is the identity the reader actually has.
+        const auto letterOf = [](const QString &text) -> unsigned {
+            const QKeySequence mnemonic = QKeySequence::mnemonic(text);
+            if (mnemonic.isEmpty())
+                return 0;
+            const unsigned taken = static_cast<unsigned>(mnemonic[0].key());
+            if (taken == static_cast<unsigned>(Qt::Key_unknown))
+                return 0;
+            return taken >= 'a' && taken <= 'z' ? taken - 32 : taken;
+        };
+
+        // Whether a label still has Chinese in it. Used as the receipt that a round
+        // read the language it claims to have read: a catalogue that failed to load
+        // would leave the English round walking the Chinese rows, both rounds green and
+        // one of them testing nothing.
+        const auto hasChinese = [](const QString &text) {
+            for (const QChar &character : text) {
+                const ushort code = character.unicode();
+                if (code >= 0x3400 && code <= 0x9FFF) // the CJK ideograph blocks
+                    return true;
+            }
+            return false;
+        };
+
+        // Every visible row under the bar, in walk order, each carrying the name of the
+        // menu it came out of. Separators carry no letter and are not rows; a hidden
+        // row is not one the reader can Alt to.
+        const auto rowsOf = [&letterOf](MainWindow &window) {
+            QList<Row> rows;
+            std::function<void(const QString &, const QList<QAction *> &)> walk =
+                [&](const QString &menu, const QList<QAction *> &actions) {
+                    for (QAction *action : actions) {
+                        if (!action || action->isSeparator() || !action->isVisible())
+                            continue;
+                        const QString label = action->text();
+                        rows.append({label, menu, letterOf(label)});
+                        if (QMenu *inside = action->menu())
+                            walk(menu + QStringLiteral(" > ") + label, inside->actions());
+                    }
+                };
+            walk(QStringLiteral("menu bar"), window.menuBar()->actions());
+            return rows;
+        };
+
+        // One round's readings and verdicts. The letters are grouped per menu so that a
+        // failure names the menu, the letter and the rows sharing it, which is the whole of
+        // what it takes to go and fix one.
+        const auto judge = [](const QString &language, const QList<Row> &rows) {
+            QStringList menus;
+            for (const Row &row : rows) {
+                if (!menus.contains(row.menu))
+                    menus.append(row.menu);
+            }
+
+            int lettered = 0;
+            QStringList carryingLetters;
+            for (const QString &menu : std::as_const(menus)) {
+                int visible = 0;
+                QMap<unsigned, QStringList> byLetter;
+                for (const Row &row : rows) {
+                    if (row.menu != menu)
+                        continue;
+                    ++visible;
+                    if (row.letter == 0)
+                        continue;
+                    ++lettered;
+                    byLetter[row.letter].append(row.label);
+                }
+
+                QStringList letters;
+                for (auto taken = byLetter.constBegin(); taken != byLetter.constEnd(); ++taken)
+                    letters.append(QString(1, QChar(static_cast<ushort>(taken.key()))));
+                if (!byLetter.isEmpty())
+                    carryingLetters.append(menu);
+                std::cout << "MEASURE mnemonics [" << language.toStdString() << "] menu ["
+                          << menu.toStdString() << "] rows=" << visible << " letters="
+                          << letters.join(QStringLiteral(" ")).toStdString() << '\n';
+
+                for (auto taken = byLetter.constBegin(); taken != byLetter.constEnd(); ++taken)
+                    check(taken.value().size() == 1,
+                          QStringLiteral("[%1] menu '%2': the letter '%3' is taken by %4 of its "
+                                         "rows -- %5")
+                              .arg(language, menu,
+                                   QString(1, QChar(static_cast<ushort>(taken.key()))))
+                              .arg(taken.value().size())
+                              .arg(taken.value().join(QStringLiteral(" | "))));
+            }
+
+            std::cout << "MEASURE mnemonics [" << language.toStdString() << "]: "
+                      << menus.size() << " menus, " << rows.size() << " visible rows, " << lettered
+                      << " of them carrying a letter, in " << carryingLetters.size()
+                      << " menus\n";
+
+            // The walk has to get inside the menus, not only read the bar: 文档 is exactly
+            // where §116's collision was, and a round that never descended would be a green
+            // saying nothing was wrong. A floor rather than a count, because a menu gaining a
+            // row or a whole new menu arriving is an ordinary change -- today it is seven, and
+            // three menus carry no letter at all (最近打开, 转到 and Language).
+            check(carryingLetters.size() >= 6,
+                  QStringLiteral("[%1] setup: only %2 of its menus carried a letter, so the walk "
+                                 "did not reach inside them -- it saw %3")
+                      .arg(language)
+                      .arg(carryingLetters.size())
+                      .arg(carryingLetters.join(QStringLiteral(" | "))));
+        };
+
+        // The menu bar's own rows, which are the ones every language has to translate.
+        const auto barRows = [](const QList<Row> &rows) {
+            QStringList labels;
+            for (const Row &row : rows) {
+                if (row.menu == QStringLiteral("menu bar"))
+                    labels.append(row.label);
+            }
+            return labels;
+        };
+
+        // Chinese first, and with no catalogue installed: the source strings are the
+        // interface, so this is what a reader who never opened the Language menu sees.
+        QList<Row> chineseRows;
+        {
+            MainWindow chinese;
+            chineseRows = rowsOf(chinese);
+            judge(QStringLiteral("zh_CN"), chineseRows);
+        }
+
+        // The catalogue is a build product compiled into the binary, which is why this target
+        // is listed beside i18n_smoke among the translation targets: without that, the load
+        // below fails and the English round walks Chinese rows while reporting English.
+        QList<Row> englishRows;
+        {
+            QTranslator catalogue;
+            const QString resource = Languages::catalogueResource(QStringLiteral("en"));
+            check(catalogue.load(resource),
+                  QStringLiteral("setup: the English catalogue loads (%1)").arg(resource));
+            check(QCoreApplication::installTranslator(&catalogue),
+                  "setup: and the English catalogue installs");
+
+            MainWindow inEnglish;
+            englishRows = rowsOf(inEnglish);
+            judge(QStringLiteral("en"), englishRows);
+
+            // Out before the next block, which reads Chinese sentences off the window this
+            // test was built around.
+            QCoreApplication::removeTranslator(&catalogue);
+        }
+
+        // The receipt that the second round read a second language rather than the first one
+        // twice: the bar has the same rows in both, each said differently, and each English
+        // one free of Chinese -- except "Language", which the product leaves untranslated on
+        // purpose, because whoever needs that entry is looking at an interface they cannot
+        // read. A catalogue that did not load would have left both rounds green over the same
+        // labels, which is how §92's one-spelling lookup silently tested one locale.
+        {
+            const QStringList chineseBar = barRows(chineseRows);
+            const QStringList englishBar = barRows(englishRows);
+            check(!chineseBar.isEmpty() && chineseBar.size() == englishBar.size(),
+                  QStringLiteral("setup: both rounds saw the whole menu bar (%1 and then %2 "
+                                 "rows)")
+                      .arg(chineseBar.size())
+                      .arg(englishBar.size()));
+
+            int moved = 0;
+            const int pairs = qMin(chineseBar.size(), englishBar.size());
+            for (int row = 0; row < pairs; ++row) {
+                if (chineseBar.at(row) == englishBar.at(row)) {
+                    check(englishBar.at(row) == QStringLiteral("Language"),
+                          QStringLiteral("setup: the menu bar row '%1' is word for word the "
+                                         "same in both languages")
+                              .arg(englishBar.at(row)));
+                    continue;
+                }
+                ++moved;
+                check(!hasChinese(englishBar.at(row)),
+                      QStringLiteral("setup: the English menu bar row '%1' still has Chinese "
+                                     "in it")
+                          .arg(englishBar.at(row)));
+            }
+
+            std::cout << "MEASURE mnemonics setup: " << moved << " of " << pairs
+                      << " menu bar rows changed language\n";
+            check(pairs > 0 && moved == pairs - 1,
+                  QStringLiteral("setup: every menu bar row but 'Language' changed language "
+                                 "(%1 of %2 did)")
+                      .arg(moved)
+                      .arg(pairs));
+        }
     }
 
     // ---- a second document joins the first ----

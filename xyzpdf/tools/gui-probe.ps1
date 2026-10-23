@@ -138,7 +138,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -1815,6 +1815,77 @@ switch ($Mode) {
           -and ($e.Current.Name -like 'Undo*' -or $e.Current.Name -like ((CjStr 0x64A4,0x9500) + '*'))) {
         Say ('  undo row |' + $e.Current.Name + '|') }
     }
+  }
+  'saveinplace' {
+    # What F8 made Ctrl+S: write the pending edit back into the file that is open. Neither the
+    # in-place save nor the three-answer box has ever been read off a screen (sec.116 says so about
+    # both), and the mode that used to press the key -- saverename -- has been unrun since, because
+    # the key it pressed took the -Doc file with it. Everything below therefore happens on the copy
+    # the guard above made, and the original is only ever hashed.
+    #
+    # The edit is a rotation through the dialog, because that changes the BYTES of the file rather
+    # than only the view: 'the save happened' is then a disk reading, not a line of text. Four things
+    # have to agree afterwards -- the status line says it saved and names the copy, the caption's star
+    # is gone, the copy's sha256 moved, and (the guard) the original's did not.
+    #
+    # -Control keeps all four expectations and does not press the key. The status line is timed at 5 s
+    # so it is polled, never slept-once-and-read.
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground; refusing to send Ctrl+S into another window' }
+    $title = (Window $app.Id).Current.Name
+    Say ('  window [' + $title + ']')
+    if (-not $title.Contains($script:guardCopyLeaf)) {
+      Bail ('  the caption does not name the copy this probe made [' + $script:guardCopyLeaf + ']')
+    }
+    $copyBefore = Copy-Hash
+    if ($copyBefore -ne $script:guardOrigHash) {
+      Bail ('  the copy is not the original before anything was saved (' + $copyBefore + ')')
+    }
+    Say ('  the copy equals the original before the edit (' + $copyBefore + ')')
+
+    Rotate-CurrentPage $app.Id
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  the caption never grew the unsaved-edits star; it reads [' + (Window $app.Id).Current.Name + ']')
+    }
+    Say ('  caption after the rotation [' + (Window $app.Id).Current.Name + '] -- the star is there')
+
+    # The key only goes where the window is: the dialog that just closed had the foreground, and a
+    # chord sent to whoever holds it now would be somebody else's Ctrl+S.
+    if (-not (ForegroundIs (Window $app.Id))) {
+      Say ('  foreground is [' + [W32]::Text([W32]::GetForegroundWindow()) + '], not ours; raising')
+      if (-not (TakeForeground $app.Id)) { Bail '  could not get the foreground back after the rotate dialog' }
+    }
+    if ($Control) {
+      Say '  CONTROL: Ctrl+S is not pressed; every expectation below stays the same'
+    } else {
+      [System.Windows.Forms.SendKeys]::SendWait('^s')
+    }
+
+    $savedCj = CjStr 0x5DF2, 0x4FDD, 0x5B58, 0x5230   # the source form of the save line
+    $msg = Wait-Status $app.Id @($savedCj, 'Saved to')
+    $sawMsg = ($msg -ne '')
+    $msgNamesCopy = $msg.Contains($script:guardCopyLeaf)
+    $starGone = Wait-Star $app.Id $false
+    $copyAfter = Copy-Hash
+    $moved = ($copyAfter -ne $copyBefore)
+    Say ('  status line [' + $msg.Replace("`r", ' ').Replace("`n", ' / ') + ']')
+    Say ('  a save line=' + $sawMsg + '  it names the copy=' + $msgNamesCopy +
+         '  the star went=' + $starGone + '  the copy moved=' + $moved)
+    Say ('  copy sha256 before [' + $copyBefore + ']')
+    Say ('  copy sha256 after  [' + $copyAfter + ']')
+    if (-not $sawMsg) {
+      if ($Control) {
+        Bail '  CONTROL: with the key unpressed no save line appeared -- the status verdict is live (CONTROL exit 1)'
+      }
+      Bail '  Ctrl+S left no "saved to" line in the status bar'
+    }
+    if (-not $msgNamesCopy) { Bail ('  the save line does not name the file that is open [' + $script:guardCopy + ']') }
+    if (-not $starGone) { Bail '  the caption still carries the star, so the tab still thinks something is unwritten' }
+    if (-not $moved) { Bail '  the copy on disk is what it was, so nothing was written despite the line saying it was' }
+    if (-not (Guard-Check 'after the in-place save')) {
+      Bail '  the in-place save wrote the file this probe was handed rather than its own copy'
+    }
+    Say ('  Ctrl+S wrote the copy: the line names it, the star is gone, the bytes moved, the original did not')
   }
   'saverename' {
     # Renaming in the native save box works, and the route is neither of the two obvious ones

@@ -334,7 +334,7 @@ This document&apos;s only page came in from another file: the screen has no page
     </message>
     <message>
         <location filename="../../src/edit/documenteditor.cpp" line="734"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="589"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="594"/>
         <source>去掉口令</source>
         <translation>Remove password</translation>
     </message>
@@ -563,7 +563,7 @@ The parser says: %2</translation>
     </message>
     <message>
         <location filename="../../src/edit/documenteditor.cpp" line="2547"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="580"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="585"/>
         <source>，</source>
         <translation>, </translation>
     </message>
@@ -737,8 +737,8 @@ The parser says: %1</translation>
     </message>
     <message numerus="yes">
         <location filename="../../src/edit/documenteditor.cpp" line="2060"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="603"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="609"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="608"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="614"/>
         <source>这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。</source>
         <translation>
             <numerusform>This document has already been told to split into pieces of %n page. Undo that step before merging a file in.</numerusform>
@@ -811,22 +811,22 @@ The parser says: %1</translation>
     </message>
     <message>
         <location filename="../../documenttab.cpp" line="107"/>
-        <location filename="../../documenttab.cpp" line="1081"/>
+        <location filename="../../documenttab.cpp" line="1078"/>
         <source>缩略图</source>
         <translation>Thumbnails</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="662"/>
+        <location filename="../../documenttab.cpp" line="659"/>
         <source>（空标签）</source>
         <translation>(no document)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="889"/>
+        <location filename="../../documenttab.cpp" line="886"/>
         <source>打开链接</source>
         <translation>Open Link</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="890"/>
+        <location filename="../../documenttab.cpp" line="887"/>
         <source>要在浏览器中打开这个地址：
 %1
 
@@ -842,7 +842,7 @@ Continue?</translation>
         <translation>Printing…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1428"/>
+        <location filename="../../documenttab.cpp" line="1425"/>
         <location filename="../../src/services/documentoutput.cpp" line="60"/>
         <location filename="../../src/services/documentoutput.cpp" line="119"/>
         <source>取消</source>
@@ -876,23 +876,23 @@ Continue?</translation>
         <translation>Exporting images…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="921"/>
+        <location filename="../../documenttab.cpp" line="918"/>
         <source>修改这份文档</source>
         <translation>Editing this document</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="938"/>
-        <location filename="../../documenttab.cpp" line="1652"/>
+        <location filename="../../documenttab.cpp" line="935"/>
+        <location filename="../../documenttab.cpp" line="1628"/>
         <source>这个标签里没有打开的文档。</source>
         <translation>There is no document open in this tab.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="940"/>
+        <location filename="../../documenttab.cpp" line="937"/>
         <source>这个标签正在打印或导出，完成之后才能重新加载。</source>
         <translation>This tab is printing or exporting; it can be reloaded once that has finished.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="946"/>
+        <location filename="../../documenttab.cpp" line="943"/>
         <location filename="../../src/services/filechangenotice.cpp" line="41"/>
         <source>重新加载</source>
         <translation>Reload</translation>
@@ -957,7 +957,7 @@ Continue?</translation>
         <translation>Send</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="947"/>
+        <location filename="../../documenttab.cpp" line="944"/>
         <source>「%1」还带着没有写进任何文件的修改：%2。
 
 重新加载会把这些修改丢掉。要继续吗？</source>
@@ -966,81 +966,81 @@ Continue?</translation>
 Reloading will throw those changes away. Continue?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="961"/>
+        <location filename="../../documenttab.cpp" line="958"/>
         <source>%1 不在了，所以没有可以重新加载的东西。</source>
         <translation>%1 is no longer there, so there is nothing to reload.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="988"/>
-        <location filename="../../documenttab.cpp" line="1001"/>
+        <location filename="../../documenttab.cpp" line="985"/>
+        <location filename="../../documenttab.cpp" line="998"/>
         <source>重新加载 %1 失败。</source>
         <translation>Could not reload %1.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1057"/>
+        <location filename="../../documenttab.cpp" line="1054"/>
         <source>原第 %1 页</source>
         <translation>Page %1 of the file</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1067"/>
+        <location filename="../../documenttab.cpp" line="1064"/>
         <source>%1（合并）</source>
         <translation>%1 (merged)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1068"/>
+        <location filename="../../documenttab.cpp" line="1065"/>
         <source>来自 %1 的第 %2 页</source>
         <translation>Page %2 of %1</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1081"/>
+        <location filename="../../documenttab.cpp" line="1078"/>
         <source>缩略图（修改预览）</source>
         <translation>Thumbnails (preview of changes)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1083"/>
+        <location filename="../../documenttab.cpp" line="1080"/>
         <source>这里显示的是保存之后的页面顺序和朝向；正在读的文件本身没有变</source>
         <translation>These show the pages in the order and orientation a save would write; the file you are reading has not changed</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1147"/>
+        <location filename="../../documenttab.cpp" line="1144"/>
         <source>旋转页面</source>
         <translation>Rotate Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1166"/>
+        <location filename="../../documenttab.cpp" line="1163"/>
         <source>移动页面</source>
         <translation>Move Pages</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1206"/>
+        <location filename="../../documenttab.cpp" line="1203"/>
         <source>合并文件进来</source>
         <translation>Merge Files In</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1221"/>
-        <location filename="../../documenttab.cpp" line="1233"/>
+        <location filename="../../documenttab.cpp" line="1218"/>
+        <location filename="../../documenttab.cpp" line="1230"/>
         <source>拆分文件</source>
         <translation>Split Files</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1259"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="592"/>
+        <location filename="../../documenttab.cpp" line="1256"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="597"/>
         <source>加密 / 去掉口令</source>
         <translation>Encrypt / Remove Password</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1280"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="618"/>
+        <location filename="../../documenttab.cpp" line="1277"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="623"/>
         <source>加水印</source>
         <translation>Add Watermark</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1307"/>
+        <location filename="../../documenttab.cpp" line="1304"/>
         <source>编辑书签</source>
         <translation>Edit Bookmarks</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1391"/>
+        <location filename="../../documenttab.cpp" line="1388"/>
         <source>改了 %n 个表单字段</source>
         <translation>
             <numerusform>Change %n form field</numerusform>
@@ -1048,98 +1048,92 @@ Reloading will throw those changes away. Continue?</translation>
         </translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1392"/>
+        <location filename="../../documenttab.cpp" line="1389"/>
         <source>，</source>
         <translation>, </translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1427"/>
-        <location filename="../../documenttab.cpp" line="1454"/>
-        <location filename="../../documenttab.cpp" line="1492"/>
-        <location filename="../../documenttab.cpp" line="1535"/>
-        <location filename="../../documenttab.cpp" line="1592"/>
+        <location filename="../../documenttab.cpp" line="1424"/>
+        <location filename="../../documenttab.cpp" line="1440"/>
+        <location filename="../../documenttab.cpp" line="1515"/>
+        <location filename="../../documenttab.cpp" line="1572"/>
         <source>保存</source>
         <translation>Save</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1427"/>
+        <location filename="../../documenttab.cpp" line="1424"/>
         <source>要另存为一份新的吗？</source>
         <translation>Save it as a new file?</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1428"/>
+        <location filename="../../documenttab.cpp" line="1425"/>
         <source>另存为…</source>
         <translation>Save &amp;As…</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1440"/>
-        <source>这份文档带口令保护，而填写的内容写出去会得到一份没有保护的副本。本版不保存填好的字段，另存为也一样——那只会多出一份不带保护的副本。</source>
-        <translation>This document is protected with a password, and the filled-in fields would come out of it as a copy with no protection. This version does not save filled fields, and &apos;Save As&apos; is no different: it would only put another unprotected copy in the folder.</translation>
-    </message>
-    <message>
-        <location filename="../../documenttab.cpp" line="1455"/>
-        <location filename="../../documenttab.cpp" line="1644"/>
+        <location filename="../../documenttab.cpp" line="1441"/>
+        <location filename="../../documenttab.cpp" line="1624"/>
         <source>这个标签正在打印或导出，完成之后才能保存。</source>
         <translation>This tab is printing or exporting; it can be saved once that has finished.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1468"/>
+        <location filename="../../documenttab.cpp" line="1454"/>
         <source>%1 不在了，可能已经被移走，或者网络位置断开了。</source>
         <translation>%1 is gone -- it may have been moved, or a network location has dropped.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1473"/>
+        <location filename="../../documenttab.cpp" line="1459"/>
         <source>%1 在 Windows 应用的安装目录里，这个程序改不了它。</source>
         <translation>%1 is inside a Windows app&apos;s installation folder, which this program cannot change.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1478"/>
+        <location filename="../../documenttab.cpp" line="1464"/>
         <source>%1 是只读文件，写不回去。</source>
         <translation>%1 is a read-only file, so it cannot be written back.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1482"/>
+        <location filename="../../documenttab.cpp" line="1468"/>
         <source>%1 所在的文件夹不允许写入。</source>
         <translation>The folder holding %1 does not allow writing.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1486"/>
+        <location filename="../../documenttab.cpp" line="1472"/>
         <source>这份文档还带着拆分，写回原文件只能写成一个文件。</source>
         <translation>This document still has a split pending, and writing back to the original can only produce one file.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1572"/>
+        <location filename="../../documenttab.cpp" line="1552"/>
         <source>没能把新文件换上去（Windows 错误 %1）。原来的文件没有改动，这些修改还留在这里。</source>
         <translation>The new file could not be put in place (Windows error %1). The original file is unchanged, and these changes are still here.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1593"/>
+        <location filename="../../documenttab.cpp" line="1573"/>
         <source>新文件已经放回原处，但重新打开它失败：%1</source>
         <translation>The new file is in place, but reopening it failed: %1</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1613"/>
+        <location filename="../../documenttab.cpp" line="1593"/>
         <source>%1 已修改.pdf</source>
         <translation>%1 modified.pdf</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1618"/>
-        <location filename="../../documenttab.cpp" line="1626"/>
+        <location filename="../../documenttab.cpp" line="1598"/>
+        <location filename="../../documenttab.cpp" line="1606"/>
         <source>另存为</source>
         <translation>Save As</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1642"/>
+        <location filename="../../documenttab.cpp" line="1622"/>
         <source>没有待保存的修改。</source>
         <translation>There is nothing to save.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1659"/>
+        <location filename="../../documenttab.cpp" line="1635"/>
         <source>这份文档现在没法写出。</source>
         <translation>This document cannot be written out right now.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1716"/>
+        <location filename="../../documenttab.cpp" line="1692"/>
         <source>修改已经写成 %1，但这个程序打不开它。原来的文档和这里的修改都还在。
 
 %2</source>
@@ -1148,22 +1142,22 @@ Reloading will throw those changes away. Continue?</translation>
 %2</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1726"/>
+        <location filename="../../documenttab.cpp" line="1702"/>
         <source>写好的 %1 打不开。</source>
         <translation>%1 could not be opened.</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1618"/>
+        <location filename="../../documenttab.cpp" line="1598"/>
         <source>PDF 文档 (*.pdf)</source>
         <translation>PDF documents (*.pdf)</translation>
     </message>
     <message>
-        <location filename="../../documenttab.cpp" line="1129"/>
+        <location filename="../../documenttab.cpp" line="1126"/>
         <source>删除页面</source>
         <translation>Delete Pages</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1205"/>
+        <location filename="../../documenttab.cpp" line="1202"/>
         <source>
 
 列表里前面 %n 个文件已经记下了，要退回去用撤销。</source>
@@ -1177,7 +1171,7 @@ The first %n files in the list have been recorded; use Undo to take them back.</
         </translation>
     </message>
     <message numerus="yes">
-        <location filename="../../documenttab.cpp" line="1222"/>
+        <location filename="../../documenttab.cpp" line="1219"/>
         <source>这份要写出的文档只有 %n 页，拆不出第二个文件来。</source>
         <translation>
             <numerusform>The document this would write has only %n page, so there is no second file to split off.</numerusform>
@@ -2457,8 +2451,8 @@ This document already has %n pages merged in from another file.</numerusform>
     </message>
     <message numerus="yes">
         <location filename="../../src/ui/mergepagesdialog.cpp" line="416"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="600"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="606"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="605"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="611"/>
         <source>这份文档已经说了要拆成每 %n 页一份。先撤销那一步，再把文件合并进来。</source>
         <translation>
             <numerusform>This document has already been told to split into pieces of %n page. Undo that step before merging a file in.</numerusform>
@@ -2721,54 +2715,54 @@ The original file is not touched. This step only records the change; a save is s
 <context>
     <name>PdfiumBackend</name>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1152"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1150"/>
         <source>找不到文件：%1</source>
         <translation>File not found: %1</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1153"/>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1168"/>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1200"/>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1203"/>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="2027"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1151"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1166"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1198"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1201"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="2042"/>
         <source>打开 %1 时出错：%2</source>
         <translation>Error opening %1: %2</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1153"/>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1168"/>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1200"/>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1204"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1151"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1166"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1198"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1202"/>
         <source>文件无法解析</source>
         <translation>the file cannot be parsed</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1190"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1188"/>
         <source>此文档已加密，需要密码。</source>
         <translation>This document is encrypted and needs a password.</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1194"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1192"/>
         <source>这个文件不是有效的 PDF，或者已经损坏。</source>
         <translation>This file is not a valid PDF, or it is damaged.</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1197"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1195"/>
         <source>这个 PDF 使用了不支持的加密方式，无法打开。</source>
         <translation>This PDF uses an encryption method that is not supported.</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="1205"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="1203"/>
         <source>文件不存在</source>
         <translation>the file is not there</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="2028"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="2043"/>
         <source>文件无法写入</source>
         <translation>the file cannot be written</translation>
     </message>
     <message>
-        <location filename="../../src/document/pdfiumbackend.cpp" line="2039"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="2054"/>
         <source>这份文档的表单没能写出来。原来的文件没有改动。</source>
         <translation>The form in this document could not be written out. The original file is unchanged.</translation>
     </message>
@@ -2972,7 +2966,7 @@ The original file is not touched. This step only records the change; a save is s
     <name>ProtectPagesDialog</name>
     <message>
         <location filename="../../src/ui/protectpagesdialog.cpp" line="22"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="591"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="596"/>
         <source>加密 / 去掉口令</source>
         <translation>Encrypt / Remove Password</translation>
     </message>
@@ -3181,7 +3175,7 @@ The original file is not touched, and this step writes nothing either: the file 
     </message>
     <message>
         <location filename="../../src/ui/protectpagesdialog.cpp" line="232"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="588"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="593"/>
         <source>去掉口令</source>
         <translation>Remove password</translation>
     </message>
@@ -3605,7 +3599,7 @@ The original file is not touched. This step only records the change; a save is s
     </message>
     <message>
         <location filename="../../src/ui/splitpagesdialog.cpp" line="100"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="578"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="583"/>
         <source>、</source>
         <translation>, </translation>
     </message>
@@ -3895,7 +3889,7 @@ Each component&apos;s licence and source address are listed below, and the full 
     <name>WatermarkDialog</name>
     <message>
         <location filename="../../src/ui/watermarkdialog.cpp" line="24"/>
-        <location filename="../../tests/i18n_smoke.cpp" line="619"/>
+        <location filename="../../tests/i18n_smoke.cpp" line="624"/>
         <source>加水印</source>
         <translation>Add Watermark</translation>
     </message>

@@ -510,7 +510,6 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
         formFieldsInSource = false;
         xfaInSource = false;
         dynamicXfaInSource = false;
-        sourceEncrypted = false;
         sourceHasScript = false;
         // No document, no fields to fill. Order matters: the view drops its form
         // surface before the backend it points at is closed, and before the view is
@@ -602,7 +601,6 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
     formFieldsInSource = false;
     xfaInSource = false;
     dynamicXfaInSource = false;
-    sourceEncrypted = false;
     sourceHasScript = false;
     sourceOutlineRows.clear();
     {
@@ -612,7 +610,6 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
             formFieldsInSource = probe.hasFormFields();
             xfaInSource = probe.hasXfa();
             dynamicXfaInSource = probe.hasDynamicXfa();
-            sourceEncrypted = probe.sourceIsProtected();
             sourceHasScript = probe.hasFormScript();
             sourceOutlineRows = probe.sourceOutlineRows();
         }
@@ -1430,17 +1427,6 @@ void DocumentTab::offerSaveAs(const QString &reason)
         saveEditsAs();
 }
 
-QString DocumentTab::fieldSaveRefusal() const
-{
-    // One sentence for both ways out, because 另存为 must not be a way round it: an
-    // unprotected copy of a document its author put a password on is the same loss
-    // whichever name it lands under. The measurement this rests on is in
-    // tests/documenttab_smoke.cpp -- FPDF_SaveAsCopy on this build writes a file whose
-    // trailer carries no /Encrypt, so the protection goes with the bytes it rewrote.
-    return tr("这份文档带口令保护，而填写的内容写出去会得到一份没有保护的副本。"
-              "本版不保存填好的字段，另存为也一样——那只会多出一份不带保护的副本。");
-}
-
 bool DocumentTab::saveEdits()
 {
     const bool structural = editor && editor->isDirty();
@@ -1484,12 +1470,6 @@ bool DocumentTab::saveEdits()
     }
     if (structural && editor->pieceCount() > 1) {
         offerSaveAs(tr("这份文档还带着拆分，写回原文件只能写成一个文件。"));
-        return false;
-    }
-    if (fields > 0 && sourceEncrypted) {
-        // A refusal about the document rather than about the disk, so no 另存为 offer:
-        // the other way out would fail for the same reason.
-        WindowDialogs::warning(window(), tr("保存"), fieldSaveRefusal());
         return false;
     }
 
@@ -1642,10 +1622,6 @@ bool DocumentTab::saveEditsTo(const QString &destination, QString *error)
         return refuse(tr("没有待保存的修改。"));
     if (hasForegroundJob())
         return refuse(tr("这个标签正在打印或导出，完成之后才能保存。"));
-    if (fields > 0 && sourceEncrypted)
-        // The refusal saveEdits() makes, said here too -- 另存为 is not a way round
-        // losing a password, and the handoff says so on purpose (G1 6).
-        return refuse(fieldSaveRefusal());
 
     const QString source = documentPath();
     if (source.isEmpty())

@@ -526,10 +526,6 @@ private:
     // write back here and offers 另存为, which is the way out that keeps the work.
     void offerSaveAs(const QString &reason);
 
-    // Why a filled field cannot be written into a document the author put a password
-    // on -- and why 另存为 says the same thing. One sentence, two callers, because the
-    // rule is not about which box the reader pressed.
-    QString fieldSaveRefusal() const;
 
     void onPageImageNeeded(const RenderToken &token);
     void onPageRendered(const RenderToken &token, const QImage &image);
@@ -602,20 +598,16 @@ private:
     std::unique_ptr<DocumentOutput> output;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
-    // Whether the file on disk carries an /Encrypt dictionary of its own, and whether
-    // anything in it runs a script. Read in the same open-time pass as the line above.
+    // Whether anything in the file asks for a script to run, read in the same open-time
+    // pass as the line above. This build has no V8, so a field's calculation, validation
+    // and formatting actions never run, and the reader is told that once on the way in
+    // rather than finding out from a total that stayed at zero.
     //
-    // The first decides whether a field change can be saved at all: measured on this
-    // build, FPDF_SaveAsCopy writes an unencrypted file from an encrypted one, so a
-    // save that carries the reader's answers would also carry away the protection the
-    // file was written with -- and 另存为 must not be a way round that, because it would
-    // put an unprotected copy of a protected document on disk under a new name.
-    //
-    // The second is what the short status sentence at open time is about: this build has
-    // no V8, so a field's calculation, validation and formatting actions never run and
-    // the reader is told that once, on the way in, instead of finding out from a total
-    // that stayed at zero.
-    bool sourceEncrypted = false;
+    // Whether the file is encrypted is deliberately not read or kept here. G1 6 asked for
+    // that to be measured before deciding what to do about it, and
+    // tests/documenttab_smoke.cpp measures it: PDFium's FPDF_SaveAsCopy carries /Encrypt
+    // and its permission bits over, so a filled protected form saves the way an
+    // unprotected one does and no gate is needed.
     bool sourceHasScript = false;
     // What the open-time probe answered about XFA, kept for hasXfa() / hasDynamicXfa() above.
     bool xfaInSource = false;

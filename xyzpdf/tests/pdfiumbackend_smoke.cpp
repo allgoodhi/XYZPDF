@@ -31,6 +31,7 @@
 // Run by tools/build_all_tests.py like every other test.
 
 #include "../src/document/pdfiumbackend.h"
+#include "formsample.h"
 #include "../src/services/filechangenotice.h"
 
 #include <QApplication>
@@ -48,10 +49,16 @@
 #endif
 #include <windows.h>
 
+#include <fpdf_annot.h>
+#include <fpdf_formfill.h>
+#include <fpdfview.h>
+
 #include <cmath>
 #include <iostream>
 
 namespace {
+
+using namespace FormSampleFile;
 
 int failures = 0;
 
@@ -574,6 +581,390 @@ void checkFailures(const QString &directory)
     check(damaged.lastError().isEmpty(), "and the previous error is gone");
 }
 
+FormFill::Frame flatFrame()
+{
+    FormFill::Frame frame;
+    frame.pixels = QSize(595, 842);
+    frame.quarterTurns = 0;
+    return frame;
+}
+
+void checkFormFilling(const QString &scratch)
+{
+    const Geometry geometry = FormSampleFile::geometry();
+    const QString samplePath = scratch + QStringLiteral("/form-sample.pdf");
+    const QString rotatedPath = scratch + QStringLiteral("/form-rotated.pdf");
+    const QString xfaPath = scratch + QStringLiteral("/form-xfa.pdf");
+    QString why;
+    check(write(samplePath, 0, false, &why),
+          QStringLiteral("setup: the form sample is written: %1").arg(why));
+    check(write(rotatedPath, 90, false, &why),
+          QStringLiteral("setup: the rotated form sample is written: %1").arg(why));
+    check(write(xfaPath, 0, true, &why),
+          QStringLiteral("setup: the XFA form sample is written: %1").arg(why));
+
+    const QByteArray originalBytes = [&samplePath] {
+        QFile file(samplePath);
+        if (!file.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return file.readAll();
+    }();
+    check(!originalBytes.isEmpty(), "and the sample can be read back for the byte compare");
+
+    PdfiumBackend document;
+    const Document::Status opened = document.load(samplePath, QString());
+    {
+        // Which of the two answers -- the status the backend gives and the error code
+        // the library itself holds -- is what turns "the sample does not open" into a
+        // fact about the bytes rather than a guess about the parser.
+        FPDF_DOCUMENT raw = FPDF_LoadDocument(samplePath.toUtf8().constData(), nullptr);
+        QFile head(samplePath);
+        head.open(QIODevice::ReadOnly);
+        const QByteArray first = head.read(16);
+        head.close();
+        note(QStringLiteral("formdiag: load status=%1 raw=%2 lastError=%3 bytes=%4 "
+                            "formType=%5 head=%6")
+                 .arg(int(opened))
+                 .arg(raw ? 1 : 0)
+                 .arg(FPDF_GetLastError())
+                 .arg(QFileInfo(samplePath).size())
+                 .arg(raw ? FPDF_GetFormType(raw) : -1)
+                 .arg(QString::fromUtf8(first.toPercentEncoding())));
+        if (raw)
+            FPDF_CloseDocument(raw);
+    }
+    check(opened == Document::Status::Ready,
+          QStringLiteral("form: the sample opens (%1)").arg(document.lastError()));
+    check(document.fillable(), "form: an AcroForm document is fillable");
+
+    // ---- what is under the pointer, before any input ----
+    //
+    // These rows are the companion every later zero needs (sec.82's rule): a field that
+    // answers None somewhere else on the page is only evidence if it answers its kind
+    // where the file put it.
+    struct Expected
+    {
+        const char *name;
+        QRectF rect;
+        FormFill::Field field;
+    };
+    const Expected expected[] = {
+        {"text", geometry.textField, FormFill::Field::TextField},
+        {"checkbox", geometry.checkBox, FormFill::Field::CheckBox},
+        {"radio one", geometry.radioOne, FormFill::Field::RadioButton},
+        {"radio two", geometry.radioTwo, FormFill::Field::RadioButton},
+        {"combobox", geometry.comboBox, FormFill::Field::ComboBox},
+        {"listbox", geometry.listBox, FormFill::Field::ListBox},
+    };
+    for (const Expected &one : expected) {
+        const FormFill::Field found = document.fieldAt(0, flatFrame(), flatDevice(one.rect));
+        check(found == one.field,
+              QStringLiteral("form: the %1 is hit as its own kind (got %2)")
+                  .arg(one.name)
+                  .arg(int(found)));
+        note(QStringLiteral("formhit %1: field=%2 interactive=%3")
+                 .arg(one.name)
+                 .arg(int(found))
+                 .arg(FormFill::isInteractive(found) ? 1 : 0));
+    }
+    check(document.fieldAt(0, flatFrame(), QPointF(400, 700)) == FormFill::Field::None,
+          "form: blank paper is not a field");
+
+    // ---- the two kinds this version shows and does not answer ----
+    //
+    // Named by what they are not rather than by what PDFium calls them. The push button
+    // reads back as PUSHBUTTON (1); the signature widget answers 8, a value this build
+    // gives no name to without the XFA enum. Both mean the same thing to a reader, which
+    // is that the click does nothing -- and that is the contract handoff-04 G1 5 wrote,
+    // so it is the contract pinned here while the numbers go to the log.
+    const Expected shown[] = {
+        {"push button", geometry.pushButton, FormFill::Field::None},
+        {"signature", geometry.signature, FormFill::Field::None},
+    };
+    for (const Expected &one : shown) {
+        const FormFill::Field found = document.fieldAt(0, flatFrame(), flatDevice(one.rect));
+        note(QStringLiteral("formshown %1: field=%2 interactive=%3")
+                 .arg(one.name)
+                 .arg(int(found))
+                 .arg(FormFill::isInteractive(found) ? 1 : 0));
+        check(!FormFill::isInteractive(found),
+              QStringLiteral("form: the %1 is not answered by a click").arg(one.name));
+        check(!document.mousePressed(0, flatFrame(), flatDevice(one.rect), {}),
+              QStringLiteral("form: the %1 takes no press").arg(one.name));
+    }
+    check(!document.hasFocusedField(), "and neither of them took the keyboard either");
+
+    // ---- click, type, undo ----
+    const FormFill::Frame frame = flatFrame();
+    check(document.mousePressed(0, frame, flatDevice(geometry.textField), {}),
+          "form: a press on the text field goes to the form");
+    check(document.mouseReleased(0, frame, flatDevice(geometry.textField), {}),
+          "and so does its release");
+    check(document.hasFocusedField(), "form: the text field has the keyboard now");
+    check(document.focusedPage() == 0, "and the form layer knows which page it is on");
+    check(document.focusedFieldType() == FormFill::Field::TextField,
+          "and what kind of field it is");
+    const FormFill::Pointer shape = document.takeRequestedPointer();
+    note(QStringLiteral("formcursor after focusing a text field: %1").arg(int(shape)));
+    check(shape == FormFill::Pointer::IBeam,
+          "form: PDFium asked for the I-beam while the field took focus");
+
+    const QVector<FormFill::Repaint> focusRepaints = document.takeRepaints();
+    note(QStringLiteral("formrepaint on focus: %1 entries, first page=%2 rect=(%3,%4)-(%5,%6)")
+             .arg(focusRepaints.size())
+             .arg(focusRepaints.isEmpty() ? -1 : focusRepaints.first().page)
+             .arg(focusRepaints.isEmpty() ? 0 : focusRepaints.first().userSpace.left())
+             .arg(focusRepaints.isEmpty() ? 0 : focusRepaints.first().userSpace.top())
+             .arg(focusRepaints.isEmpty() ? 0 : focusRepaints.first().userSpace.right())
+             .arg(focusRepaints.isEmpty() ? 0 : focusRepaints.first().userSpace.bottom()));
+    check(!focusRepaints.isEmpty(), "form: taking focus asks for a repaint");
+    check(focusRepaints.first().page == 0, "and says which page it is about");
+    // The rectangle has to cover the field's own. sec.82's rule about a row that reads 0
+    // works in the other direction too: a repaint over the wrong part of the page would
+    // leave the field showing what it showed before the click, and a test that only
+    // counted entries would never see that. Measured on this sample the answer is the
+    // field's /Rect grown by about two points on each side (the focus ring), so what is
+    // pinned is containment rather than equality -- equality would fail on the growth
+    // that is PDFium's own business.
+    check(focusRepaints.first().userSpace.contains(geometry.textField),
+          "and the rectangle covers the field it is about");
+
+    check(document.differingFieldCount() == 0,
+          "form: a click and a caret are not a change to the document");
+    for (const char letter : {'H', 'E', 'L', 'L', 'O'}) {
+        check(document.characterTyped(QChar(letter), {}),
+              QStringLiteral("form: the character %1 is taken").arg(QChar(letter)));
+        document.takeRepaints();
+    }
+    check(document.differingFieldCount() == 1,
+          "form: five keystrokes in one field are one changed field");
+    check(document.canUndoFocused(), "form: the field has something to undo");
+    // Measured: the field's own undo is per keystroke, not per editing session. One undo
+    // after five characters takes one character back, so the field still differs from the
+    // file. Worth pinning, because the reader's 撤销 while a field has the keyboard means
+    // "one more character" and the same menu item with no focus means "the last page
+    // operation" -- the two histories are not the same size and the menu says nothing
+    // about which one it walked.
+    document.undoFocused();
+    document.takeRepaints();
+    check(document.differingFieldCount() == 1,
+          "form: one undo takes one keystroke back, not the whole edit");
+    for (int step = 0; step < 4; ++step) {
+        document.undoFocused();
+        document.takeRepaints();
+    }
+    check(document.differingFieldCount() == 0,
+          "form: undoing every keystroke puts the file's own value back");
+    check(document.canRedoFocused(), "and the redo is still there to walk back");
+    document.redoFocused();
+    document.takeRepaints();
+    check(document.differingFieldCount() == 1, "and redoing puts the change back");
+    // Back to the file's value, so the groups below start from a count of zero and can
+    // assert absolute numbers instead of deltas off whatever the last group left behind.
+    document.undoFocused();
+    document.takeRepaints();
+    check(document.differingFieldCount() == 0, "and undoing the redo is back to zero");
+
+    // ---- Escape and the click on paper are the view's, not the field's ----
+    document.releaseFocus();
+    document.takeRepaints();
+    check(!document.hasFocusedField(), "form: letting go of the focus takes the keyboard back");
+    check(!document.mousePressed(0, frame, QPointF(400, 700), {}),
+          "and a press on paper is not the form's to take");
+
+    // ---- Tab walks the field order ----
+    check(document.mousePressed(0, frame, flatDevice(geometry.textField), {}),
+          "form: refocus the text field for the tab");
+    document.mouseReleased(0, frame, flatDevice(geometry.textField), {});
+    document.takeRepaints();
+    const bool tabTaken = document.keyPressed(Qt::Key_Tab, {});
+    const FormFill::Field afterTab = document.focusedFieldType();
+    note(QStringLiteral("formtab: taken=%1 field now=%2 page now=%3")
+             .arg(tabTaken)
+             .arg(int(afterTab))
+             .arg(document.focusedPage()));
+    check(tabTaken, "form: Tab goes to the field, not to the page");
+    check(afterTab != FormFill::Field::TextField, "and the focus moved on from the text field");
+    const bool shiftTabTaken = document.keyPressed(Qt::Key_Tab, Qt::ShiftModifier);
+    note(QStringLiteral("formshifttab: taken=%1 field now=%2")
+             .arg(shiftTabTaken)
+             .arg(int(document.focusedFieldType())));
+    document.releaseFocus();
+    document.takeRepaints();
+
+    // ---- the checkbox and the radio: a click is the whole edit ----
+    //
+    // The value is read back off a staged file rather than off the in-memory field,
+    // because reading a field while it still holds focus answers the file's value and not
+    // the one the widget is holding (formfill.h has that measurement). Staging commits
+    // first, so what the file says is what the reader sees.
+    const QString checkboxStage = scratch + QStringLiteral("/checkbox-stage.pdf");
+    auto checkboxValue = [&document, &checkboxStage, &why](const QString &label) {
+        QString staged;
+        if (!document.stageFieldValues(QFileInfo(checkboxStage).absolutePath(), &staged, &why))
+            return QString();
+        QFile::remove(checkboxStage);
+        if (!QFile::rename(staged, checkboxStage))
+            return QString();
+        const QString value = fieldValue(checkboxStage, QStringLiteral("agree"), &why);
+        note(QStringLiteral("formcheck %1: agree=[%2] differing=%3")
+                 .arg(label, value)
+                 .arg(document.differingFieldCount()));
+        return value;
+    };
+    const QString unchecked = checkboxValue(QStringLiteral("before any click"));
+    check(document.mousePressed(0, frame, flatDevice(geometry.checkBox), {}),
+          "form: a press on the checkbox is the form's");
+    document.mouseReleased(0, frame, flatDevice(geometry.checkBox), {});
+    document.takeRepaints();
+    check(document.differingFieldCount() == 1, "form: checking the box changes one field");
+    document.releaseFocus();
+    document.takeRepaints();
+    const QString checked = checkboxValue(QStringLiteral("after one click"));
+    check(checked != unchecked,
+          QStringLiteral("form: the box's value in the file really moved (%1 -> %2)")
+              .arg(unchecked, checked));
+    check(document.mousePressed(0, frame, flatDevice(geometry.checkBox), {}),
+          "and clicking it again is still the box's press");
+    document.mouseReleased(0, frame, flatDevice(geometry.checkBox), {});
+    document.takeRepaints();
+    document.releaseFocus();
+    document.takeRepaints();
+    const QString uncheckedAgain = checkboxValue(QStringLiteral("after two clicks"));
+    check(uncheckedAgain == unchecked,
+          QStringLiteral("form: the second click puts the file's own value back (%1 vs %2)")
+              .arg(uncheckedAgain, unchecked));
+    check(document.differingFieldCount() == 0,
+          "and with it the count of changed fields goes back to zero");
+
+    check(document.mousePressed(0, frame, flatDevice(geometry.radioTwo), {}),
+          "form: the second radio takes the press");
+    document.mouseReleased(0, frame, flatDevice(geometry.radioTwo), {});
+    document.takeRepaints();
+    check(document.differingFieldCount() >= 1,
+          "form: choosing the other radio changes the group");
+    document.releaseFocus();
+    document.takeRepaints();
+
+    // ---- the input-method commit is one edit, not a run of keystrokes ----
+    check(document.mousePressed(0, frame, flatDevice(geometry.textField), {}),
+          "form: refocus the text field for the commit");
+    document.mouseReleased(0, frame, flatDevice(geometry.textField), {});
+    document.takeRepaints();
+    document.commitText(QStringLiteral("名字"));
+    document.takeRepaints();
+    check(document.differingFieldCount() >= 1, "form: a committed string changes a field");
+    document.releaseFocus();
+    document.takeRepaints();
+    const QString committed = fieldValue(samplePath, QStringLiteral("name"), &why);
+    note(QStringLiteral("formime: the file on disk still says name=[%1] (%2)")
+             .arg(committed, why));
+    check(committed == QStringLiteral("typed on page 1"),
+          "form: filling a field does not write the reader's file -- that is 保存's job");
+
+    // ---- the save: PDFium's own copy, read back by PDFium ----
+    check(document.mousePressed(0, frame, flatDevice(geometry.textField), {}),
+          "form: refocus the text field to type the value that gets saved");
+    document.mouseReleased(0, frame, flatDevice(geometry.textField), {});
+    document.takeRepaints();
+    document.commitText(QStringLiteral("SAVED-BY-PDFIUM"));
+    document.takeRepaints();
+    QString staged;
+    QString stageError;
+    check(document.stageFieldValues(scratch, &staged, &stageError),
+          QStringLiteral("form: the field values stage out to a file of their own (%1)")
+              .arg(stageError));
+    check(staged != samplePath, "and the stage is never the reader's own file");
+    const QString stagedValue = fieldValue(staged, QStringLiteral("name"), &why);
+    note(QStringLiteral("formsave: staged file %1 holds name=[%2] (%3)")
+             .arg(QFileInfo(staged).fileName(), stagedValue, why));
+    check(stagedValue.contains(QStringLiteral("SAVED-BY-PDFIUM")),
+          "form: the staged file carries what the reader typed");
+    const QByteArray after = [&samplePath] {
+        QFile file(samplePath);
+        if (!file.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return file.readAll();
+    }();
+    check(after == originalBytes,
+          QStringLiteral("form: the reader's file is byte-identical (was %1 bytes, now %2)")
+              .arg(originalBytes.size())
+              .arg(after.size()));
+
+    // ---- the page the reader turned ----
+    //
+    // The coordinate space this whole feature is written in was measured for a page
+    // with no /Rotate. A page marked /Rotate 90 is where a second answer would show up:
+    // the click coordinates PDFium wants are its own user space (formfill.h), and
+    // FPDF_DeviceToPage is the conversion that knows the difference -- so the same
+    // field, given the geometry its displayed pixels were drawn with, has to take the
+    // focus. If it does not, the rotation is being folded in twice.
+    PdfiumBackend turned;
+    check(turned.load(rotatedPath, QString()) == Document::Status::Ready,
+          "form: the rotated sample opens");
+    const QSizeF displayed = turned.pageSize(0);
+    note(QStringLiteral("formrotate: pageSize(0) on a page stored 595x842 marked /Rotate 90 = %1x%2")
+             .arg(displayed.width())
+             .arg(displayed.height()));
+    // The field's own centre in user space is (160, 615); where that is on screen is
+    // FPDF_PageToDevice's answer for the geometry the page was drawn with. Asking the
+    // library and then clicking there is the check that the two conversions are
+    // inverses of each other rather than two guesses that happen to agree.
+    struct Case
+    {
+        int quarterTurns;
+        QSize pixels;
+    };
+    const Case cases[] = {{0, displayed.toSize()},
+                          {1, QSize(int(displayed.height()), int(displayed.width()))}};
+    for (const Case &one : cases) {
+        FormFill::Frame turnedFrame;
+        turnedFrame.pixels = one.pixels;
+        turnedFrame.quarterTurns = one.quarterTurns;
+        const QPointF clicked = deviceCentre(rotatedPath, geometry.textField.center(),
+                                             one.pixels, one.quarterTurns);
+        note(QStringLiteral("formrotate reader-turns=%1 frame=%2x%3 device(%4,%5) field=%6")
+                 .arg(one.quarterTurns)
+                 .arg(one.pixels.width())
+                 .arg(one.pixels.height())
+                 .arg(clicked.x())
+                 .arg(clicked.y())
+                 .arg(int(turned.fieldAt(0, turnedFrame, clicked))));
+        check(!clicked.isNull(),
+              QStringLiteral("form: the turned page can be asked where the field is (turns %1)")
+                  .arg(one.quarterTurns));
+        check(turned.fieldAt(0, turnedFrame, clicked) == FormFill::Field::TextField,
+              QStringLiteral("form: on a turned page the field is hit where the pixels say it is "
+                             "(reader turns %1)")
+                  .arg(one.quarterTurns));
+        check(turned.mousePressed(0, turnedFrame, clicked, {}),
+              "form: and a press there goes to the form");
+        turned.mouseReleased(0, turnedFrame, clicked, {});
+        turned.takeRepaints();
+        check(turned.focusedPage() == 0
+                  && turned.focusedFieldType() == FormFill::Field::TextField,
+              "form: the field on the turned page took the keyboard");
+        turned.releaseFocus();
+        turned.takeRepaints();
+    }
+
+    // ---- the form this build cannot read is not a form it takes input for ----
+    PdfiumBackend xfa;
+    check(xfa.load(xfaPath, QString()) == Document::Status::Ready,
+          "form: the XFA sample opens");
+    note(QStringLiteral("formxfa: fillable=%1 fieldAt(text field)=%2")
+             .arg(xfa.fillable())
+             .arg(int(xfa.fieldAt(0, frame, flatDevice(geometry.textField)))));
+    check(!xfa.fillable(),
+          "form: a document whose form is an XFA packet takes no input here");
+
+    // ---- what the reader's own changes are, and what forgets them ----
+    document.forgetFieldValueSnapshots();
+    document.takeRepaints();
+    check(document.differingFieldCount() == 0,
+          "form: after a load the file is what the values are compared against");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -610,6 +1001,15 @@ int main(int argc, char **argv)
     checkDeleteWhileOpen(directory);
     checkReplaceWhileOpen(directory);
     checkWatcherAfterChange(directory);
+
+    // The form layer needs files of its own, in a directory that is not the fixtures:
+    // a sample written into tests/fixtures would be walked by every test that globs it
+    // (the same reason the generated form samples of documenteditor_smoke refuse a
+    // directory naming `fixtures`).
+    QTemporaryDir formScratch;
+    check(formScratch.isValid(), "a scratch directory for the form samples");
+    if (formScratch.isValid())
+        checkFormFilling(formScratch.path());
 
     if (failures == 0) {
         std::cout << "pdfium backend: all checks passed\n";

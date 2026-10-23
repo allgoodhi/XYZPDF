@@ -52,6 +52,8 @@
 #include <QTemporaryDir>
 #include <QPointF>
 #include <QString>
+#include <QCryptographicHash>
+#include <QMouseEvent>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QPointer>
@@ -482,7 +484,8 @@ int main(int argc, char **argv)
         // One generator, three shapes: no form at all, an AcroForm with a field, and the same with
         // a packet bolted on (/NeedsRendering and no /Fields turns it dynamic).
         const auto build = [&book](const QString &file, bool withFields, bool withPacket,
-                                   bool needsRendering, QString *why) -> bool {
+                                   bool needsRendering, QString *why,
+                                   bool withScript = false) -> bool {
             const auto rect = [](QPDF &qpdf, double left, double top, double right,
                                  double bottom) {
                 QPDFObjectHandle value = QPDFObjectHandle::newArray();
@@ -505,6 +508,20 @@ int main(int argc, char **argv)
                     field.replaceKey("/T", QPDFObjectHandle::newString("onOne"));
                     field.replaceKey("/V", QPDFObjectHandle::newString("typed on page 1"));
                     field.replaceKey("/Rect", rect(qpdf, 60, 600, 260, 630));
+                    if (withScript) {
+                        // /AA is the additional-actions dictionary, and a field carrying one
+                        // is a form that asks for arithmetic or validation on every keystroke
+                        // -- which a build with no V8 never runs. The shape is table 226's:
+                        // event keys (/K typing, /F losing the focus) each naming an action.
+                        QPDFObjectHandle action = QPDFObjectHandle::newDictionary();
+                        action.replaceKey("/S", QPDFObjectHandle::newName("/JavaScript"));
+                        action.replaceKey("/JS",
+                                          QPDFObjectHandle::newString("event.value = 1;"));
+                        QPDFObjectHandle actions = QPDFObjectHandle::newDictionary();
+                        actions.replaceKey("/K", action);
+                        actions.replaceKey("/F", action);
+                        field.replaceKey("/AA", actions);
+                    }
                     field = qpdf.makeIndirectObject(field);
                     field.replaceKey("/P", page);
                     QPDFObjectHandle annots = QPDFObjectHandle::newArray();
@@ -635,6 +652,24 @@ int main(int argc, char **argv)
               QStringLiteral("fields alone get no notice: %1").arg(fieldsSaid));
         check(fieldsSaid.startsWith(QStringLiteral("已打开")),
               QStringLiteral("and are opened with the ordinary sentence: %1").arg(fieldsSaid));
+
+        // handoff-04 G1 5's sentence: a form whose fields carry actions. This build has no V8
+        // (docs/pdfium-plan.md sec.2 reads args.gn's pdf_enable_v8=false), so a calculation or
+        // a validation the author wrote never happens, and a reader whose total did not move
+        // has no way to find that out except being told. Fields alone still get nothing -- the
+        // line above is the control for this one, and it is the pair that makes the row mean
+        // something: a notice that also fires on a plain form would pass this check too.
+        const QString withScript = samples.filePath(QStringLiteral("fields-with-script.pdf"));
+        check(build(withScript, true, false, false, &made, true),
+              QStringLiteral("setup: a copy whose field carries an action: %1").arg(made));
+        const QString scriptSaid = saidFor(withScript);
+        std::cout << "MEASURE status script: [" << scriptSaid.toStdString() << "]\n";
+        check(scriptSaid.contains(QStringLiteral("脚本")),
+              QStringLiteral("a scripted form is named on the bar: %1").arg(scriptSaid));
+        check(scriptSaid.contains(QStringLiteral("不运行")),
+              QStringLiteral("and the sentence says what will not happen: %1").arg(scriptSaid));
+        check(!scriptSaid.contains(QStringLiteral("XFA")),
+              QStringLiteral("it is not mixed up with the packet notice: %1").arg(scriptSaid));
 
         while (count > tabsBefore) {
             closeOneTab();
@@ -1500,6 +1535,206 @@ int main(int argc, char **argv)
             view->viewport()->removeEventFilter(&viewportResizes);
         }
         cascade.hide();
+    }
+
+    // ---- the three answers, asked about a filled field ----
+    //
+    // handoff-04 G1's mainwindow item: 关窗 must treat a changed field the way it treats
+    // a pending page operation, because the work is in the same place -- this tab and
+    // nowhere else. The block below is the F8 half of that question rewritten for an
+    // answer that came from a keyboard instead of a dialog: the same three buttons, and
+    // three different visible outcomes, on a document whose only change is what somebody
+    // typed into it.
+    //
+    // The file is a copy in a scratch folder, and every round compares its sha256 before
+    // and after: 取消 and 不保存 must both leave the bytes alone, and only 保存 may move
+    // them. That is AGENTS.md's rule read from the window's side.
+    {
+        // The window comes back to a size where a field is a clickable area rather than a
+        // few pixels: earlier blocks leave it whatever they last asked it to be, and a
+        // page drawn 74 points wide puts that field in an 8x4 box -- a click that misses
+        // by rounding is a test reading its own geometry, not the program's.
+        window.resize(1100, 800);
+        window.show();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+
+        QTemporaryDir formDir;
+        check(formDir.isValid(), "setup: a scratch folder for the window's form");
+        const QString formFile = formDir.filePath(QStringLiteral("window-form.pdf"));
+        {
+            QPDF qpdf;
+            qpdf.processFile((directory + QStringLiteral("/text.pdf")).toUtf8().constData());
+            std::vector<QPDFPageObjectHelper> pages =
+                QPDFPageDocumentHelper(qpdf).getAllPages();
+            QPDFObjectHandle page = pages.front().getObjectHandle();
+            QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+            field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+            field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+            field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+            field.replaceKey("/T", QPDFObjectHandle::newString("name"));
+            field.replaceKey("/V", QPDFObjectHandle::newString("typed on page 1"));
+            field.replaceKey("/DA", QPDFObjectHandle::newString("/Helv 10 Tf 0 g "));
+            QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+            rect.appendItem(QPDFObjectHandle::newReal(60));
+            rect.appendItem(QPDFObjectHandle::newReal(600));
+            rect.appendItem(QPDFObjectHandle::newReal(260));
+            rect.appendItem(QPDFObjectHandle::newReal(630));
+            field.replaceKey("/Rect", rect);
+            QPDFObjectHandle font = QPDFObjectHandle::newDictionary();
+            font.replaceKey("/Type", QPDFObjectHandle::newName("/Font"));
+            font.replaceKey("/Subtype", QPDFObjectHandle::newName("/Type1"));
+            font.replaceKey("/BaseFont", QPDFObjectHandle::newName("/Helvetica"));
+            font = qpdf.makeIndirectObject(font);
+            QPDFObjectHandle resources = page.getKey("/Resources");
+            if (!resources.isDictionary()) {
+                resources = QPDFObjectHandle::newDictionary();
+                page.replaceKey("/Resources", resources);
+            }
+            QPDFObjectHandle fonts = resources.getKey("/Font");
+            if (!fonts.isDictionary()) {
+                fonts = QPDFObjectHandle::newDictionary();
+                resources.replaceKey("/Font", fonts);
+            }
+            fonts.replaceKey("/Helv", font);
+            field = qpdf.makeIndirectObject(field);
+            field.replaceKey("/P", page);
+            QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+            annots.appendItem(field);
+            page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+            QPDFObjectHandle fields = QPDFObjectHandle::newArray();
+            fields.appendItem(field);
+            QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+            form.replaceKey("/Fields", fields);
+            form.replaceKey("/DA", QPDFObjectHandle::newString("/Helv 10 Tf 0 g "));
+            QPDFObjectHandle dr = QPDFObjectHandle::newDictionary();
+            QPDFObjectHandle drFonts = QPDFObjectHandle::newDictionary();
+            drFonts.replaceKey("/Helv", font);
+            dr.replaceKey("/Font", drFonts);
+            form.replaceKey("/DR", dr);
+            qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+            QPDFWriter writer(qpdf, formFile.toUtf8().constData());
+            writer.write();
+        }
+        check(QFileInfo::exists(formFile), "setup: a form-bearing copy is on disk");
+
+        auto *closeTabAction = window.findChild<QAction *>(QStringLiteral("closeTabAction"));
+        check(closeTabAction, "setup: the close-tab item is in the window");
+        const auto pump = [] {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        };
+        const auto shaOf = [](const QString &file) {
+            QFile in(file);
+            if (!in.open(QIODevice::ReadOnly))
+                return QByteArray();
+            return QCryptographicHash::hash(in.readAll(), QCryptographicHash::Sha256);
+        };
+        const auto emptyWindow = [&window, &closeTabAction, &pump] {
+            for (int guard = 0; openTabs(window) > 0 && guard < 20; ++guard) {
+                bool asked = false;
+                answerNextBox(QMessageBox::Discard, &asked, nullptr);
+                closeTabAction->trigger();
+                pump();
+            }
+        };
+
+        // Open the form and change one field.
+        //
+        // The change is made through the form surface with an explicit page frame rather
+        // than by clicking the pixels, and that is deliberate: the window has been through
+        // a dozen other blocks by now and its tab area is whatever the last of them left it
+        // (measured here: 100x30, in which the field is a box four pixels tall), so a click
+        // would be a test reading the window's leftover layout. The route this block is
+        // about is what the *window* does with a tab whose fields changed, and the click
+        // itself is measured end to end in documenttab_smoke.
+        const auto fillOneField = [&window, &formFile, &pump]() -> DocumentTab * {
+            dropFiles(window, {QUrl::fromLocalFile(formFile).toString()}, Qt::CopyAction);
+            if (!waitFor([&window, &formFile] {
+                    DocumentTab *front = currentDocumentTab(window);
+                    return front && front->isOpen() && front->documentPath() == formFile;
+                }))
+                return nullptr;
+            pump();
+            DocumentTab *tab = currentDocumentTab(window);
+            FormFill *surface = tab->formSurface();
+            if (!surface || !surface->fillable())
+                return tab;
+            FormFill::Frame frame;
+            frame.pixels = QSize(595, 842);
+            frame.quarterTurns = 0;
+            // The field's /Rect is 60,600 to 260,630 in user space with the origin at the
+            // page's bottom-left, so its centre is (160, 615) -- and the frame above is a
+            // page drawn one pixel to the point, which makes the device point (160, 227).
+            const QPointF field(160.0, 227.0);
+            surface->mousePressed(0, frame, field, Qt::NoModifier);
+            surface->mouseReleased(0, frame, field, Qt::NoModifier);
+            surface->characterTyped(QChar(QStringLiteral("Z")[0]), Qt::NoModifier);
+            surface->releaseFocus();
+            pump();
+            return tab;
+        };
+
+        // ---- 取消: nothing closes and nothing is written ----
+        {
+            emptyWindow();
+            DocumentTab *tab = fillOneField();
+            check(tab != nullptr, "form close: the filled document opened in the window");
+            check(tab && tab->hasUnsavedEdits(),
+                  "form close: and the window's tab counts a typed field as an edit");
+            check(tab && tab->title().endsWith(QStringLiteral(" *")),
+                  QStringLiteral("form close: the tab's title carries the star (%1)")
+                      .arg(tab ? tab->title() : QString()));
+            const QByteArray before = shaOf(formFile);
+            bool asked = false;
+            QString question;
+            answerNextBox(QMessageBox::Cancel, &asked, &question);
+            closeTabAction->trigger();
+            pump();
+            check(asked, "form close: closing the tab asks first");
+            std::cout << "MEASURE form close question: [" << question.toStdString() << "]\n";
+            check(question.contains(QStringLiteral("字段")),
+                  "and it names the field the reader changed");
+            check(openTabs(window) == 1, "form close: 取消 left the tab where it was");
+            check(shaOf(formFile) == before,
+                  "form close: 取消 wrote nothing to the reader's file");
+
+            // ---- 不保存: the tab goes, the file does not change ----
+            asked = false;
+            answerNextBox(QMessageBox::Discard, &asked, nullptr);
+            closeTabAction->trigger();
+            pump();
+            check(asked, "form close: the question is asked again, and 不保存 answers it");
+            check(openTabs(window) == 0,
+                  "form close: 不保存 closed the tab");
+            check(shaOf(formFile) == before,
+                  "form close: and 不保存 wrote nothing either");
+        }
+
+        // ---- 保存: the answer goes into the file, and the tab closes ----
+        {
+            emptyWindow();
+            DocumentTab *tab = fillOneField();
+            check(tab != nullptr && tab->hasUnsavedEdits(),
+                  "form close: a second round, filled the same way");
+            const QByteArray before = shaOf(formFile);
+            bool asked = false;
+            answerNextBox(QMessageBox::Save, &asked, nullptr);
+            closeTabAction->trigger();
+            pump();
+            check(asked, "form close: 保存 is one of the three answers");
+            check(openTabs(window) == 0,
+                  "form close: 保存 wrote and then let the tab close");
+            const QByteArray after = shaOf(formFile);
+            std::cout << "MEASURE form close sha256: before "
+                      << before.left(6).toHex().toStdString() << " after "
+                      << after.left(6).toHex().toStdString()
+                      << " (first 6 bytes of each digest; the files differ wholly)"
+                      << '\n';
+            check(after != before,
+                  "form close: 保存 is the one answer that writes the reader's file");
+            emptyWindow();
+        }
     }
 
     // ---- fullscreen and presentation ----

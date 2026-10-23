@@ -426,30 +426,22 @@ FormFill::Field fieldOf(int pdfiumType)
 }
 
 
-// FFI_SetCursor's int, as far as it has been read on this machine: a text field
-// asks for 3 while taking focus (measured on field-flat.pdf, and 3 is the I-beam in
-// PDFium's own widget layer). The rest of the switch is PDFium's FWL cursor order,
-// which this build has never been observed to ask for; a value outside the list
-// comes back as an arrow rather than as a guess.
+// FFI_SetCursor's int. The release names no constants for it -- its comment says "see
+// Flags for Cursor type" and nothing in the package's headers defines them -- so this
+// table is only as wide as what has been read on this machine. A scratch build of nine
+// fields (a text field, five button and three choice variants) recorded which shape each
+// one asked for as it took focus: the text field and the combobox both asked 3, and the
+// listbox asked 0. Those two are therefore IBeam and Arrow; anything else PDFium may ask
+// for on a build or a field this program has not put a cursor to yet comes back as an
+// arrow rather than as a guess, because the hover shape does not depend on this -- it
+// comes from the hit test, which is measured.
 FormFill::Pointer pointerOf(int pdfiumCursor)
 {
     switch (pdfiumCursor) {
     case 0:
         return FormFill::Pointer::Arrow;
-    case 1:
-        return FormFill::Pointer::Cross;
-    case 2:
-        return FormFill::Pointer::Wait;
     case 3:
         return FormFill::Pointer::IBeam;
-    case 4:
-        return FormFill::Pointer::UpDown;
-    case 8:
-        return FormFill::Pointer::SizeAll;
-    case 10:
-        return FormFill::Pointer::No;
-    case 11:
-        return FormFill::Pointer::Hand;
     default:
         return FormFill::Pointer::Arrow;
     }
@@ -714,7 +706,13 @@ void onInvalidate(FPDF_FORMFILLINFO *self, FPDF_PAGE page, double left, double t
     const int index = state->indexOfPage(page);
     if (index < 0)
         return; // a page nothing is holding is a page nothing can show
-    const QRectF area(left, bottom, right - left, top - bottom);
+    // The four numbers come in screen order -- `top` the smaller y, `bottom` the larger
+    // -- while the space they name has its origin at the page's bottom-left corner. Measured
+    // on field-flat.pdf: a field whose /Rect is [60 600 260 630] reported (59,599,261,631).
+    // So the rectangle is normalised by min/max rather than by trusting the names, and a
+    // Repaint's userSpace means the same thing a click's coordinates do.
+    const QRectF area(qMin(left, right), qMin(top, bottom), qAbs(right - left),
+                      qAbs(bottom - top));
     // One entry per page, grown to cover what has been asked for. A single click in
     // a text field reports seven of these (measured), and a keystroke more than one
     // again; keeping them apart would mean seven renders of the same band.
@@ -1743,8 +1741,9 @@ bool PdfiumBackend::mousePressed(int page, const Frame &frame, const QPointF &de
     FS_POINTF point{};
     if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
         return false;
-    if (!FormFill::isInteractive(fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x,
-                                                                point.y))))
+    const Field field = fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x,
+                                                             point.y));
+    if (!FormFill::isInteractive(field))
         return false;
     // Before the press, not after: the click that checks a box is the last moment
     // its old value is still the value the file has.
@@ -1754,7 +1753,14 @@ bool PdfiumBackend::mousePressed(int page, const Frame &frame, const QPointF &de
         FPDFPage_CloseAnnot(annotation);
 
     const Impl::Dispatch guard(*impl);
-    return FORM_OnLButtonDown(impl->form, handle, formEventFlags(modifiers), point.x, point.y) != 0;
+    // FORM_OnLButtonDown's own answer is not what the caller is told. Measured on a page
+    // marked /Rotate 90: the hit test named the field, the press was dispatched and the
+    // field took the keyboard -- and FORM_OnLButtonDown still answered false. A view that
+    // trusted that answer would have started a text selection in the same click. The
+    // question the view is asking is "is this click the form's", and the hit test above
+    // is the answer to it; the dispatch happens either way.
+    FORM_OnLButtonDown(impl->form, handle, formEventFlags(modifiers), point.x, point.y);
+    return true;
 }
 
 bool PdfiumBackend::mouseReleased(int page, const Frame &frame, const QPointF &devicePoint,
@@ -1768,7 +1774,11 @@ bool PdfiumBackend::mouseReleased(int page, const Frame &frame, const QPointF &d
     if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
         return false;
     const Impl::Dispatch guard(*impl);
-    return FORM_OnLButtonUp(impl->form, handle, formEventFlags(modifiers), point.x, point.y) != 0;
+    FORM_OnLButtonUp(impl->form, handle, formEventFlags(modifiers), point.x, point.y);
+    // A release belongs to a press that already said the form had the gesture, so it is
+    // taken whenever a field is the one holding the keyboard; the caller's job is to end
+    // the drag, and the boolean is the same question the press answered.
+    return impl->focusedPageLocked() >= 0;
 }
 
 bool PdfiumBackend::mouseDoubleClicked(int page, const Frame &frame, const QPointF &devicePoint)
@@ -1780,11 +1790,16 @@ bool PdfiumBackend::mouseDoubleClicked(int page, const Frame &frame, const QPoin
     FS_POINTF point{};
     if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
         return false;
+    const Field field = fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x,
+                                                             point.y));
+    if (!FormFill::isInteractive(field))
+        return false;
     const Impl::Dispatch guard(*impl);
     // A double-click in a text field selects a word, which is the ordinary way to
-    // replace one answer with another; it is only reached when the press already
-    // went to the form, so the field is known to be interactive.
-    return FORM_OnLButtonDoubleClick(impl->form, handle, 0, point.x, point.y) != 0;
+    // replace one answer with another. Same reasoning as the press: the hit test says
+    // whose gesture this is, and PDFium's boolean is not that question.
+    FORM_OnLButtonDoubleClick(impl->form, handle, 0, point.x, point.y);
+    return true;
 }
 
 bool PdfiumBackend::keyPressed(int qtKey, Qt::KeyboardModifiers modifiers)

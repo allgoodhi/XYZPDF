@@ -289,7 +289,11 @@ function Say([string]$s) {
 # one -- so it drives a window it did not open. sec.74 lost a round that way.
 function Bail([string]$why) {
   Say ('  ' + $why)
+  # A mode that gives up halfway is the mode that might have written something it should not have,
+  # so the save guard is read here too -- and the exit code stays 1 either way.
+  if ($script:guardArmed) { Guard-Check 'bailing mid-run' | Out-Null }
   Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+  if ($script:guardBroken) { Say '  GUARD: the file handed to the probe MOVED during this run (hashes above)' }
   exit 1
 }
 function CjStr([int[]]$codePoints) {
@@ -1335,7 +1339,207 @@ function ReplyCount([string]$summary) {
   return -1
 }
 
+# ---- the save guard ---------------------------------------------------------------------
+# Some modes press Ctrl+S, Ctrl+Shift+S, or the Save answer of the three-question box. All three
+# write a PDF, and the only code path in this program that may write a user's PDF is the program's
+# own Save (AGENTS.md) -- a probe has no business being the thing that does it to a real file. F8
+# turned Ctrl+S into a write, which is why -Mode saverename sat unrun from sec.116 on: it pressed
+# the key against whatever -Doc named, and -Doc's default is somebody's real document.
+#
+# So a save mode never opens the file it was handed:
+#   * the ORIGINAL's sha256 is taken before the app starts, and again when the run ends -- and on
+#     every Bail on the way there, because a mode that gives up halfway is exactly the mode that
+#     might have written something;
+#   * the file is copied into %TEMP%\xyzpdf-gui-probe\save-<random>\ under a name made up here, and
+#     THAT path replaces $Doc, so the launch line cannot name the original;
+#   * the copy's own hash is read by the modes, which is what makes 'the save wrote where it says
+#     it wrote' and 'the save did not happen' two different readings on disk instead of one line of
+#     status text.
+# A path under tests\fixtures may be read and copied -- it still is not opened.
+$script:saveModes = @('saveinplace', 'closeprompt', 'saveas', 'saverename')
+$script:guardArmed = $false
+$script:guardBroken = $false
+$script:guardOrig = ''
+$script:guardOrigHash = ''
+$script:guardDir = ''
+$script:guardCopy = ''
+$script:guardCopyLeaf = ''
+
+function Guard-Arm([string]$original) {
+  # Returns the path the app is allowed to open. The name is random on purpose: every later 'did
+  # this really happen' read is then about a file that could not have been in the title bar before
+  # the launch, which is the vacuous-receipt shape this suite keeps tripping on (sec.77, sec.97).
+  $full = (Resolve-Path -LiteralPath $original).Path
+  $script:guardOrig = $full
+  $script:guardOrigHash = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
+  $rand = [guid]::NewGuid().ToString('N').Substring(0, 8)
+  $script:guardDir = Join-Path $scratch ('save-' + $rand)
+  if (-not (Test-Path $script:guardDir)) { New-Item -ItemType Directory -Path $script:guardDir | Out-Null }
+  # An ASCII, space-free leaf. The path goes out as a bare argument to Start-Process (a space would
+  # split it into two arguments and the app would open nothing) and later into a shell field, so it
+  # is sanitised here rather than inherited from whatever -Doc happened to be spelled as.
+  $safe = ([System.IO.Path]::GetFileName($full) -replace '[^A-Za-z0-9._-]', '-')
+  $script:guardCopyLeaf = 'probe-' + $rand + '-' + $safe
+  $script:guardCopy = Join-Path $script:guardDir $script:guardCopyLeaf
+  Copy-Item -LiteralPath $full -Destination $script:guardCopy -Force
+  $script:guardArmed = $true
+  Say ('  GUARD: original [' + $full + '] sha256=' + $script:guardOrigHash)
+  Say ('  GUARD: the app is handed the copy [' + $script:guardCopy + ']')
+  Say ('  GUARD: copy sha256=' + (Copy-Hash) + '  (must equal the original before any Save)')
+  return $script:guardCopy
+}
+
+function Copy-Hash() {
+  if (-not $script:guardCopy) { return '' }
+  if (-not (Test-Path -LiteralPath $script:guardCopy)) { return '(the copy is gone)' }
+  return (Get-FileHash -LiteralPath $script:guardCopy -Algorithm SHA256).Hash
+}
+
+function Guard-Check([string]$tag) {
+  # The one line that says whether this run was allowed to touch anything it should not. Returns
+  # false when the original moved; the caller decides whether that is a Bail or the final exit code.
+  if (-not $script:guardArmed) { return $true }
+  $now = ''
+  try { $now = (Get-FileHash -LiteralPath $script:guardOrig -Algorithm SHA256).Hash } catch { $now = '(unreadable)' }
+  if ($now -eq $script:guardOrigHash) {
+    Say ('  GUARD ' + $tag + ': the original is byte-for-byte what it was (' + $now + ')')
+    return $true
+  }
+  $script:guardBroken = $true
+  Say ('  GUARD ' + $tag + ': THE ORIGINAL MOVED  before=' + $script:guardOrigHash + '  after=' + $now)
+  Say ('           [' + $script:guardOrig + ']')
+  return $false
+}
+
+if ($script:saveModes -contains $Mode) {
+  # Armed before the launch, because the launch itself is what must not name the original.
+  $Doc = Guard-Arm $Doc
+  if ($Installed) {
+    # A packaged instance opens its own document through the picker, so the only way it can reach a
+    # file is the row or path the caller names. Under a save mode that has to be the copy made above.
+    if (-not $OpenViaPicker) {
+      Bail ('  a packaged save run must hand the picker the copy this guard made: -OpenViaPicker ' + $script:guardCopy)
+    }
+    if ([System.IO.Path]::GetFileName($OpenViaPicker) -ne $script:guardCopyLeaf) {
+      Bail ('  -OpenViaPicker names [' + [System.IO.Path]::GetFileName($OpenViaPicker) +
+            '] but a save mode may only open the copy [' + $script:guardCopyLeaf + ']')
+    }
+  }
+}
+
 if (-not $Installed -and -not (Test-Path $Doc)) { Bail ("no document at $Doc -- pass -Doc <path to a pdf>") }
+# ---- the save modes' shared routes ------------------------------------------------------
+# Everything a save mode needs, in one place: two of the three modes make the same edit and read the
+# same window, and a second copy of a route is how one of them ends up working in only one language
+# (sec.87's lesson, applied to this harness rather than to the product).
+function Has-Star([int]$procId) {
+  # DocumentTab::title() appends ' *' to the file name while the edit list is not empty and
+  # MainWindow::updateWindowTitle() puts that title into the caption. It is compared as part of the
+  # copy's own made-up name, so a caption that never carried the copy cannot pass this.
+  $w = Window $procId
+  if (-not $w) { return $false }
+  return $w.Current.Name.Contains($script:guardCopyLeaf + ' *')
+}
+function Wait-Star([int]$procId, [bool]$want, [int]$rounds = 25) {
+  # Polling for a star that arrives via a repaint rather than sleeping once and reading: the same
+  # reason WaitName polls (sec.109). NOTE a vanished window answers false, so a caller that is
+  # waiting for the WINDOW to go away asks Wait-WindowGone, not this.
+  for ($k = 1; $k -le $rounds; $k++) {
+    if ((Has-Star $procId) -eq $want) { return $true }
+    Start-Sleep -Milliseconds 300
+  }
+  return $false
+}
+function Rotate-CurrentPage([int]$procId) {
+  # Document / Rotate Pages, the 'Current page' radio, then the accept -- the route strippreview has
+  # used since sec.109, wanted here because an edit that shows up in the saved BYTES is what makes
+  # 'the save happened' a disk reading and not one line of status text.
+  TopMenu $procId @('Document', (CjStr 0x6587, 0x6863)) | Out-Null
+  $row = RowAny $procId @('Rotate Pages', (CjStr 0x65CB, 0x8F6C, 0x9875, 0x9762))
+  if (-not $row) { Bail '  no Rotate Pages row under Document in either language' }
+  Say ('  menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled)
+  ClickAt $row
+  $dlg = WaitClass $procId 'RotatePagesDialog' 12
+  if (-not $dlg) { Bail '  the rotate dialog did not open' }
+  $cur = MatchOne $dlg $CT::RadioButton @('Current page', (CjStr 0x5F53, 0x524D, 0x9875))
+  if (-not $cur) { Bail '  no Current page radio in either language' }
+  Say ('  picking |' + $cur.Current.Name + '|')
+  ClickAt $cur
+  Start-Sleep -Milliseconds 600
+  $go = MatchOne $dlg $CT::Button @('Rotate these pages', (CjStr 0x65CB, 0x8F6C, 0x8FD9, 0x4E9B, 0x9875))
+  if (-not ($go -and $go.Current.IsEnabled)) { Bail '  the rotate accept is not lit after picking the current page' }
+  Say ('  recording: |' + $go.Current.Name + '|')
+  ClickAt $go
+  if (-not (WaitClassGone $procId 'RotatePagesDialog' 20)) { Bail '  the rotate dialog stayed open after the press' }
+  Start-Sleep -Milliseconds 600
+}
+function Close-Window([int]$procId) {
+  # WM_CLOSE to our own main window. That message is exactly what the caption's X produces, and
+  # MainWindow::closeEvent is the guard the three-answer box lives behind. A synthesised click on the
+  # X would depend on the theme's button geometry; the message does not, and it can only land on a
+  # window this probe launched.
+  $w = Window $procId
+  if (-not $w) { return $false }
+  [W32]::PostMessageW([IntPtr]$w.Current.NativeWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+  return $true
+}
+function Wait-WindowGone([int]$procId, [int]$rounds = 30) {
+  for ($k = 1; $k -le $rounds; $k++) {
+    if (-not (Window $procId)) { return $true }
+    Start-Sleep -Milliseconds 400
+  }
+  return $false
+}
+function Wait-PromptBox([int]$procId, [string]$tag) {
+  # The three answers are a QMessageBox (WindowDialogs::question with Save | Discard | Cancel).
+  # Matched by CLASS, because the title, the body and the buttons are all translatable strings; the
+  # poll also requires a label, because a window on its way in answers an empty Name and every read
+  # after that is about a stale handle (sec.87).
+  for ($k = 1; $k -le 15; $k++) {
+    Start-Sleep -Milliseconds 400
+    $b = FindClass $procId 'QMessageBox'
+    if ($b -and @(FindType $b $CT::Text).Count -gt 0) {
+      Say ('  ' + $tag + ': box [' + $b.Current.Name + '] class=' + $b.Current.ClassName)
+      foreach ($t in @(FindType $b $CT::Text)) {
+        Say ('    |' + $t.Current.Name.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+      }
+      return $b
+    }
+  }
+  return $null
+}
+function PressBoxButton($box, [string[]]$names, [string]$tag) {
+  # EXACT names rather than substrings: this box offers Save, Don't Save and Cancel, and a substring
+  # search for Save answers on Don't Save -- where pressing the neighbour is the one thing that
+  # changes the file. Printed before filtered, as everywhere else in this suite.
+  $buttons = @(FindType $box $CT::Button)
+  Say ('  ' + $tag + ': ' + $buttons.Count + ' Button element(s):')
+  foreach ($b in $buttons) { Say ('    |' + $b.Current.Name + '| enabled=' + $b.Current.IsEnabled) }
+  foreach ($b in $buttons) {
+    foreach ($n in $names) {
+      if ($b.Current.Name -eq $n) {
+        Say ('  ' + $tag + ': pressing |' + $n + '|')
+        ClickAt $b
+        return $true
+      }
+    }
+  }
+  Say ('  ' + $tag + ': nothing among them is named [' + ($names -join ', ') + ']')
+  return $false
+}
+function Wait-Status([int]$procId, [string[]]$needles, [int]$rounds = 40) {
+  # A save line is TIMED (setStatusMessage gives it 5 s), so this polls instead of sleeping once and
+  # reading -- a read at the wrong moment looks exactly like a line that never came. The cursor is
+  # parked first because a toolbar statusTip replaces a timed message outright (sec.114).
+  ParkCursorAway
+  for ($k = 1; $k -le $rounds; $k++) {
+    $s = StatusName $procId
+    foreach ($n in $needles) { if ($s.Contains($n)) { return $s } }
+    Start-Sleep -Milliseconds 200
+  }
+  return ''
+}
+
 if ($Log) { $lines.Clear() }
 $app = Start-ProbeApp $Language
 if (-not $app) { Bail 'the application never produced a window' }
@@ -3660,5 +3864,10 @@ switch ($Mode) {
     Say '  both boxes name the orphaned reply exactly for the requests that make one'
   }
 }
+$guardHeld = Guard-Check 'end of run'
 Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+if (-not $guardHeld) {
+  Say 'GUARD FAILED: a save mode wrote the file it was handed, not the copy it made'
+  exit 1
+}
 Say 'DONE'

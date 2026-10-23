@@ -610,6 +610,74 @@ void appendWatermarkContent(QPDF &qpdf, QPDFPageObjectHelper &page, const std::s
     throw std::runtime_error(refusal.toUtf8().constData());
 }
 
+// ---- does this document ask for a script to run? ----
+
+// One action dictionary. PDF 32000-1 table 169 names /JavaScript; PDF/Ed (ISO 32000-2)
+// adds /SetField and /Calculate, which are the two an AcroForm's dynamic calculations use.
+// Anything else -- /GoTo, /Launch, /URI -- is a document command rather than a program, and
+// a reader whose form has only those loses nothing to a build with no V8.
+bool isScriptAction(const QPDFObjectHandle &action)
+{
+    if (!action.isDictionary())
+        return false;
+    const std::string kind = action.getKey("/S").getName();
+    return kind == "/JavaScript" || kind == "/SetField" || kind == "/Calculate";
+}
+
+// A field tree, walked for /AA. Both bounds are there because the tree comes from a file:
+// a /Kids list that names its own parent is a loop, and fpdf_doc.h's warning about bookmark
+// cycles is the same lesson one dictionary over. The numbers are far above any form anybody
+// has shipped -- and a walk that reaches one stops rather than spinning, which is the
+// difference between a slow open and no open at all.
+bool fieldsCarryActions(const QPDFObjectHandle &field, int depth, int &remaining)
+{
+    if (depth > 32 || remaining <= 0)
+        return false;
+    --remaining;
+    if (!field.isDictionary())
+        return false;
+    if (field.hasKey("/AA"))
+        return true;
+    const QPDFObjectHandle kids = field.getKey("/Kids");
+    if (!kids.isArray())
+        return false;
+    for (int index = 0; index < kids.getArrayNItems(); ++index) {
+        if (fieldsCarryActions(kids.getArrayItem(index), depth + 1, remaining))
+            return true;
+    }
+    return false;
+}
+
+bool formCarriesScript(const QPDFObjectHandle &root)
+{
+    const QPDFObjectHandle form = root.getKey("/AcroForm");
+    if (form.isDictionary()) {
+        // /AA on the form itself is a document-level action; /DC is Part 2's dynamic
+        // calculation dictionary, whose presence means field values are computed.
+        if (form.hasKey("/AA") || form.hasKey("/DC"))
+            return true;
+        const QPDFObjectHandle fields = form.getKey("/Fields");
+        if (fields.isArray()) {
+            int remaining = 20000;
+            for (int index = 0; index < fields.getArrayNItems(); ++index) {
+                if (fieldsCarryActions(fields.getArrayItem(index), 0, remaining))
+                    return true;
+            }
+        }
+    }
+    // The name tree a document-level JavaScript lives in, and the two action slots the
+    // catalog has: /OpenAction and its own /AA.
+    const QPDFObjectHandle names = root.getKey("/Names");
+    if (names.isDictionary() && names.hasKey("/JavaScript"))
+        return true;
+    if (isScriptAction(root.getKey("/OpenAction")))
+        return true;
+    const QPDFObjectHandle catalogActions = root.getKey("/AA");
+    if (catalogActions.isDictionary() && !catalogActions.getKeys().empty())
+        return true;
+    return false;
+}
+
 } // namespace
 
 // The words a reader asked for, because these show up in a menu and a menu that
@@ -1695,6 +1763,7 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     sourceHasFormFields = false;
     sourceHasXfa = false;
     sourceDynamicXfa = false;
+    sourceHasScript = false;
     sourceReplyLinks.clear();
     sourcePositionalBookmarkCount = 0;
 
@@ -1779,6 +1848,13 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
         const QPDFObjectHandle needsRendering = document->getRoot().getKey("/NeedsRendering");
         sourceDynamicXfa = sourceHasXfa
             && ((needsRendering.isBool() && needsRendering.getBoolValue()) || !sourceHasFormFields);
+
+        // And whether it asks for scripts. Read here, in the same pass over the same
+        // parsed catalogue, because the sentence this answers is shown at open time and
+        // this class holds no parser afterwards -- and because a build with no V8 runs
+        // none of it either way, so the only thing this can honestly report is the claim
+        // the file itself makes.
+        sourceHasScript = formCarriesScript(document->getRoot());
     }
     // And the threads between annotations, while the parser still has them: 删除页面 and 拆分文件
     // ask what a request would cost them on every keystroke (§47), and this class keeps no QPDF
@@ -2753,15 +2829,22 @@ bool DocumentEditor::openImportSources(std::vector<std::unique_ptr<QPDF>> *forei
 
 bool DocumentEditor::writeStaged(const PieceRange &keep, const QString &staged,
                                  const std::vector<std::unique_ptr<QPDF>> &foreign,
-                                 const Protection &protection, QString *error)
+                                 const Protection &protection, QString *error,
+                                 const QString &sourceOverride)
 {
+    // Which bytes the operations are applied to. The source the tab is reading, unless
+    // the reader filled fields as well -- in which case PDFium has already written those
+    // answers into a hidden copy beside it, and the page numbers in the pending list are
+    // still the numbers of the file on screen because that copy has the same pages in the
+    // same order.
+    const QString replayFrom = sourceOverride.isEmpty() ? sourcePath : sourceOverride;
     try {
         // The replay: the source read again from disk, then every pending operation
         // in the order the reader asked for them. This is where an original page
         // number becomes a position in a document that has already shrunk, which is
         // the whole reason `present` is carried along.
         std::unique_ptr<QPDF> document = std::make_unique<QPDF>();
-        document->processFile(sourcePath.toUtf8().constData(),
+        document->processFile(replayFrom.toUtf8().constData(),
                               sourcePassword.isEmpty() ? nullptr
                                                        : sourcePassword.toUtf8().constData());
         QVector<PageRef> present = openedDocumentInOrder(originalPages);
@@ -2913,7 +2996,8 @@ bool DocumentEditor::writeStaged(const PieceRange &keep, const QString &staged,
     return true;
 }
 
-bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *written)
+bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *written,
+                          const QString &fieldValuesFrom)
 {
     if (live.isEmpty() && pending.isEmpty()) {
         *error = tr("还没有打开任何文档。");
@@ -2967,6 +3051,15 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
                          ? tr("拆出来的文件里有一个（%1）就是正在打开的这份。请换一个文件名。")
                                .arg(QFileInfo(one).fileName())
                          : tr("另存为不能覆盖正在打开的文件。请换一个文件名。");
+            return false;
+        }
+        if (!fieldValuesFrom.isEmpty() && sameFile(fieldValuesFrom, one)) {
+            // The other file this save reads from. Overwriting it would pull the bytes
+            // out from under a writer that has not finished with them, and a reader who
+            // typed a destination into the box could hit it: the staged names are random,
+            // but the folder is the one the document came from.
+            *error = tr("另存为不能覆盖这次保存借用的暂存文件（%1）。请换一个文件名。")
+                         .arg(QFileInfo(one).fileName());
             return false;
         }
         for (const Import &import : std::as_const(imports)) {
@@ -3058,7 +3151,8 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
     QVector<Staged> built;
     for (int index = 0; index < pieces.size(); ++index) {
         const QString staged = stagedPath(directory, stamp, index);
-        if (!writeStaged(pieces.at(index), staged, foreign, protection, error)) {
+        if (!writeStaged(pieces.at(index), staged, foreign, protection, error,
+                         fieldValuesFrom)) {
             for (const Staged &one : std::as_const(built))
                 QFile::remove(one.from);
             return false;
@@ -3109,7 +3203,8 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
     return false;
 }
 
-bool DocumentEditor::stageInPlace(QString *staged, QString *error)
+bool DocumentEditor::stageInPlace(QString *staged, QString *error,
+                                   const QString &fieldValuesFrom)
 {
     if (live.isEmpty() || pending.isEmpty()) {
         *error = tr("没有待保存的修改。");
@@ -3150,7 +3245,7 @@ bool DocumentEditor::stageInPlace(QString *staged, QString *error)
     }
 
     const PieceRange whole{0, int(live.size()) - 1};
-    if (!writeStaged(whole, candidate, foreign, protection, error))
+    if (!writeStaged(whole, candidate, foreign, protection, error, fieldValuesFrom))
         return false;
 
     SetFileAttributesW(QDir::toNativeSeparators(candidate).toStdWString().c_str(),
@@ -3158,34 +3253,46 @@ bool DocumentEditor::stageInPlace(QString *staged, QString *error)
 
     // The check the ordering exists for: the bytes have to be a PDF this program's own
     // writer can read back, with the page count the pending list promised, before the
-    // original is touched. qpdf is the second reader here rather than Qt PDF because the
-    // staged file may be encrypted with a key only this class knows, and because it is
-    // the same parser that wrote it -- a file it cannot open is one no later save could
-    // read either.
-    try {
-        QPDF check;
-        const QByteArray password = passwordOfWrittenFile().toUtf8();
-        check.processFile(candidate.toUtf8().constData(),
-                          password.isEmpty() ? nullptr : password.constData());
-        const int pages = int(QPDFPageDocumentHelper(check).getAllPages().size());
-        if (pages != int(live.size())) {
-            QFile::remove(candidate);
-            *error = tr("写出来的文件有 %2 页，而这些修改是 %1 页，所以没有替换原来的文件。"
-                        "原来的文件没有改动。")
-                         .arg(live.size())
-                         .arg(pages);
-            return false;
-        }
-    } catch (const std::exception &e) {
+    // original is touched.
+    QString checkError;
+    if (!verifyStagedFile(candidate, int(live.size()), passwordOfWrittenFile(), &checkError)) {
         QFile::remove(candidate);
-        *error = tr("写出来的文件没能重新打开，所以没有替换原来的文件。原来的文件没有改动。\n\n"
-                    "解析器说：%1")
-                     .arg(QString::fromUtf8(e.what()));
+        if (error)
+            *error = checkError;
         return false;
     }
 
     if (staged != nullptr)
         *staged = candidate;
+    return true;
+}
+
+bool DocumentEditor::verifyStagedFile(const QString &path, int expectedPages,
+                                      const QString &password, QString *error)
+{
+    // qpdf is the second reader here rather than the renderer, because the staged file
+    // may be encrypted with a key only this class knows, and because it is the same
+    // parser that writes the files this check is for -- a file it cannot open is one no
+    // later save could read either. A PDFium-staged file is written by the other engine,
+    // which is exactly why the same second reader is worth running over it.
+    try {
+        QPDF check;
+        const QByteArray key = password.toUtf8();
+        check.processFile(path.toUtf8().constData(), key.isEmpty() ? nullptr : key.constData());
+        const int pages = int(QPDFPageDocumentHelper(check).getAllPages().size());
+        if (pages != expectedPages) {
+            *error = tr("写出来的文件有 %2 页，而这些修改是 %1 页，所以没有替换原来的文件。"
+                        "原来的文件没有改动。")
+                         .arg(expectedPages)
+                         .arg(pages);
+            return false;
+        }
+    } catch (const std::exception &e) {
+        *error = tr("写出来的文件没能重新打开，所以没有替换原来的文件。原来的文件没有改动。\n\n"
+                    "解析器说：%1")
+                     .arg(QString::fromUtf8(e.what()));
+        return false;
+    }
     return true;
 }
 

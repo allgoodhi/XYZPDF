@@ -379,6 +379,11 @@ int main(int argc, char **argv)
             { "PrintDialog", "%n 页/张", 1 },
             { "ImageExportDialog", "全部（%n 页）", 1 },
             { "DocumentTab", "这份要写出的文档只有 %n 页，拆不出第二个文件来。", 1 },
+            // handoff-04 G1 6: the line the close prompt reads when the reader filled
+            // fields, and the one place a field count reaches the screen. Without a
+            // probe the two English forms could come back identical and every other
+            // check would still be green (sec.93's lesson).
+            { "DocumentTab", "改了 %n 个表单字段", 1 },
             // sec.33's second half: the rows that sit outside the edit model -- what the
             // export says when it finishes, what the close guard asks, what the dialogs add
             // once a merge has run. Each of these can name exactly one page or one file or

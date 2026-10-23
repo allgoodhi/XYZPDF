@@ -4,6 +4,8 @@
 
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QFocusEvent>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
@@ -386,6 +388,10 @@ void PageView::setPageImage(const RenderToken &token, const QImage &image)
 
     images.insert(page, PageImage{token, image});
     failedRenders.remove(page);
+    // The picture that was out of date is the one that just arrived, so the page is
+    // current again -- and an answer that did not come back (the branch above) leaves
+    // it stale, which is what keeps the retry going.
+    stalePages.remove(page);
 
     const QPoint offset(horizontalScrollBar()->value(), verticalScrollBar()->value());
     const QRectF pageRect = layout.rectOf(page);
@@ -413,6 +419,7 @@ void PageView::dropAllImages()
     images.clear();
     requested.clear();
     failedRenders.clear();
+    stalePages.clear();
 }
 
 void PageView::goToPage(int page)
@@ -499,6 +506,156 @@ void PageView::setDocument(Document *document)
     // And the links are per-page into the document too -- a cached page of links
     // from the old file would point at pages of this one.
     linkCache.clear();
+    // A field's focus belongs to the document that had it. Leaving it set is worse
+    // than leaving a selection behind: the next keystroke would go into the form
+    // layer of a file that is no longer here.
+    if (form && form->hasFocusedField())
+        form->releaseFocus();
+}
+
+void PageView::setFormSurface(FormFill *surface)
+{
+    // Whatever the last document's fields were doing, this view stops routing input
+    // to them now -- including the drag, which would otherwise release into a form
+    // layer that is not the one that took the press.
+    inFormDrag = false;
+    formDragPage = -1;
+    form = surface;
+    // The pointer's shape was chosen by the surface that is going away, so it is
+    // recomputed on the next move rather than kept.
+    applyPointerShape(activeTool == Tool::View ? Qt::OpenHandCursor : Qt::ArrowCursor);
+}
+
+bool PageView::fieldHasFocus() const
+{
+    return form && form->hasFocusedField();
+}
+
+bool PageView::canUndoInField() const
+{
+    return form && form->canUndoFocused();
+}
+
+bool PageView::canRedoInField() const
+{
+    return form && form->canRedoFocused();
+}
+
+void PageView::undoInField()
+{
+    if (!form)
+        return;
+    form->undoFocused();
+    applyFormCallbacks();
+    Q_EMIT selectionChanged();
+}
+
+void PageView::redoInField()
+{
+    if (!form)
+        return;
+    form->redoFocused();
+    applyFormCallbacks();
+    Q_EMIT selectionChanged();
+}
+
+FormFill::Frame PageView::formFrameFor(int page) const
+{
+    FormFill::Frame frame;
+    const QVector<QSizeF> &sizes = layout.pagePoints();
+    if (page < 0 || page >= sizes.size())
+        return frame;
+    // The whole page at this zoom and this screen, and the reader's quarter turns --
+    // the two the render was asked for. PageMetrics::pixelsFor is the same call
+    // requestVisiblePages() makes, and it has to stay the same call: if the frame
+    // this returns and the size the image was drawn at ever disagree, a click lands
+    // on the wrong point of the page and the disagreement is invisible in both.
+    frame.pixels = PageMetrics::pixelsFor(sizes.at(page), layout.zoom(), devicePixelRatioF());
+    frame.quarterTurns = rotationDegrees == 90   ? 1
+        : rotationDegrees == 180 ? 2
+        : rotationDegrees == 270 ? 3
+                                 : 0;
+    return frame;
+}
+
+QPointF PageView::formDevicePoint(int page, const QPointF &viewportPoint) const
+{
+    const QVector<QSizeF> &sizes = layout.pagePoints();
+    if (page < 0 || page >= sizes.size())
+        return {};
+    const QRectF rect = layout.rectOf(page);
+    const QSize pagePixels = PageMetrics::pixelsFor(sizes.at(page), layout.zoom(),
+                                                    devicePixelRatioF());
+    if (rect.isEmpty() || pagePixels.isEmpty())
+        return {};
+    // Viewport to content coordinates (the scrollbars are what separates them), then
+    // the page's own box within the content, then the same scale paintEvent() draws
+    // the image with -- in logical pixels on one side and device pixels on the other.
+    const QPointF inContent = viewportPoint + QPointF(horizontalScrollBar()->value(),
+                                                      verticalScrollBar()->value());
+    return QPointF((inContent.x() - rect.left()) * pagePixels.width() / rect.width(),
+                   (inContent.y() - rect.top()) * pagePixels.height() / rect.height());
+}
+
+FormFill::Field PageView::fieldUnder(const QPoint &viewportPoint) const
+{
+    if (!form || !form->fillable())
+        return FormFill::Field::None;
+    const int page = pageAtPoint(viewportPoint);
+    if (page < 0)
+        return FormFill::Field::None;
+    return form->fieldAt(page, formFrameFor(page), formDevicePoint(page, viewportPoint));
+}
+
+void PageView::applyFormCallbacks()
+{
+    if (!form)
+        return;
+    // The shape PDFium asked for, if it asked for one. Measured on this build:
+    // FORM_OnMouseMove asks for nothing and the shape arrives while a field is
+    // taking focus, so this is a nudge rather than the pointer's main answer --
+    // fieldUnder() is that. It still has to be drained, because an unanswered
+    // request stays in the queue and applies to the next event too.
+    const FormFill::Pointer askedFor = form->takeRequestedPointer();
+    if (askedFor != FormFill::Pointer::Arrow) {
+        applyPointerShape(askedFor == FormFill::Pointer::IBeam ? Qt::IBeamCursor
+                      : askedFor == FormFill::Pointer::Hand ? Qt::PointingHandCursor
+                      : askedFor == FormFill::Pointer::Cross ? Qt::CrossCursor
+                      : askedFor == FormFill::Pointer::Wait ? Qt::WaitCursor
+                      : askedFor == FormFill::Pointer::UpDown ? Qt::SizeVerCursor
+                      : askedFor == FormFill::Pointer::SizeAll ? Qt::SizeAllCursor
+                      : askedFor == FormFill::Pointer::No ? Qt::ForbiddenCursor
+                                                           : Qt::ArrowCursor);
+    }
+
+    const QVector<FormFill::Repaint> repaints = form->takeRepaints();
+    if (repaints.isEmpty())
+        return;
+
+    // PDFium's rectangle is the answer to "what did you just change"; the answer to
+    // "what is on screen that has to be drawn again" is the band this view already
+    // asks for. So the rect is what makes the page stale, and neededRegion() is what
+    // keeps the re-render to the part of the page the reader can see -- at 800% that
+    // is a band, not the page, which is the case handoff-04 G1 3 asks about.
+    QSet<int> pages;
+    for (const FormFill::Repaint &repaint : repaints)
+        pages.insert(repaint.page);
+    for (const int page : std::as_const(pages)) {
+        if (page < 0 || page >= pageCount())
+            continue;
+        // The cache first, then the generation, then the request: token equality
+        // ignores the generation, so a page the cache still holds would come back
+        // with the keystroke missing. See the note on formPageStale().
+        Q_EMIT formPageStale(page);
+        stalePages.insert(page);
+        requested.remove(page); // so the page is asked for again, not left "on its way"
+    }
+    Q_EMIT invalidated();
+    requestVisiblePages();
+    // The reader changed the document, not just the screen. The tab's star, its 保存
+    // rows and the close question all hang off this, and none of them can ask the
+    // question themselves without a signal to ask it on.
+    Q_EMIT formEdited();
 }
 
 void PageView::clearSelection()
@@ -690,6 +847,41 @@ void PageView::mousePressEvent(QMouseEvent *event)
 
     const QPoint at = event->position().toPoint();
 
+    // ---- the field ----
+    //
+    // A press on a field the reader can fill is not a pan and not a selection: it
+    // goes to the form layer, which decides what that field does with it -- a text
+    // field takes the caret, a checkbox toggles, a list box moves its selection. The
+    // answer comes back from the call itself, so a push button or a signature (shown,
+    // not answered: handoff-04 G1 5) falls through to exactly the behaviour this
+    // function had before the form layer existed.
+    if (form && activeTool != Tool::Recognize && activeTool != Tool::Snapshot
+        && activeTool != Tool::Translate && form->fillable()) {
+        const int page = pageAtPoint(at);
+        if (page >= 0
+            && form->mousePressed(page, formFrameFor(page), formDevicePoint(page, at),
+                                  event->modifiers())) {
+            inFormDrag = true;
+            formDragPage = page;
+            // One drag, one meaning -- the same rule the box and the selection follow.
+            clearSelection();
+            applyFormCallbacks();
+            Q_EMIT formFocusChanged(form->hasFocusedField());
+            event->accept();
+            return;
+        }
+        if (form->hasFocusedField()) {
+            // A click on paper, on a link, on nothing: the field lets go and commits.
+            // The click is taken, because a reader who clicks away from a field they
+            // were typing in asked for one thing -- to stop typing in it.
+            form->releaseFocus();
+            applyFormCallbacks();
+            Q_EMIT formFocusChanged(false);
+            event->accept();
+            return;
+        }
+    }
+
     // ---- the hand ----
     //
     // A click on a link is not the start of a pan: in the reading tool, a link
@@ -778,6 +970,19 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
 {
     const QPoint at = event->position().toPoint();
 
+    if (inFormDrag && form) {
+        // Between a press that went into a field and its release, the pointer is
+        // selecting text inside that field, not on the page. Same mapping as the
+        // press, so a drag that leaves the field's box stops where the box does.
+        const int page = formDragPage;
+        if (page >= 0) {
+            form->mouseMoved(page, formFrameFor(page), formDevicePoint(page, at));
+            applyFormCallbacks();
+        }
+        event->accept();
+        return;
+    }
+
     if (panning) {
         // The paper follows the pointer, so the scroll position moves against
         // it: dragging right shows what is to the left, dragging down shows
@@ -806,6 +1011,33 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
 
 Qt::CursorShape PageView::pointerShapeFor(const QPoint &viewportPoint) const
 {
+    // A field the reader can fill says so with the pointer, in the two tools that
+    // are not about marking the page up. This is the reading handoff-04 G1 1 asks for
+    // (`FORM_OnMouseMove` + `FFI_SetCursor`), and measured on this build the
+    // FORM_OnMouseMove half of that asks for no cursor at all -- moving over a text
+    // field and over blank paper both produced no FFI_SetCursor call -- so the shape
+    // comes from the hit test PDFium also offers, FPDFPage_HasFormFieldAtPoint, and
+    // any shape a callback does request is applied in applyFormCallbacks().
+    //
+    // Only 选择 and 手形: in the four marking tools the pointer is the answer to a
+    // different question ("what will this drag draw") and a field must not steal it.
+    if (form && (activeTool == Tool::Select || activeTool == Tool::View)
+        && form->fillable()) {
+        switch (fieldUnder(viewportPoint)) {
+        case FormFill::Field::TextField:
+            return Qt::IBeamCursor;
+        case FormFill::Field::CheckBox:
+        case FormFill::Field::RadioButton:
+        case FormFill::Field::ComboBox:
+        case FormFill::Field::ListBox:
+            return Qt::PointingHandCursor;
+        case FormFill::Field::None:
+        case FormFill::Field::PushButton:
+        case FormFill::Field::Signature:
+            break; // shown, not answered: the tool's own pointer stands
+        }
+    }
+
     switch (activeTool) {
     case Tool::View:
         // A hand everywhere, except over a link -- where it becomes the pointing
@@ -866,6 +1098,20 @@ void PageView::applyPointerShape(Qt::CursorShape shape)
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton && inFormDrag && form) {
+        inFormDrag = false;
+        const int page = formDragPage;
+        formDragPage = -1;
+        if (page >= 0) {
+            form->mouseReleased(page, formFrameFor(page),
+                                 formDevicePoint(page, event->position().toPoint()),
+                                 event->modifiers());
+            applyFormCallbacks();
+            Q_EMIT formFocusChanged(form->hasFocusedField());
+        }
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::LeftButton && panning) {
         panning = false;
         viewport()->releaseMouse();
@@ -926,6 +1172,23 @@ void PageView::finishRegionDrag()
 
 void PageView::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    // In a text field a double-click selects the word under the pointer, which is
+    // the fastest way to replace one answer with another. Only when the field took
+    // the press that came with it -- the check is the same one the press uses, so a
+    // push button or a signature gets the gesture it got before this existed.
+    if (form && event->button() == Qt::LeftButton && activeTool != Tool::Recognize
+        && activeTool != Tool::Snapshot && activeTool != Tool::Translate
+        && form->fillable() && FormFill::isInteractive(fieldUnder(event->position().toPoint()))) {
+        const QPoint at = event->position().toPoint();
+        const int page = pageAtPoint(at);
+        if (page >= 0 && form->mouseDoubleClicked(page, formFrameFor(page),
+                                                 formDevicePoint(page, at))) {
+            applyFormCallbacks();
+            event->accept();
+            return;
+        }
+    }
+
     // Selecting a word is a thing the selection tool does, and the translate tool
     // does it too -- a double-clicked word is the fastest way to ask after one
     // term. In the other two a double-click is two clicks of the tool in force:
@@ -1256,6 +1519,12 @@ bool PageView::isRendered(int page) const
     const QVector<QSizeF> &sizes = layout.pagePoints();
     if (page < 0 || page >= sizes.size())
         return false;
+    // A field changed on this page. What is held is a picture of the page as it was
+    // before the keystroke, and paintEvent() still draws it -- so the reader sees the
+    // old page for the length of one render instead of a grey box, while this says
+    // "not rendered" often enough for requestVisiblePages() to ask again.
+    if (stalePages.contains(page))
+        return false;
     const auto have = images.constFind(page);
     if (have == images.constEnd())
         return false;
@@ -1325,6 +1594,14 @@ void PageView::requestVisiblePages()
             ++entry;
         else
             entry = requested.erase(entry);
+    }
+    // A page that left the view is not held any more, so it has nothing left to be
+    // out of date. The next pass over it asks for a fresh render on its own.
+    for (auto entry = stalePages.begin(); entry != stalePages.end();) {
+        if (wanted.contains(*entry))
+            ++entry;
+        else
+            entry = stalePages.erase(entry);
     }
 
     for (const int page : std::as_const(wanted)) {
@@ -1577,6 +1854,50 @@ void PageView::wheelEvent(QWheelEvent *event)
 
 void PageView::keyPressEvent(QKeyEvent *event)
 {
+    // ---- the field ----
+    //
+    // While one of this document's fields has the keyboard, the keys are the field's:
+    // the arrows move its caret, Tab and Shift+Tab walk its own field order (across
+    // pages, through FFI_GetPage), Backspace and Delete take its characters away and
+    // Ctrl+C/V/X/Z/A are its clipboard and its undo. All of that is PDFium's answer to
+    // FORM_OnKeyDown/OnChar, so the question goes there first and only a key the field
+    // does not want comes back to the page -- which is the rule handoff-04 G1 1 ends
+    // with: "字段没有焦点时，键盘快捷键照旧归应用".
+    if (form && form->hasFocusedField()) {
+        if (event->key() == Qt::Key_Escape) {
+            // Esc is the reader asking to be out of the field, not a key the field
+            // answers: it commits and lets go. Measured, FORM_ForceToKillFocus is also
+            // the commit -- the value the reader typed reaches the field here, not
+            // before -- which is what makes 保存 able to write a typed answer at all.
+            form->releaseFocus();
+            applyFormCallbacks();
+            Q_EMIT formFocusChanged(false);
+            event->accept();
+            return;
+        }
+        const Qt::KeyboardModifiers modifiers = event->modifiers();
+        bool handled = form->keyPressed(event->key(), modifiers);
+        if (!handled && !event->text().isEmpty() && event->text().at(0).isPrint()) {
+            // A key that is not a name and is not a control: the character itself.
+            // PDFium's edit widget takes it through OnChar, one code unit at a time --
+            // which is exactly the route an input method must NOT take, see
+            // inputMethodEvent().
+            for (const QChar character : event->text()) {
+                if (form->characterTyped(character, modifiers))
+                    handled = true;
+            }
+        }
+        if (handled) {
+            applyFormCallbacks();
+            event->accept();
+            return;
+        }
+        // Not the field's key. Everything the page does with a key -- PgUp, space,
+        // the arrows -- stays available, which is what "a field that has focus does
+        // not swallow the reader's navigation" means in practice; the ones a field
+        // does want never reach here.
+    }
+
     switch (event->key()) {
     case Qt::Key_PageDown:
         scrollBy(viewport()->height() - kArrowStep);
@@ -1607,4 +1928,89 @@ void PageView::keyPressEvent(QKeyEvent *event)
         break;
     }
     QAbstractScrollArea::keyPressEvent(event);
+}
+
+void PageView::inputMethodEvent(QInputMethodEvent *event)
+{
+    // A composed string arrives here, not as keys: an input method that was asked to
+    // type 中文 sends its candidate string in one commit, and sending the same text as
+    // a run of FORM_OnChar calls is what breaks it -- the widget would take each
+    // character as a separate keystroke, so the reader's one edit becomes several and
+    // the composition the input method just resolved is pasted one glyph at a time
+    // (handoff-04 G1 2).
+    if (!form || !event->commitString().isEmpty()) {
+        // The preedit string is deliberately ignored: this version draws no underlined
+        // composition inside the field, so what the reader sees before they press space
+        // is the input method's own window, not the page. Said out loud because it is
+        // the one visible thing this route does not do.
+        if (form) {
+            form->commitText(event->commitString());
+            applyFormCallbacks();
+            event->accept();
+            return;
+        }
+    }
+    QAbstractScrollArea::inputMethodEvent(event);
+}
+
+QVariant PageView::inputMethodQuery(Qt::InputMethodQuery query) const
+{
+    if (!form || !form->hasFocusedField())
+        return QAbstractScrollArea::inputMethodQuery(query);
+
+    if (query == Qt::ImEnabled)
+        return true;
+    if (query == Qt::ImCursorRectangle) {
+        // Where the candidate window goes. PDFium reports no caret position inside a
+        // widget on this build -- nothing in fpdf_formfill.h asks the embedder to draw
+        // one, and FFI_DisplayCaret is the XFA-only entry the header says to leave
+        // null -- so the field's own rectangle is what a candidate window can be
+        // placed against. The caret is inside it, so the window is never further from
+        // what the reader is typing than the box they typed it into.
+        int page = -1;
+        QRectF userSpace;
+        if (!form->focusedFieldRect(&page, &userSpace))
+            return QAbstractScrollArea::inputMethodQuery(query);
+        const QRectF rect = pageRectInViewport(page);
+        const QSizeF points = [this, page] {
+            const QVector<QSizeF> &sizes = layout.pagePoints();
+            return page < sizes.size() ? sizes.at(page) : QSizeF();
+        }();
+        if (rect.isEmpty() || points.isEmpty())
+            return QVariant();
+        // User space has its origin at the page's bottom-left; the frame is the
+        // displayed page, so the flip is the one a highlight already uses. Rotation is
+        // not folded in here: a field's box on a page turned by the reader is drawn
+        // inside the page's own frame, and the window only needs a point near it.
+        const double scaleX = rect.width() / points.width();
+        const double scaleY = rect.height() / points.height();
+        return QRectF(rect.left() + userSpace.left() * scaleX,
+                      rect.top() + (points.height() - userSpace.bottom()) * scaleY,
+                      userSpace.width() * scaleX, userSpace.height() * scaleY);
+    }
+    return QAbstractScrollArea::inputMethodQuery(query);
+}
+
+void PageView::focusInEvent(QFocusEvent *event)
+{
+    QAbstractScrollArea::focusInEvent(event);
+    // The reader asked to type into the page. Whether that means a field or the
+    // viewer's own keys is answered per keystroke; this only says that an input method
+    // has somewhere to put a candidate window.
+    setAttribute(Qt::WA_InputMethodEnabled, form && form->fillable());
+}
+
+void PageView::focusOutEvent(QFocusEvent *event)
+{
+    // Leaving the page is leaving the field: the value the reader typed is committed
+    // and drawn, so that a 保存 or a 关闭 asked about afterwards sees the same text the
+    // reader does. Without it, a field that still holds focus inside PDFium keeps its
+    // edit in the widget, and the measurement in formfill.h's header says that value
+    // does not reach the field -- and so does not reach the file.
+    if (form && form->hasFocusedField()) {
+        form->releaseFocus();
+        applyFormCallbacks();
+        Q_EMIT formFocusChanged(false);
+    }
+    QAbstractScrollArea::focusOutEvent(event);
 }

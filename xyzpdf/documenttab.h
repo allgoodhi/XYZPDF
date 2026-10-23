@@ -57,6 +57,7 @@
 
 class DocumentEditor;
 class FindBar;
+class FormFill;
 class OutlinePanel;
 class PageRenderer;
 class PageView;
@@ -259,6 +260,14 @@ public:
     bool hasXfa() const { return xfaInSource; }
     bool hasDynamicXfa() const { return dynamicXfaInSource; }
 
+    // Whether the form on disk carries actions this program will not run -- a field's
+    // /AA, a document-level JavaScript name tree, an /OpenAction that is one, or the
+    // dynamic-calculation dictionary of PDF Part 2. This build has no V8, so those
+    // never happen, and 文档 says so once on the way in (handoff-04 G1 5). Read from the
+    // same open-time pass as the three above, for the same reason: nothing here keeps a
+    // parser open to ask again.
+    bool hasFormScript() const { return sourceHasScript; }
+
     // Whether the thumbnail strip is showing pending edits rather than the file
     // as it is on disk (docs/review-03.md §1.3). The main view always shows the
     // file; the strip shows what a save would write. See refreshThumbnailRows().
@@ -399,6 +408,20 @@ public:
     // closing is losing them, and nothing else tells the reader.
     bool hasUnsavedEdits() const;
 
+    // Whether the reader changed a field. Separate from hasUnsavedEdits() because the
+    // two have one caller that has to know which it is: the 保存 writes a structural
+    // list through qpdf and field values through PDFium, and a tab holding only field
+    // changes has nothing for the first of those to do (handoff-04 G1 6).
+    bool hasFieldEdits() const;
+
+    // The form layer of the document open here, or null for a file with no fields --
+    // or an engine that cannot fill them. This is the one place the read-only `Document`
+    // seam is allowed to become something more, and it does so with a cast rather than
+    // with a method on Document: docs/PLAN.md §7.3 says a write path must not be
+    // reachable through the read-only type, and a tab that asks "can I fill this" should
+    // not have to know which library answers.
+    FormFill *formSurface() const { return form; }
+
     // ---- 导出 ----
     //
     // The reading itself is WordExportSession's -- why it is not on the thread
@@ -503,6 +526,11 @@ private:
     // write back here and offers 另存为, which is the way out that keeps the work.
     void offerSaveAs(const QString &reason);
 
+    // Why a filled field cannot be written into a document the author put a password
+    // on -- and why 另存为 says the same thing. One sentence, two callers, because the
+    // rule is not about which box the reader pressed.
+    QString fieldSaveRefusal() const;
+
     void onPageImageNeeded(const RenderToken &token);
     void onPageRendered(const RenderToken &token, const QImage &image);
     void onDiscarded(const RenderToken &token);
@@ -542,6 +570,10 @@ private:
     // the comment, because reordering these two looks harmless.
     std::unique_ptr<Document> backend;
     std::unique_ptr<PageRenderer> renderer;
+    // The same object as `backend`, seen as the thing that takes field input. Owned
+    // by `backend`, and therefore destroyed after it only because the view holds the
+    // same pointer and is a child widget -- see the note above about declaration order.
+    FormFill *form = nullptr;
 
     RenderCache cache;
     FindBar *findBar = nullptr;
@@ -570,6 +602,21 @@ private:
     std::unique_ptr<DocumentOutput> output;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
+    // Whether the file on disk carries an /Encrypt dictionary of its own, and whether
+    // anything in it runs a script. Read in the same open-time pass as the line above.
+    //
+    // The first decides whether a field change can be saved at all: measured on this
+    // build, FPDF_SaveAsCopy writes an unencrypted file from an encrypted one, so a
+    // save that carries the reader's answers would also carry away the protection the
+    // file was written with -- and 另存为 must not be a way round that, because it would
+    // put an unprotected copy of a protected document on disk under a new name.
+    //
+    // The second is what the short status sentence at open time is about: this build has
+    // no V8, so a field's calculation, validation and formatting actions never run and
+    // the reader is told that once, on the way in, instead of finding out from a total
+    // that stayed at zero.
+    bool sourceEncrypted = false;
+    bool sourceHasScript = false;
     // What the open-time probe answered about XFA, kept for hasXfa() / hasDynamicXfa() above.
     bool xfaInSource = false;
     bool dynamicXfaInSource = false;

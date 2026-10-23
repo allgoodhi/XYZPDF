@@ -1,10 +1,15 @@
 #include "pdfiumbackend.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QImage>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QTimeZone>
+#include <QUuid>
 
 // Before fpdfview.h, which includes windows.h itself (line 26 of the release's
 // header): once that has run, NOMINMAX is too late and numeric_limits::max() is
@@ -14,8 +19,11 @@
 #endif
 #include <windows.h>
 
+#include <fpdf_annot.h>
 #include <fpdf_doc.h>
 #include <fpdf_formfill.h>
+#include <fpdf_fwlevent.h>
+#include <fpdf_save.h>
 #include <fpdf_text.h>
 #include <fpdfview.h>
 
@@ -374,6 +382,468 @@ void appendBookmarks(FPDF_DOCUMENT document, FPDF_BOOKMARK parent, int depth,
     }
 }
 
+// ---- the form layer's callbacks ----
+//
+// FPDF_FORMFILLINFO is a C struct of function pointers with no client-data slot,
+// so the standard embedder trick applies: put it first in a struct of our own and
+// hang the pointer off the end. `base` is the first member of a
+// standard-layout struct, which is what makes the cast below (from the pointer
+// PDFium hands the callback back to the enclosing FormFillInfo) more than a
+// guess -- and it is a layout promise the release's own header relies on, since
+// every one of these callbacks is called through it.
+//
+// The member is not called `interface`: windows.h is in this translation unit, and
+// the rpc header family that comes with it defines `interface` as `struct`, which
+// would turn this declaration into a syntax error several lines away from the cause
+// (AGENTS.md, the same trap as `small`).
+struct FormFillInfo
+{
+    FPDF_FORMFILLINFO base;
+    void *self = nullptr;
+};
+
+// FPDFPage_HasFormFieldAtPoint's answer, and FPDF_FORMFIELD_* from the same header.
+FormFill::Field fieldOf(int pdfiumType)
+{
+    switch (pdfiumType) {
+    case FPDF_FORMFIELD_PUSHBUTTON:
+        return FormFill::Field::PushButton;
+    case FPDF_FORMFIELD_CHECKBOX:
+        return FormFill::Field::CheckBox;
+    case FPDF_FORMFIELD_RADIOBUTTON:
+        return FormFill::Field::RadioButton;
+    case FPDF_FORMFIELD_COMBOBOX:
+        return FormFill::Field::ComboBox;
+    case FPDF_FORMFIELD_LISTBOX:
+        return FormFill::Field::ListBox;
+    case FPDF_FORMFIELD_TEXTFIELD:
+        return FormFill::Field::TextField;
+    case FPDF_FORMFIELD_SIGNATURE:
+        return FormFill::Field::Signature;
+    default:
+        return FormFill::Field::None;
+    }
+}
+
+
+// FFI_SetCursor's int, as far as it has been read on this machine: a text field
+// asks for 3 while taking focus (measured on field-flat.pdf, and 3 is the I-beam in
+// PDFium's own widget layer). The rest of the switch is PDFium's FWL cursor order,
+// which this build has never been observed to ask for; a value outside the list
+// comes back as an arrow rather than as a guess.
+FormFill::Pointer pointerOf(int pdfiumCursor)
+{
+    switch (pdfiumCursor) {
+    case 0:
+        return FormFill::Pointer::Arrow;
+    case 1:
+        return FormFill::Pointer::Cross;
+    case 2:
+        return FormFill::Pointer::Wait;
+    case 3:
+        return FormFill::Pointer::IBeam;
+    case 4:
+        return FormFill::Pointer::UpDown;
+    case 8:
+        return FormFill::Pointer::SizeAll;
+    case 10:
+        return FormFill::Pointer::No;
+    case 11:
+        return FormFill::Pointer::Hand;
+    default:
+        return FormFill::Pointer::Arrow;
+    }
+}
+
+// Qt's modifiers to FWL_EVENTFLAG_*, which is the numbering FORM_On* asks for.
+int formEventFlags(Qt::KeyboardModifiers modifiers)
+{
+    int flags = 0;
+    if (modifiers.testFlag(Qt::ShiftModifier))
+        flags |= FWL_EVENTFLAG_ShiftKey;
+    if (modifiers.testFlag(Qt::ControlModifier))
+        flags |= FWL_EVENTFLAG_ControlKey;
+    if (modifiers.testFlag(Qt::AltModifier))
+        flags |= FWL_EVENTFLAG_AltKey;
+    return flags;
+}
+
+// Qt::Key to the FWL_VKEY_ code of the same key. PDFium reads the Windows
+// virtual-key numbering (fpdf_fwlevent.h's FWL_VKEY_* are those values), and the
+// two agree for letters and digits -- which is why this is a list of the rest
+// rather than a table of everything. 0 for a key PDFium has no name for: the
+// caller then lets the key go where it would have gone before the form existed.
+int formVirtualKey(int qtKey)
+{
+    switch (qtKey) {
+    case Qt::Key_Backspace:
+        return FWL_VKEY_Back;
+    case Qt::Key_Tab:
+        return FWL_VKEY_Tab;
+    case Qt::Key_Clear:
+        return FWL_VKEY_Clear;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        return FWL_VKEY_Return;
+    case Qt::Key_Escape:
+        return FWL_VKEY_Escape;
+    case Qt::Key_Space:
+        return FWL_VKEY_Space;
+    case Qt::Key_PageUp:
+        return FWL_VKEY_Prior;
+    case Qt::Key_PageDown:
+        return FWL_VKEY_Next;
+    case Qt::Key_End:
+        return FWL_VKEY_End;
+    case Qt::Key_Home:
+        return FWL_VKEY_Home;
+    case Qt::Key_Left:
+        return FWL_VKEY_Left;
+    case Qt::Key_Up:
+        return FWL_VKEY_Up;
+    case Qt::Key_Right:
+        return FWL_VKEY_Right;
+    case Qt::Key_Down:
+        return FWL_VKEY_Down;
+    case Qt::Key_Insert:
+        return FWL_VKEY_Insert;
+    case Qt::Key_Delete:
+        return FWL_VKEY_Delete;
+    default:
+        break;
+    }
+    // The Latin letters and the main-row digits are the same numbers in both, and
+    // Qt reports an uppercase letter as Key_A plus ShiftModifier, so no case
+    // adjustment is needed here -- the character itself arrives through OnChar.
+    if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z)
+        return FWL_VKEY_A + (qtKey - Qt::Key_A);
+    if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9)
+        return FWL_VKEY_0 + (qtKey - Qt::Key_0);
+    return 0;
+}
+
+// The value of a field, as the form layer sees it.
+//
+// Not FPDFAnnot_GetStringValue(annot, "/V"), which answers 2 bytes -- the empty
+// string -- on the same file that this reads back as "typed on page 1". Measured
+// on field-flat.pdf, and it is the asymmetry docs/pdfium-plan.md sec.4.2 wrote as
+// unexplained: the form-aware read resolves the field's value the way the widget
+// that draws it does, the raw dictionary read of the widget annotation does not.
+QString fieldValue(FPDF_FORMHANDLE form, FPDF_ANNOTATION annotation)
+{
+    if (!annotation)
+        return {};
+    QVector<FPDF_WCHAR> buffer(256);
+    const unsigned long bytes
+        = FPDFAnnot_GetFormFieldValue(form, annotation, buffer.data(),
+                                      static_cast<unsigned long>(buffer.size() * sizeof(FPDF_WCHAR)));
+    if (bytes <= 2)
+        return {};
+    const int units = qMin<int>(int(bytes / 2), int(buffer.size())) - 1;
+    // FPDF_WCHAR is unsigned short, which is what QString::fromUtf16 wants.
+    return QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer.constData()), units);
+}
+
+// A field's own name, which is what a value is remembered against. A widget and
+// its parent field share the name, and it does not move when the page it is on
+// moves -- which matters because a pending 删除页面 has already shifted page
+// numbers by the time a reader looks at a field on a later page.
+QString fieldName(FPDF_FORMHANDLE form, FPDF_ANNOTATION annotation)
+{
+    if (!annotation)
+        return {};
+    QVector<FPDF_WCHAR> buffer(256);
+    const unsigned long bytes = FPDFAnnot_GetFormFieldName(
+        form, annotation, buffer.data(), static_cast<unsigned long>(buffer.size() * sizeof(FPDF_WCHAR)));
+    if (bytes <= 2)
+        return {};
+    const int units = qMin<int>(int(bytes / 2), int(buffer.size())) - 1;
+    return QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer.constData()), units);
+}
+
+// The rectangle a widget annotation occupies, in the page's own user space.
+QRectF fieldRect(FPDF_ANNOTATION annotation)
+{
+    FS_RECTF rect{};
+    if (!annotation || !FPDFAnnot_GetRect(annotation, &rect))
+        return {};
+    // FS_RECTF is left/top/right/bottom in the same bottom-left-origin space
+    // everything here uses, so `top` is the larger y and the height is top - bottom.
+    return QRectF(rect.left, rect.bottom, rect.right - rect.left, rect.top - rect.bottom);
+}
+
+// Everything the PDFium form callbacks are allowed to touch, for one document.
+//
+// It is a struct of its own rather than a few more fields on PdfiumBackend::Impl
+// because of how the callbacks find their way home: FPDF_FORMFILLINFO has no
+// client-data slot, so the only route from a callback to the object it belongs to
+// is the FormFillInfo this file puts around it -- and a free function cannot name
+// `PdfiumBackend::Impl`, which is a private nested type. Pointing at something the
+// callbacks *can* name keeps that access rule intact and makes the boundary
+// explicit instead: anything the library may reach for lives here and nowhere else.
+//
+// One of these per document, not one per process. A window with two tabs has two
+// backends and two form environments, and each callback arrives through the
+// FORMFILLINFO of whichever document caused it, so a process-wide singleton would
+// attribute one tab's keystroke to the other's page.
+struct FormState;
+
+// The timer id is process-wide, because the callback PDFium hands back takes only
+// an id and the table it looks this up in has to be reachable from a bare function
+// pointer. It is the one piece of the form layer that is not per-document, and it
+// holds nothing but (id -> which document's timer to start).
+QHash<int, FormState *> &formTimerOwners()
+{
+    static QHash<int, FormState *> owners;
+    return owners;
+}
+
+struct FormState
+{
+    // The form handle, for the one callback that has to tell PDFium about a page it
+    // loaded on the document's behalf (FFI_GetPage). load() sets it, close() clears
+    // it before the handle is exited.
+    FPDF_FORMHANDLE form = nullptr;
+
+    // What PDFium asked for while the last FORM_* call was in flight. Both are
+    // collected rather than acted on, because the caller that made that call is the
+    // one that knows which pages are on screen. Drained after every routed event by
+    // takeRepaints() and takeRequestedPointer().
+    QVector<FormFill::Repaint> repaints;
+    FormFill::Pointer pendingPointer = FormFill::Pointer::Arrow;
+
+    // The pages this document is holding, both ways round. holdPage() maintains it
+    // beside its own LRU; the callbacks need it because FFI_Invalidate is handed a
+    // page *handle* and the view needs a page *index*, and FFI_GetPage runs the
+    // other direction.
+    QHash<int, FPDF_PAGE> pageByIndex;
+    QHash<FPDF_PAGE, int> indexByPage;
+
+    // A page FFI_GetPage had to load for PDFium rather than find in the LRU -- for
+    // instance when a Tab walks off the end of the held set. The LRU cannot take
+    // these: eviction would close a handle PDFium is using mid-gesture, and
+    // formDispatchDepth already stops that from happening for the LRU's own pages.
+    QVector<FPDF_PAGE> loadedForForm;
+
+    // PDFium's caret blink runs through FFI_SetTimer, whose callback is a bare
+    // function pointer taking only the timer id -- and whose return value, kill
+    // semantics and "nonzero on success" wording are Win32 SetTimer's, because that is
+    // what the interface was copied from. So the answer is SetTimer itself rather than
+    // a Qt timer: these same sources are compiled into the two shell DLLs, which are
+    // linked /DELAYLOAD:Qt6Core.dll, and a QTimer pulls in a data import that cannot be
+    // delay-loaded (LNK1194 on staticMetaObject). A thread-message timer needs a message
+    // loop on the thread that started it, which the reader's UI thread has and the
+    // preview pane never asks for in the first place: no input, no focus, no caret.
+    struct Timer
+    {
+        TimerCallback callback = nullptr;
+    };
+    QHash<int, Timer> timers;
+    QVector<UINT_PTR> timerIds;
+
+    // Greater than zero while a FORM_* call is on the stack, which is what makes
+    // holdPage() let the LRU grow instead of evicting a handle PDFium is using.
+    int dispatchDepth = 0;
+
+    // The value each field held before the first event this program routed to it,
+    // keyed by page index and field name. This is what differingFieldCount()
+    // compares against, and why that question costs nothing on a document whose
+    // fields the reader never touched.
+    QHash<QString, QString> valueBeforeTouch;
+
+    int indexOfPage(FPDF_PAGE page) const
+    {
+        const auto found = indexByPage.constFind(page);
+        return found == indexByPage.constEnd() ? -1 : found.value();
+    }
+
+    void notePage(int index, FPDF_PAGE page)
+    {
+        pageByIndex.insert(index, page);
+        indexByPage.insert(page, index);
+    }
+
+    void forgetPage(FPDF_PAGE page)
+    {
+        indexByPage.remove(page);
+        for (auto it = pageByIndex.begin(); it != pageByIndex.end(); ++it) {
+            if (it.value() == page) {
+                pageByIndex.erase(it);
+                break;
+            }
+        }
+    }
+
+    // Everything, on the way out. The caller has already let PDFium go.
+    void clear()
+    {
+        for (const UINT_PTR id : std::as_const(timerIds)) {
+            KillTimer(nullptr, id);
+            formTimerOwners().remove(int(id));
+        }
+        timerIds.clear();
+        timers.clear();
+        repaints.clear();
+        pendingPointer = FormFill::Pointer::Arrow;
+        pageByIndex.clear();
+        indexByPage.clear();
+        loadedForForm.clear();
+        valueBeforeTouch.clear();
+        dispatchDepth = 0;
+    }
+
+};
+
+// ---- the form callbacks ----
+//
+// Every one of these runs synchronously on the thread that made the FORM_* call,
+// which already holds the process-wide PDFium mutex -- so none of them may take it
+// again and none may block. FFI_SetTimer's callback is the exception: it arrives
+// later, from the event loop, and the code that runs it takes the lock there.
+
+void onInvalidate(FPDF_FORMFILLINFO *self, FPDF_PAGE page, double left, double top, double right,
+                  double bottom)
+{
+    FormState *state = static_cast<FormState *>(reinterpret_cast<FormFillInfo *>(self)->self);
+    // The header gives the rectangle in PDF user space and says the implementation
+    // "should call FPDF_RenderPageBitmap() for repainting the specified page area".
+    // In this program that means telling the view, because the view is the one that
+    // knows which band of which page is on screen and what asking for it costs.
+    // Measured on field-flat.pdf: focusing the field reported
+    // (59,599)-(261,631), the field's own /Rect grown by a point on each side.
+    const int index = state->indexOfPage(page);
+    if (index < 0)
+        return; // a page nothing is holding is a page nothing can show
+    const QRectF area(left, bottom, right - left, top - bottom);
+    // One entry per page, grown to cover what has been asked for. A single click in
+    // a text field reports seven of these (measured), and a keystroke more than one
+    // again; keeping them apart would mean seven renders of the same band.
+    for (FormFill::Repaint &existing : state->repaints) {
+        if (existing.page == index) {
+            existing.userSpace = existing.userSpace.united(area);
+            return;
+        }
+    }
+    state->repaints.append(FormFill::Repaint{index, area});
+}
+
+void onSetCursor(FPDF_FORMFILLINFO *self, int cursorType)
+{
+    FormState *state = static_cast<FormState *>(reinterpret_cast<FormFillInfo *>(self)->self);
+    state->pendingPointer = pointerOf(cursorType);
+}
+
+// Where a Win32 thread-message timer lands. The id PDFium was handed is the key, and
+// the registry is checked again on every fire: a document can be closed between two
+// blinks, and then its FormState is gone -- which is the shape of the crash F10
+// recorded for the recognition pool, with a different object left alive.
+void CALLBACK formTimerThunk(HWND, UINT, UINT_PTR eventId, DWORD)
+{
+    const auto owner = formTimerOwners().constFind(int(eventId));
+    if (owner == formTimerOwners().constEnd() || !owner.value())
+        return;
+    const auto entry = owner.value()->timers.constFind(int(eventId));
+    if (entry == owner.value()->timers.constEnd() || !entry->callback)
+        return;
+    // The callback is a PDFium call, so it takes the process lock like every other
+    // entry point that reaches the library.
+    const QMutexLocker locker(&pdfiumMutex());
+    entry->callback(int(eventId));
+}
+
+void onKillTimer(FPDF_FORMFILLINFO *self, int timerId)
+{
+    FormState *state = static_cast<FormState *>(reinterpret_cast<FormFillInfo *>(self)->self);
+    const auto found = state->timers.constFind(timerId);
+    if (found == state->timers.constEnd())
+        return;
+    KillTimer(nullptr, UINT_PTR(timerId));
+    state->timerIds.removeOne(UINT_PTR(timerId));
+    state->timers.erase(found);
+    formTimerOwners().remove(timerId);
+}
+
+int onSetTimer(FPDF_FORMFILLINFO *self, int elapsed, TimerCallback callback)
+{
+    FormState *state = static_cast<FormState *>(reinterpret_cast<FormFillInfo *>(self)->self);
+    if (!callback || elapsed <= 0)
+        return 0;
+    // hWnd NULL, a TimerProc, and no id of our own: the return value is the identifier
+    // to hand back, exactly the contract FFI_SetTimer's header describes. A zero answer
+    // would tell PDFium it has no timer, and the caret in a text field would never
+    // blink -- measured to be asked for with `elapsed` 500 on the first focus.
+    const UINT_PTR id = SetTimer(nullptr, 0, UINT(elapsed), &formTimerThunk);
+    if (id == 0)
+        return 0;
+    FormState::Timer timer;
+    timer.callback = callback;
+    state->timers.insert(int(id), timer);
+    state->timerIds.append(id);
+    formTimerOwners().insert(int(id), state);
+    return int(id);
+}
+
+FPDF_SYSTEMTIME onGetLocalTime(FPDF_FORMFILLINFO *self)
+{
+    (void)self;
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    FPDF_SYSTEMTIME out{};
+    out.wYear = now.wYear;
+    out.wMonth = now.wMonth;
+    out.wDayOfWeek = now.wDayOfWeek;
+    out.wDay = now.wDay;
+    out.wHour = now.wHour;
+    out.wMinute = now.wMinute;
+    out.wSecond = now.wSecond;
+    out.wMilliseconds = now.wMilliseconds;
+    return out;
+}
+
+FPDF_PAGE onGetPage(FPDF_FORMFILLINFO *self, FPDF_DOCUMENT document, int index)
+{
+    FormState *state = static_cast<FormState *>(reinterpret_cast<FormFillInfo *>(self)->self);
+    const auto held = state->pageByIndex.constFind(index);
+    if (held != state->pageByIndex.constEnd() && held.value())
+        return held.value();
+    // Not on screen. PDFium asks this when a field's action names another page --
+    // a Tab at the end of one page asking for the next -- and the handle it gets
+    // back is one it does not own, so this one is remembered and closed at
+    // teardown rather than handed to the view's LRU, which would evict it while
+    // PDFium is still using it.
+    FPDF_PAGE page = FPDF_LoadPage(document, index);
+    if (!page)
+        return nullptr;
+    if (state->form)
+        FORM_OnAfterLoadPage(page, state->form);
+    state->loadedForForm.append(page);
+    state->notePage(index, page);
+    return page;
+}
+
+int onGetRotation(FPDF_FORMFILLINFO *self, FPDF_PAGE page)
+{
+    (void)self;
+    (void)page;
+    // Zero, and that is the consistent answer rather than a default: the click
+    // coordinates this class hands FORM_On* come out of FPDF_DeviceToPage in the
+    // page's *unrotated* user space -- measured, and formfill.h's own field-rect
+    // reads are in that space too -- so a rotation reported here would be applied a
+    // second time inside PDFium. Measured also: no FORM_* call in the sequence
+    // focus, type, commit ever reached this callback on this build.
+    return 0;
+}
+
+void onExecuteNamedAction(FPDF_FORMFILLINFO *self, FPDF_BYTESTRING action)
+{
+    (void)self;
+    (void)action;
+    // Nothing. A named action is a document command -- Print, SaveAs, SubmitForm,
+    // a jump -- and handoff-04 G1 5 puts the reader's own buttons outside what this
+    // version responds to. PDFium's field navigation ("Next Field", "Prev Field")
+    // does not come through here: Tab is handled inside FORM_OnKeyDown.
+}
+
 } // namespace
 
 struct PdfiumBackend::Impl
@@ -385,19 +855,43 @@ struct PdfiumBackend::Impl
         quint64 lastUsed = 0;
     };
 
+    // Keeps holdPage() from evicting while a FORM_* call is on the stack: PDFium is
+    // using the handles it was given, and FORM_OnBeforeClosePage on one of them
+    // mid-call is the bug F10 describes for a different object, with a page handle.
+    struct Dispatch
+    {
+        explicit Dispatch(Impl &owner)
+            : impl(owner)
+        {
+            ++impl.formState.dispatchDepth;
+        }
+        ~Dispatch() { --impl.formState.dispatchDepth; }
+
+        Impl &impl;
+    };
+
     PdfFileHandle file;
     FPDF_DOCUMENT document = nullptr;
     // The form-fill environment and its interface. Both live as long as the
     // document: fpdf_formfill.h says the FPDF_FORMFILLINFO must stay alive until
     // the handle is closed, and the handle must be exited before the document.
-    // Zeroed means every callback is null, which is enough to draw -- the F5
-    // probe filled none of them and widgets still appeared (pdfium-plan.md
-    // sec.7).
-    FPDF_FORMFILLINFO formInfo{};
+    // Since G1 the eight callbacks the header marks as required for version 1 are
+    // filled in (see the block under "the form callbacks" below); the optional ones
+    // and everything the header reserves for XFA stay null, because this build has
+    // no XFA module (pdfium-plan.md sec.4.3) and no V8, so FFI_GetCurrentPage --
+    // which the header says is "required when V8 support is present, otherwise
+    // unused" -- is not answered either.
+    FormFillInfo formInfo{};
     FPDF_FORMHANDLE form = nullptr;
     QString path;
     QString error;
     bool encrypted = false;
+
+    // ---- what the form layer asked for while the last event was in flight ----
+    //
+    // The callbacks may only touch this, and they reach it through the FormFillInfo
+    // wrapped around the FORMFILLINFO they were registered with.
+    FormState formState;
 
     QHash<int, HeldPage> pages;
     quint64 useCounter = 0;
@@ -410,12 +904,14 @@ struct PdfiumBackend::Impl
 
         auto held = pages.find(index);
         if (held == pages.end()) {
-            if (pages.size() >= kPagesHeld) {
+            if (pages.size() >= kPagesHeld && formState.dispatchDepth == 0) {
                 auto oldest = pages.begin();
                 for (auto it = pages.begin(); it != pages.end(); ++it) {
                     if (it->lastUsed < oldest->lastUsed)
                         oldest = it;
                 }
+                if (oldest->page)
+                    formState.forgetPage(oldest->page);
                 if (oldest->page && form)
                     FORM_OnBeforeClosePage(oldest->page, form);
                 if (oldest->text)
@@ -432,6 +928,7 @@ struct PdfiumBackend::Impl
             // layer is told which page it is about to draw on.
             if (form)
                 FORM_OnAfterLoadPage(fresh.page, form);
+            formState.notePage(index, fresh.page);
             held = pages.insert(index, fresh);
         }
 
@@ -450,9 +947,141 @@ struct PdfiumBackend::Impl
         return held == pages.constEnd() ? nullptr : held->text;
     }
 
+    // The annotation the form layer has focused, and which page it is on through
+    // `pageIndex`. The caller must close it with FPDFPage_CloseAnnot(); the header
+    // says so for FORM_GetFocusedAnnot's answer, and an answer that is not a focus
+    // comes back null with the index untouched.
+    FPDF_ANNOTATION focusedAnnot(int *pageIndex) const
+    {
+        if (!form)
+            return nullptr;
+        int index = -1;
+        FPDF_ANNOTATION annotation = nullptr;
+        if (!FORM_GetFocusedAnnot(form, &index, &annotation) || !annotation)
+            return nullptr;
+        if (pageIndex)
+            *pageIndex = index;
+        return annotation;
+    }
+
+    // Which page has the focused field, or -1. The handle it returns through
+    // FORM_GetFocusedAnnot is closed here; the caller only wants the number.
+    int focusedPageLocked() const
+    {
+        int page = -1;
+        FPDF_ANNOTATION focused = focusedAnnot(&page);
+        if (!focused)
+            return -1;
+        FPDFPage_CloseAnnot(focused);
+        return page;
+    }
+
+    // Remember what this field held, once, before the first event that could change
+    // it. Called *before* dispatching, which is the whole point: after the click the
+    // checkbox is already toggled, and the value that has to be compared against is
+    // the one the file says.
+    void noteFieldBeforeTouch(int page, FPDF_ANNOTATION annotation)
+    {
+        if (!annotation)
+            return;
+        const QString name = fieldName(form, annotation);
+        if (name.isEmpty())
+            return;
+        const QString key = QStringLiteral("%1|%2").arg(page).arg(name);
+        if (formState.valueBeforeTouch.contains(key))
+            return;
+        formState.valueBeforeTouch.insert(key, fieldValue(form, annotation));
+    }
+
+    // The same question for the field that has focus, which is what a keystroke is
+    // about -- and what a Tab has already moved on from by the time this is asked.
+    void noteFocusedFieldBeforeTouch()
+    {
+        int page = -1;
+        FPDF_ANNOTATION annotation = focusedAnnot(&page);
+        if (!annotation)
+            return;
+        noteFieldBeforeTouch(page, annotation);
+        FPDFPage_CloseAnnot(annotation);
+    }
+
+    // How many fields hold something other than what the file says, and the pairs that
+// answer it. The value a field holds now, and the one it held before this program's first
+    // event aimed at it. The focused widget is asked for its live text, because a
+    // value the reader is still typing has not reached the field yet (FormFill's
+    // header has the measurement). Answers are UTF-16 → QString pairs the caller
+    // compares.
+    void currentAndOriginalValues(QVector<QPair<QString, QString>> &out)
+    {
+        out.reserve(formState.valueBeforeTouch.size());
+        for (auto entry = formState.valueBeforeTouch.constBegin();
+             entry != formState.valueBeforeTouch.constEnd(); ++entry) {
+            const int page = entry.key().section(QLatin1Char('|'), 0, 0).toInt();
+            const QString name = entry.key().section(QLatin1Char('|'), 1);
+            QString now;
+            int focusedPageIndex = -1;
+            FPDF_ANNOTATION focused = focusedAnnot(&focusedPageIndex);
+            if (focused && focusedPageIndex == page && fieldName(form, focused) == name) {
+                QVector<FPDF_WCHAR> buffer(1024);
+                const unsigned long bytes = FORM_GetFocusedText(
+                    form, focused ? holdPageRef(focusedPageIndex) : nullptr, buffer.data(),
+                    static_cast<unsigned long>(buffer.size() * sizeof(FPDF_WCHAR)));
+                if (bytes > 2) {
+                    const int units
+                        = qMin<int>(int(bytes / 2), int(buffer.size())) - 1;
+                    now = QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer.constData()),
+                                             units);
+                }
+                FPDFPage_CloseAnnot(focused);
+            } else {
+                if (focused)
+                    FPDFPage_CloseAnnot(focused);
+                FPDF_PAGE pageHandle = holdPageRef(page);
+                FPDF_ANNOTATION annotation
+                    = pageHandle ? pageField(pageHandle, name) : nullptr;
+                now = fieldValue(form, annotation);
+                if (annotation)
+                    FPDFPage_CloseAnnot(annotation);
+            }
+            out.append({entry.value(), now});
+        }
+    }
+
+    // holdPage() through a page index, for the reads that only need the handle.
+    FPDF_PAGE holdPageRef(int index)
+    {
+        return index < 0 ? nullptr : holdPage(index, false);
+    }
+
+    // The field of a page with this exact name. A page is walked by annotation index,
+    // which is bounded by what is on it, and the walk stops at the first match.
+    FPDF_ANNOTATION pageField(FPDF_PAGE page, const QString &name)
+    {
+        if (!page || name.isEmpty())
+            return nullptr;
+        const int count = FPDFPage_GetAnnotCount(page);
+        for (int index = 0; index < count; ++index) {
+            FPDF_ANNOTATION annotation = FPDFPage_GetAnnot(page, index);
+            if (!annotation)
+                continue;
+            if (fieldName(form, annotation) == name)
+                return annotation; // the caller closes it
+            FPDFPage_CloseAnnot(annotation);
+        }
+        return nullptr;
+    }
+
     // Caller holds the mutex.
     void close()
     {
+        // The timers first and unconditionally: their slots call back into PDFium,
+        // and a queued one firing after FPDFDOC_ExitFormFillEnvironment would be a
+        // call into a form handle that is gone -- the shape of the crash F10 recorded
+        // for the recognition pool, with a different object left alive.
+        for (const int id : formState.timers.keys())
+            formTimerOwners().remove(id);
+        const QVector<FPDF_PAGE> borrowed = formState.loadedForForm;
+        formState.clear();
         for (auto &held : pages) {
             if (held.page && form)
                 FORM_OnBeforeClosePage(held.page, form);
@@ -463,7 +1092,15 @@ struct PdfiumBackend::Impl
         }
         pages.clear();
         useCounter = 0;
+        // The pages FFI_GetPage loaded for PDFium belong to neither the LRU nor
+        // PDFium, so this is the only place they get closed. Before the document, as
+        // everything else here is.
+        for (FPDF_PAGE page : borrowed)
+            FPDF_ClosePage(page);
         if (form) {
+            // The state stops naming the handle before it is exited, so a callback
+            // that somehow arrives between the two cannot use a handle that is gone.
+            formState.form = nullptr;
             FPDFDOC_ExitFormFillEnvironment(form);
             form = nullptr;
         }
@@ -474,7 +1111,6 @@ struct PdfiumBackend::Impl
         file.close();
     }
 };
-
 PdfiumBackend::PdfiumBackend()
     : impl(std::make_unique<Impl>())
 {
@@ -574,12 +1210,29 @@ Document::Status PdfiumBackend::load(const QString &path, const QString &passwor
     impl->path = path;
     // The form layer is initialized for every document, not only ones with
     // fields: asking whether there are any costs a parse, and on a document
-    // without fields this handle draws nothing. Version 1 is the stable
-    // interface, and this build of PDFium has no XFA module (pdfium-plan.md
-    // sec.4.3). Every callback stays null -- F7-C only draws, it accepts no
-    // input, and the F5 probe drew widgets with the same empty interface.
-    impl->formInfo.version = 1;
-    impl->form = FPDFDOC_InitFormFillEnvironment(impl->document, &impl->formInfo);
+    // without fields this handle draws nothing and takes no input. Version 1 is
+    // the stable interface, and this build of PDFium has no XFA module
+    // (pdfium-plan.md sec.4.3).
+    //
+    // The eight callbacks are the ones fpdf_formfill.h marks as required for
+    // version 1. F7-C could leave them all null and still draw, because drawing
+    // asks nothing of the embedder; accepting input does, and a null one of those
+    // is a call through a null pointer -- which is why the F5 probe never tried it.
+    impl->formInfo.base.version = 1;
+    impl->formInfo.self = &impl->formState;
+    impl->formInfo.base.FFI_Invalidate = &onInvalidate;
+    impl->formInfo.base.FFI_SetCursor = &onSetCursor;
+    impl->formInfo.base.FFI_SetTimer = &onSetTimer;
+    impl->formInfo.base.FFI_KillTimer = &onKillTimer;
+    impl->formInfo.base.FFI_GetLocalTime = &onGetLocalTime;
+    impl->formInfo.base.FFI_GetPage = &onGetPage;
+    impl->formInfo.base.FFI_GetRotation = &onGetRotation;
+    impl->formInfo.base.FFI_ExecuteNamedAction = &onExecuteNamedAction;
+    impl->form = FPDFDOC_InitFormFillEnvironment(impl->document, &impl->formInfo.base);
+    impl->formState.form = impl->form;
+    // Pages this backend was holding from a previous file are gone by now (close()
+    // ran at the top of load()), so the handle table starts with nothing in it and
+    // FFI_GetPage will load rather than find.
     // A non-empty password that opened the document means it was encrypted. There
     // is no cheaper way to ask a PDF that did not need one.
     impl->encrypted = !password.isEmpty();
@@ -969,3 +1622,426 @@ DocMetadata PdfiumBackend::metadata() const
     result.encrypted = impl->encrypted;
     return result;
 }
+
+// ===========================================================================
+// FormFill -- filling a field, and getting the filled document out to a file
+// ===========================================================================
+
+namespace {
+
+// A point in the page's pixel grid, turned into the space PDFium's form layer asks
+// for. The frame is the one the *displayed* pixels were made with, which is what
+// FPDF_DeviceToPage's "you must make sure start_x, start_y, size_x, size_y and
+// rotate have exactly same values as you used in the FPDF_RenderPage() function
+// call" means; start is 0,0 because the grid is the whole page, not the band that
+// was drawn into a buffer.
+bool formUserSpace(FPDF_PAGE page, const FormFill::Frame &frame, const QPointF &devicePoint,
+                   FS_POINTF *out)
+{
+    if (!page || frame.pixels.isEmpty())
+        return false;
+    double x = 0;
+    double y = 0;
+    if (!FPDF_DeviceToPage(page, 0, 0, frame.pixels.width(), frame.pixels.height(),
+                           frame.quarterTurns, qRound(devicePoint.x()), qRound(devicePoint.y()), &x,
+                           &y))
+        return false;
+    out->x = float(x);
+    out->y = float(y);
+    return true;
+}
+
+// The file FPDF_SaveAsCopy writes into. Its WriteBlock gets a chunk at a time, and
+// the only failure mode worth reporting is a write that did not happen.
+struct FormFileWriter
+{
+    FPDF_FILEWRITE base;
+    QFile *file = nullptr;
+    bool failed = false;
+
+    FormFileWriter()
+    {
+        base.version = 1;
+        base.WriteBlock = &writeBlock;
+    }
+
+    static int writeBlock(FPDF_FILEWRITE *self, const void *data, unsigned long size)
+    {
+        // `base` is the first member of a standard-layout struct, which is what makes
+        // the round trip from the pointer PDFium hands back to the object that owns it
+        // well-defined -- the same trick FormFillInfo uses for the same reason.
+        auto *writer = reinterpret_cast<FormFileWriter *>(self);
+        if (writer->failed)
+            return -1;
+        const qint64 written = writer->file->write(static_cast<const char *>(data),
+                                                   static_cast<qint64>(size));
+        if (written != static_cast<qint64>(size)) {
+            writer->failed = true;
+            return -1;
+        }
+        return 0;
+    }
+};
+
+} // namespace
+
+bool PdfiumBackend::fillable() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->document || !impl->form)
+        return false;
+    // A form this build cannot read is not a form this build should take input for:
+    // FORMTYPE_XFA_FULL and FORMTYPE_XFA_FOREGROUND both mean the packet is the
+    // other copy of the form, and this build has no XFA module to load it with
+    // (pdfium-plan.md sec.4.3 -- FPDF_LoadXFA answers false for every one of them).
+    // The reader is told that in 文档's own sentence at open time; here it means a
+    // click on such a field does nothing rather than half-filling one copy of two.
+    return FPDF_GetFormType(impl->document) == FORMTYPE_ACRO_FORM;
+}
+
+FormFill::Field PdfiumBackend::fieldAt(int page, const Frame &frame,
+                                       const QPointF &devicePoint) const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form)
+        return Field::None;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    FS_POINTF point{};
+    if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
+        return Field::None;
+    // The hit test PDFium does itself, in the same space its widgets are drawn in:
+    // measured on field-flat.pdf, this answers 6 (a text field) at the field's raw
+    // /Rect centre and -1 everywhere else. FPDFAnnot_GetFormFieldAtPoint is the same
+    // question with an answer that has to be closed, and a cursor does not need it.
+    return fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x, point.y));
+}
+
+bool PdfiumBackend::mouseMoved(int page, const Frame &frame, const QPointF &devicePoint)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form)
+        return false;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    FS_POINTF point{};
+    if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
+        return false;
+    const Impl::Dispatch guard(*impl);
+    // Measured on this build: moving over a field requests no cursor at all, so the
+    // return value is not how a pointer learns what to be -- fieldAt() is. The call
+    // still goes out, because PDFium tracks the pointer for the press that follows
+    // it and a widget that never saw the move can miss the release.
+    return FORM_OnMouseMove(impl->form, handle, 0, point.x, point.y) != 0;
+}
+
+bool PdfiumBackend::mousePressed(int page, const Frame &frame, const QPointF &devicePoint,
+                                 Qt::KeyboardModifiers modifiers)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form)
+        return false;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    FS_POINTF point{};
+    if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
+        return false;
+    if (!FormFill::isInteractive(fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x,
+                                                                point.y))))
+        return false;
+    // Before the press, not after: the click that checks a box is the last moment
+    // its old value is still the value the file has.
+    FPDF_ANNOTATION annotation = FPDFAnnot_GetFormFieldAtPoint(impl->form, handle, &point);
+    impl->noteFieldBeforeTouch(page, annotation);
+    if (annotation)
+        FPDFPage_CloseAnnot(annotation);
+
+    const Impl::Dispatch guard(*impl);
+    return FORM_OnLButtonDown(impl->form, handle, formEventFlags(modifiers), point.x, point.y) != 0;
+}
+
+bool PdfiumBackend::mouseReleased(int page, const Frame &frame, const QPointF &devicePoint,
+                                  Qt::KeyboardModifiers modifiers)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form)
+        return false;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    FS_POINTF point{};
+    if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
+        return false;
+    const Impl::Dispatch guard(*impl);
+    return FORM_OnLButtonUp(impl->form, handle, formEventFlags(modifiers), point.x, point.y) != 0;
+}
+
+bool PdfiumBackend::mouseDoubleClicked(int page, const Frame &frame, const QPointF &devicePoint)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form)
+        return false;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    FS_POINTF point{};
+    if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
+        return false;
+    const Impl::Dispatch guard(*impl);
+    // A double-click in a text field selects a word, which is the ordinary way to
+    // replace one answer with another; it is only reached when the press already
+    // went to the form, so the field is known to be interactive.
+    return FORM_OnLButtonDoubleClick(impl->form, handle, 0, point.x, point.y) != 0;
+}
+
+bool PdfiumBackend::keyPressed(int qtKey, Qt::KeyboardModifiers modifiers)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form)
+        return false;
+    int page = -1;
+    FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
+    if (!focused)
+        return false;
+    FPDFPage_CloseAnnot(focused);
+    impl->noteFocusedFieldBeforeTouch();
+
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    if (!handle)
+        return false;
+    const int virtualKey = formVirtualKey(qtKey);
+    if (virtualKey == 0)
+        return false;
+    const Impl::Dispatch guard(*impl);
+    return FORM_OnKeyDown(impl->form, handle, virtualKey, formEventFlags(modifiers)) != 0;
+}
+
+bool PdfiumBackend::characterTyped(QChar character, Qt::KeyboardModifiers modifiers)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form || character.isNull())
+        return false;
+    int page = -1;
+    FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
+    if (!focused)
+        return false;
+    FPDFPage_CloseAnnot(focused);
+    impl->noteFocusedFieldBeforeTouch();
+
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    if (!handle)
+        return false;
+    const Impl::Dispatch guard(*impl);
+    return FORM_OnChar(impl->form, handle, character.unicode(), formEventFlags(modifiers)) != 0;
+}
+
+void PdfiumBackend::commitText(const QString &text)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form || text.isEmpty())
+        return;
+    int page = -1;
+    FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
+    if (!focused)
+        return;
+    FPDFPage_CloseAnnot(focused);
+    impl->noteFocusedFieldBeforeTouch();
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    if (!handle)
+        return;
+    const Impl::Dispatch guard(*impl);
+    // One call for the whole committed string. FORM_OnChar per character would put
+    // the composition into the field one code unit at a time, which is what breaks
+    // it -- the candidate string a reader chose is one edit, and the widget's undo
+    // stack should hold it as one (handoff-04 G1 2).
+    //
+    // QString::utf16() is the null-terminated UTF-16 the header asks for; FPDF_WCHAR
+    // is unsigned short, which is what a char16_t is on every platform this builds
+    // for but not the same type to the compiler.
+    FORM_ReplaceSelection(impl->form, handle,
+                          reinterpret_cast<FPDF_WIDESTRING>(text.utf16()));
+}
+
+bool PdfiumBackend::hasFocusedField() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    int page = -1;
+    FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
+    if (!focused)
+        return false;
+    FPDFPage_CloseAnnot(focused);
+    return true;
+}
+
+int PdfiumBackend::focusedPage() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    int page = -1;
+    FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
+    if (!focused)
+        return -1;
+    FPDFPage_CloseAnnot(focused);
+    return page;
+}
+
+FormFill::Field PdfiumBackend::focusedFieldType() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    int page = -1;
+    FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
+    if (!focused)
+        return Field::None;
+    const Field field = fieldOf(FPDFAnnot_GetFormFieldType(impl->form, focused));
+    FPDFPage_CloseAnnot(focused);
+    return field;
+}
+
+bool PdfiumBackend::focusedFieldRect(int *page, QRectF *userSpace) const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    int index = -1;
+    FPDF_ANNOTATION focused = impl->focusedAnnot(&index);
+    if (!focused)
+        return false;
+    const QRectF rect = fieldRect(focused);
+    FPDFPage_CloseAnnot(focused);
+    if (rect.isEmpty())
+        return false;
+    if (page)
+        *page = index;
+    if (userSpace)
+        *userSpace = rect;
+    return true;
+}
+
+void PdfiumBackend::releaseFocus()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form)
+        return;
+    const Impl::Dispatch guard(*impl);
+    // And it is the commit: measured on field-flat.pdf, a save taken while a text
+    // field still had focus wrote a file that did not contain what the reader had
+    // typed, and the same save after this call did. stageFieldValues() depends on it.
+    FORM_ForceToKillFocus(impl->form);
+}
+
+bool PdfiumBackend::canUndoFocused() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    const int page = impl->focusedPageLocked();
+    if (page < 0)
+        return false;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    return handle && FORM_CanUndo(impl->form, handle);
+}
+
+bool PdfiumBackend::canRedoFocused() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    const int page = impl->focusedPageLocked();
+    if (page < 0)
+        return false;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    return handle && FORM_CanRedo(impl->form, handle);
+}
+
+void PdfiumBackend::undoFocused()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    const int page = impl->focusedPageLocked();
+    if (page < 0)
+        return;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    if (!handle)
+        return;
+    const Impl::Dispatch guard(*impl);
+    FORM_Undo(impl->form, handle);
+}
+
+void PdfiumBackend::redoFocused()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    const int page = impl->focusedPageLocked();
+    if (page < 0)
+        return;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    if (!handle)
+        return;
+    const Impl::Dispatch guard(*impl);
+    FORM_Redo(impl->form, handle);
+}
+
+QVector<FormFill::Repaint> PdfiumBackend::takeRepaints()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    return std::move(impl->formState.repaints);
+}
+
+FormFill::Pointer PdfiumBackend::takeRequestedPointer()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    const Pointer pointer = impl->formState.pendingPointer;
+    impl->formState.pendingPointer = Pointer::Arrow;
+    return pointer;
+}
+
+int PdfiumBackend::differingFieldCount() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    QVector<QPair<QString, QString>> pairs;
+    impl->currentAndOriginalValues(pairs);
+    int differing = 0;
+    for (const auto &pair : std::as_const(pairs)) {
+        if (pair.first != pair.second)
+            ++differing;
+    }
+    return differing;
+}
+
+void PdfiumBackend::forgetFieldValueSnapshots()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    impl->formState.valueBeforeTouch.clear();
+}
+
+bool PdfiumBackend::stageFieldValues(const QString &directory, QString *staged, QString *error)
+{
+    const auto tr = [](const char *text) {
+        return QCoreApplication::translate("PdfiumBackend", text);
+    };
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->document)
+        return false;
+
+    releaseFocus();
+
+    // Beside the file it will replace, hidden, with a name no second save can pick:
+    // the same three rules F8 wrote for DocumentEditor::stageInPlace(), because this
+    // is the first of its two stages when a reader has both filled fields and page
+    // edits, and a staged file that could collide is how §24's lesson was learned.
+    QString candidate;
+    for (;;) {
+        candidate = QDir(directory).filePath(QStringLiteral("xyzpdf-form-%1.pdf")
+                                                 .arg(QUuid::createUuid().toString(
+                                                          QUuid::WithoutBraces)));
+        if (!QFileInfo::exists(candidate))
+            break;
+    }
+
+    QFile file(candidate);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        *error = tr("打开 %1 时出错：%2").arg(QFileInfo(candidate).fileName(),
+                                             tr("文件无法写入"));
+        return false;
+    }
+    FormFileWriter writer;
+    writer.file = &file;
+    const int saved = FPDF_SaveAsCopy(impl->document, &writer.base, FPDF_NO_INCREMENTAL);
+    const bool flushed = file.flush();
+    file.close();
+
+    if (!saved || writer.failed || !flushed) {
+        QFile::remove(candidate);
+        *error = tr("这份文档的表单没能写出来。原来的文件没有改动。");
+        return false;
+    }
+    SetFileAttributesW(QDir::toNativeSeparators(candidate).toStdWString().c_str(),
+                       FILE_ATTRIBUTE_HIDDEN);
+    *staged = candidate;
+    return true;
+}
+

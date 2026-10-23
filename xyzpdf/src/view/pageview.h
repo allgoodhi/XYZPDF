@@ -42,6 +42,7 @@
 // Relative, like every other include from inside src/: the project root is not
 // on the include path, and the files at the root reach into src/ by naming it.
 #include "../document/document.h"
+#include "../document/formfill.h"
 #include "../document/textlayer.h"
 #include "../render/rendertoken.h"
 
@@ -49,6 +50,7 @@
 #include <QColor>
 #include <QHash>
 #include <QImage>
+#include <QSet>
 #include <QSizeF>
 #include <QVector>
 
@@ -196,6 +198,32 @@ public:
     // a document that failed to open.
     void setDocument(Document *document);
 
+    // ---- the form surface ----
+    //
+    // The interactive half of the form layer, borrowed from the same object the
+    // document is (PdfiumBackend is both), and null for a document with no fields
+    // or an engine that cannot fill them. Set beside setDocument() and cleared with
+    // it: a surface left pointing at a replaced document would route a click into
+    // the previous file's fields.
+    //
+    // While the pointer is on a field, or one of them has the keyboard, the input
+    // stops going to the page and goes here -- the whole of handoff-04 G1 1. A
+    // document without fields behaves exactly as it did before, because fillable()
+    // is false and every handler falls through to the code it fell through to.
+    void setFormSurface(FormFill *form);
+    FormFill *formSurface() const { return form; }
+
+    // Whether one of this document's fields has the keyboard. Public because the tab
+    // has to decide which 撤销 the reader meant (G1 4), and that is a fact about the
+    // view's input rather than about the document.
+    bool fieldHasFocus() const;
+    // The undo and redo the focused field offers itself, which is what decides
+    // whether the structural list gets the keystroke or the field does.
+    bool canUndoInField() const;
+    bool canRedoInField() const;
+    void undoInField();
+    void redoInField();
+
     void clearSelection();
     // Everything, from the first character of the first page to the last of the
     // last. Bounded by what the document has, so it is empty (rather than
@@ -316,6 +344,26 @@ Q_SIGNALS:
     // auto-translate mode) is not asked to act while the reader is still dragging.
     void selectionFinished();
 
+    // PDFium says a page is no longer what it drew, because a field on it changed.
+    //
+    // The receiver (DocumentTab) takes that page's pictures out of the render cache
+    // -- token equality ignores the generation, so a cached page would otherwise be
+    // handed back with the keystroke missing -- and this class then re-asks for it.
+    // Emitted before invalidated(), for the reason that note gives: the request that
+    // follows has to carry the generation the bump creates.
+    void formPageStale(int page);
+
+    // A field took the keyboard, or gave it up. The tab's 撤销/重做 rows change meaning
+    // with this, and the window's keyboard shortcuts stop applying while a field is
+    // being typed into (G1 1's last line).
+    void formFocusChanged(bool focused);
+
+    // Something on a page changed because the reader did it to a field, and the
+    // picture is being asked for again. The tab's title star and its 保存 rows read
+    // this -- the value a field holds is a fact about the document, and only the view
+    // knows when the reader just changed it.
+    void formEdited();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -327,6 +375,12 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
+    // An input-method commit -- a composed Chinese string -- goes to the form in one
+    // call, and the candidate window goes where the field is.
+    void inputMethodEvent(QInputMethodEvent *event) override;
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
+    void focusInEvent(QFocusEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
 
 private:
     // One rendered image, with the token it is an answer to: the token carries
@@ -461,6 +515,42 @@ private:
     // and the arrows and space by less.
     void scrollBy(int pixels);
 
+    // ---- the form routing ----
+
+    // The geometry this page was drawn with, in the form layer's own words: the
+    // whole page in device pixels at this zoom and this screen, and the reader's
+    // clockwise quarter turns. It has to be the same pair the render used, because
+    // that is the contract FPDF_DeviceToPage states and the reason a click lands
+    // where the pixel is.
+    FormFill::Frame formFrameFor(int page) const;
+
+    // A viewport point turned into a point in that pixel grid -- the same arithmetic
+    // paintEvent() uses to put a rendered band on screen, run backwards.
+    QPointF formDevicePoint(int page, const QPointF &viewportPoint) const;
+
+    // The field a viewport point is over, or None. Answers the question through the
+    // form layer's own hit test rather than a rectangle list kept here, for the same
+    // reason linksFor() asks the document: a second answer to "what is under the
+    // pointer" is two answers that can disagree.
+    FormFill::Field fieldUnder(const QPoint &viewportPoint) const;
+
+    // After every routed event: hand the pointer shape PDFium asked for to the
+    // pointer, and hand every rectangle PDFium said is stale to the render path.
+    // Draining is not optional -- the queue is what tells the view to draw again.
+    void applyFormCallbacks();
+
+    // One page's picture is out of date and its old one is still on screen. The page
+    // is asked for again (isRendered() says no until the new one lands) but the old
+    // image keeps being drawn until it does, which is why this is a set of pages
+    // rather than a call to dropAllImages(): the alternative is a page that goes grey
+    // for the length of one render every time the reader types a character.
+    QSet<int> stalePages;
+
+    // Between the press that went into a field and the release that ends it. A move
+    // in between is a text selection inside the field, not a drag on the page.
+    bool inFormDrag = false;
+    int formDragPage = -1;
+
     PageLayout layout;
     ZoomController zoomController;
     // Page sizes as the document reports them, in points and unrotated. The
@@ -480,6 +570,10 @@ private:
 
     // Borrowed, for text queries only. See setDocument().
     Document *textSource = nullptr;
+
+    // Borrowed, for field input only. See setFormSurface(); null is a document
+    // without a form, and every handler treats that as "the page owns the input".
+    FormFill *form = nullptr;
 
     // A page's links, kept once fetched (see linksFor). Mutable because the
     // cursor's hit test is a const question that still has to populate it.

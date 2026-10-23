@@ -1025,6 +1025,21 @@ if(XYZPDF_BUILD_OCR_SMOKE AND WIN32)
         LIBRARIES Qt6::Concurrent windowsapp)
 endif()
 
+# The measurement behind the accuracy question: one crop, every recognizer this
+# machine installs, several preprocessings, and a printed table instead of a
+# verdict. See the header comment of tests/ocrprobe.cpp -- it is built and not
+# run, because every line it prints is another library's answer.
+option(XYZPDF_BUILD_OCR_PROBE "Build the OCR accuracy measurement probe" OFF)
+if(XYZPDF_BUILD_OCR_PROBE AND WIN32)
+    xyzpdf_add_test(ocrprobe
+        SOURCES src/document/documentfactory.cpp
+                src/document/pdfiumbackend.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+                src/ocr/ocrengine.cpp
+        LIBRARIES xyzpdf_pdfium Qt6::Concurrent windowsapp)
+endif()
+
 # A PDF read out as a Word document.
 #
 # Two halves that need no PDF -- rules about where one paragraph ends and the

@@ -1994,25 +1994,22 @@ int main(int argc, char **argv)
             check(waitFor([recognized] { return recognized->isEnabled(); }, 30000),
                   "and the recognition finishes");
             const QString text = recognized->toPlainText().simplified();
-            // What is pinned here is the pipeline, not the recognizer's spelling.
-            // The crop is asserted where it is produced -- the snapshot block above
-            // checks the picture the same code path puts on the clipboard -- and a
-            // blank or wrong crop answers with nothing, which the second line below
-            // catches. What the machine's own Windows recognizer makes of a correct
-            // crop is its own: measured in F7-E on this fixture's line, rendered
-            // cleanly at 552 px and again at 1600 px (both read by hand through
-            // Windows.Media.Ocr), it answers ")(YZPDF one" -- the X as a pair of
-            // brackets -- where the same box through the engine this build replaced
-            // answered "XYZPDF one". Same words, same size, same colour; the
-            // antialiasing phase differs and the recognizer is bimodal on that. A
-            // product change to chase it was measured and did not help, so the
-            // answer is printed rather than dictated, and the misreading is
-            // reported as the feature's own quality question rather than hidden.
+            // The whole line, spelled as the fixture writes it.
+            //
+            // This was loosened to "a piece of the line" in F7, because this
+            // machine's recognizer read the X of "XYZPDF" as ")(" -- and that
+            // misreading turned out to be about WHICH engine got the picture, not
+            // about the picture. Measured in tests/ocrprobe.cpp over one crop and
+            // fourteen preprocessings: en-US reads this line exactly in every one
+            // of them, zh-Hans -- which is what this machine's own language list
+            // puts first, and therefore what the engine used to pick -- in four.
+            // The engine now asks the other script family when its own answer says
+            // that is what the picture was, and the assertion is back to the
+            // word-for-word question. The control that shows this row is load-
+            // bearing is that one: with the second pass removed, it is red again.
             std::cout << "MEASURE ocr answer: [" << text.toStdString() << "]\n";
-            check(!text.isEmpty(), "the recognition came back with something");
-            check(text.contains(QStringLiteral("one")),
-                  QStringLiteral("and it is a piece of the line that was inside the box "
-                                 "(got \"%1\")")
+            check(text == QStringLiteral("XYZPDF one"),
+                  QStringLiteral("the recognition reads the line word for word (got \"%1\")")
                       .arg(text));
         }
     }
@@ -2069,14 +2066,14 @@ int main(int argc, char **argv)
             return field->toPlainText().simplified();
         };
 
-        // Asked as "the pipeline came back with that line" rather than with its
-        // exact spelling: under PDFium this machine's recognizer reads the X as
-        // ")(" (the block above has the measurement). What this block is about is
-        // the second call surviving, and for that the same box giving the same
-        // answer twice is the sharper question anyway.
+        // Both boxes read the whole line, word for word -- the same question the
+        // block above asks, asked a second time after the idle gap. What this
+        // block is about is the second call surviving; the exact spelling is in
+        // it too because a second answer that came back as something else would
+        // be the same feature failing quietly.
         const QString first = readBox(QStringLiteral("the first recognition"));
-        check(first.contains(QStringLiteral("one")),
-              QStringLiteral("the first box reads its text (got \"%1\")").arg(first));
+        check(first == QStringLiteral("XYZPDF one"),
+              QStringLiteral("the first box reads the line word for word (got \"%1\")").arg(first));
 
         // Past QThreadPool's thirty-second idle expiry, with the clock room for
         // the expiry itself. A failing waitFor here would report the timeout;
@@ -2085,8 +2082,8 @@ int main(int argc, char **argv)
         waitFor([] { return false; }, 32000);
 
         const QString second = readBox(QStringLiteral("the recognition after the wait"));
-        check(!second.isEmpty() && second == first,
-              QStringLiteral("a box drawn after the idle gap reads the same text as the first "
+        check(second == QStringLiteral("XYZPDF one"),
+              QStringLiteral("the box drawn after the idle gap reads the same line, word for word "
                              "(got \"%1\", first was \"%2\")")
                   .arg(second, first));
     }

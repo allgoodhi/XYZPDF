@@ -1346,10 +1346,18 @@ install(TARGETS xyzpdf
 # all. PDFium is not Qt's to deploy, so nothing else puts it anywhere.
 install(FILES "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll"
     DESTINATION ${CMAKE_INSTALL_BINDIR})
+# The same exclusion as the POST_BUILD windeployqt line above, and it has to be
+# said twice: this is a second, separate run of the deploy tool -- the one the
+# package is staged from -- and it knows nothing about the flags of the first.
+# Without it the §116 package shipped imageformats\qpdf.dll and, because that
+# plugin links it, Qt6Pdf.dll: 4.6 MB of a second PDF engine nothing calls,
+# beside the pdfium.dll F7 replaced it with (the payload diff said "gained 1,
+# lost 0").
 qt_generate_deploy_app_script(
     TARGET xyzpdf
     OUTPUT_SCRIPT deploy_script
     NO_UNSUPPORTED_PLATFORM_ERROR
+    DEPLOY_TOOL_OPTIONS --exclude-plugins qpdf
 )
 install(SCRIPT ${deploy_script})
 

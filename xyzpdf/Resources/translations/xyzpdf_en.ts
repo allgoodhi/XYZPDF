@@ -1849,7 +1849,7 @@ Save them first?</translation>
     <message>
         <location filename="../../mainwindow.cpp" line="935"/>
         <source>拆分文件(&amp;C)…</source>
-        <translation>&amp;Split Files…</translation>
+        <translation>Split &amp;Files…</translation>
     </message>
     <message>
         <location filename="../../mainwindow.cpp" line="952"/>

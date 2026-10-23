@@ -10,7 +10,9 @@
     native dialog in the way is driven with Win32 messages. The five modes added on 2026-10-22
     (propsdialog, findwhole, snapshot, strippreview, mnemonics) do use synthesized keys, and
     snapshot also owns the clipboard; all five verify the foreground before typing, because a
-    key sent to somebody else's window is not a reading.
+    key sent to somebody else's window is not a reading. The three added on 2026-10-23
+    (saveinplace, closeprompt, saveas) type chords the same way and with the same check -- and they
+    are the only modes this file lets write anything, which is what the save guard below is for.
 
     Modes:
       inventory      every non-empty Name in the window, with its control type. This is
@@ -24,10 +26,24 @@
       splitsagain    record a split, reopen the box and change the size, which is the only way the
                      "this replaces the earlier one" aside exists at all -- twice, so both numerus
                      branches of it come out (nothing is saved here either).
-      saverename     the save-changes-as row -> the native save box -> a name typed into its file
-                     field, then the receipts read back from the file, the tab, the status line and
-                     the source hash (sec.44; the route is in that mode's own comment, all of it
-                     measured).
+      saveas         Ctrl+Shift+S -> the native save box -> a full path written into its file field
+                     -> a REAL click on its accept (BM_CLICK is honoured by the open dialog and the
+                     folder picker but not by this one), then the receipts read back from the new
+                     file, the caption, the status line and the two hashes that must not move.
+                     (sec.44 measured the route; the mode's own comment says what F8 did to the row
+                     this mode was written against. 'saverename' is kept as an alias for it.)
+      saveinplace    the Ctrl+S F8 turned into a write, read four ways at once on a copy this probe
+                     made: rotate page 1 through the dialog, watch the caption grow ' *', press the
+                     key, and require the status line to name that copy, the star to go, the copy's
+                     sha256 to move (and to carry /Rotate 90 afterwards), and the original's not to.
+                     -Control keeps all four verdicts and presses nothing, so it exits 1.
+      closeprompt    the three answers a close gives when the tab still holds unwritten edits, one
+                     round each: Cancel keeps the window and writes nothing, Discard closes and
+                     writes nothing, Save closes and writes. The box is found by the CLASS name
+                     QMessageBox because every word in it is translated; its buttons are matched by
+                     EXACT name, since 'Save' is a substring of "Don't Save" and this is the one box
+                     where picking the neighbour writes a file. -Control closes a document that was
+                     never edited and still expects the box, so it exits 1.
       langswitch     switch the interface language through the app's OWN Language menu and read the
                      result after a restart, then put it back. This is the only route to an English
                      installed copy: a packaged process never sees XYZPDF_SETTINGS_PATH (sec.48), and
@@ -112,6 +128,14 @@
                      land in the same file). -Control keeps every step and expects the sentence at
                      range 3, where it cannot be.
 
+    THE SAVE GUARD. The three modes above press Ctrl+S, Ctrl+Shift+S or the Save answer of a
+    question box, and every one of those writes a PDF. None of them is allowed to write a file
+    somebody handed this script: each copies -Doc into %TEMP%\xyzpdf-gui-probe\save-<random>\ under
+    a name made up here, opens THAT, and hashes the original before the app starts and again at the
+    end of the run -- and on every Bail in between, because the mode that gives up halfway is the
+    mode that might already have written. A tests\fixtures path is read and copied; it is not
+    opened. -Installed is refused for these three unless -OpenViaPicker names the copy.
+
     Examples (from the repository root):
       powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1 -Mode inventory
       ... -Mode menudump -Menu Document
@@ -131,6 +155,14 @@
       ... -Mode replynotice -Doc H:/tmp/f9-samples/thread-across-pages.pdf
       ... -Mode replynotice -Control -Doc H:/tmp/f9-samples/thread-across-pages.pdf   (also exit 1)
       ... -Mode findwhole -Control -Doc xyzpdf/tests/fixtures/text.pdf   (the control must exit 1)
+      ... -Mode saveinplace -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode saveinplace -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      ... -Mode closeprompt -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode closeprompt -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      ... -Mode saveas -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode saveas -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      The three above write nothing outside %TEMP%\xyzpdf-gui-probe\save-<random>\: -Doc is copied
+      and never opened, so a fixtures path is a perfectly good thing to hand them.
 
     -Log takes a UTF-8 file, which is the only way to read a Chinese interface back from this
     console (it is GBK, so the window title alone arrives as mojibake). Write such a path with
@@ -184,6 +216,10 @@ param(
   # added for handoff-03 F9: translatesetup looks for the settings dialog without pressing the
   # button that opens it, xfanotice asks for the packet sentence on a file carrying no packet,
   # replynotice expects the orphan sentence on a page that holds neither end of the thread.
+  # And so do the three save modes: saveinplace leaves Ctrl+S unpressed, closeprompt closes a
+  # document nothing has edited, saveas presses neither the chord nor the menu row -- each keeps the
+  # verdict it is written against, so each has to exit 1 rather than quietly report a save it never
+  # made.
   [switch]$Control,
   # Run against the installed package instead of the build tree. It cannot be started by exe
   # path (WindowsApps blocks that) and takes no file argument (no AppExecutionAlias is declared),
@@ -1422,6 +1458,12 @@ function Guard-Check([string]$tag) {
   return $false
 }
 
+# 'saverename' stays an accepted -Mode name because rounds since sec.44 are quoted by it in the
+# comments below and in the notes the main session keeps; the mode itself is Save As now. PowerShell
+# has no multi-label switch clause ('a','b' { } does not parse and @('a','b') never matches), so the
+# alias is folded here -- before the guard reads $Mode, and before the switch does.
+if ($Mode -eq 'saverename') { $Mode = 'saveas' }
+
 if ($script:saveModes -contains $Mode) {
   # Armed before the launch, because the launch itself is what must not name the original.
   $Doc = Guard-Arm $Doc
@@ -2018,23 +2060,36 @@ switch ($Mode) {
     }
     Say '  the three answers do what they say: Cancel keeps, Discard closes clean, Save writes and closes'
   }
-  'saverename' {
-    # Renaming in the native save box works, and the route is neither of the two obvious ones
-    # (measured 2026-09-27, sec.44; it cost sec.41 a whole round of wrong conclusions):
-    #   * WM_SETTEXT to the Edit with control id 1001 DOES change the name -- proven by the file
-    #     that comes out, because WM_GETTEXT on that same Edit answers empty while the screen
-    #     shows text, so the box cannot be read back at all.
-    #   * BM_CLICK to the button with control id 1 does NOT accept this dialog, even though the
-    #     same call accepts the native open dialog (sec.29) and the folder picker (sec.37/38).
-    #     What accepts it is a real click at the button's own GetWindowRect centre.
-    #   * The keyboard is not an option here: SendKeys into this box gets eaten by the Pinyin IME
-    #     ("renamed-44.pdf" came out as composition text with a candidate strip open).
-    # Acceptance is then read from our own receipts: the file on disk, the tab, the status line,
-    # and the source hash, which must not move.
-    $target = Join-Path $OutDir ('renamed-' + [System.DateTime]::Now.ToString('HHmmss') + '.pdf')
-    # Backslashes, not forward ones: this string goes into a Win32 field read by the shell.
-    if (Test-Path $target) { Remove-Item $target -Force }
-    $sourceHash = (Get-FileHash -Path $Doc -Algorithm SHA256).Hash
+  'saveas' {
+    # Save As: the chord, the native box, a name written into it, and the file that comes out.
+    #
+    # This mode was written against the row that used to be called 'Save Changes As' (sec.44, and
+    # the route notes below are its measurements). F8 renamed that row in two: the plain Save (Ctrl+S)
+    # now writes in place, and 'Save As...' (Ctrl+Shift+S) is the old behaviour under its own name
+    # (mainwindow.cpp:1032 and :1042). Two things followed. The old needles match nothing at all now
+    # -- no row is called 'Save Changes As' in either language -- and the Ctrl+S this mode used to
+    # press would write the file it was handed. That is why it sat unrun from sec.116 on, and why it
+    # now works entirely on the copy the guard made: the file Save As writes lands in that same probe
+    # directory, and BOTH the original and the copy have to be untouched when the run ends.
+    #
+    # The route through the native box is still neither of the two obvious ones (sec.44 measured it,
+    # and it cost sec.41 a whole round of wrong conclusions):
+    #   * WM_SETTEXT to the Edit with control id 1001 DOES change the name -- proven by the file that
+    #     comes out, because WM_GETTEXT on that same Edit answers empty while the screen shows text,
+    #     so the box cannot be read back at all.
+    #   * BM_CLICK to the button with control id 1 does NOT accept this dialog, even though the same
+    #     call accepts the native open dialog (sec.29) and the folder picker (sec.37/38). What
+    #     accepts it is a real click at the button's own GetWindowRect centre.
+    #   * The keyboard is not an option INSIDE the box: SendKeys there gets eaten by the Pinyin IME
+    #     ('renamed-44.pdf' came out as composition text with a candidate strip open). The chord that
+    #     opens it goes to our own window, which is a different matter and is foreground-verified.
+    # Acceptance is read from our own receipts: the file on disk, the caption, the status line, and
+    # the two hashes that must not move.
+    # -Control keeps every one of those expectations and presses nothing: no box, no file, exit 1.
+    $target = Join-Path $script:guardDir ('saveas-' + $script:guardCopyLeaf)
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+    $copyBefore = Copy-Hash
+    Say ('  the new file will be [' + $target + '] -- inside the probe directory, never beside the original')
 
     if ($Installed) {
       # Nothing behind the native open dialog had ever been reached on the packaged copy until
@@ -2080,85 +2135,121 @@ switch ($Mode) {
       Say ('  document window [' + (Window $app.Id).Current.Name + ']')
     }
 
-    TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
-    ClickAt (RowAny $app.Id @('Rotate Pages', (CjStr 0x65CB,0x8F6C,0x9875,0x9762)))
-    Start-Sleep -Milliseconds 1500
-    # Print what is actually there before filtering it: every guess about a dialog title or
-    # a button label has been wrong at least once in this suite.
-    foreach ($w in @(FindType (Window $app.Id) $CT::Window)) {
-      Say ('  window in subtree [' + $w.Current.Name + '] class=' + $w.Current.ClassName)
+    # An edit first: Save As with an empty edit list refuses ('there is nothing to save'), so the box
+    # would never open and the run would read as a broken route instead of as what it is.
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground; the chord would go to another window' }
+    if (-not (Window $app.Id).Current.Name.Contains($script:guardCopyLeaf)) {
+      Bail ('  the caption does not name the copy this probe made [' + $script:guardCopyLeaf + ']')
     }
-    # Ours by CLASS: a Qt dialog reports its widget class name, which no translation can change,
-    # while its title is one of our own translatable strings.
-    $rot = $null
-    foreach ($w in @(FindType (Window $app.Id) $CT::Window)) {
-      if ($w.Current.ClassName -eq 'RotatePagesDialog') { $rot = $w }
+    Say ('  window [' + (Window $app.Id).Current.Name + ']')
+    Rotate-CurrentPage $app.Id
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  the caption never grew the unsaved-edits star; it reads [' + (Window $app.Id).Current.Name + ']')
     }
-    if (-not $rot) { Bail '  rotate dialog not found' }
-    foreach ($b in @(FindType $rot $CT::Button)) {
-      Say ('    button |' + $b.Current.Name + '| enabled=' + $b.Current.IsEnabled)
-    }
-    # The box opens on the typed-range choice with an empty field, so its accept is greyed by
-    # design (sec.14: refuse before the press rather than guess a range). Name a page first.
-    $cur = MatchOne $rot $CT::RadioButton @('Current page', (CjStr 0x5F53,0x524D,0x9875))
-    if ($cur) { ClickAt $cur; Start-Sleep -Milliseconds 600; Say ('  picked |' + $cur.Current.Name + '|') }
-    $ok = MatchOne $rot $CT::Button @('Rotate', (CjStr 0x65CB,0x8F6C))
-    if (-not ($ok -and $ok.Current.IsEnabled)) { Bail '  rotate accept not lit' }
-    Say ('  recording: |' + $ok.Current.Name + '|')
-    ClickAt $ok
-    Start-Sleep -Milliseconds 1200
+    Say ('  caption after the rotation [' + (Window $app.Id).Current.Name + '] -- the star is there')
 
-    # The row click is retried: Expand() has been seen to report the menu as open without the
-    # following click landing, so the dialog's absence is polled for and the whole attempt redone
-    # rather than concluding the menu is broken.
+    # The chord is the reader's own route and it cannot miss a menu row; the row is the retry, with
+    # the retries Expand() has always needed here (it reports the menu as open on rounds where the
+    # following click does not land). -Control skips BOTH and keeps every verdict below.
     $sv = $null
-    for ($try = 1; $try -le 3 -and -not $sv; $try++) {
-      TopMenu $app.Id @('Document', (CjStr 0x6587,0x6863)) | Out-Null
-      $saveRow = RowAny $app.Id @('Save Changes As', (CjStr 0x4FDD,0x5B58,0x4FEE,0x6539,0x4E3A))
-      if (-not $saveRow) { Bail '  no Save Changes As row' }
-      $rr = $saveRow.Current.BoundingRectangle
-      Say ('  try ' + $try + ': menu row |' + $saveRow.Current.Name + '| enabled=' + $saveRow.Current.IsEnabled + ' at ' + [int]$rr.X + ',' + [int]$rr.Y + ' ' + [int]$rr.Width + 'x' + [int]$rr.Height)
-      ClickAt $saveRow
-      for ($k = 1; $k -le 8; $k++) {
+    if ($Control) {
+      Say '  CONTROL: neither Ctrl+Shift+S nor the Save As row is pressed; every verdict stays'
+    } else {
+      if (-not (ForegroundIs (Window $app.Id))) {
+        Say ('  foreground is [' + [W32]::Text([W32]::GetForegroundWindow()) + '], not ours; raising')
+        if (-not (TakeForeground $app.Id)) { Bail '  could not get the foreground back after the rotate dialog' }
+      }
+      [System.Windows.Forms.SendKeys]::SendWait('^+s')
+      for ($k = 1; $k -le 10 -and -not $sv; $k++) {
         Start-Sleep -Milliseconds 500
-      foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $app.Id))))) {
-        foreach ($e in (@($w) + @(FindType $w $CT::Window))) {
-          if ($e.Current.ClassName -eq '#32770') { $sv = $e }
+        $sv = FindPicker $app.Id
+      }
+      if ($sv) { Say ('  Ctrl+Shift+S opened the native box [' + $sv.Current.Name + ']') }
+      for ($try = 1; $try -le 3 -and -not $sv; $try++) {
+        if ($try -eq 1) { Say '  no box within 5s of the chord; trying the Document menu row' }
+        TopMenu $app.Id @('Document', (CjStr 0x6587, 0x6863)) | Out-Null
+        $saveRow = RowAny $app.Id @('Save As', (CjStr 0x53E6, 0x4FDD, 0x4E3A))
+        if (-not $saveRow) { Bail '  no Save As row under Document in either language' }
+        $rr = $saveRow.Current.BoundingRectangle
+        Say ('  try ' + $try + ': menu row |' + $saveRow.Current.Name + '| enabled=' + $saveRow.Current.IsEnabled +
+             ' at ' + [int]$rr.X + ',' + [int]$rr.Y + ' ' + [int]$rr.Width + 'x' + [int]$rr.Height)
+        ClickAt $saveRow
+        for ($k = 1; $k -le 8 -and -not $sv; $k++) {
+          Start-Sleep -Milliseconds 500
+          $sv = FindPicker $app.Id
         }
       }
-        if ($sv) { break }
+    }
+    if (-not $sv) {
+      if (-not $Control) { Bail '  no native save dialog after the chord and three menu tries' }
+    } else {
+      Say ('  save dialog [' + $sv.Current.Name + '] class=' + $sv.Current.ClassName)
+      $kids = PickerChildren $sv
+      $go = $null
+      foreach ($h in $kids) {
+        $cls = [W32]::Cls($h); $id = [W32]::GetDlgCtrlID($h)
+        # The text printed here is what Win32 ANSWERS, not what is drawn: on the name field it is
+        # empty while the screen shows the seeded file name (sec.44).
+        if ($cls -eq 'Edit') { Say ('    Edit id=' + $id + ' answers [' + [W32]::Text($h) + ']') }
+        if ($cls -eq 'Button' -and $id -eq 1) { $go = $h }
       }
+      $nameBox = NameField $kids
+      if (-not ($nameBox -and $go)) { Bail '  no file-name field / no Button id=1 in the save box' }
+      [W32]::SendMessageW($nameBox, 0x000C, [IntPtr]0, $target) | Out-Null
+      Start-Sleep -Milliseconds 700
+      Say ('  wrote [' + $target + '], box answers [' + [W32]::Text($nameBox) +
+           '] -- an empty answer proves nothing, see the note above')
+      # A real click on the drawn button: BM_CLICK to this control id is answered by the open dialog
+      # and the folder picker, but NOT by the save dialog (sec.44).
+      $gr = [W32]::Rect([IntPtr]$go)
+      [W32]::Click([int](($gr.left + $gr.right) / 2), [int](($gr.top + $gr.bottom) / 2))
     }
-    if (-not $sv) { Bail '  no native save dialog after three tries' }
-    Say ('  save dialog [' + $sv.Current.Name + ']')
-    $kids = New-Object System.Collections.Generic.List[IntPtr]
-    $cb = [W32+EnumProc] { param($h, $l) $kids.Add($h); return $true }
-    [W32]::EnumChildWindows([IntPtr]$sv.Current.NativeWindowHandle, $cb, [IntPtr]::Zero) | Out-Null
-    $go = $null
-    foreach ($h in $kids) {
-      $cls = [W32]::Cls($h); $id = [W32]::GetDlgCtrlID($h)
-      # The text printed here is what Win32 ANSWERS, not what is drawn: on the name field it
-      # is empty while the screen shows the seeded file name.
-      if ($cls -eq 'Edit') { Say ('    Edit id=' + $id + ' answers [' + [W32]::Text($h) + ']') }
-      if ($cls -eq 'Button' -and $id -eq 1) { $go = $h }
+
+    # ---- the verdicts, the same in both runs ----
+    $exists = $false
+    for ($k = 1; $k -le 24 -and -not $exists; $k++) {
+      $exists = Test-Path -LiteralPath $target
+      if (-not $exists) { Start-Sleep -Milliseconds 500 }
     }
-    $nameBox = NameField $kids
-    if (-not ($nameBox -and $go)) { Bail '  no file-name field / no Button id=1' }
-    [W32]::SendMessageW($nameBox, 0x000C, [IntPtr]0, $target) | Out-Null
-    Start-Sleep -Milliseconds 700
-    $blind = [W32]::Text($nameBox)
-    Say ('  wrote [' + $target + '], box answers [' + $blind + '] -- an empty answer proves nothing, see the note above')
-    # A real click on the drawn button: BM_CLICK to this control id is answered by the open
-    # dialog and the folder picker, but NOT by the save dialog.
-    $gr = [W32]::Rect([IntPtr]$go)
-    [W32]::Click([int](($gr.left + $gr.right) / 2), [int](($gr.top + $gr.bottom) / 2))
-    Start-Sleep -Seconds 4
-    Say ('  target exists: ' + (Test-Path $target) + ' size ' + `
-         $(if (Test-Path $target) { (Get-Item $target).Length } else { 0 }))
-    Say ('  source hash unchanged: ' + `
-         $((Get-FileHash -Path $Doc -Algorithm SHA256).Hash -eq $sourceHash))
-    Say ('  status: [' + (StatusName $app.Id) + ']')
+    $size = 0
+    if ($exists) { $size = (Get-Item -LiteralPath $target).Length }
+    Say ('  target exists=' + $exists + '  size=' + $size)
+    if (-not $exists) {
+      if ($Control) {
+        Bail '  CONTROL: with nothing pressed no file came out -- the target verdict is live (CONTROL exit 1)'
+      }
+      Bail ('  the save box was accepted but no file came out at [' + $target + ']')
+    }
+    # The status line is timed at 8 s, so it is read before anything else is polled.
+    $wroteCj = CjStr 0x5DF2, 0x5199, 0x6210   # the source form of the 'wrote a new file' line
+    $msg = Wait-Status $app.Id @($wroteCj, 'Wrote a new file')
+    # Save As makes THIS tab the new file -- the documentSavedAs handler stopped opening a second tab
+    # at F8 -- so the caption is the receipt that the app itself took the box's answer.
+    $targetLeaf = [System.IO.Path]::GetFileName($target)
+    $renamed = $false
+    for ($k = 1; $k -le 20 -and -not $renamed; $k++) {
+      $renamed = $null -ne (Window $app.Id) -and (Window $app.Id).Current.Name.Contains($targetLeaf)
+      if (-not $renamed) { Start-Sleep -Milliseconds 300 }
+    }
+    Say ('  status line [' + $msg.Replace("`r", ' ').Replace("`n", ' / ') + ']')
+    Say ('  caption [' + (Window $app.Id).Current.Name + '] names the new file=' + $renamed)
     foreach ($t in @(FindType (Window $app.Id) $CT::TabItem)) { Say ('  tab |' + $t.Current.Name + '|') }
+    if ($msg -eq '') { Bail '  no status line about a new file being written' }
+    if (-not $renamed) { Bail ('  the caption never became the new file [' + $targetLeaf + ']') }
+    # The two files that must not have moved: the copy the app was opened with, and the original.
+    $copyAfter = Copy-Hash
+    Say ('  in-place copy sha256 [' + $copyBefore + '] -> [' + $copyAfter + ']')
+    if ($copyAfter -ne $copyBefore) {
+      Bail '  Save As wrote the in-place file as well -- that is the Ctrl+S route, not this one'
+    }
+    # A file that exists is not yet the edited document: a copy of the untouched source would exist too.
+    $raw = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString([System.IO.File]::ReadAllBytes($target))
+    $rotated = $raw.Contains('/Rotate 90')
+    Say ('  the new file carries /Rotate 90=' + $rotated)
+    if (-not $rotated) { Bail '  the new file is a rewrite of the untouched source -- the rotation is not in it' }
+    if (-not (Guard-Check 'after Save As')) { Bail '  Save As wrote the original file this probe was handed' }
+    Say '  Save As wrote its own new file, left the copy and the original alone, and the tab moved to it'
   }
   'langswitch' {
     # An installed copy speaks the system locale, and no setting written from outside can reach it

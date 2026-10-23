@@ -57,6 +57,7 @@
 
 class DocumentEditor;
 class FindBar;
+class FormFill;
 class OutlinePanel;
 class PageRenderer;
 class PageView;
@@ -259,6 +260,14 @@ public:
     bool hasXfa() const { return xfaInSource; }
     bool hasDynamicXfa() const { return dynamicXfaInSource; }
 
+    // Whether the form on disk carries actions this program will not run -- a field's
+    // /AA, a document-level JavaScript name tree, an /OpenAction that is one, or the
+    // dynamic-calculation dictionary of PDF Part 2. This build has no V8, so those
+    // never happen, and 文档 says so once on the way in (handoff-04 G1 5). Read from the
+    // same open-time pass as the three above, for the same reason: nothing here keeps a
+    // parser open to ask again.
+    bool hasFormScript() const { return sourceHasScript; }
+
     // Whether the thumbnail strip is showing pending edits rather than the file
     // as it is on disk (docs/review-03.md §1.3). The main view always shows the
     // file; the strip shows what a save would write. See refreshThumbnailRows().
@@ -399,6 +408,20 @@ public:
     // closing is losing them, and nothing else tells the reader.
     bool hasUnsavedEdits() const;
 
+    // Whether the reader changed a field. Separate from hasUnsavedEdits() because the
+    // two have one caller that has to know which it is: the 保存 writes a structural
+    // list through qpdf and field values through PDFium, and a tab holding only field
+    // changes has nothing for the first of those to do (handoff-04 G1 6).
+    bool hasFieldEdits() const;
+
+    // The form layer of the document open here, or null for a file with no fields --
+    // or an engine that cannot fill them. This is the one place the read-only `Document`
+    // seam is allowed to become something more, and it does so with a cast rather than
+    // with a method on Document: docs/PLAN.md §7.3 says a write path must not be
+    // reachable through the read-only type, and a tab that asks "can I fill this" should
+    // not have to know which library answers.
+    FormFill *formSurface() const { return form; }
+
     // ---- 导出 ----
     //
     // The reading itself is WordExportSession's -- why it is not on the thread
@@ -503,6 +526,7 @@ private:
     // write back here and offers 另存为, which is the way out that keeps the work.
     void offerSaveAs(const QString &reason);
 
+
     void onPageImageNeeded(const RenderToken &token);
     void onPageRendered(const RenderToken &token, const QImage &image);
     void onDiscarded(const RenderToken &token);
@@ -542,6 +566,10 @@ private:
     // the comment, because reordering these two looks harmless.
     std::unique_ptr<Document> backend;
     std::unique_ptr<PageRenderer> renderer;
+    // The same object as `backend`, seen as the thing that takes field input. Owned
+    // by `backend`, and therefore destroyed after it only because the view holds the
+    // same pointer and is a child widget -- see the note above about declaration order.
+    FormFill *form = nullptr;
 
     RenderCache cache;
     FindBar *findBar = nullptr;
@@ -570,6 +598,17 @@ private:
     std::unique_ptr<DocumentOutput> output;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
+    // Whether anything in the file asks for a script to run, read in the same open-time
+    // pass as the line above. This build has no V8, so a field's calculation, validation
+    // and formatting actions never run, and the reader is told that once on the way in
+    // rather than finding out from a total that stayed at zero.
+    //
+    // Whether the file is encrypted is deliberately not read or kept here. G1 6 asked for
+    // that to be measured before deciding what to do about it, and
+    // tests/documenttab_smoke.cpp measures it: PDFium's FPDF_SaveAsCopy carries /Encrypt
+    // and its permission bits over, so a filled protected form saves the way an
+    // unprotected one does and no gate is needed.
+    bool sourceHasScript = false;
     // What the open-time probe answered about XFA, kept for hasXfa() / hasDynamicXfa() above.
     bool xfaInSource = false;
     bool dynamicXfaInSource = false;

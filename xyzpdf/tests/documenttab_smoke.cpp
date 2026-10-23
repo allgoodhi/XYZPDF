@@ -39,8 +39,11 @@
 #include "../src/ui/thumbnailpanel.h"
 #include "../src/ui/translatedialog.h"
 #include "../src/ui/watermarkdialog.h"
+#include "../src/document/pdfiumbackend.h"
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
+
+#include "formsample.h"
 
 #include <QAccessible>
 #include <QAbstractButton>
@@ -57,6 +60,8 @@
 #include <QGroupBox>
 #include <QIcon>
 #include <QImage>
+#include <QInputMethodEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -277,6 +282,23 @@ void answerNextBox(const QString &buttonText, bool *seen, QString *text)
         }
     });
     timer->start(20);
+}
+
+// A file read whole, and written whole: the byte-level before/after a save is judged on.
+QByteArray readAllBytes(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
+bool writeAllBytes(const QString &path, const QByteArray &bytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    return file.write(bytes) == bytes.size();
 }
 
 // One mouse event, straight to the viewport.
@@ -2666,6 +2688,640 @@ int main(int argc, char **argv)
         }
 
         QObject::disconnect(setup);
+    }
+
+    // ---- the form the reader fills: one path from a click to bytes on disk ----
+    //
+    // handoff-04 G1's test list asks for the whole route in this file: click a field,
+    // type, see the star, save, read /V back with qpdf (a second reader, not the engine
+    // that wrote it), and re-render to see the new value drawn. Each layer is pinned on
+    // its own in pdfiumbackend_smoke; this block exists for the seams, because the view's
+    // routing, the tab's dirty answer, the two-stage save and the reopen are four places a
+    // mistake can hide while every layer still says something correct by itself.
+    //
+    // The file is written into a scratch directory. Nothing here opens or touches
+    // tests/fixtures, and the one thing this slice must never do is write the reader's own
+    // PDF -- AGENTS.md's rule -- so a test that wrote a fixture would be a test breaking
+    // the rule it means to check.
+    {
+        QTemporaryDir formDir;
+        check(formDir.isValid(), "setup: a scratch folder for the form path");
+        const QString formPath = formDir.filePath(QStringLiteral("fillable.pdf"));
+        QString why;
+        check(FormSampleFile::write(formPath, 0, false, &why),
+              QStringLiteral("fill: the fillable sample is written: %1").arg(why));
+        const FormSampleFile::Geometry fields;
+
+        DocumentTab tab;
+        tab.resize(900, 700);
+        tab.show();
+        check(tab.open(formPath) == Document::Status::Ready,
+              QStringLiteral("fill: the sample opens in a tab (%1)").arg(tab.lastError()));
+        PageView *view = viewOf(tab);
+        check(waitFor([view] { return view->isRendered(0); }),
+              "fill: and the page with the fields on it is drawn");
+
+        // A field's centre as the view draws it: user space flipped to a top-left origin
+        // and scaled into the rectangle the page occupies. That is pagePointFor() run
+        // backwards, which is the mapping the click itself uses -- so a test with its own
+        // arithmetic would be measuring its arithmetic.
+        const auto fieldPoint = [view](const QRectF &rect) {
+            const QPointF centre = FormSampleFile::userCentre(rect);
+            const QRectF page = view->pageRectInViewport(0);
+            return QPointF(page.left() + centre.x() / 595.0 * page.width(),
+                           page.top() + (842.0 - centre.y()) / 842.0 * page.height());
+        };
+        const QPointF textFieldOnScreen = fieldPoint(fields.textField);
+        QWidget *canvas = view->viewport();
+
+        check(!tab.hasUnsavedEdits(), "fill: opening a document is not a change to it");
+        check(tab.title() == QStringLiteral("fillable.pdf"),
+              QStringLiteral("fill: and the title carries no star (%1)").arg(tab.title()));
+
+        // ---- the click, through the view ----
+        sendMouse(canvas, QEvent::MouseButtonPress, textFieldOnScreen);
+        sendMouse(canvas, QEvent::MouseButtonRelease, textFieldOnScreen);
+        check(waitFor([&tab] { return tab.view()->fieldHasFocus(); }),
+              "fill: a click on the text field gives it the keyboard");
+        check(view->viewport()->cursor().shape() == Qt::IBeamCursor,
+              QStringLiteral("fill: and the pointer over the field is an I-beam (got %1)")
+                  .arg(int(view->viewport()->cursor().shape())));
+
+        // ---- the keystrokes, and what the tab says about them ----
+        view->setFocus();
+        const auto type = [view](const QString &text) {
+            for (const QChar character : text) {
+                QKeyEvent press(QEvent::KeyPress,
+                                 int(Qt::Key_A) + character.toLatin1() - 'A', Qt::NoModifier,
+                                 QString(character));
+                QApplication::sendEvent(view, &press);
+            }
+        };
+        type(QStringLiteral("ABC"));
+        check(waitFor([&tab] { return tab.hasUnsavedEdits(); }),
+              "fill: three characters are an unsaved change");
+        check(tab.hasFieldEdits(), "and the tab knows it came from a field");
+        check(tab.title() == QStringLiteral("fillable.pdf *"),
+              QStringLiteral("fill: the title carries the star (%1)").arg(tab.title()));
+        note(QStringLiteral("fill summary: [%1] undoName=[%2] canUndo=%3")
+                 .arg(tab.pendingEditsSummary(), tab.undoEditName())
+                 .arg(tab.canUndoEdits() ? 1 : 0));
+        check(tab.pendingEditsSummary().contains(QStringLiteral("字段")),
+              "fill: and the summary names the fields the reader changed");
+        check(tab.undoEditName().isEmpty(),
+              "fill: with the keyboard in a field, 撤销 names no page operation");
+
+        // ---- the picture on the screen follows the keystroke ----
+        //
+        // This is the row RenderCache::dropPage() earns. A keystroke changes what a page
+        // looks like without changing what an image of it is an answer to -- same page, same
+        // band, same size, same rotation -- and token equality ignores the generation
+        // (rendertoken.h says so), so the entry the tab's cache holds for that page is
+        // exactly the page as it was before the character. Everything downstream still looks
+        // right: the view asks again, the tab answers, and the answer is the old picture. Only
+        // a pixel count taken off the screen sees it.
+        //
+        // Counted rather than hashed, because the focused field also draws a caret and that
+        // blinks on a timer: an exact comparison would be a coin flip about the blink phase.
+        // Two characters of text are tens of pixels of ink, so a caret cannot hide behind the
+        // margin -- and the margin is printed with the reading, so the row can be audited.
+        const auto fieldOnScreen = [view](const QRectF &rect) {
+            const QRectF page = view->pageRectInViewport(0);
+            const double scaleX = page.width() / 595.0;
+            const double scaleY = page.height() / 842.0;
+            // `rect` is in user space (origin bottom-left), so the displayed top edge is the
+            // page height minus the box's upper y.
+            return QRect(QPoint(int(page.left() + rect.left() * scaleX),
+                                int(page.top() + (842.0 - rect.bottom()) * scaleY)),
+                         QSize(qMax(1, int(rect.width() * scaleX)),
+                               qMax(1, int(rect.height() * scaleY))));
+        };
+        const auto inkOnScreen = [view, fieldOnScreen](const QRectF &rect) {
+            const QImage whole = view->grab().toImage();
+            const QRect box = fieldOnScreen(rect).intersected(whole.rect());
+            if (box.isEmpty())
+                return -1;
+            const QImage crop = whole.copy(box);
+            int ink = 0;
+            for (int y = 0; y < crop.height(); ++y) {
+                for (int x = 0; x < crop.width(); ++x) {
+                    if (qGray(crop.pixel(x, y)) < 250)
+                        ++ink;
+                }
+            }
+            return ink;
+        };
+        const int inkAfterClick = inkOnScreen(fields.textField);
+        type(QStringLiteral("DD"));
+        check(waitFor([&tab] { return tab.hasFieldEdits(); }),
+              "fill: a second pair of characters is another change");
+        check(waitFor([view] { return view->isRendered(0); }),
+              "fill: and the page is drawn again after the keystroke");
+        const int inkAfterTyping = inkOnScreen(fields.textField);
+        note(QStringLiteral("fill screen ink in the field box: after the click=%1 after two "
+                            "characters=%2 (the crop is %3x%4)")
+                 .arg(inkAfterClick)
+                 .arg(inkAfterTyping)
+                 .arg(fieldOnScreen(fields.textField).width())
+                 .arg(fieldOnScreen(fields.textField).height()));
+        check(inkAfterTyping > inkAfterClick + 20,
+              "fill: the field on the screen shows what the reader just typed");
+        // Back to where this row started, so the block below finds the field focused with
+        // the characters it expects -- and the picture has to come back to its own ink count.
+        // Through the view, not the surface: the view is what drains PDFium's repaint
+        // queue, and a change that is never drained is a change that is never drawn --
+        // which is the other half of what these two rows are checking.
+        view->undoInField();
+        view->undoInField();
+        check(waitFor([view] { return view->isRendered(0); }), "fill: the undo is drawn too");
+        const int inkAfterUndo = inkOnScreen(fields.textField);
+        note(QStringLiteral("fill screen ink after undoing both characters: %1").arg(inkAfterUndo));
+        // Compared with the picture that had the characters in it, not with the one that
+        // had none: what an undone keystroke leaves behind is the reader's own selection
+        // over the text that came back, and a washed band is hundreds of pixels of ink no
+        // value can be read off. That the ink falls at all is the point -- it says the undo
+        // reached the screen, which is the thing this row is about.
+        check(inkAfterUndo < inkAfterTyping,
+              QStringLiteral("fill: the undo is drawn on the screen too (%1 against %2)")
+                  .arg(inkAfterUndo)
+                  .arg(inkAfterTyping));
+        // The next rows need the keyboard in the field again, which is what a click gives.
+        sendMouse(canvas, QEvent::MouseButtonPress, textFieldOnScreen);
+        sendMouse(canvas, QEvent::MouseButtonRelease, textFieldOnScreen);
+        check(waitFor([&tab] { return tab.view()->fieldHasFocus(); }),
+              "fill: refocused for the undo rows below");
+
+        // 撤销 while the field has the keyboard is the field's own, and it is per
+        // keystroke: measured in pdfiumbackend_smoke, one undo after three characters takes
+        // one character back. So the star stays until the last one is gone -- which is the
+        // reading a reader expects from a field, and the one that would be wrong if the
+        // keystroke had quietly gone to the page list instead.
+        tab.undoEdit();
+        check(tab.hasUnsavedEdits(), "fill: one 撤销 in a field takes one keystroke back");
+        tab.undoEdit();
+        tab.undoEdit();
+        check(waitFor([&tab] { return !tab.hasUnsavedEdits(); }),
+              "fill: undoing all three puts the file's value back, and the star with it");
+
+        // A click on paper commits and lets go; the page is the reader's again.
+        const QPointF paper = fieldPoint(QRectF(300, 300, 40, 40));
+        sendMouse(canvas, QEvent::MouseButtonPress, paper);
+        sendMouse(canvas, QEvent::MouseButtonRelease, paper);
+        check(waitFor([&tab] { return !tab.view()->fieldHasFocus(); }),
+              "fill: a click on blank paper takes the keyboard away from the field");
+
+        // ---- the input method, in one commit ----
+        sendMouse(canvas, QEvent::MouseButtonPress, textFieldOnScreen);
+        sendMouse(canvas, QEvent::MouseButtonRelease, textFieldOnScreen);
+        check(waitFor([&tab] { return tab.view()->fieldHasFocus(); }),
+              "fill: refocused for the input-method commit");
+        {
+            QInputMethodEvent commit;
+            commit.setCommitString(QStringLiteral("中文"));
+            QApplication::sendEvent(view, &commit);
+        }
+        check(waitFor([&tab] { return tab.hasFieldEdits(); }),
+              "fill: a committed string is one edit to one field");
+
+        // ---- the save: the answers reach the file, and only the save writes it ----
+        const QByteArray beforeSave = readAllBytes(formPath);
+        check(tab.saveEdits(), "fill: 保存 writes the filled field back in place");
+        note(QStringLiteral("fill: the reader's file went from %1 to %2 bytes")
+                 .arg(beforeSave.size())
+                 .arg(readAllBytes(formPath).size()));
+        check(readAllBytes(formPath) != beforeSave,
+              "fill: and the bytes really moved -- this is the one path allowed to write");
+        check(!tab.hasUnsavedEdits(), "fill: after a save nothing is unsaved");
+        check(tab.title() == QStringLiteral("fillable.pdf"),
+              "fill: and the star is off again");
+
+        // qpdf is the second reader: the value has to be in the file's own /V, not only in
+        // whatever PDFium drew.
+        {
+            QPDF read;
+            read.processFile(formPath.toUtf8().constData());
+            QString value;
+            std::vector<QPDFPageObjectHelper> pages =
+                QPDFPageDocumentHelper(read).getAllPages();
+            for (QPDFPageObjectHelper &page : pages) {
+                for (const QPDFObjectHandle &annot : page.getAnnotations()) {
+                    if (annot.getKey("/T").getStringValue() == "name") {
+                        // getUTF8Value, not getStringValue: PDFium writes a value that is
+                        // not plain ASCII as a UTF-16BE string with a byte order mark, and
+                        // the raw bytes of that are what getStringValue hands back.
+                        value = QString::fromUtf8(annot.getKey("/V").getUTF8Value().c_str());
+                    }
+                }
+            }
+            note(QStringLiteral("fill: qpdf reads the field name=[%1]").arg(value));
+            check(value.contains(QStringLiteral("中文")),
+                  "fill: the committed string is in the file the reader opened");
+            check(!value.contains(QStringLiteral("ABC")),
+                  "fill: and the three characters that were undone are not in it");
+        }
+
+        // ---- and the reopened page draws it ----
+        //
+        // The pixel half the handoff asks for. Measured as a difference between two
+        // renders of one rectangle, the file before the save and the file after: the
+        // instrument sec.89 uses, because "there are pixels in the field" would still be
+        // true with the old value painted in it.
+        {
+            const QString keptBefore = formDir.filePath(QStringLiteral("before.pdf"));
+            check(writeAllBytes(keptBefore, beforeSave),
+                  "fill: setup: the file as it was before the save is kept to compare");
+            const QRectF box = fields.textField;
+            const auto inkOf = [&box](const QString &path) {
+                PdfiumBackend reader;
+                if (reader.load(path, QString()) != Document::Status::Ready)
+                    return QStringLiteral("(no picture)");
+                RenderOptions options;
+                const QImage image = reader.render(0, QSize(595, 842), options);
+                if (image.isNull())
+                    return QStringLiteral("(no picture)");
+                // The field's device rectangle at this size: the page is drawn 1:1 and
+                // unrotated, so the flip is the page height and nothing else.
+                const int left = int(box.left());
+                const int right = int(box.right());
+                // box is in user space (origin bottom-left), so the displayed top edge
+                // is the page height minus the box's *upper* y -- flipped the other way
+                // round the rectangle collapses to nothing and every count is a zero
+                // about an empty crop rather than about the page.
+                const int top = int(842.0 - box.bottom());
+                const int bottom = int(842.0 - box.top());
+                quint64 hash = 1469598103934665603ULL;
+                int ink = 0;
+                for (int y = top; y < bottom; ++y) {
+                    for (int x = left; x < right; ++x) {
+                        const QRgb pixel = image.pixel(x, y);
+                        if (qGray(pixel) < 250)
+                            ++ink;
+                        hash = (hash ^ quint64(pixel)) * 1099511628211ULL;
+                    }
+                }
+                return QStringLiteral("ink=%1 hash=%2").arg(ink).arg(hash, 0, 16);
+            };
+            const QString before = inkOf(keptBefore);
+            const QString after = inkOf(formPath);
+            note(QStringLiteral("fill render field pixels: before [%1] after [%2]")
+                     .arg(before, after));
+            check(before != after,
+                  "fill: the field is drawn with the value the reader put in it");
+        }
+
+        // ---- another answer, and 另存为 with it ----
+        sendMouse(canvas, QEvent::MouseButtonPress, textFieldOnScreen);
+        sendMouse(canvas, QEvent::MouseButtonRelease, textFieldOnScreen);
+        check(waitFor([&tab] { return tab.view()->fieldHasFocus(); }),
+              "fill: refocused for the save-as");
+        type(QStringLiteral("XYZ"));
+        check(waitFor([&tab] { return tab.hasFieldEdits(); }),
+              "fill: and the tab is dirty again");
+        const QString saveAsPath = formDir.filePath(QStringLiteral("copy-with-answers.pdf"));
+        QString saveError;
+        check(tab.saveEditsTo(saveAsPath, &saveError),
+              QStringLiteral("fill: 另存为 writes the filled document out (%1)")
+                  .arg(saveError));
+        check(QFileInfo::exists(saveAsPath), "fill: and the new file is there");
+        {
+            const QString copyValue
+                = FormSampleFile::fieldValue(saveAsPath, QStringLiteral("name"), &why);
+            note(QStringLiteral("fill: the 另存为 copy reads name=[%1]").arg(copyValue));
+            check(copyValue.contains(QStringLiteral("XYZ")),
+                  "fill: the new file carries the answer typed after the save");
+        }
+
+        // ---- what one character costs on a page that is slow to draw ----
+        //
+        // handoff-04 G1 3 asks for this number, and asks for it because the UI thread and
+        // the renderer share one lock: a keystroke that has to be drawn again waits behind
+        // whatever render is running, and on a scanned page that is tens of milliseconds
+        // rather than less than one. The row is the reading; the bound is a hair trigger
+        // for the day a keystroke starts costing a second, which would be a different bug
+        // than being slow on a scan.
+        {
+            const QString heavy = formDir.filePath(QStringLiteral("heavy-form.pdf"));
+            {
+                QPDF qpdf;
+                qpdf.processFile((directory + QStringLiteral("/scan.pdf")).toUtf8().constData());
+                std::vector<QPDFPageObjectHelper> pages =
+                    QPDFPageDocumentHelper(qpdf).getAllPages();
+                QPDFObjectHandle page = pages.front().getObjectHandle();
+                const QPDFObjectHandle box = pages.front().getMediaBox();
+                const double width = box.getArrayItem(2).getNumericValue();
+                const double height = box.getArrayItem(3).getNumericValue();
+                QPDFObjectHandle field = QPDFObjectHandle::newDictionary();
+                field.replaceKey("/Type", QPDFObjectHandle::newName("/Annot"));
+                field.replaceKey("/Subtype", QPDFObjectHandle::newName("/Widget"));
+                field.replaceKey("/FT", QPDFObjectHandle::newName("/Tx"));
+                field.replaceKey("/T", QPDFObjectHandle::newString("name"));
+                field.replaceKey("/V", QPDFObjectHandle::newString("typed"));
+                field.replaceKey("/DA", QPDFObjectHandle::newString("/Helv 10 Tf 0 g "));
+                QPDFObjectHandle rect = QPDFObjectHandle::newArray();
+                rect.appendItem(QPDFObjectHandle::newReal(width * 0.1));
+                rect.appendItem(QPDFObjectHandle::newReal(height * 0.1));
+                rect.appendItem(QPDFObjectHandle::newReal(width * 0.5));
+                rect.appendItem(QPDFObjectHandle::newReal(height * 0.16));
+                field.replaceKey("/Rect", rect);
+                QPDFObjectHandle font = QPDFObjectHandle::newDictionary();
+                font.replaceKey("/Type", QPDFObjectHandle::newName("/Font"));
+                font.replaceKey("/Subtype", QPDFObjectHandle::newName("/Type1"));
+                font.replaceKey("/BaseFont", QPDFObjectHandle::newName("/Helvetica"));
+                font = qpdf.makeIndirectObject(font);
+                QPDFObjectHandle resources = page.getKey("/Resources");
+                if (!resources.isDictionary()) {
+                    resources = QPDFObjectHandle::newDictionary();
+                    page.replaceKey("/Resources", resources);
+                }
+                QPDFObjectHandle fonts = resources.getKey("/Font");
+                if (!fonts.isDictionary()) {
+                    fonts = QPDFObjectHandle::newDictionary();
+                    resources.replaceKey("/Font", fonts);
+                }
+                fonts.replaceKey("/Helv", font);
+                field = qpdf.makeIndirectObject(field);
+                field.replaceKey("/P", page);
+                QPDFObjectHandle annots = QPDFObjectHandle::newArray();
+                annots.appendItem(field);
+                page.replaceKey("/Annots", qpdf.makeIndirectObject(annots));
+                QPDFObjectHandle formFields = QPDFObjectHandle::newArray();
+                formFields.appendItem(field);
+                QPDFObjectHandle form = QPDFObjectHandle::newDictionary();
+                form.replaceKey("/Fields", formFields);
+                form.replaceKey("/DA", QPDFObjectHandle::newString("/Helv 10 Tf 0 g "));
+                qpdf.getRoot().replaceKey("/AcroForm", qpdf.makeIndirectObject(form));
+                QPDFWriter writer(qpdf, heavy.toUtf8().constData());
+                writer.write();
+            }
+
+            DocumentTab heavyTab;
+            heavyTab.resize(900, 700);
+            heavyTab.show();
+            check(heavyTab.open(heavy) == Document::Status::Ready,
+                  QStringLiteral("fill: the scanned page with a field on it opens (%1)")
+                      .arg(heavyTab.lastError()));
+            PageView *heavyView = viewOf(heavyTab);
+            check(waitFor([heavyView] { return heavyView->isRendered(0); }),
+                  "fill: and the heavy page is drawn once before anything is timed");
+            PdfiumBackend measured;
+            check(measured.load(heavy, QString()) == Document::Status::Ready,
+                  "fill: setup: the file is opened again to be asked how big its page is");
+            const QSizeF heavyPoints = measured.pageSize(0);
+            note(QStringLiteral("fill heavy: page 1 is %1x%2 pt and the view draws it %3x%4 px")
+                     .arg(heavyPoints.width())
+                     .arg(heavyPoints.height())
+                     .arg(heavyView->pageRectInViewport(0).width())
+                     .arg(heavyView->pageRectInViewport(0).height()));
+            const QRectF heavyField(heavyPoints.width() * 0.1, heavyPoints.height() * 0.1,
+                                    heavyPoints.width() * 0.4, heavyPoints.height() * 0.06);
+            const QPointF centre = FormSampleFile::userCentre(heavyField);
+            const QRectF drawn = heavyView->pageRectInViewport(0);
+            const QPointF onScreen(drawn.left() + centre.x() / heavyPoints.width() * drawn.width(),
+                                   drawn.top()
+                                       + (heavyPoints.height() - centre.y()) / heavyPoints.height()
+                                             * drawn.height());
+            QWidget *heavyCanvas = heavyView->viewport();
+            sendMouse(heavyCanvas, QEvent::MouseButtonPress, onScreen);
+            sendMouse(heavyCanvas, QEvent::MouseButtonRelease, onScreen);
+            check(waitFor([&heavyTab] { return heavyTab.view()->fieldHasFocus(); }),
+                  "fill: the field on the scanned page takes the keyboard");
+            heavyView->setFocus();
+
+            qint64 totalMilliseconds = 0;
+            const int rounds = 5;
+            for (int round = 0; round < rounds; ++round) {
+                QElapsedTimer clock;
+                clock.start();
+                const int ascii = 0x41 + round; // 'A'
+                QKeyEvent key(QEvent::KeyPress, ascii, Qt::NoModifier,
+                              QString(QChar(static_cast<ushort>(ascii))));
+                QApplication::sendEvent(heavyView, &key);
+                // Until the page is drawn again, not until the call returns: what the
+                // reader pays is the wait for their own character to appear, and that is
+                // the render behind the shared lock.
+                waitFor([heavyView] { return heavyView->isRendered(0); });
+                totalMilliseconds += clock.elapsed();
+            }
+            const qint64 perKeystroke = rounds > 0 ? totalMilliseconds / rounds : 0;
+            note(QStringLiteral("fill heavy: %1 characters on a scanned page, %2 ms in all, "
+                                "%3 ms per keystroke including its redraw")
+                     .arg(rounds)
+                     .arg(totalMilliseconds)
+                     .arg(perKeystroke));
+            check(perKeystroke < 750,
+                  QStringLiteral("fill: a keystroke on the heaviest page this program is "
+                                 "tested on stays under three quarters of a second (%1 ms)")
+                      .arg(perKeystroke));
+        }
+
+        // ---- the encrypted document: measured, and then saved like any other ----
+        //
+        // handoff-04 G1 6 asks for a measurement before a decision: does FPDF_SaveAsCopy
+        // keep the encryption and the permissions of the file it was given, or does writing
+        // a filled form also take the protection off? The rows that print the answer are
+        // quoted in the report, and the checks under them pin it, so that a later PDFium
+        // which stopped carrying /Encrypt over reddens a line here rather than quietly
+        // putting an unprotected copy of somebody's protected document on their disk.
+        {
+            const QString lockedPath = formDir.filePath(QStringLiteral("locked.pdf"));
+            const QString lockedAgain = formDir.filePath(QStringLiteral("locked-copy.pdf"));
+            {
+                QPDF lock;
+                lock.processFile(formPath.toUtf8().constData());
+                QPDFWriter out(lock, lockedPath.toUtf8().constData());
+                // A real user password, so that opening the file at all needs the key --
+                // the case worth asking about. R3/RC4-128 rather than the R6 the 加密 box
+                // writes, because what is asked here is what happens to /Encrypt on the way
+                // through PDFium's writer, and the file has to open for the question to be
+                // asked at all.
+                out.setR3EncryptionParametersInsecure("let-me-in", "owner-key", true, true,
+                                                     true, true, true, true, qpdf_r3p_full);
+                out.write();
+            }
+            check(QFileInfo::exists(lockedPath), "fill: setup: an encrypted copy was written");
+            const QByteArray lockedBefore = readAllBytes(lockedPath);
+
+            // What the source's own dictionary says, to be compared with what comes back.
+            QString sourcePermissions;
+            {
+                QPDF probe;
+                probe.processFile(lockedPath.toUtf8().constData(), "let-me-in");
+                int R = 0;
+                int P = 0;
+                probe.isEncrypted(R, P);
+                sourcePermissions = QStringLiteral("R=%1 P=%2 print=%3 extract=%4 assemble=%5 "
+                                                  "annotate=%6 form=%7 other=%8")
+                                        .arg(R)
+                                        .arg(P)
+                                        .arg(probe.allowPrintHighRes() ? 1 : 0)
+                                        .arg(probe.allowExtractAll() ? 1 : 0)
+                                        .arg(probe.allowModifyAssembly() ? 1 : 0)
+                                        .arg(probe.allowModifyAnnotation() ? 1 : 0)
+                                        .arg(probe.allowModifyForm() ? 1 : 0)
+                                        .arg(probe.allowModifyOther() ? 1 : 0);
+            }
+
+            DocumentTab locked;
+            locked.resize(900, 700);
+            locked.show();
+            check(locked.open(lockedPath, QStringLiteral("let-me-in"))
+                      == Document::Status::Ready,
+                  QStringLiteral("fill: the encrypted form opens with its key (%1)")
+                      .arg(locked.lastError()));
+            PageView *lockedView = viewOf(locked);
+            check(waitFor([&lockedView] { return lockedView->isRendered(0); }),
+                  "fill: and its page is drawn");
+            const auto lockedFieldPoint = [lockedView](const QRectF &rect) {
+                const QPointF centre = FormSampleFile::userCentre(rect);
+                const QRectF page = lockedView->pageRectInViewport(0);
+                return QPointF(page.left() + centre.x() / 595.0 * page.width(),
+                               page.top() + (842.0 - centre.y()) / 842.0 * page.height());
+            };
+            const QPointF lockedField = lockedFieldPoint(fields.textField);
+            sendMouse(lockedView->viewport(), QEvent::MouseButtonPress, lockedField);
+            sendMouse(lockedView->viewport(), QEvent::MouseButtonRelease, lockedField);
+            check(waitFor([&locked] { return locked.view()->fieldHasFocus(); }),
+                  "fill: a field on a protected document takes the keyboard");
+            {
+                QInputMethodEvent commit;
+                commit.setCommitString(QStringLiteral("SECRET"));
+                QApplication::sendEvent(lockedView, &commit);
+            }
+            check(waitFor([&locked] { return locked.hasFieldEdits(); }),
+                  "fill: and the answer is held in memory, unsaved");
+
+            // The measurement, off the backend's own first stage rather than off the tab:
+            // what would the bytes look like if a protected document were saved?
+            {
+                QString staged;
+                QString stageError;
+                const bool stagedOk = locked.formSurface()->stageFieldValues(
+                    formDir.path(), &staged, &stageError);
+                check(stagedOk && !staged.isEmpty(),
+                      QStringLiteral("fill: the backend stages its copy of a protected "
+                                     "document (%1)").arg(stageError));
+                if (stagedOk && !staged.isEmpty()) {
+                    // Whether the file can be read with no key. The flag has to start at
+                    // false and be set only by a read that worked: a file qpdf cannot open
+                    // without a key is a file that still has one, and treating the throw as
+                    // "no answer" printed "opens with no key=1" for a file that was
+                    // encrypted the whole time.
+                    bool opensWithoutKey = false;
+                    bool readWithNoKey = false;
+                    QString stagedPermissions;
+                    try {
+                        QPDF none;
+                        none.processFile(staged.toUtf8().constData());
+                        readWithNoKey = true;
+                        opensWithoutKey = !none.isEncrypted();
+                    } catch (const std::exception &e) {
+                        note(QStringLiteral("fill encrypt: reading the staged file with no "
+                                            "key is refused: %1")
+                             .arg(QString::fromUtf8(e.what())));
+                    }
+                    if (!opensWithoutKey) {
+                        QPDF probe;
+                        probe.processFile(staged.toUtf8().constData(), "let-me-in");
+                        int R = 0;
+                        int P = 0;
+                        probe.isEncrypted(R, P);
+                        stagedPermissions =
+                            QStringLiteral("R=%1 P=%2 print=%3 extract=%4 assemble=%5 "
+                                           "annotate=%6 form=%7 other=%8")
+                                .arg(R)
+                                .arg(P)
+                                .arg(probe.allowPrintHighRes() ? 1 : 0)
+                                .arg(probe.allowExtractAll() ? 1 : 0)
+                                .arg(probe.allowModifyAssembly() ? 1 : 0)
+                                .arg(probe.allowModifyAnnotation() ? 1 : 0)
+                                .arg(probe.allowModifyForm() ? 1 : 0)
+                                .arg(probe.allowModifyOther() ? 1 : 0);
+                    }
+                    note(QStringLiteral("fill encrypt: source  %1").arg(sourcePermissions));
+                    note(QStringLiteral("fill encrypt: staged   %1").arg(stagedPermissions));
+                    note(QStringLiteral("fill encrypt: staged opens with no key=%1, bytes=%2")
+                             .arg(readWithNoKey && opensWithoutKey ? 1 : 0)
+                             .arg(QFileInfo(staged).size()));
+                    QFile::remove(staged);
+                    check(!readWithNoKey || !opensWithoutKey,
+                          "fill: measured -- PDFium's save keeps the encryption");
+                    check(stagedPermissions == sourcePermissions,
+                          "fill: and it keeps the permission bits beside it");
+                }
+            }
+
+            // So the save is allowed, and what it writes has to still be the protected
+            // document it was -- with the reader's answer inside it.
+            check(locked.saveEdits(),
+                  "fill: a protected document with filled fields saves like any other");
+            check(readAllBytes(lockedPath) != lockedBefore,
+                  "fill: and the bytes moved");
+            check(!locked.hasUnsavedEdits(), "fill: and nothing is unsaved any more");
+            {
+                bool stillNeedsKey = false;
+                try {
+                    QPDF none;
+                    none.processFile(lockedPath.toUtf8().constData());
+                } catch (const std::exception &e) {
+                    stillNeedsKey = QString::fromUtf8(e.what()).contains(
+                        QStringLiteral("password"));
+                }
+                check(stillNeedsKey,
+                      "fill: the file that came back still asks for its key");
+                QPDF withKey;
+                withKey.processFile(lockedPath.toUtf8().constData(), "let-me-in");
+                QString value;
+                QPDFPageDocumentHelper withKeyPages(withKey);
+                std::vector<QPDFPageObjectHelper> pages = withKeyPages.getAllPages();
+                for (QPDFPageObjectHelper &page : pages) {
+                    for (QPDFAnnotationObjectHelper &entry : page.getAnnotations()) {
+                        const QPDFObjectHandle annot = entry.getObjectHandle();
+                        if (annot.getKey("/T").getStringValue() == "name")
+                            value = QString::fromUtf8(annot.getKey("/V").getUTF8Value().c_str());
+                    }
+                }
+                note(QStringLiteral("fill: the saved protected file reads name=[%1]").arg(value));
+                check(value.contains(QStringLiteral("SECRET")),
+                      "fill: and the answer the reader typed is in it");
+            }
+
+            // 另存为 takes the same route with a new name, and the copy it writes is
+            // encrypted the same way -- which is the only way "save a copy" can be offered
+            // on a protected document at all.
+            // A fresh answer first: with nothing unsaved 另存为 refuses, which is the same
+            // rule the unprotected tab follows. And the reason is taken into a variable on
+            // its own line, because check() may evaluate its second argument before its
+            // first -- so an inline .arg(why) printed the sentence before the call had
+            // filled it, and a real refusal looked like an empty one.
+            // Click it again first: the save reloaded the document, so the field that had
+            // the keyboard belonged to the pages before it.
+            const QPointF refocused = lockedFieldPoint(fields.textField);
+            sendMouse(lockedView->viewport(), QEvent::MouseButtonPress, refocused);
+            sendMouse(lockedView->viewport(), QEvent::MouseButtonRelease, refocused);
+            check(waitFor([&locked] { return locked.view()->fieldHasFocus(); }),
+                  "fill: the field takes the keyboard again after the save and reload");
+            {
+                QInputMethodEvent more;
+                more.setCommitString(QStringLiteral("!!"));
+                QApplication::sendEvent(lockedView, &more);
+            }
+            check(waitFor([&locked] { return locked.hasFieldEdits(); }),
+                  "fill: and a protected document can be edited again after a save");
+            QString asWhy;
+            const bool savedAs = locked.saveEditsTo(lockedAgain, &asWhy);
+            note(QStringLiteral("fill: 另存为 of the protected document returned %1 (%2)")
+                     .arg(savedAs ? 1 : 0)
+                     .arg(asWhy));
+            check(savedAs, "fill: 另存为 of a protected document works");
+            {
+                QPDF probe;
+                probe.processFile(lockedAgain.toUtf8().constData(), "let-me-in");
+                note(QStringLiteral("fill: the 另存为 copy is encrypted=%1, pages=%2")
+                         .arg(probe.isEncrypted() ? 1 : 0)
+                         .arg(int(QPDFPageDocumentHelper(probe).getAllPages().size())));
+                check(probe.isEncrypted(), "fill: and the copy is still encrypted");
+            }
+        }
     }
 
     // ---- night reading ----

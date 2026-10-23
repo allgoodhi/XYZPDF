@@ -4,6 +4,7 @@
 #include "src/core/windowdialogs.h"
 #include "src/document/bookmarkposition.h"
 #include "src/document/documentfactory.h"
+#include "src/document/formfill.h"
 #include "src/edit/documenteditor.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
@@ -246,6 +247,24 @@ DocumentTab::DocumentTab(QWidget *parent)
             translateSelection();
     });
     connect(pageView, &PageView::toolChanged, this, &DocumentTab::toolChanged);
+    // A field changed, so the picture the cache holds for that page is a picture of
+    // the page as it was. The token does not change -- same page, same band, same
+    // size, same rotation -- and token equality ignores the generation, so nothing
+    // else in this pipeline would notice. See the note on PageView::formPageStale().
+    connect(pageView, &PageView::formPageStale, this, [this](int page) {
+        cache.dropPage(page);
+        Q_EMIT cacheChanged(cache.usedBytes(), cache.maximumBytes());
+    });
+    // Both of these change what 撤销 means, what the title says and whether 保存 has
+    // anything to write, which is exactly what editStateChanged is for.
+    connect(pageView, &PageView::formFocusChanged, this, [this] {
+        Q_EMIT editStateChanged();
+        Q_EMIT titleChanged(title());
+    });
+    connect(pageView, &PageView::formEdited, this, [this] {
+        Q_EMIT editStateChanged();
+        Q_EMIT titleChanged(title());
+    });
     connect(renderer.get(), &PageRenderer::rendered, this, &DocumentTab::onPageRendered);
     connect(renderer.get(), &PageRenderer::discarded, this, &DocumentTab::onDiscarded);
 
@@ -254,6 +273,14 @@ DocumentTab::DocumentTab(QWidget *parent)
 
 DocumentTab::~DocumentTab()
 {
+    // Before anything else: the view routes keystrokes and clicks into the form
+    // layer, and the form layer lives on `backend`, which goes with this object's
+    // members while pageView -- a child widget -- goes later with the base class.
+    // Clearing the surface is what keeps a focus change during teardown from being a
+    // call into a document that has already been closed.
+    pageView->setFormSurface(nullptr);
+    form = nullptr;
+
     // First, and before anything it would report about is taken apart: a
     // watcher whose document has gone would answer a change with a bar for a
     // tab nobody can see. The watcher is a child and would go with this object
@@ -483,6 +510,12 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
         formFieldsInSource = false;
         xfaInSource = false;
         dynamicXfaInSource = false;
+        sourceHasScript = false;
+        // No document, no fields to fill. Order matters: the view drops its form
+        // surface before the backend it points at is closed, and before the view is
+        // emptied of the pages that surface drew.
+        form = nullptr;
+        pageView->setFormSurface(nullptr);
         // The tab is on no file now, and the old file's changes are no longer
         // this tab's to report -- including the failure that may have been
         // caused by a half-written replacement of that very file.
@@ -518,6 +551,11 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
     // and only for text -- images still come through this class, which is what
     // keeps them off the thread that draws.
     pageView->setDocument(backend.get());
+    // The form surface is the same object, seen as the half that takes input. Null
+    // for an engine that has no form layer at all -- which the view reads as "the page
+    // owns every gesture", the behaviour it had before G1.
+    form = dynamic_cast<FormFill *>(backend.get());
+    pageView->setFormSurface(form);
     // A new document's pages have nothing to do with the previous one's, and
     // they are keyed by page number and size, so they would be found and drawn.
     cache.clear();
@@ -563,6 +601,7 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
     formFieldsInSource = false;
     xfaInSource = false;
     dynamicXfaInSource = false;
+    sourceHasScript = false;
     sourceOutlineRows.clear();
     {
         DocumentEditor probe;
@@ -571,6 +610,7 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
             formFieldsInSource = probe.hasFormFields();
             xfaInSource = probe.hasXfa();
             dynamicXfaInSource = probe.hasDynamicXfa();
+            sourceHasScript = probe.hasFormScript();
             sourceOutlineRows = probe.sourceOutlineRows();
         }
     }
@@ -1269,44 +1309,84 @@ void DocumentTab::editOutline()
 
 void DocumentTab::undoEdit()
 {
+    // The field first, and only when it has the keyboard and its own history to walk:
+    // a reader who typed a name, deleted it and typed another one means the last
+    // keystroke, not the last page operation (handoff-04 G1 4). No focus, or an empty
+    // field history, and the structural list takes it -- which is the behaviour every
+    // version before this had, unchanged.
+    if (pageView->canUndoInField()) {
+        pageView->undoInField();
+        Q_EMIT editStateChanged();
+        Q_EMIT titleChanged(title());
+        return;
+    }
     if (editor && editor->undo())
         Q_EMIT editStateChanged();
 }
 
 void DocumentTab::redoEdit()
 {
+    if (pageView->canRedoInField()) {
+        pageView->redoInField();
+        Q_EMIT editStateChanged();
+        Q_EMIT titleChanged(title());
+        return;
+    }
     if (editor && editor->redo())
         Q_EMIT editStateChanged();
 }
 
 bool DocumentTab::canUndoEdits() const
 {
-    return editor && editor->canUndo();
+    return pageView->canUndoInField() || (editor && editor->canUndo());
 }
 
 bool DocumentTab::canRedoEdits() const
 {
-    return editor && editor->canRedo();
+    return pageView->canRedoInField() || (editor && editor->canRedo());
 }
 
 QString DocumentTab::undoEditName() const
 {
+    // Empty for a keystroke in a field: PDFium's field history has no names to read
+    // back, and the window draws a bare 撤销 for an empty one. A made-up "撤销 字段"
+    // would promise a description the list cannot give, and the reader would read the
+    // same words for the second keystroke and the fifth.
+    if (pageView->canUndoInField())
+        return QString();
     return editor ? editor->undoDescription() : QString();
 }
 
 QString DocumentTab::redoEditName() const
 {
+    if (pageView->canRedoInField())
+        return QString();
     return editor ? editor->redoDescription() : QString();
+}
+
+bool DocumentTab::hasFieldEdits() const
+{
+    return form && form->differingFieldCount() > 0;
 }
 
 bool DocumentTab::hasUnsavedEdits() const
 {
-    return editor && editor->isDirty();
+    return (editor && editor->isDirty()) || hasFieldEdits();
 }
 
 QString DocumentTab::pendingEditsSummary() const
 {
-    return editor ? editor->pendingSummary() : QString();
+    QStringList parts;
+    if (editor && editor->isDirty())
+        parts.append(editor->pendingSummary());
+    // Counted, and through %n rather than %1: the sentence is the one a reader reads
+    // before throwing the work away, and "改了 3 个字段" says which of the four they
+    // clicked is going with it -- while the AGENTS.md rule about a bare `.arg(n)` is
+    // that the catalogue cannot see a plural it was not given (sec.93).
+    const int fields = form ? form->differingFieldCount() : 0;
+    if (fields > 0)
+        parts.append(tr("改了 %n 个表单字段", nullptr, fields));
+    return parts.join(tr("，"));
 }
 
 DocumentTab::ReadingState DocumentTab::readingState() const
@@ -1349,7 +1429,9 @@ void DocumentTab::offerSaveAs(const QString &reason)
 
 bool DocumentTab::saveEdits()
 {
-    if (!editor || !editor->isDirty())
+    const bool structural = editor && editor->isDirty();
+    const int fields = form ? form->differingFieldCount() : 0;
+    if (!structural && fields == 0)
         return false;
     if (hasForegroundJob()) {
         // A foreground job is holding the tab on the stack and reading the
@@ -1386,22 +1468,50 @@ bool DocumentTab::saveEdits()
         offerSaveAs(tr("%1 所在的文件夹不允许写入。").arg(source.fileName()));
         return false;
     }
-    if (editor->pieceCount() > 1) {
+    if (structural && editor->pieceCount() > 1) {
         offerSaveAs(tr("这份文档还带着拆分，写回原文件只能写成一个文件。"));
         return false;
     }
 
     const ReadingState state = readingState();
-    const QString passwordAfter = editor->passwordOfWrittenFile();
+    // With no structural list the written file keeps the protection the source has, and
+    // the key this tab opened it with is the key it still asks for. With one, the list
+    // decides -- a pending 加密 replaces it, a carried /Encrypt keeps it.
+    const QString passwordAfter = structural ? editor->passwordOfWrittenFile() : documentPassword;
 
     // The copy is written and checked before this tab lets go of anything: a
     // staging failure leaves the original and the view exactly as they were.
+    //
+    // Two stages when the reader did both kinds of thing: PDFium writes the field
+    // answers beside the source, and the structural replay reads *that* file instead of
+    // the source, so one save carries both and neither writer has to know the other's
+    // format (handoff-04 G1 6). With only field answers there is no second stage, and
+    // the first one's check is the same qpdf reopen the structural one runs.
+    QString fieldStage;
     QString staged;
     QString error;
+    bool staged_ok = true;
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const bool stagedOk = editor->stageInPlace(&staged, &error);
+    if (fields > 0)
+        staged_ok = form->stageFieldValues(source.absolutePath(), &fieldStage, &error);
+    if (staged_ok && structural) {
+        staged_ok = editor->stageInPlace(&staged, &error, fieldStage);
+        // The replay has read it. It is ours, it is hidden, and it is not the reader's
+        // document, so it does not stay in their folder.
+        if (!fieldStage.isEmpty()) {
+            QFile::remove(fieldStage);
+            fieldStage.clear();
+        }
+    } else if (staged_ok && fields > 0) {
+        staged_ok = DocumentEditor::verifyStagedFile(fieldStage, backend->pageCount(),
+                                                     documentPassword, &error);
+        if (staged_ok)
+            staged = fieldStage;
+    }
     QApplication::restoreOverrideCursor();
-    if (!stagedOk) {
+    if (!staged_ok) {
+        if (!fieldStage.isEmpty())
+            QFile::remove(fieldStage);
         WindowDialogs::warning(window(), tr("保存"), error);
         return false;
     }
@@ -1420,6 +1530,11 @@ bool DocumentTab::saveEdits()
     notice->beginSelfWrite();
     QApplication::setOverrideCursor(Qt::WaitCursor);
     renderer->setDocument(nullptr);
+    // The view stops routing input before the document under the form layer goes:
+    // a keystroke landing between this and the reopen would be a call into a form
+    // environment with no pages.
+    pageView->setFormSurface(nullptr);
+    form = nullptr;
     backend->close();
     quint32 windowsError = 0;
     const bool replaced = DocumentEditor::replaceSource(path, staged, &windowsError);
@@ -1465,7 +1580,9 @@ bool DocumentTab::saveEdits()
 
 bool DocumentTab::saveEditsAs()
 {
-    if (!editor || !editor->isDirty())
+    // Not `editor->isDirty()`: a tab whose only change is a filled field has no
+    // structural list, and 另存为 is the way to put those answers in a file.
+    if (!hasUnsavedEdits())
         return false;
 
     // Seeded with the source document's own name plus a suffix, in the folder it
@@ -1499,16 +1616,45 @@ bool DocumentTab::saveEditsTo(const QString &destination, QString *error)
     };
     if (destination.isEmpty())
         return refuse(QString());
-    if (!editor || !editor->isDirty())
+    const bool structural = editor && editor->isDirty();
+    const int fields = form ? form->differingFieldCount() : 0;
+    if (!structural && fields == 0)
         return refuse(tr("没有待保存的修改。"));
     if (hasForegroundJob())
         return refuse(tr("这个标签正在打印或导出，完成之后才能保存。"));
 
+    const QString source = documentPath();
+    if (source.isEmpty())
+        return refuse(tr("这个标签里没有打开的文档。"));
+    // The editor that writes the bytes. A fields-only save has no list to replay, but
+    // it still goes through DocumentEditor, because that is where the staged-name,
+    // overwrite-checked, qpdf-verified way out to a new file lives -- and a second copy
+    // of that walk is how a 另存为 would start meaning something different from a 保存.
+    DocumentEditor *session = editSession();
+    if (!session)
+        return refuse(tr("这份文档现在没法写出。"));
+
     const ReadingState state = readingState();
-    const QString changes = editor->pendingSummary();
-    const int pages = editor->pageCount();
+    const QString changes = pendingEditsSummary();
+    const int pages = backend->pageCount();
     QString writeError;
     QStringList written;
+
+    // The first of the two stages, beside the file being read: PDFium's own copy of the
+    // document with the reader's answers committed into it. Nothing here touches the
+    // source -- this is a hidden file of ours, and the writer below is the one that
+    // chooses the name the reader typed.
+    QString fieldStage;
+    {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        QString stageError;
+        const bool staged_ok = fields <= 0
+            || form->stageFieldValues(QFileInfo(source).absolutePath(), &fieldStage,
+                                      &stageError);
+        QApplication::restoreOverrideCursor();
+        if (!staged_ok)
+            return refuse(stageError);
+    }
 
     // Synchronous, with the wait cursor over it, rather than off the thread that
     // draws: QPDF reads the file's structure and copies its streams, and neither
@@ -1516,7 +1662,9 @@ bool DocumentTab::saveEditsTo(const QString &destination, QString *error)
     // one page-tree to read and one file to write, so the dialog this would go in
     // could only spin. docs/store-submission.md §10 has the measured cost.
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const bool done = editor->saveAs(destination, &writeError, &written);
+    const bool done = session->saveAs(destination, &writeError, &written, fieldStage);
+    if (!fieldStage.isEmpty())
+        QFile::remove(fieldStage);
     QApplication::restoreOverrideCursor();
     if (!done)
         return refuse(writeError);
@@ -1531,7 +1679,7 @@ bool DocumentTab::saveEditsTo(const QString &destination, QString *error)
     // The password rides along because the copy may well be locked: making the
     // reader type the key again, in a different box, one line after pressing
     // 确定, is a second chance to get it wrong rather than a feature.
-    const QString password = editor->passwordOfWrittenFile();
+    const QString password = session->passwordOfWrittenFile();
 
     // The new file has to be readable before this tab moves to it. If it is not,
     // the bytes are still there to look at but the document on screen -- and the

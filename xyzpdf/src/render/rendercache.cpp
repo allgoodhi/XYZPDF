@@ -101,3 +101,15 @@ void RenderCache::clear()
     // stamps around it, and restarting it would make the first entry after a
     // clear look as old as the entries before it.
 }
+
+void RenderCache::dropPage(int page)
+{
+    for (auto entry = entries.begin(); entry != entries.end();) {
+        if (entry.key().page != page) {
+            ++entry;
+            continue;
+        }
+        used -= bytesOf(entry->image);
+        entry = entries.erase(entry);
+    }
+}

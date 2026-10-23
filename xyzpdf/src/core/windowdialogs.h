@@ -59,6 +59,14 @@ QMessageBox::StandardButton question(
                                                                         | QMessageBox::No),
     QMessageBox::StandardButton defaultButton = QMessageBox::NoButton);
 
+// The close-with-unsaved-edits question: Save | Don't Save | Cancel, returned as the
+// standard buttons (QMessageBox::Save / Discard / Cancel) so callers and tests pick by
+// role. Only the Discard button is relabelled -- Qt's own catalogue words it
+// 丢弃 / Discard, "throw away", which is not the Windows answer to "save first?"
+// (不保存 / Don't Save). Found on screen by handoff-04 G2.
+QMessageBox::StandardButton askSaveBeforeClosing(QWidget *parent, const QString &title,
+                                                 const QString &text);
+
 // A question whose answers are the caller's own words -- 「另存为…」 and 「取消」,
 // where the standard buttons cannot say what the way out is. Returns the index of
 // the button pressed, or -1 when the box was closed without one. Window modal,

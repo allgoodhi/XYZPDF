@@ -21,12 +21,15 @@
 // F7-C adds the form layer's first half: FPDFDOC_InitFormFillEnvironment per
 // document and FPDF_FFLDraw after every page render, so a field's appearance
 // (the picture its author or PDFium generated) is now part of the page image.
-// Nothing is accepted as input and nothing is written: this is the "draw only"
-// step of pdfium-plan.md sec.7. Two limits still hold and are not bugs: the
-// value in a widget is PDFium's own face -- its font, size and alignment come
+// G1 adds the second half: the FORM_On* events, so a reader can fill a field and
+// see it, and FPDF_SaveAsCopy, so the filled document can be written out when
+// they ask (FormFill::stageFieldValues). Two limits still hold and are not bugs:
+// the value in a widget is PDFium's own face -- its font, size and alignment come
 // from its rules, not the original design -- and a document whose form is also
-// an XFA packet still shows only its field copy (sec.4.3; this build has no XFA
-// module). /NeedAppearances is not answered either.
+// an XFA packet still shows only its field copy, unfilled (sec.4.3; this build
+// has no XFA module). /NeedAppearances is not answered either. Scripts are not
+// either: this build has no V8, so a field's calculation, validation and
+// formatting actions never run.
 //
 // The bookmark read gives a title and a page and no place inside the page, which
 // is what the sidebar asks for; where the file said to look is carried by the
@@ -59,10 +62,11 @@
 #pragma once
 
 #include "document.h"
+#include "formfill.h"
 
 #include <memory>
 
-class PdfiumBackend : public Document
+class PdfiumBackend : public Document, public FormFill
 {
 public:
     PdfiumBackend();
@@ -84,6 +88,32 @@ public:
     Outline outline() const override;
     QVector<Link> links(int page) const override;
     DocMetadata metadata() const override;
+
+    bool fillable() const override;
+    Field fieldAt(int page, const Frame &frame, const QPointF &devicePoint) const override;
+    bool mouseMoved(int page, const Frame &frame, const QPointF &devicePoint) override;
+    bool mousePressed(int page, const Frame &frame, const QPointF &devicePoint,
+                      Qt::KeyboardModifiers modifiers) override;
+    bool mouseReleased(int page, const Frame &frame, const QPointF &devicePoint,
+                       Qt::KeyboardModifiers modifiers) override;
+    bool mouseDoubleClicked(int page, const Frame &frame, const QPointF &devicePoint) override;
+    bool keyPressed(int qtKey, Qt::KeyboardModifiers modifiers) override;
+    bool characterTyped(QChar character, Qt::KeyboardModifiers modifiers) override;
+    void commitText(const QString &text) override;
+    bool hasFocusedField() const override;
+    int focusedPage() const override;
+    Field focusedFieldType() const override;
+    bool focusedFieldRect(int *page, QRectF *userSpace) const override;
+    void releaseFocus() override;
+    bool canUndoFocused() const override;
+    bool canRedoFocused() const override;
+    void undoFocused() override;
+    void redoFocused() override;
+    QVector<Repaint> takeRepaints() override;
+    Pointer takeRequestedPointer() override;
+    int differingFieldCount() const override;
+    void forgetFieldValueSnapshots() override;
+    bool stageFieldValues(const QString &directory, QString *staged, QString *error) override;
 
 private:
     struct Impl;

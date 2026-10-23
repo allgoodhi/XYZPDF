@@ -692,6 +692,17 @@ public:
     // a reader gets on the way in has to be the stronger of the two.
     bool hasDynamicXfa() const { return sourceDynamicXfa; }
 
+    // Whether anything in this document asks for a script to run: an /AA additional-actions
+    // dictionary on a field or on the form, a /JavaScript name tree in the catalog, an
+    // /OpenAction that is a JavaScript action, or the /DC dynamic-calculation dictionary of
+    // PDF Part 2. Read in the same pass as the two above, and for the same reason: the
+    // sentence a reader of such a file gets at open time is a fact about the file, and this
+    // class keeps no parser open to be asked about it later.
+    //
+    // Not a claim about what *would* happen: this build has no V8 (docs/pdfium-plan.md sec.2,
+    // args.gn's `pdf_enable_v8=false`), so none of it runs whichever way this reads.
+    bool hasFormScript() const { return sourceHasScript; }
+
     // ---- what a request would cost the threads between annotations (§47) ----
     //
     // Three questions, all of them asked *before the press*, and all of them answered off the
@@ -1040,7 +1051,8 @@ public:
     // caller has to know that the name it handed over is not a file that now exists. On a
     // success this holds one path when nothing was split, so there is no case where the
     // answer is "several files, and here is a name that is none of them".
-    bool saveAs(const QString &path, QString *error, QStringList *written = nullptr);
+    bool saveAs(const QString &path, QString *error, QStringList *written = nullptr,
+                const QString &fieldValuesFrom = QString());
 
     // Writes the pending list to a hidden file in the source's own directory and checks
     // the result by opening it again with qpdf (it has to parse, and hold the page count
@@ -1048,7 +1060,23 @@ public:
     // last step, after every reader of the original has let go -- the order F8 fixes, and
     // the reason this stops at a file next to the destination rather than at one named by
     // a dialog. Refuses a split, which is several files and cannot be one replacement.
-    bool stageInPlace(QString *staged, QString *error);
+    //
+    // `fieldValuesFrom`, when it is given, is the file the replay reads instead of the
+    // source: the reader filled fields as well as changing pages, and PDFium has already
+    // written those answers into this hidden copy (handoff-04 G1 6's first stage). The
+    // pending list is still the reader's own requests, the page numbers in it are still
+    // the numbers of the file on screen, and the source's protection, form and XFA
+    // readings are still the ones taken at open -- what changes is only which bytes the
+    // operations are applied to.
+    bool stageInPlace(QString *staged, QString *error,
+                      const QString &fieldValuesFrom = QString());
+
+    // Check the shape of a staged file the way stageInPlace() checks the one it writes:
+    // it has to parse, and hold `expectedPages`. Shared because a fields-only save has a
+    // staged file too -- PDFium's, not qpdf's -- and "the bytes we are about to put in
+    // place are a PDF with the pages we think they are" is one rule with two writers.
+    static bool verifyStagedFile(const QString &path, int expectedPages,
+                                 const QString &password, QString *error);
 
     // The last step of an in-place save: ReplaceFileW over the source, which keeps
     // its ACL, attributes and creation time. Apart from stageInPlace() because the
@@ -1104,7 +1132,8 @@ private:
     // how a file gets written by one route and described by another.
     bool writeStaged(const PieceRange &keep, const QString &staged,
                      const std::vector<std::unique_ptr<QPDF>> &foreign,
-                     const Protection &protection, QString *error);
+                     const Protection &protection, QString *error,
+                     const QString &sourceOverride = QString());
     // Whether the pending list, as it stands, changes which pages a save writes or how they are
     // ordered -- the four kinds 删除 / 移动 / 合并 / 拆分 against the four that leave the collection
     // alone. Asked once per output file, and the only thing that decides whether an /AcroForm /XFA
@@ -1136,6 +1165,9 @@ private:
     // decides what to do with the packet from hasXfa() alone.
     bool sourceHasXfa = false;
     bool sourceDynamicXfa = false;
+    // Whether the file asks for scripts, read beside the two above for the sentence the
+    // reader of a scripted form gets at open time. See hasFormScript().
+    bool sourceHasScript = false;
     // The threads between annotations that the file on disk can resolve, as page pairs. Read in
     // open() for the same reason the four lines above are read there, and asked again by
     // repliesAtRiskForDelete() / repliesAtRiskForSplit() on every keystroke (§47).

@@ -53,6 +53,16 @@ public:
     // test is a function nobody is checking.
     void clear();
 
+    // One page's answers, now.
+    //
+    // A form edit changes what a page looks like without changing what an image is an
+    // answer to: the token is the same page, the same band, the same size, the same
+    // rotation, and token equality ignores the generation (see rendertoken.h), so the
+    // entry the cache holds for it is exactly the page from before the keystroke and
+    // would be handed straight back. This is the one place that knows to throw it --
+    // the view cannot, because the cache is the tab's.
+    void dropPage(int page);
+
     // What an image costs. A static so the tests and the cache cannot disagree
     // about the arithmetic.
     static qint64 bytesOf(const QImage &image);

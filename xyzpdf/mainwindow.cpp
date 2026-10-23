@@ -1616,6 +1616,18 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                    "（屏幕上看的是字段那份）。")
                     .arg(info.fileName()),
                 12000);
+        } else if (tab->hasFormFields() && tab->hasFormScript()) {
+            // Handoff-04 G1 5's short sentence. The build has no V8 (docs/pdfium-plan.md
+            // sec.2 reads args.gn's `pdf_enable_v8=false`), so a field's calculation,
+            // validation and formatting actions never run here -- and a reader whose
+            // total did not move would otherwise have no way to find out that the form
+            // was asking for arithmetic. Timed, and through setStatusMessage, because a
+            // notice that a toolbar hover can wipe is a notice nobody gets.
+            setStatusMessage(
+                tr("已打开 %1 —— 这份表单带着脚本，本版不运行它们：字段的计算、校验和格式化"
+                   "都不会发生。")
+                    .arg(info.fileName()),
+                8000);
         } else {
             setStatusMessage(tr("已打开 %1").arg(info.fileName()), 4000);
         }
@@ -1880,11 +1892,9 @@ bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
     // 「doc.pdf *」还带着没有写进任何文件的修改 hands the reader the same warning
     // twice in one sentence.
     const QString file = QFileInfo(tab->documentPath()).fileName();
-    const auto answer = WindowDialogs::question(
+    const auto answer = WindowDialogs::askSaveBeforeClosing(
         this, tr("还有没保存的修改"),
-        tr("「%1」还带着没有写进任何文件的修改：%2。\n\n要先保存吗？").arg(file, what),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Save);
+        tr("「%1」还带着没有写进任何文件的修改：%2。\n\n要先保存吗？").arg(file, what));
     if (answer == QMessageBox::Cancel)
         return false;
     if (answer == QMessageBox::Discard)
@@ -1913,11 +1923,9 @@ bool MainWindow::confirmDiscardingEditsInAllTabs()
     if (dirty.size() == 1)
         return confirmDiscardingEdits(dirty.first());
 
-    const auto answer = WindowDialogs::question(
+    const auto answer = WindowDialogs::askSaveBeforeClosing(
         this, tr("还有没保存的修改"),
-        tr("这个窗口里有 %n 个标签带着没有写进任何文件的修改。", nullptr, int(dirty.size())),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Save);
+        tr("这个窗口里有 %n 个标签带着没有写进任何文件的修改。", nullptr, int(dirty.size())));
     if (answer == QMessageBox::Cancel)
         return false;
     if (answer == QMessageBox::Discard)

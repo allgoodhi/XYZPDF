@@ -1962,7 +1962,9 @@ switch ($Mode) {
     # U+5B58) this needle list carried before it was run -- and the English one as |Save| |Cancel|
     # |Discard|, in that order.
     $answerSave = @('Save', (CjStr 0x4FDD, 0x5B58))
-    $answerDiscard = @('Discard', "Don't Save", (CjStr 0x4E22, 0x5F03))
+    # sec.118: the product now labels this button itself -- U+4E0D U+4FDD U+5B58 '(N)' / "Don't Save".
+    $answerDiscard = @("Don't Save", ((CjStr 0x4E0D, 0x4FDD, 0x5B58) + '(N)'), (CjStr 0x4E0D, 0x4FDD, 0x5B58),
+                       'Discard', (CjStr 0x4E22, 0x5F03))
     $answerCancel = @('Cancel', (CjStr 0x53D6, 0x6D88))
 
     function Prompt-Three([int]$procId, [string]$tag) {

@@ -1,5 +1,6 @@
 #include "windowdialogs.h"
 
+#include <QCoreApplication>
 #include <QInputDialog>
 #include <QPushButton>
 #include <QWidget>
@@ -81,6 +82,19 @@ QMessageBox::StandardButton question(QWidget *parent, const QString &title, cons
                                      QMessageBox::StandardButton defaultButton)
 {
     return ask(parent, QMessageBox::Question, title, text, buttons, defaultButton);
+}
+
+QMessageBox::StandardButton askSaveBeforeClosing(QWidget *parent, const QString &title,
+                                                 const QString &text)
+{
+    QMessageBox box(QMessageBox::Question, title, text, QMessageBox::NoButton, parent);
+    box.setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Save);
+    if (QAbstractButton *discard = box.button(QMessageBox::Discard))
+        discard->setText(QCoreApplication::translate("WindowDialogs", "不保存(&N)"));
+    makeWindowModal(&box, parent);
+    box.exec();
+    return box.standardButton(box.clickedButton());
 }
 
 int askChoice(QWidget *parent, const QString &title, const QString &text,

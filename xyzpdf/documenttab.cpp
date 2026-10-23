@@ -160,8 +160,7 @@ DocumentTab::DocumentTab(QWidget *parent)
     // two that hold the tab's foreground count, and the window asks that count
     // before taking the tab apart.
     jobs = std::make_unique<ForegroundJobs>();
-    output = std::make_unique<DocumentOutput>(
-        this, pageView, jobs.get(), openDocument, [this] { return hasFormFields(); });
+    output = std::make_unique<DocumentOutput>(this, pageView, jobs.get(), openDocument);
     connect(output.get(), &DocumentOutput::imageExportFinished, this,
             &DocumentTab::imageExportFinished);
 

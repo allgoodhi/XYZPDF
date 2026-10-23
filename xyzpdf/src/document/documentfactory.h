@@ -7,9 +7,10 @@
 // backend in a build, chosen when the program is built, and an interface that
 // could hand out two of them would invite a program that has to work with both.
 //
-// The choice arrived in F7-B and lives in the .cpp: one of the two headers is
-// included, the other is not compiled at all, and the program carries the engine
-// it was built with and no second one. F7-E removes Qt PDF and leaves one branch.
+// The choice arrived in F7-B as a build switch and stopped being one in F7-E:
+// there is one backend, it is PDFium, and this file is still the only place a
+// concrete Document is named -- which is what let the view, the two shell
+// handlers and the print and export paths change engines without changing.
 #pragma once
 
 #include <memory>

@@ -48,12 +48,18 @@ inline QString title()
 
 // The paragraph above the list. It says the one thing a person opening this
 // dialog most likely wants to know.
+//
+// Qt and PDFium used to be the same sentence, because Qt's PDF module carried
+// PDFium inside it. Since F7 the program links PDFium itself, so the two have
+// different licences and the paragraph has to say so: LGPL for Qt, BSD-3 for
+// PDFium, Apache-2.0 for QPDF, each one a library this program calls through an
+// interface rather than links into its own binary.
 inline QString summary()
 {
     return QCoreApplication::translate(
         "ThirdPartyNotices",
-        "XYZPDF 使用了下列开源组件。其中 Qt（含其中的 PDFium）以 LGPL 授权，"
-        "它编译为独立的动态库，XYZPDF 通过接口调用，并未与之静态链接——"
+        "XYZPDF 使用了下列开源组件：Qt（LGPL）、PDFium（BSD-3-Clause）与 QPDF（Apache-2.0）。"
+        "它们都编译为独立的动态库，XYZPDF 通过接口调用，并未与之静态链接——"
         "你可以用自行修改的版本替换它们。\n\n"
         "下方列出每个组件的许可证与源码地址。许可证全文可在此查看。");
 }

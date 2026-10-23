@@ -269,22 +269,15 @@ int main(int argc, char **argv)
         DeleteObject(bitmap);
     }
 
-    // The engine actually in this process, against the build's own switch. Same
-    // assertion as the preview handler's, and the same reason: a provider left on
-    // the other backend would still return a picture, so only the module identity
-    // can tell the two apart. Checked once, after a thumbnail has existed -- that
-    // is the call that makes a delay-loaded engine load.
-#if defined(XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+    // The engine actually in this process. Same assertion as the preview
+    // handler's, and the same reason: a provider wired back to the other engine
+    // would still return a picture, so only the module identity can tell the two
+    // apart. Checked once, after a thumbnail has existed -- that is the call that
+    // makes a delay-loaded engine load.
     check(GetModuleHandleW(L"pdfium.dll") != nullptr,
-          "the thumbnail's engine is pdfium.dll, as this build was configured");
+          "the thumbnail's engine is pdfium.dll");
     check(GetModuleHandleW(L"Qt6Pdf.dll") == nullptr,
           "and Qt's PDF engine is not loaded in this process");
-#else
-    check(GetModuleHandleW(L"Qt6Pdf.dll") != nullptr,
-          "the thumbnail's engine is Qt6Pdf.dll, as this build was configured");
-    check(GetModuleHandleW(L"pdfium.dll") == nullptr,
-          "and PDFium is not loaded in this process");
-#endif
 
     // Refusing a request is better than drawing a wrong one: at zero there is no
     // page to show, and a bitmap of an undefined size is how a tile ends up blank.

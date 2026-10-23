@@ -13,8 +13,7 @@
 #include <QRadioButton>
 #include <QVBoxLayout>
 
-PrintDialog::PrintDialog(QWidget *parent, QPrinter *printer, int currentPage, int pageCount,
-                         bool hasFormFields)
+PrintDialog::PrintDialog(QWidget *parent, QPrinter *printer, int currentPage, int pageCount)
     : QDialog(parent)
     , printer(printer)
     , pageTotal(pageCount)
@@ -27,15 +26,6 @@ PrintDialog::PrintDialog(QWidget *parent, QPrinter *printer, int currentPage, in
     resize(440, 360);
 
     auto *layout = new QVBoxLayout(this);
-
-    // The fields are drawn by neither the view nor the print path (§82/§94), so
-    // a filled form comes out blank here. The open already says so in the status
-    // line; this is the window where the reader is about to spend paper on it.
-    if (hasFormFields) {
-        auto *notice = new QLabel(tr("这份文档含表单字段，本版打印出来字段里是空的。"), this);
-        notice->setWordWrap(true);
-        layout->addWidget(notice);
-    }
 
     // ---- 页面范围 ----
     {

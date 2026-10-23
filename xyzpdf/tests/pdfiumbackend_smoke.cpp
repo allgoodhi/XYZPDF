@@ -1,32 +1,36 @@
-// The two document engines, read on the same files and compared page by page.
+// The document engine, asserted on its own rather than against a second one.
 //
-// docs/pdfium-plan.md sec.10 F7-B asks for "同一份文件两条路逐档对数（C6 那种）" and
-// sec.5.2 names what the F5 probe left unmeasured: C6 compared only the first page
-// of each fixture, while the layout uses every page. So this walks every page of
-// every committed fixture -- page count, page size, text -- and renders a sample
-// of pages through both backends at the same size. The comparisons are equalities
-// with a stated tolerance, not a threshold somebody can raise: the only reason
-// any of them is allowed to differ at all is sec.5.1's measurement that the two
-// rasterisers disagree by a few counts per channel on text and vectors, and by
-// nothing on bitmap pages.
+// ---- what this file is now ----
 //
-// ---- the second half is not a comparison ----
+// It began in F7-B as the comparison docs/pdfium-plan.md sec.10 asked for: the
+// same file read through both backends, page count, every page size, the text of
+// every page, and a render of every page compared pixel by pixel. F7-E retired
+// the engine on the left of that comparison, and with it the columns that needed
+// two answers to be read against. What is left is what a single engine can be
+// held to without one: every page of every committed fixture opens, is sized, is
+// read and is drawn; the geometry the view depends on (rotation, and a band of a
+// page at 2x) lands where the page itself lands; a failed load gets a status and
+// a sentence; and the file handle behaves the way F7 changed it to.
+//
+// The pixel numbers that used to live in the comparison are not lost: they are in
+// docs/pdfium-plan.md sec.5.1, measured by the F5 probe, and the ones that decided
+// the swap are quoted from there. This file no longer prints them, because there
+// is nothing here to print them against.
+//
+// ---- the second half is the reason the file opened at all ----
 //
 // docs/handoff-03.md F7 item 3 / docs/pdfium-plan.md R7 changes how the file is
 // opened: our own handle with FILE_SHARE_READ | WRITE | DELETE, so that a save by
-// replacement (F8) can move a new file over the one on screen. Qt PDF cannot be
-// asked for that, so there is no column to compare it against -- these are
-// assertions about the PDFium backend itself, and about the notice above the page
-// still firing after the file is deleted or replaced. The control for the handle
-// half is in the record: removing FILE_SHARE_DELETE from pdfiumbackend.cpp turns
-// the delete and the replace checks red (the watcher's own file is not held open,
-// so it stays green -- it is asserting FileChangeNotice, not our handle).
+// replacement (F8) can move a new file over the one on screen. Those are
+// assertions about the PDFium backend with no other engine to compare them to:
+// the control for the handle half is in the record -- removing FILE_SHARE_DELETE
+// from pdfiumbackend.cpp turns the delete and the replace checks red (the
+// watcher's own file is not held open, so it stays green: it is asserting
+// FileChangeNotice, not our handle).
 //
-// Run by tools/build_all_tests.py like every other test, and only created when a
-// PDFium release was found (see the target's guard in CMakeLists.txt).
+// Run by tools/build_all_tests.py like every other test.
 
 #include "../src/document/pdfiumbackend.h"
-#include "../src/document/qtpdfbackend.h"
 #include "../src/services/filechangenotice.h"
 
 #include <QApplication>
@@ -35,7 +39,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
-#include <QPainter>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QWidget>
@@ -75,82 +78,31 @@ bool close(double left, double right, double tolerance = 0.01)
     return std::fabs(left - right) <= tolerance;
 }
 
-// A rendered page with the paper it is going to be looked at on. Qt PDF hands
-// back transparent pixels where the page paints nothing; PdfiumBackend fills
-// white, because PDFium does not fill the buffer it is given and uninitialised
-// memory is not paper (docs/pdfium-plan.md sec.3, C8). Sec.5.1 compared the two
-// the same way, so the difference that remains is the rasteriser's, not the
-// background's.
-QImage onPaper(const QImage &image)
+// The ink on a page: how much of it, and where. A page that renders to a blank
+// rectangle of the right size passes every size check in this file, which is how
+// the F5 probe first counted the paper itself as ink (docs/pdfium-plan.md sec.3,
+// C8) and how render_smoke's transparent-image bug survived two milestones.
+int inkPixels(const QImage &image, int threshold = 250)
 {
-    if (image.isNull())
-        return image;
-    QImage papered(image.size(), QImage::Format_RGB32);
-    papered.fill(Qt::white);
-    QPainter painter(&papered);
-    painter.drawImage(0, 0, image);
-    return papered;
-}
-
-struct Difference
-{
-    bool sameSize = false;
-    int differing = 0;
-    int maxChannel = 0;
-};
-
-Difference comparePixels(const QImage &left, const QImage &right)
-{
-    Difference result;
-    if (left.isNull() || right.isNull() || left.size() != right.size())
-        return result;
-    result.sameSize = true;
-    const QImage a = onPaper(left).convertToFormat(QImage::Format_RGB32);
-    const QImage b = onPaper(right).convertToFormat(QImage::Format_RGB32);
-    for (int y = 0; y < a.height(); ++y) {
-        const auto *lineA = reinterpret_cast<const QRgb *>(a.constScanLine(y));
-        const auto *lineB = reinterpret_cast<const QRgb *>(b.constScanLine(y));
-        for (int x = 0; x < a.width(); ++x) {
-            const int red = qAbs(qRed(lineA[x]) - qRed(lineB[x]));
-            const int green = qAbs(qGreen(lineA[x]) - qGreen(lineB[x]));
-            const int blue = qAbs(qBlue(lineA[x]) - qBlue(lineB[x]));
-            const int worst = qMax(red, qMax(green, blue));
-            if (worst != 0)
-                ++result.differing;
-            result.maxChannel = qMax(result.maxChannel, worst);
-        }
+    int ink = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x)
+            if (qGray(line[x]) < threshold)
+                ++ink;
     }
-    return result;
+    return ink;
 }
 
-// Sec.5.1 measured at most 3/255 on the seven synthetic text and vector fixtures
-// and 0 on the two bitmap pages. The tolerance here is 8 rather than 3 so a
-// different-but-correct rasteriser build is not called a defect; a wrong page,
-// a wrong scale or a wrong rotation is hundreds, not single digits.
-constexpr int kRasterTolerance = 8;
-
-QString describeDifference(const Difference &difference)
+QRect inkBox(const QImage &image)
 {
-    return QStringLiteral("%1 pixels differ, max channel %2")
-        .arg(difference.differing)
-        .arg(difference.maxChannel);
-}
-
-// The ink on a page, so a band can be aimed at something. A band of blank paper
-// is not a test -- it is white pixels compared with white pixels whatever the
-// origin was. The F7-B control run that flipped start_y's sign stayed green on
-// the original fixed band (y=500 of a page whose text stops above it), which is
-// how this helper came to exist.
-QRect inkBox(const QImage &page)
-{
-    const QImage papered = onPaper(page).convertToFormat(QImage::Format_RGB32);
-    int left = papered.width();
-    int top = papered.height();
+    int left = image.width();
+    int top = image.height();
     int right = -1;
     int bottom = -1;
-    for (int y = 0; y < papered.height(); ++y) {
-        const auto *line = reinterpret_cast<const QRgb *>(papered.constScanLine(y));
-        for (int x = 0; x < papered.width(); ++x) {
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
             if (qGray(line[x]) >= 250)
                 continue;
             left = qMin(left, x);
@@ -164,22 +116,61 @@ QRect inkBox(const QImage &page)
     return QRect(QPoint(left, top), QPoint(right, bottom));
 }
 
-// ---- the page-by-page comparison ----
+// How two pictures of the same thing differ, which is asked here of one engine
+// with itself: a band of a page against the same page rendered whole and cropped.
+struct Difference
+{
+    bool sameSize = false;
+    int differing = 0;
+    int maxChannel = 0;
+};
+
+Difference comparePixels(const QImage &left, const QImage &right)
+{
+    Difference result;
+    if (left.isNull() || right.isNull() || left.size() != right.size())
+        return result;
+    result.sameSize = true;
+    const QImage a = left.convertToFormat(QImage::Format_RGB32);
+    const QImage b = right.convertToFormat(QImage::Format_RGB32);
+    for (int y = 0; y < a.height(); ++y) {
+        const auto *lineA = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+        const auto *lineB = reinterpret_cast<const QRgb *>(b.constScanLine(y));
+        for (int x = 0; x < a.width(); ++x) {
+            const int worst = qMax(qRed(lineA[x]) - qRed(lineB[x]),
+                                   qMax(qGreen(lineA[x]) - qGreen(lineB[x]),
+                                        qBlue(lineA[x]) - qBlue(lineB[x])));
+            const int distance = qAbs(worst);
+            if (distance != 0)
+                ++result.differing;
+            result.maxChannel = qMax(result.maxChannel, distance);
+        }
+    }
+    return result;
+}
+
+QString describeDifference(const Difference &difference)
+{
+    return QStringLiteral("%1 pixels differ, max channel %2")
+        .arg(difference.differing)
+        .arg(difference.maxChannel);
+}
+
+// ---- the page-by-page walk ----
 
 struct Sample
 {
     const char *name;
-    // Bitmap-only pages: same input pixels, so the two rasterisers have no
-    // antialiasing to disagree about and the comparison is allowed no slack at
-    // all. This is sec.5.1's pair of zeroes, turned into a rule.
-    bool bitmapOnly;
+    // Pages with a text layer. A scan and a blank page answer "" for every page,
+    // and a reader that says otherwise is reading something that is not there.
+    bool hasText;
     // Rendered pages, spread across the document. All of them for a small
-    // fixture; a sample for huge.pdf, where a full pair of renders per page is
-    // minutes of work for a number that does not change across pages.
+    // fixture; a sample for huge.pdf, where a full render per page is minutes of
+    // work for a number that does not change across pages.
     int renders;
 };
 
-void compareDocument(const QString &directory, const Sample &sample)
+void checkDocument(const QString &directory, const Sample &sample)
 {
     const QString path = fixture(directory, QString::fromLatin1(sample.name));
     if (!QFileInfo::exists(path)) {
@@ -187,187 +178,143 @@ void compareDocument(const QString &directory, const Sample &sample)
         return;
     }
 
-    QtPdfBackend qt;
     PdfiumBackend pdfium;
-    const Document::Status qtStatus = qt.load(path, QString());
-    const Document::Status pdfiumStatus = pdfium.load(path, QString());
-    check(qtStatus == Document::Status::Ready,
-          QStringLiteral("%1 opens through Qt PDF").arg(sample.name));
-    check(pdfiumStatus == Document::Status::Ready,
-          QStringLiteral("%1 opens through PDFium (%2)").arg(sample.name).arg(pdfiumStatus ==
-                  Document::Status::Ready ? QStringLiteral("ready")
-                                          : pdfium.lastError()));
-    if (qtStatus != Document::Status::Ready || pdfiumStatus != Document::Status::Ready)
+    const Document::Status status = pdfium.load(path, QString());
+    check(status == Document::Status::Ready,
+          QStringLiteral("%1 opens (%2)").arg(sample.name).arg(
+              status == Document::Status::Ready ? QStringLiteral("ready")
+                                                : pdfium.lastError()));
+    if (status != Document::Status::Ready)
         return;
 
-    const int pages = qt.pageCount();
-    check(pdfium.pageCount() == pages,
-          QStringLiteral("%1: both engines count %2 pages (PDFium says %3)")
-              .arg(sample.name)
-              .arg(pages)
-              .arg(pdfium.pageCount()));
-    if (pdfium.pageCount() != pages)
-        return;
+    const int pages = pdfium.pageCount();
+    check(pages > 0, QStringLiteral("%1 has pages to count (%2)").arg(sample.name).arg(pages));
 
-    // ---- every page's size and text ----
-    //
-    // The size walk is the row sec.5.2 says C6 never took: it looked at page one
-    // and the layout uses all of them. The text walk is exact; the two backends
-    // are reading the same text page out of the same PDFium, so anything but an
-    // identical string is a real difference and not a tolerance question.
-    QSizeF smallestDifference;
-    int textMismatches = 0;
+    // Every page sized, and every page's text asked for: the size walk is the row
+    // sec.5.2 says the F5 probe never took (it looked at page one, and the layout
+    // uses all of them), and asking every page is what makes a per-page cache bug
+    // show up on the page nobody looks at first.
+    int withText = 0;
     for (int page = 0; page < pages; ++page) {
-        const QSizeF qtSize = qt.pageSize(page);
-        const QSizeF pdfiumSize = pdfium.pageSize(page);
-        if (!close(qtSize.width(), pdfiumSize.width())
-            || !close(qtSize.height(), pdfiumSize.height())) {
-            check(false, QStringLiteral("%1 page %2: Qt says %3x%4, PDFium says %5x%6")
-                             .arg(sample.name)
-                             .arg(page + 1)
-                             .arg(qtSize.width())
-                             .arg(qtSize.height())
-                             .arg(pdfiumSize.width())
-                             .arg(pdfiumSize.height()));
-        }
-
-        const QString qtText = qt.text(page);
-        const QString pdfiumText = pdfium.text(page);
-        if (qtText != pdfiumText) {
-            ++textMismatches;
-            if (textMismatches <= 3) {
-                check(false, QStringLiteral("%1 page %2: text differs (Qt %3 chars, PDFium %4)")
-                                 .arg(sample.name)
-                                 .arg(page + 1)
-                                 .arg(qtText.size())
-                                 .arg(pdfiumText.size()));
-            }
-        }
+        const QSizeF size = pdfium.pageSize(page);
+        check(size.width() > 0 && size.height() > 0,
+              QStringLiteral("%1 page %2 has a size (%3x%4)")
+                  .arg(sample.name)
+                  .arg(page + 1)
+                  .arg(size.width())
+                  .arg(size.height()));
+        if (!pdfium.text(page).isEmpty())
+            ++withText;
     }
-    check(textMismatches == 0,
-          QStringLiteral("%1: all %2 pages have the same text in both engines (%3 differ)")
+    check(sample.hasText ? withText > 0 : withText == 0,
+          QStringLiteral("%1: %2 of %3 pages have a text layer, and the fixture is %4")
               .arg(sample.name)
+              .arg(withText)
               .arg(pages)
-              .arg(textMismatches));
+              .arg(sample.hasText ? QStringLiteral("supposed to") : QStringLiteral("not")));
 
     // ---- the rendered pages ----
     const int toRender = qMin(sample.renders, pages);
     const int step = qMax(1, pages / toRender);
     int rendered = 0;
-    Difference worst;
+    int empties = 0;
     for (int page = 0; page < pages && rendered < toRender; page += step) {
         const QSizeF points = pdfium.pageSize(page);
         const QSize pixels(qRound(points.width() * 96.0 / 72.0),
                            qRound(points.height() * 96.0 / 72.0));
         // The view's options: annotations on, subpixel text off (PageRenderer
-        // never asks for it; image export and print explicitly do not). Asking
-        // for LCD text here measured a max channel difference of 84/85 rather
-        // than sec.5.1's 3 -- a comparison of a route the product does not take.
+        // never asks for it; image export and print explicitly do not).
         RenderOptions options;
-
-        const QImage qtImage = qt.render(page, pixels, options);
-        const QImage pdfiumImage = pdfium.render(page, pixels, options);
-        check(!qtImage.isNull(),
-              QStringLiteral("%1 page %2 renders through Qt PDF").arg(sample.name).arg(page + 1));
-        check(!pdfiumImage.isNull(), QStringLiteral("%1 page %2 renders through PDFium")
-                                         .arg(sample.name)
-                                         .arg(page + 1));
-        if (qtImage.isNull() || pdfiumImage.isNull())
+        const QImage image = pdfium.render(page, pixels, options);
+        check(!image.isNull(),
+              QStringLiteral("%1 page %2 renders").arg(sample.name).arg(page + 1));
+        check(image.size() == pixels,
+              QStringLiteral("%1 page %2: the image is %3x%4, asked for %5x%6")
+                  .arg(sample.name)
+                  .arg(page + 1)
+                  .arg(image.width())
+                  .arg(image.height())
+                  .arg(pixels.width())
+                  .arg(pixels.height()));
+        if (image.isNull())
             continue;
-
-        check(qtImage.size() == pixels,
-              QStringLiteral("%1 page %2: Qt image is %3x%4, asked for %5x%6")
-                  .arg(sample.name).arg(page + 1)
-                  .arg(qtImage.width()).arg(qtImage.height())
-                  .arg(pixels.width()).arg(pixels.height()));
-        check(pdfiumImage.size() == pixels,
-              QStringLiteral("%1 page %2: PDFium image is %3x%4, asked for %5x%6")
-                  .arg(sample.name).arg(page + 1)
-                  .arg(pdfiumImage.width()).arg(pdfiumImage.height())
-                  .arg(pixels.width()).arg(pixels.height()));
-
-        const Difference difference = comparePixels(qtImage, pdfiumImage);
-        check(difference.sameSize,
-              QStringLiteral("%1 page %2: both images are the same size")
-                  .arg(sample.name).arg(page + 1));
-        const int allowed = sample.bitmapOnly ? 0 : kRasterTolerance;
-        check(difference.maxChannel <= allowed,
-              QStringLiteral("%1 page %2: %3 (allowed %4)")
-                  .arg(sample.name).arg(page + 1)
-                  .arg(describeDifference(difference))
-                  .arg(allowed));
-        worst.differing = qMax(worst.differing, difference.differing);
-        worst.maxChannel = qMax(worst.maxChannel, difference.maxChannel);
+        // Some ink, and not nothing but ink: a page that comes back flat is the
+        // failure this file exists to catch, and a page that comes back as one
+        // solid block is the same failure the other way round -- that is sec.3's
+        // C8, where the probe counted the paper itself as ink because PDFium does
+        // not fill the buffer it is given. The measured fractions across these
+        // fixtures run from 0.2% (a line of text) to 38% (the panel page), so the
+        // claim pinned here is "there is ink and there is paper", and the fraction
+        // is printed rather than judged.
+        const int ink = inkPixels(image);
+        const int total = image.width() * image.height();
+        if (ink == 0)
+            ++empties;
+        check(ink > 0 && ink < total,
+              QStringLiteral("%1 page %2: %3 of %4 pixels are ink, and the rest is paper")
+                  .arg(sample.name)
+                  .arg(page + 1)
+                  .arg(ink)
+                  .arg(total));
         ++rendered;
     }
-    note(QStringLiteral("  %1: %2 pages, %3 rendered; worst %4")
+    check(empties == 0,
+          QStringLiteral("%1: none of the %2 pages rendered came back empty").arg(sample.name)
+              .arg(rendered));
+    note(QStringLiteral("  %1: %2 pages, %3 rendered, %4 pages with text")
              .arg(sample.name)
              .arg(pages)
              .arg(rendered)
-             .arg(describeDifference(worst)));
+             .arg(withText));
 }
 
 // ---- rotation ----
 //
 // rotated.pdf is stored 300x400 and marked /Rotate 90, and FPDF_GetPageSizeByIndexF
-// already answers 400x300 (measured before the backend was written). So pageSize
-// must not rotate a second time, and a render at rotation 0 must look like Qt's.
-// Rotation 90 is the caller's rotation on top of the page's own, and both engines
-// turn it clockwise into a 300x400 image.
-void compareRotation(const QString &directory)
+// already answers 400x300. So pageSize must not rotate a second time; and a page
+// turned 90 degrees by the caller -- on top of the page's own rotation -- is a
+// 300x400 image, because the renderer is told to turn it and not handed a
+// rectangle that was already the wrong shape.
+void checkRotation(const QString &directory)
 {
     const QString path = fixture(directory, QStringLiteral("rotated.pdf"));
-    QtPdfBackend qt;
     PdfiumBackend pdfium;
-    check(qt.load(path, QString()) == Document::Status::Ready, "rotated.pdf opens through Qt PDF");
     check(pdfium.load(path, QString()) == Document::Status::Ready,
           "rotated.pdf opens through PDFium");
-    if (qt.pageCount() != 1 || pdfium.pageCount() != 1) {
-        check(false, "rotated.pdf has one page in both engines");
+    if (pdfium.pageCount() != 1) {
+        check(false, "rotated.pdf has one page");
         return;
     }
 
-    const QSizeF qtSize = qt.pageSize(0);
-    const QSizeF pdfiumSize = pdfium.pageSize(0);
-    check(close(qtSize.width(), 400) && close(qtSize.height(), 300),
-          QStringLiteral("rotated.pdf is 400x300 through Qt PDF (%1x%2)")
-              .arg(qtSize.width()).arg(qtSize.height()));
-    check(close(pdfiumSize.width(), 400) && close(pdfiumSize.height(), 300),
-          QStringLiteral("rotated.pdf is 400x300 through PDFium (%1x%2)")
-              .arg(pdfiumSize.width()).arg(pdfiumSize.height()));
+    const QSizeF size = pdfium.pageSize(0);
+    check(close(size.width(), 400) && close(size.height(), 300),
+          QStringLiteral("rotated.pdf is 400x300 (%1x%2), the way up it is read")
+              .arg(size.width())
+              .arg(size.height()));
 
     RenderOptions upright;
-    const QImage qtUpright = qt.render(0, QSize(400, 300), upright);
-    const QImage pdfiumUpright = pdfium.render(0, QSize(400, 300), upright);
-    check(!qtUpright.isNull() && !pdfiumUpright.isNull(),
-          "rotated.pdf renders upright through both engines");
-    const Difference uprightDifference = comparePixels(qtUpright, pdfiumUpright);
-    check(uprightDifference.sameSize && uprightDifference.maxChannel <= kRasterTolerance,
-          QStringLiteral("rotated.pdf at rotation 0: %1")
-              .arg(describeDifference(uprightDifference)));
+    const QImage uprightImage = pdfium.render(0, QSize(400, 300), upright);
+    check(!uprightImage.isNull() && uprightImage.size() == QSize(400, 300),
+          "and it renders upright at the size asked for");
 
     RenderOptions turned = upright;
     turned.rotationDegrees = 90;
-    const QImage qtTurned = qt.render(0, QSize(300, 400), turned);
-    const QImage pdfiumTurned = pdfium.render(0, QSize(300, 400), turned);
-    check(qtTurned.size() == QSize(300, 400),
-          "Qt PDF turns rotated.pdf into a 300x400 image at 90 degrees");
-    check(pdfiumTurned.size() == QSize(300, 400),
-          "PDFium turns rotated.pdf into a 300x400 image at 90 degrees");
-    const Difference turnedDifference = comparePixels(qtTurned, pdfiumTurned);
-    check(turnedDifference.sameSize && turnedDifference.maxChannel <= kRasterTolerance,
-          QStringLiteral("rotated.pdf at 90 degrees: %1")
-              .arg(describeDifference(turnedDifference)));
+    const QImage turnedImage = pdfium.render(0, QSize(300, 400), turned);
+    check(turnedImage.size() == QSize(300, 400),
+          QStringLiteral("a 90-degree turn gives a 300x400 image (%1x%2)")
+              .arg(turnedImage.width())
+              .arg(turnedImage.height()));
 
-    // A rotation argument both engines ignored would compare equal too, so the
-    // same page at 180 degrees -- the same image size, so the comparison is not
-    // skipped for a shape mismatch -- has to be a different picture.
+    // A rotation argument the engine ignored would still give the right size, so
+    // the same page at 180 degrees -- the same image size as the upright one, so
+    // nothing is skipped for a shape mismatch -- has to be a different picture.
     RenderOptions upsideDown = upright;
     upsideDown.rotationDegrees = 180;
-    const QImage qtUpsideDown = qt.render(0, QSize(400, 300), upsideDown);
-    const Difference upsideDownDifference = comparePixels(qtUpright, qtUpsideDown);
-    check(upsideDownDifference.sameSize && upsideDownDifference.maxChannel > 0,
-          "180 degrees is a different picture from 0 degrees");
+    const QImage upsideDownImage = pdfium.render(0, QSize(400, 300), upsideDown);
+    const Difference difference = comparePixels(uprightImage, upsideDownImage);
+    check(difference.sameSize && difference.maxChannel > 0,
+          QStringLiteral("180 degrees is a different picture from 0 degrees: %1")
+              .arg(describeDifference(difference)));
 }
 
 // ---- a band of a page ----
@@ -375,35 +322,24 @@ void compareRotation(const QString &directory)
 // The view at 800% asks for the part of the page on screen: `clip` is in the
 // scaled page's grid, the image is the band's size. A backend that passes the
 // band's size to the library gets a squashed page instead, and nothing on screen
-// says which happened until the picture is wrong. So aim a band at real ink,
-// require PDFium's band to be its own full render cropped to exactly that
-// rectangle, and require it to be what Qt PDF's whole-page render has there.
-//
-// Qt's own band is size-checked only: at 2x it lands one pixel up-left of its
-// own crop and rasterises the glyphs at that phase (max 140). That is a Qt
-// quirk, and the blank band this test used to aim at hid it -- see the note at
-// the comparison.
-void compareBand(const QString &directory)
+// says which happened until the picture is wrong. So aim a band at real ink and
+// require the band to be the same page's own picture cropped to exactly that
+// rectangle -- the one claim a single engine can make about its own geometry.
+void checkBand(const QString &directory)
 {
     const QString path = fixture(directory, QStringLiteral("text.pdf"));
-    QtPdfBackend qt;
     PdfiumBackend pdfium;
-    check(qt.load(path, QString()) == Document::Status::Ready, "text.pdf opens through Qt PDF");
     check(pdfium.load(path, QString()) == Document::Status::Ready,
           "text.pdf opens through PDFium");
-    if (qt.pageCount() < 1 || pdfium.pageCount() < 1)
+    if (pdfium.pageCount() < 1)
         return;
 
     const QSize whole(1190, 1684); // A4 at 2x the 96 dpi screen scale
-    // The product's defaults: annotations on, no LCD text. The LCD flag changes
-    // text rendering by tens of counts between the engines (measured while this
-    // test was being written: max 84-85), which is a different question from
-    // whether a band lands where the view will put it.
     RenderOptions options;
-    const QImage qtWhole = qt.render(0, whole, options);
-    const QImage pdfiumWhole = pdfium.render(0, whole, options);
+    const QImage wholeImage = pdfium.render(0, whole, options);
+    check(!wholeImage.isNull(), "text.pdf renders at the banding scale");
 
-    const QRect ink = inkBox(qtWhole);
+    const QRect ink = inkBox(wholeImage);
     check(ink.isValid(), "text.pdf's first page has ink to aim a band at");
     if (!ink.isValid())
         return;
@@ -426,43 +362,28 @@ void compareBand(const QString &directory)
     RenderOptions clipped = options;
     clipped.scaledSize = whole;
     clipped.clip = band;
-    const QImage qtBand = qt.render(0, band.size(), clipped);
-    const QImage pdfiumBand = pdfium.render(0, band.size(), clipped);
+    const QImage bandImage = pdfium.render(0, band.size(), clipped);
+    check(bandImage.size() == band.size(),
+          QStringLiteral("the band comes back at the band's size (%1x%2)")
+              .arg(bandImage.width())
+              .arg(bandImage.height()));
 
-    // Everything below is white-on-white if the band happens to miss the ink,
-    // so say first that it does not.
+    // Everything below is white-on-white if the band happens to miss the ink, so
+    // say first that it does not.
     QImage paper(band.size(), QImage::Format_RGB32);
     paper.fill(Qt::white);
-    check(comparePixels(pdfiumBand, paper).maxChannel > kRasterTolerance,
+    check(comparePixels(bandImage, paper).maxChannel > 8,
           "the band holds ink, so a wrong origin has something to move");
 
-    check(qtBand.size() == band.size(),
-          QStringLiteral("Qt PDF returns the band at the band's size (%1x%2)")
-              .arg(qtBand.width()).arg(qtBand.height()));
-    check(pdfiumBand.size() == band.size(),
-          QStringLiteral("PDFium returns the band at the band's size (%1x%2)")
-              .arg(pdfiumBand.width()).arg(pdfiumBand.height()));
+    const Difference crop = comparePixels(wholeImage.copy(band), bandImage);
+    check(crop.sameSize && crop.maxChannel <= 8,
+          QStringLiteral("the band is the page's own picture cropped: %1")
+              .arg(describeDifference(crop)));
 
-    // Qt's band is checked for its size only. Measured while this test was
-    // written: at 2x Qt's band path puts the ink one pixel up-left of its own
-    // full render's crop and rasterises the glyphs at that other phase (max
-    // 140), so "Qt band == Qt crop" is false on the stock backend -- the old,
-    // blank band hid it. Encoding that would only pin a Qt quirk; what has to
-    // hold is that PDFium's band is the page's picture, and the page itself is
-    // compared against Qt above.
-    const Difference pdfiumCrop = comparePixels(pdfiumWhole.copy(band), pdfiumBand);
-    check(pdfiumCrop.sameSize && pdfiumCrop.maxChannel <= kRasterTolerance,
-          QStringLiteral("PDFium's band is its own full render cropped: %1")
-              .arg(describeDifference(pdfiumCrop)));
-    const Difference across = comparePixels(qtWhole.copy(band), pdfiumBand);
-    check(across.sameSize && across.maxChannel <= kRasterTolerance,
-          QStringLiteral("PDFium's band is where Qt PDF's page has that rectangle: %1")
-              .arg(describeDifference(across)));
-
-    // The band must not be a page shrunk to 900x200: that would also be 900x200
-    // and would also be "stable", so compare against a squashed full page.
-    const QImage squashed = pdfiumWhole.scaled(band.size());
-    check(comparePixels(pdfiumBand, squashed).maxChannel > kRasterTolerance,
+    // The band must not be a page shrunk to 900x200: that would also be the right
+    // size and would also be "stable", so compare against a squashed full page.
+    const QImage squashed = wholeImage.scaled(band.size());
+    check(comparePixels(bandImage, squashed).maxChannel > 8,
           "the band is a crop of the page, not the whole page scaled down");
 }
 
@@ -626,10 +547,9 @@ void checkWatcherAfterChange(const QString &directory)
 
 // ---- the sentences a failed load gets ----
 //
-// Not a comparison: Qt PDF and PDFium word these differently and both are
-// allowed to. What is pinned is the shape the dialog depends on -- the right
-// status, and a sentence rather than an empty string (document.h says a backend
-// that can say no more must say that).
+// What is pinned is the shape the dialog depends on: the right status, and a
+// sentence rather than an empty string, because document.h says a backend that
+// can say no more must say that -- an empty one turns into an empty dialog.
 void checkFailures(const QString &directory)
 {
     PdfiumBackend missing;
@@ -665,21 +585,26 @@ int main(int argc, char **argv)
                                        : QStringLiteral("tests/fixtures");
 
     const Sample samples[] = {
-        {"text.pdf", false, 8},
-        {"table.pdf", false, 8},
-        {"colored.pdf", false, 8},
-        {"graphic.pdf", false, 8},
-        {"mixed.pdf", false, 8},
-        {"picture.pdf", true, 8},
-        {"scan.pdf", true, 3},
-        {"many-pages.pdf", false, 8},
-        {"huge.pdf", false, 8},
+        {"text.pdf", true, 8},
+        {"table.pdf", true, 8},
+        {"colored.pdf", true, 8},
+        {"graphic.pdf", true, 8},
+        {"mixed.pdf", true, 8},
+        {"lines.pdf", true, 8},
+        {"picture.pdf", false, 8},
+        {"scan.pdf", false, 3},
+        {"many-pages.pdf", true, 8},
+        {"huge.pdf", true, 8},
+        // The two files F7-E added for the reads that had nothing to be read
+        // from before: one that describes itself, one with links on it.
+        {"info.pdf", true, 2},
+        {"links.pdf", true, 2},
     };
     for (const Sample &sample : samples)
-        compareDocument(directory, sample);
+        checkDocument(directory, sample);
 
-    compareRotation(directory);
-    compareBand(directory);
+    checkRotation(directory);
+    checkBand(directory);
     checkFailures(directory);
 
     checkDeleteWhileOpen(directory);
@@ -687,7 +612,7 @@ int main(int argc, char **argv)
     checkWatcherAfterChange(directory);
 
     if (failures == 0) {
-        std::cout << "pdfium backend: all comparisons passed\n";
+        std::cout << "pdfium backend: all checks passed\n";
         return 0;
     }
     std::cerr << failures << " failure(s)\n";

@@ -38,7 +38,33 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(ROOT, 'tests', 'fixtures')
 
 
-def makePdf(pages):
+def assemble(objects, catalog, info=None):
+    """The bytes of a PDF from its object list, its catalog and an optional /Info.
+
+    Split out of makePdf because a fixture that is not a page of text -- the link
+    annotation one, which has to place its objects in a particular order -- needs
+    the same byte-accurate xref, and a second copy of that is a second thing to
+    get wrong.
+    """
+    body = bytearray(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
+    offsets = [0]
+    for number, content in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += b'%d 0 obj\n' % number + content + b'\nendobj\n'
+
+    xref_at = len(body)
+    body += b'xref\n0 %d\n' % (len(objects) + 1)
+    body += b'0000000000 65535 f \n'
+    for offset in offsets[1:]:
+        body += b'%010d 00000 n \n' % offset
+    trailer = b'trailer\n<< /Size %d /Root %d 0 R' % (len(objects) + 1, catalog)
+    if info is not None:
+        trailer += b' /Info %d 0 R' % info
+    body += trailer + b' >>\nstartxref\n%d\n%%%%EOF\n' % xref_at
+    return bytes(body)
+
+
+def makePdf(pages, info=None):
     """A PDF with one page per entry in `pages`.
 
     Each entry is (width, height, rotate, text, extra_keys) with the size in
@@ -99,20 +125,14 @@ def makePdf(pages):
         objects[page - 1] = objects[page - 1].replace(b'/Parent 0 0 R',
                                                       b'/Parent %d 0 R' % pages_id)
 
-    body = bytearray(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
-    offsets = [0]
-    for number, content in enumerate(objects, start=1):
-        offsets.append(len(body))
-        body += b'%d 0 obj\n' % number + content + b'\nendobj\n'
+    # The document information dictionary, in the trailer where PDF 32000-1
+    # §14.3.3 puts it -- not inside the catalog. A reader that looks for /Info
+    # under /Root finds nothing and says the file has no title.
+    info_number = None
+    if info is not None:
+        info_number = add(info)
 
-    xref_at = len(body)
-    body += b'xref\n0 %d\n' % (len(objects) + 1)
-    body += b'0000000000 65535 f \n'
-    for offset in offsets[1:]:
-        body += b'%010d 00000 n \n' % offset
-    body += (b'trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n'
-             % (len(objects) + 1, catalog, xref_at))
-    return bytes(body)
+    return assemble(objects, catalog, info_number)
 
 
 def write(name, data):
@@ -208,20 +228,82 @@ def makeScanPdf(pages):
         objects[page - 1] = objects[page - 1].replace(b'/Parent 0 0 R',
                                                       b'/Parent %d 0 R' % pages_id)
 
-    body = bytearray(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
-    offsets = [0]
-    for number, content in enumerate(objects, start=1):
-        offsets.append(len(body))
-        body += b'%d 0 obj\n' % number + content + b'\nendobj\n'
+    return assemble(objects, catalog)
 
-    xref_at = len(body)
-    body += b'xref\n0 %d\n' % (len(objects) + 1)
-    body += b'0000000000 65535 f \n'
-    for offset in offsets[1:]:
-        body += b'%010d 00000 n \n' % offset
-    body += (b'trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n'
-             % (len(objects) + 1, catalog, xref_at))
-    return bytes(body)
+
+def makeLinksPdf():
+    """Two pages, the first with two link annotations on it.
+
+    The shapes are from PDF 32000-1, not from the reader: an annotation
+    dictionary (Table 164: /Type /Annot, /Subtype /Link, /Rect, /P), a URI action
+    (§12.4.4, /S /URI /URI (http://...)), and an explicit go-to (§12.4.2.1,
+    /S /GoTo /D [page /XYZ left top zoom]). The destination is written as an
+    array rather than as a named destination because the point of the fixture is
+    what a link inside the document carries: the page *and* the place on it,
+    including the null zoom, which means "leave the zoom alone".
+
+    The rectangles are in PDF user space with the origin at the page's
+    bottom-left, and one of them deliberately overlaps two lines of the page's
+    own text: a link box is a rectangle, not a line, and a reader that draws its
+    hotspots from the text layer instead of the annotation gets the wrong shape
+    here.
+    """
+    objects = []
+
+    def add(body):
+        objects.append(body)
+        return len(objects)
+
+    font = add(b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica '
+               b'/Encoding /WinAnsiEncoding >>')
+
+    def content(lines, top):
+        drawn = 'BT /F1 18 Tf 60 %d Td' % top
+        for position, line in enumerate(lines):
+            if position:
+                drawn += ' 0 -30 Td'
+            drawn += ' (%s) Tj' % line
+        drawn += ' ET'
+        stream = drawn.encode('ascii')
+        return add(b'<< /Length %d >>\nstream\n' % len(stream) + stream + b'\nendstream')
+
+    first = content(['XYZPDF has two links on it', 'the sentence goes under both'], 760)
+    second = content(['XYZPDF the link target'], 760)
+
+    # The annotation objects come before the pages that list them, and /P points
+    # back at a page whose number is not known yet -- so the parent placeholders
+    # are patched below, the same way the page tree's are.
+    external = add(b'<< /Type /Annot /Subtype /Link /Rect [55 750 300 775] '
+                   b'/Border [0 0 0] /P 0 0 R '
+                   b'/A << /Type /Action /S /URI /URI (https://example.com/xyzpdf) >> >>')
+    internal = add(b'<< /Type /Annot /Subtype /Link /Rect [55 718 300 743] '
+                   b'/Border [0 0 0] /P 0 0 R '
+                   b'/A << /Type /Action /S /GoTo /D [0 0 R /XYZ 0 700 null] >> >>')
+
+    page_one = add(b'<< /Type /Page /Parent 0 0 R /MediaBox [0 0 595 842] '
+                   b'/Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R '
+                   b'/Annots [%d 0 R %d 0 R] >>' % (font, first, external, internal))
+    page_two = add(b'<< /Type /Page /Parent 0 0 R /MediaBox [0 0 595 842] '
+                   b'/Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>'
+                   % (font, second))
+
+    pages_id = add(b'<< /Type /Pages /Kids [%d 0 R %d 0 R] /Count 2 >>'
+                   % (page_one, page_two))
+    catalog = add(b'<< /Type /Catalog /Pages %d 0 R >>' % pages_id)
+
+    for page in (page_one, page_two):
+        objects[page - 1] = objects[page - 1].replace(b'/Parent 0 0 R',
+                                                      b'/Parent %d 0 R' % pages_id)
+    objects[external - 1] = objects[external - 1].replace(b'/P 0 0 R',
+                                                           b'/P %d 0 R' % page_one)
+    objects[internal - 1] = objects[internal - 1].replace(b'/P 0 0 R',
+                                                           b'/P %d 0 R' % page_one)
+    # The go-to's destination names its page. Patched last, because the page
+    # numbers only exist once both pages have been added.
+    objects[internal - 1] = objects[internal - 1].replace(b'/D [0 0 R',
+                                                           b'/D [%d 0 R' % page_two)
+
+    return assemble(objects, catalog)
 
 
 def main():
@@ -396,6 +478,32 @@ def main():
         (595, 842, 0, 'XYZPDF typed cover', b''),
         (595, 842, 0, '', b'', '0 0 1 rg 60 400 475 380 re f'),
     ]))
+
+    # A file that says what it is. Every other fixture here has an empty
+    # document information dictionary, so the Properties dialog has always had
+    # nothing to show and a reader cannot tell "the file has no title" from "we
+    # did not look". The keys and the date format are PDF 32000-1 §14.3.3,
+    # Table 231, copied from the specification rather than from the parser: the
+    # creation date carries a zone (and is therefore an instant), the
+    # modification date does not (and is therefore the clock of wherever the file
+    # was made), and the apostrophes in -05'00' are part of the format.
+    #
+    # The zone is deliberately not this machine's. It was +08'00' first, on a
+    # +08:00 machine, and a control that threw the zone away entirely still
+    # passed -- the two readings are the same instant there, so the assertion
+    # could not have told the two apart anywhere it mattered.
+    write('info.pdf', makePdf(
+        [(595, 842, 0, 'XYZPDF a document that describes itself', b'')],
+        info=b'<< /Title (XYZPDF Fixture Title) /Author (XYZPDF Fixture Author) '
+             b'/Subject (The subject of a fixture) /Keywords (fixture, metadata, one, two) '
+             b'/Creator (make_fixtures.py) /Producer (XYZPDF test harness) '
+             b"/CreationDate (D:20260102030405-05'00') /ModDate (D:20260103120000) >>"))
+
+    # Two links on one page: one to an address outside the document and one to a
+    # place inside it. Every other fixture has none, so links() has been
+    # answering "empty" on files that genuinely had nothing and that is not the
+    # same as having been checked.
+    write('links.pdf', makeLinksPdf())
 
     # Truncated: the header, a page object and half the xref table. A PDF
     # reader that trusts its parser crashes on files like this one, and the

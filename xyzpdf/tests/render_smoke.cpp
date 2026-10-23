@@ -10,7 +10,7 @@
 // A real render is what makes the test meaningful. A fake renderer that answers
 // immediately would never have anything in flight to be stale.
 
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 #include "../src/render/pagerenderer.h"
 #include "../src/render/rendercache.h"
 
@@ -86,7 +86,7 @@ int main(int argc, char **argv)
                                        : QStringLiteral("tests/fixtures");
     const QString path = directory + QStringLiteral("/text.pdf");
 
-    QtPdfBackend document;
+    PdfiumBackend document;
     if (document.load(path, QString()) != Document::Status::Ready) {
         std::cerr << "FAIL: could not open the fixture " << path.toStdString() << '\n';
         return 1;
@@ -219,7 +219,7 @@ int main(int argc, char **argv)
     // to leave nothing of the old one behind: every request made against it is
     // now an answer to a question about a different document.
     {
-        QtPdfBackend other;
+        PdfiumBackend other;
         check(other.load(directory + QStringLiteral("/rotated.pdf"), QString())
                   == Document::Status::Ready,
               "the second fixture opens");

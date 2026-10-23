@@ -1,7 +1,6 @@
 Qt 及其内置的第三方库
 
-Qt（Qt6Core.dll、Qt6Gui.dll、Qt6Widgets.dll、Qt6Network.dll、Qt6Svg.dll、
-Qt6Pdf.dll）本身以 LGPL-3.0 授权，许可证全文见同目录下的 LGPL-3.0.txt。
+Qt（Qt6Core.dll、Qt6Gui.dll、Qt6Widgets.dll、Qt6Network.dll、Qt6Svg.dll）本身以 LGPL-3.0 授权，许可证全文见同目录下的 LGPL-3.0.txt。
 Qt 内置了若干第三方库，随 Qt 的二进制库一并分发，它们的授权不影响 XYZPDF
 自身代码的授权：
 
@@ -16,4 +15,5 @@ Qt 内置了若干第三方库，随 Qt 的二进制库一并分发，它们的�
 包（qtbase-everywhere-src-*.tar.xz 中的 src/3rdparty 目录）取得，也可以从
 上表中各自的官方地址取得。
 
-Qt PDF 内含 PDFium，其许可证见 pdfium.txt。
+PDFium 不再在这一份里：本程序分发的是 pdfium.dll，
+其许可证与它内含组件的许可证见 pdfium.txt。

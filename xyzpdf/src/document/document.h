@@ -1,10 +1,9 @@
 // What the rest of the program is allowed to know about a PDF.
 //
-// The only place a rendering library is named is behind this interface. There
-// are two implementations, QtPdfBackend and PdfiumBackend, and a build carries
-// exactly one of them (documentfactory.cpp is where that is decided; the choice
-// arrived in F7-B for the things Qt PDF does not expose, which is the whole
-// reason the seam exists). It is deliberately narrow: it carries what the
+// The only place a rendering library is named is behind this interface. There is
+// one implementation, PdfiumBackend, and it arrived in F7 by consumer: first the
+// view, then the two shell handlers, then everything Qt PDF was still answering
+// (docs/pdfium-plan.md sec.10). It is deliberately narrow: it carries what the
 // program actually calls, not a guess at what the other engine will want.
 // Editing is not here at all and must not be: v2 adds a separate
 // DocumentEditor that holds one of these, so the write path can never be
@@ -12,9 +11,9 @@
 //
 // ---- every method here blocks, and shares one lock with the renderer ----
 //
-// Both backends serialise every PDF library call behind a single global
-// recursive mutex (see the note at the top of render/pagerenderer.h). So calling
-// any of these from the UI thread is a call that waits for whatever render is in
+// The backend serialises every PDF library call behind a single global recursive
+// mutex (see the note at the top of render/pagerenderer.h). So calling any of
+// these from the UI thread is a call that waits for whatever render is in
 // progress --
 // hundreds of milliseconds on a scanned page, which the user sees as a frozen
 // window.
@@ -59,8 +58,7 @@ struct RenderOptions
     bool optimizedForLcd = false;
 
     // Which part of the page to render, in the coordinate system of the whole
-    // page rendered at `scaledSize` -- the same thing QPdfDocumentRenderOptions
-    // calls the scaled rectangle. Empty means the whole page.
+    // page rendered at `scaledSize`. Empty means the whole page.
     //
     // This is what keeps one page from costing 288 MB: at 800% a page is far
     // bigger than the screen, and only the band on screen is worth having.
@@ -83,12 +81,11 @@ struct RenderOptions
 // One line-shaped box of text on a page, in points, with the origin at the
 // page's top-left corner.
 //
-// The text itself is not in here. Qt PDF hands out the page's text and its
-// boxes as two separate things with no pairing between them, and pairing them
-// by guessing would be wrong on exactly the documents where it matters --
-// columns, tables, rotated captions. src/document/textlayer (M2) is where a
-// character range becomes a box, by asking for the selection it already knows
-// the range of.
+// The text itself is not in here. The page's text and its boxes are handed out as
+// two separate things with no pairing between them, and pairing them by guessing
+// would be wrong on exactly the documents where it matters -- columns, tables,
+// rotated captions. src/document/textlayer (M2) is where a character range
+// becomes a box, by asking for the selection it already knows the range of.
 struct TextRun
 {
     QRectF box;

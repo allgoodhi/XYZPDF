@@ -665,7 +665,14 @@ bool sameLine(const QRectF &previous, const QRectF &next)
     if (std::fabs(previous.center().y() - next.center().y()) > body * 0.6)
         return false;
     const double gap = next.left() - previous.right();
-    return gap <= body * 3.0 && gap >= -body * 0.5;
+    // The half-point of allowed overlap, plus one point of slack: the page's own
+    // unit. Qt PDF rounded every box to whole points and PDFium does not, and a
+    // fixture that sits on the edge shows the difference -- runs.pdf's two pieces
+    // overlap by 11.23 points against a limit of body/2 = 10.97, where Qt's
+    // rounded numbers gave exactly 11 against 11. The rule is "this is not a
+    // column on the other side of the page", and a tenth of a point of extra
+    // overlap says nothing about that.
+    return gap <= body * 3.0 && gap >= -(body * 0.5) - 1.0;
 }
 
 // Whether a line ends a sentence, and so -- with the line being short -- ends the

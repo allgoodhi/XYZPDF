@@ -12,15 +12,12 @@
 // The pool has one thread, so two renders do not run at once; they run off the
 // thread that draws the window, which is the point. Moving work here does not
 // make a backend safe to ask from two threads at once -- that promise belongs to
-// the backend, and each one has to make it in its own header.
+// the backend, and is made in its own header.
 //
-// Each backend makes that promise in its own way and with the same shape: one
-// global recursive mutex that every call into the PDF library goes through, one
-// document object, not a copy per thread. QtPdfBackend borrows Qt PDF's
-// (QPdfMutexLocker, in QtPdf/private/qpdfdocument_p.h, a
-// std::unique_lock<QRecursiveMutex> around every FPDF call); PdfiumBackend
-// owns its own (pdfiumbackend.cpp, pdfiumMutex()). Two consequences worth
-// having written down, because both are easy to assume away:
+// The backend makes it in the shape PDFium's own header asks for: one global
+// recursive mutex that every call into the PDF library goes through, one document
+// object, not a copy per thread (pdfiumbackend.cpp, pdfiumMutex()). Two
+// consequences worth having written down, because both are easy to assume away:
 //
 //   * One call runs at a time inside PDFium, so there is no multi-core speedup
 //     to be had here. Do not promise one.

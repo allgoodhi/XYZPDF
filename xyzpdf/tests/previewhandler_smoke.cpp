@@ -563,21 +563,15 @@ int main(int argc, char **argv)
             check(drewSomething(child, 420, 560),
                   "a real document produced a page with ink on it, not a flat rectangle");
 
-            // Which engine this pane actually loaded, asserted against the switch
-            // this build was configured with. A handler still wired to the other
-            // backend loads the other DLL, and F7-D's whole point is that it does
-            // not -- two engines in the package is the state this slice ends.
-#if defined(XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+            // Which engine this pane actually loaded. F7-D moved the handler onto
+            // PDFium and F7-E left only one engine in the build, so the second
+            // line is the one that would catch a wiring that came back: a pane
+            // that pulled in Qt6Pdf.dll as well is two engines in the package,
+            // which is the state the whole of F7 exists to end.
             check(GetModuleHandleW(L"pdfium.dll") != nullptr,
-                  "the pane's engine is pdfium.dll, as this build was configured");
+                  "the pane's engine is pdfium.dll");
             check(GetModuleHandleW(L"Qt6Pdf.dll") == nullptr,
                   "and Qt's PDF engine is not loaded in this process");
-#else
-            check(GetModuleHandleW(L"Qt6Pdf.dll") != nullptr,
-                  "the pane's engine is Qt6Pdf.dll, as this build was configured");
-            check(GetModuleHandleW(L"pdfium.dll") == nullptr,
-                  "and PDFium is not loaded in this process");
-#endif
 
             const unsigned long before = colourAt(child, 420, 560);
             SendMessageW(child, WM_VSCROLL, MAKEWPARAM(SB_PAGEDOWN, 0), 0);

@@ -69,6 +69,13 @@ void OcrSession::captureRegion(int page, QRectF points)
     // is also capped where the whole page stays a UI-thread-sized job -- which
     // is what keeps a tiny box on a huge page from asking for a
     // fifty-thousand-pixel rendering to get its two hundred.
+    //
+    // The band render below means the *crop* is what is actually drawn, so this
+    // cap is more conservative than its name suggests. F7-E measured why it was
+    // not raised: a box around text.pdf's one line renders 552 px on its long
+    // side under this cap and 1600 px without it, and the machine's recognizer
+    // answered ")(YZPDF one" for both -- the size is not what decides that
+    // answer, so the cap stays where the shipped behaviour put it.
     const double pageCap =
         std::sqrt(double(kOcrMaximumPagePixels))
         / std::sqrt(double(pagePoints.width()) * double(pagePoints.height()));

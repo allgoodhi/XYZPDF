@@ -11,20 +11,15 @@
 // to the record in docs/perf.md, where a regression is visible as a change in a
 // column rather than as a red build.
 //
-// ---- two columns ----
+// ---- one engine ----
 //
 // docs/pdfium-plan.md sec.5.1/5.2 compared the two engines with a probe; sec.10
-// F7-B asks that comparison to live here instead, as a column of this table. So
-// when a PDFium release was found at configure time (XYZPDF_HAVE_PDFIUM) the
-// same file is measured twice, once through each backend, in one process. When
-// none was found the PDFium column reads "-": a fresh clone still builds and
-// runs this, and the record says which build produced the numbers it quotes.
-//
-// One order effect is worth knowing before reading the table: Qt PDF is
-// measured first, so the PDFium column is the one that reads a warm file cache.
-// How much that is worth has not been measured (sec.5.2's separate runs on the
-// 600-page fixture read 1.6 vs 0.3 ms, the same direction); the render and text
-// rows are CPU-bound and should not care.
+// F7-B asked that comparison to live here instead, as a second column, and for
+// the four slices after that it was a table with two columns to read against
+// each other. F7-E retired the left-hand one: there is no second engine in the
+// build, so what used to be the PDFium column is now the only column. The row
+// names and the order are unchanged, which is what lets docs/perf.md compare a
+// number from before the swap with one after it.
 //
 // tools/build_all_tests.py builds every target whose name does not say it is
 // something else, and 'bench' is one of those names: this compiles with the
@@ -50,14 +45,10 @@
 //     build-local-release\tests\xyzpdf_perf_bench.exe tests/fixtures H:\pdf_test\CH340.PDF
 
 #include "../src/document/document.h"
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 #include "../src/document/textsearch.h"
 #include "../src/render/rendercache.h"
 #include "../src/render/rendertoken.h"
-
-#ifdef XYZPDF_HAVE_PDFIUM
-#include "../src/document/pdfiumbackend.h"
-#endif
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -108,10 +99,10 @@ qint64 memoryKb(bool peak)
 // One row of the table. Printed as markdown so the output can be pasted into
 // docs/perf.md rather than retyped -- a table that has to be copied by hand is a
 // table that stops being updated.
-void rowPair(const QString &what, const QString &qt, const QString &pdfium, const QString &note)
+void row(const QString &what, const QString &value, const QString &note)
 {
-    printf("| %-42s | %12s | %12s | %-34s |\n",
-           qPrintable(what), qPrintable(qt), qPrintable(pdfium), qPrintable(note));
+    printf("| %-42s | %12s | %-34s |\n",
+           qPrintable(what), qPrintable(value), qPrintable(note));
     fflush(stdout);
 }
 
@@ -132,8 +123,7 @@ QString ms(double value)
     return QString::number(value, 'f', value < 10.0 ? 2 : 1) + QStringLiteral(" ms");
 }
 
-// Everything one engine said about one document. Two of these are filled per
-// file, one through each backend, and the table prints them side by side.
+// Everything one engine said about one document.
 struct Measurements
 {
     bool opened = false;
@@ -289,15 +279,11 @@ int main(int argc, char **argv)
     SetProcessDPIAware();
 #endif
 
-#ifdef XYZPDF_HAVE_PDFIUM
     printf("Qt %s, PDFium %s\n", qVersion(), XYZPDF_PDFIUM_VERSION);
-#else
-    printf("Qt %s, PDFium not installed (the second column reads \"-\")\n", qVersion());
-#endif
-    printf("| Measurement | Qt PDF | PDFium | Note |\n");
-    printf("|-------------|--------|--------|------|\n");
-    rowPair("process at start", QString::number(memoryKb(false)) + " KB", "-",
-            QStringLiteral("before any document is read"));
+    printf("| Measurement | PDFium | Note |\n");
+    printf("|-------------|--------|------|\n");
+    row("process at start", QString::number(memoryKb(false)) + " KB",
+        QStringLiteral("before any document is read"));
 
     int reported = 0;
     for (const QString &path : std::as_const(documents)) {
@@ -307,94 +293,57 @@ int main(int argc, char **argv)
             continue;
         }
 
-        Measurements qt;
-        QtPdfBackend qtDocument;
-        if (!measure(qtDocument, path, kCacheLimitBytes, qt))
+        Measurements measured;
+        PdfiumBackend document;
+        if (!measure(document, path, kCacheLimitBytes, measured))
             continue;
 
-        Measurements pdfium;
-        bool havePdfium = false;
-#ifdef XYZPDF_HAVE_PDFIUM
-        {
-            PdfiumBackend pdfiumDocument;
-            havePdfium = measure(pdfiumDocument, path, kCacheLimitBytes, pdfium);
-        }
-#endif
-        // A dash, not a zero: "not measured" and "measured as nothing" are the
-        // two readings this table must never confuse.
-        const auto pdfiumMs = [&](double value) {
-            return havePdfium ? ms(value) : QStringLiteral("-");
-        };
-        const auto pdfiumValue = [&](const QString &value) {
-            return havePdfium ? value : QStringLiteral("-");
-        };
+        row(QStringLiteral("%1: open").arg(info.fileName()), ms(measured.openMs),
+            pagesNote(measured, info));
 
-        rowPair(QStringLiteral("%1: open").arg(info.fileName()),
-                ms(qt.openMs), pdfiumMs(pdfium.openMs),
-                havePdfium
-                    ? QStringLiteral("%1 pages (PDFium %2), %3 KB")
-                          .arg(qt.pages)
-                          .arg(pdfium.pages)
-                          .arg(info.size() / 1024)
-                    : pagesNote(qt, info));
+        row(QStringLiteral("%1: every page size").arg(info.fileName()), ms(measured.sizesMs),
+            QStringLiteral("%1 ms per thousand pages")
+                .arg(measured.sizesMs * 1000.0 / qMax(1, measured.pages), 0, 'f', 1));
 
-        rowPair(QStringLiteral("%1: every page size").arg(info.fileName()),
-                ms(qt.sizesMs), pdfiumMs(pdfium.sizesMs),
-                QStringLiteral("%1 ms per thousand pages")
-                    .arg(qt.sizesMs * 1000.0 / qMax(1, qt.pages), 0, 'f', 1));
+        row(QStringLiteral("%1: render %2 pages").arg(info.fileName()).arg(measured.renderedCount),
+            ms(measured.renderMs),
+            QStringLiteral("%1, %2x%3 px")
+                .arg(millisPerPage(measured.renderMs, measured.renderedCount))
+                .arg(measured.firstPixel.width())
+                .arg(measured.firstPixel.height()));
 
-        rowPair(QStringLiteral("%1: render %2 pages").arg(info.fileName()).arg(qt.renderedCount),
-                ms(qt.renderMs), pdfiumMs(pdfium.renderMs),
-                QStringLiteral("%1, %2x%3 px")
-                    .arg(millisPerPage(qt.renderMs, qt.renderedCount))
-                    .arg(qt.firstPixel.width())
-                    .arg(qt.firstPixel.height()));
+        row(QStringLiteral("%1: text of all pages").arg(info.fileName()), ms(measured.textMs),
+            millisPerPage(measured.textMs, measured.pages));
 
-        rowPair(QStringLiteral("%1: text of all pages").arg(info.fileName()),
-                ms(qt.textMs), pdfiumMs(pdfium.textMs),
-                millisPerPage(qt.textMs, qt.pages));
+        row(QStringLiteral("%1: text layer").arg(info.fileName()),
+            measured.characters == 0 ? QStringLiteral("none")
+                                     : QStringLiteral("%1 chars").arg(measured.characters),
+            QStringLiteral("a scan has to answer \"none\" here"));
 
-        rowPair(QStringLiteral("%1: text layer").arg(info.fileName()),
-                qt.characters == 0 ? QStringLiteral("none")
-                                   : QStringLiteral("%1 chars").arg(qt.characters),
-                pdfiumValue(pdfium.characters == 0
-                                ? QStringLiteral("none")
-                                : QStringLiteral("%1 chars").arg(pdfium.characters)),
-                QStringLiteral("a scan has to answer \"none\" here"));
+        row(QStringLiteral("%1: search all pages").arg(info.fileName()), ms(measured.searchMs),
+            QStringLiteral("%1, %2 matches")
+                .arg(millisPerPage(measured.searchMs, measured.pages))
+                .arg(measured.found));
 
-        rowPair(QStringLiteral("%1: search all pages").arg(info.fileName()),
-                ms(qt.searchMs), pdfiumMs(pdfium.searchMs),
-                QStringLiteral("%1, %2 matches")
-                    .arg(millisPerPage(qt.searchMs, qt.pages))
-                    .arg(qt.found));
+        row(QStringLiteral("%1: %2 pages through a %3 MB cache")
+                .arg(info.fileName())
+                .arg(measured.inserted)
+                .arg(kCacheLimitBytes / (1024 * 1024)),
+            ms(measured.cacheMs),
+            QStringLiteral("peak %1 MB, %2 entries kept")
+                .arg(measured.highWater / (1024.0 * 1024.0), 0, 'f', 1)
+                .arg(measured.kept));
 
-        rowPair(QStringLiteral("%1: %2 pages through a %3 MB cache")
-                    .arg(info.fileName())
-                    .arg(qt.inserted)
-                    .arg(kCacheLimitBytes / (1024 * 1024)),
-                ms(qt.cacheMs), pdfiumMs(pdfium.cacheMs),
-                havePdfium
-                    ? QStringLiteral("peak %1 / %2 MB, %3 / %4 entries kept")
-                          .arg(qt.highWater / (1024.0 * 1024.0), 0, 'f', 1)
-                          .arg(pdfium.highWater / (1024.0 * 1024.0), 0, 'f', 1)
-                          .arg(qt.kept)
-                          .arg(pdfium.kept)
-                    : QStringLiteral("peak %1 MB, %2 entries kept")
-                          .arg(qt.highWater / (1024.0 * 1024.0), 0, 'f', 1)
-                          .arg(qt.kept));
-
-        rowPair(QStringLiteral("%1: stayed inside its limit").arg(info.fileName()),
-                qt.highWater <= kCacheLimitBytes ? QStringLiteral("yes")
-                                                 : QStringLiteral("NO"),
-                pdfiumValue(pdfium.highWater <= kCacheLimitBytes ? QStringLiteral("yes")
-                                                                 : QStringLiteral("NO")),
-                QStringLiteral("the limit is %1 MB").arg(kCacheLimitBytes / (1024 * 1024)));
+        row(QStringLiteral("%1: stayed inside its limit").arg(info.fileName()),
+            measured.highWater <= kCacheLimitBytes ? QStringLiteral("yes")
+                                                  : QStringLiteral("NO"),
+            QStringLiteral("the limit is %1 MB").arg(kCacheLimitBytes / (1024 * 1024)));
 
         ++reported;
     }
 
-    rowPair("peak working set, whole run", QString::number(memoryKb(true)) + " KB", "-",
-            QStringLiteral("after %1 document(s) were measured").arg(reported));
+    row("peak working set, whole run", QString::number(memoryKb(true)) + " KB",
+        QStringLiteral("after %1 document(s) were measured").arg(reported));
 
     if (reported == 0) {
         std::fprintf(stderr, "nothing could be measured\n");

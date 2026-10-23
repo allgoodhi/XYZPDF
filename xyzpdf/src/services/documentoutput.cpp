@@ -19,14 +19,12 @@
 #include <QSharedPointer>
 
 DocumentOutput::DocumentOutput(QWidget *host, PageView *view, ForegroundJobs *jobs,
-                               std::function<Document *()> document,
-                               std::function<bool()> formFields)
+                               std::function<Document *()> document)
     : QObject(host)
     , host(host)
     , pageView(view)
     , jobs(jobs)
     , documentProvider(std::move(document))
-    , formFieldsInSource(std::move(formFields))
 {
 }
 
@@ -45,16 +43,11 @@ void DocumentOutput::print()
     const ForegroundJobs::Scope scope(jobs);
 
     QPrinter printer(QPrinter::HighResolution);
-    // F7-C: a PDFium-backed build draws field appearances into every page image,
-    // print included, so a filled form comes out with its answers and the
-    // warning §94 added would be false. The Qt build still prints empty boxes
-    // and keeps it until F7-E deletes that backend.
-    bool warnAboutBlankFields = false;
-#if !defined(XYZPDF_DOCUMENT_BACKEND_PDFIUM)
-    warnAboutBlankFields = formFieldsInSource ? formFieldsInSource() : false;
-#endif
-    PrintDialog dialog(host->window(), &printer, pageView->currentPage(), document->pageCount(),
-                       warnAboutBlankFields);
+    // No warning about empty fields here: the form layer draws a field's
+    // appearance into every page image this path renders, print included
+    // (docs/pdfium-plan.md sec.7's first step, shipped in F7-C).
+    PrintDialog dialog(host->window(), &printer, pageView->currentPage(),
+                       document->pageCount());
     if (dialog.exec() != QDialog::Accepted)
         return;
     const Print::Settings settings = dialog.settings();

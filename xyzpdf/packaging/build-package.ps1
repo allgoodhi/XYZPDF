@@ -144,6 +144,16 @@ Write-Host 'installing the program into the staging directory'
 & $cmake --install $buildDir --prefix $Stage
 if ($LASTEXITCODE -ne 0) { throw "cmake --install failed ($LASTEXITCODE)" }
 
+# The engine, checked for by name in the staging tree the same way the QPDF
+# runtime below is. It is not Qt's to deploy: windeployqt has never heard of
+# pdfium.dll, and the install rule that puts it here is the one line in
+# CMakeLists.txt beside the target. A package without it installs, launches,
+# paints its window and then cannot open a single file -- which is a bug report
+# about the reader, not about this script.
+if (-not (Test-Path -LiteralPath (Join-Path $Stage 'bin\pdfium.dll'))) {
+    throw "bin\pdfium.dll is not in $Stage; the install step did not carry the document engine"
+}
+
 # ---------------------------------------------------------------------------
 # 2b. What the package throws away
 #

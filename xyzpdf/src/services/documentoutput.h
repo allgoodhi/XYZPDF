@@ -30,12 +30,9 @@ class DocumentOutput : public QObject
 
 public:
     // `document` answers with the document to draw, or null when the tab has
-    // none -- an export with nothing to read says nothing. `formFields` is the
-    // tab's open-time reading, which the print box warns about: this version
-    // draws no field contents, so a filled-in form goes out with its boxes empty
-    // (docs/store-submission.md §82 and §94).
+    // none -- an export with nothing to read says nothing.
     DocumentOutput(QWidget *host, PageView *view, ForegroundJobs *jobs,
-                   std::function<Document *()> document, std::function<bool()> formFields);
+                   std::function<Document *()> document);
     ~DocumentOutput() override;
 
     // Asks for the print choices, then renders and prints.
@@ -54,5 +51,4 @@ private:
     PageView *pageView = nullptr;
     ForegroundJobs *jobs = nullptr;
     std::function<Document *()> documentProvider;
-    std::function<bool()> formFieldsInSource;
 };

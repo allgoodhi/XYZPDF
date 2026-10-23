@@ -9,15 +9,14 @@
 // This class is the same library with its own flags, which is the first step of
 // the swap docs/pdfium-plan.md lays out.
 //
-// ---- what it answers, what it draws, and what it does not yet ----
+// ---- what it answers, and what it draws ----
 //
-// F7-B moves the five calls a page view makes: load, pageCount, pageSize, render
-// and text. Everything below them -- textRuns, the character-range selection,
-// outline, links, metadata -- is still QtPdfBackend's in this build and returns
-// nothing here until F7-E. That is a real limit of the development switch, not a
-// claim that those methods are optional: a build configured with
-// -DXYZPDF_DOCUMENT_BACKEND=pdfium shows pages and text and has no selection,
-// sidebar tree, links or properties until F7-E lands. The default build is Qt.
+// All of Document. F7-B moved the five calls a page view makes (load, pageCount,
+// pageSize, render, text), F7-C added the form layer and F7-E the rest: textRuns,
+// the character-range selection, outline, links and metadata. Since F7-E this is
+// the only backend in the build -- Qt PDF and the development switch that chose
+// between them are both gone -- so a package carries pdfium.dll and nothing else
+// that can read a PDF.
 //
 // F7-C adds the form layer's first half: FPDFDOC_InitFormFillEnvironment per
 // document and FPDF_FFLDraw after every page render, so a field's appearance
@@ -28,6 +27,10 @@
 // from its rules, not the original design -- and a document whose form is also
 // an XFA packet still shows only its field copy (sec.4.3; this build has no XFA
 // module). /NeedAppearances is not answered either.
+//
+// The bookmark read gives a title and a page and no place inside the page, which
+// is what the sidebar asks for; where the file said to look is carried by the
+// editor's own read of /Dest (src/edit/documenteditor.cpp), not by this tree.
 //
 // ---- one lock, one document, one worker thread ----
 //
@@ -73,7 +76,6 @@ public:
     QImage render(int page, QSize pixels, const RenderOptions &options) override;
     QString text(int page) const override;
 
-    // F7-E. Answers nothing until then; see the header comment.
     QVector<TextRun> textRuns(int page) const override;
     int characterIndexAt(int page, QPointF point) const override;
     PageSelection pageSelection(int page, int from, int to) const override;

@@ -25,7 +25,7 @@
 // The questions, in the order the output prints them:
 //
 //   1. Text route. Draw the string with PDF operators in a base-14 font (Helvetica) at 25%
-//      alpha. Two sub-questions: does Qt PDF paint it, and does the string then appear in the
+//      alpha. Two sub-questions: does the engine paint it, and does the string then appear in the
 //      page's *extractable* text -- because if it does, a watermark silently joins everything
 //      that reads a page's text: copying, 划线翻译, export. That is a consequence, not a
 //      curiosity.
@@ -46,12 +46,16 @@
 //      readable from the fact that one of them carries a bitmap: the other carries a font object
 //      and a graphics state per page, and the bitmap is one object shared by the whole document.
 //
-// Run it twice, because the platform changes the answers to questions 2 and 3. Qt PDF implements
-// PDFium's system-font API with Qt's own font database, so *both* routes' glyphs come from
-// whatever the platform resolves: under the offscreen platform that is nothing (family "", every
-// glyph an empty box of the same width, and the Latin watermark came out as a row of boxes), and
-// the control on it says so by failing. Under QT_QPA_PLATFORM=windows the same lines are what the
-// shipped program faces.
+// Run it twice, because the platform changes the answers to questions 2 and 3. What is measured in
+// both routes is a glyph: the text route asks the PDF library to resolve a base-14 name, the image
+// route asks Qt to paint with the system's font database, and the two resolvers are not the same
+// one. Under the offscreen platform Qt resolves nothing (family "", every glyph an empty box of the
+// same width, and the Latin watermark came out as a row of boxes), and the control on it says so by
+// failing. Under QT_QPA_PLATFORM=windows the same lines are what the shipped program faces.
+//
+// The library on the reading side changed in F7 -- this probe now asks PDFium directly, where it
+// used to ask Qt PDF, which was PDFium with Qt's font resolution in front of it. Questions 2 and 3
+// therefore have to be re-measured before their old answers are quoted anywhere.
 //
 // The controls are on the instrument, and a broken one makes every line above mean nothing.
 // C1/C2 prove the ink sampler can see the page's own text at all; C3 proves "the reader opens
@@ -97,7 +101,7 @@
 // per script) against text pollution and vector crispness (where the text route is clean and the
 // image route is a bitmap at whatever resolution it was painted).
 
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 
 #include <qpdf/Buffer.hh>
 #include <qpdf/Constants.h>
@@ -202,10 +206,12 @@ struct Ink
     QSizeF pagePoints;
 };
 
-// What the reader actually shows: Qt PDF hands back a page with *transparent* paper, and the
-// window paints a colour behind it. Dropping the alpha instead would report every unpainted
-// pixel as black -- measured: the first version of this instrument read the fixture's page 1 as
-// 100% ink. Same family as pixelColor() outside an image.
+// What the reader actually shows: this used to be needed because Qt PDF handed back a page with
+// *transparent* paper and the window paints a colour behind it; dropping the alpha then reported
+// every unpainted pixel as black -- measured: the first version of this instrument read the
+// fixture's page 1 as 100% ink. Same family as pixelColor() outside an image. PDFium fills white,
+// so the composite is a no-op on the current engine and stays because a probe should not depend
+// on which engine fills.
 QImage ontoPaper(const QImage &source)
 {
     QImage canvas(source.size(), QImage::Format_RGB32);
@@ -246,7 +252,7 @@ Ink measureInk(const QString &path, const QString &password, int page,
                const QRectF *useRegion = nullptr)
 {
     Ink out;
-    QtPdfBackend document;
+    PdfiumBackend document;
     if (document.load(path, password) != Document::Status::Ready) {
         out.error = document.lastError();
         return out;
@@ -304,8 +310,8 @@ Ink measureInk(const QString &path, const QString &password, int page,
 // the rotation at all" is the only question being asked.
 int differingPixels(const QString &pathA, const QString &pathB, int page)
 {
-    QtPdfBackend a;
-    QtPdfBackend b;
+    PdfiumBackend a;
+    PdfiumBackend b;
     if (a.load(pathA, QString()) != Document::Status::Ready
         || b.load(pathB, QString()) != Document::Status::Ready)
         return -1;
@@ -345,7 +351,7 @@ bool saveRender(const QString &rendersDir, const QString &path, const QString &n
     safe.replace(QLatin1Char('/'), QLatin1Char('-'));
     QImage image;
     QString why;
-    QtPdfBackend document;
+    PdfiumBackend document;
     if (document.load(path, QString()) != Document::Status::Ready) {
         why = document.lastError();
     } else {

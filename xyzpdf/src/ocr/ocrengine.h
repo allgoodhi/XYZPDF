@@ -55,8 +55,8 @@ bool isAvailable();
 // pixel is black to it, so a page rendered straight out of a PDF -- which is
 // ink over transparent black, because a PDF page has no background of its own
 // -- arrives as a black rectangle with black text on it and comes back empty.
-// See the flattening in DocumentTab::startRecognition(), which is what the
-// first version of this feature was missing.
+// See the flattening in OcrSession::captureRegion(), which is what the first
+// version of this feature was missing.
 Result recognize(const QImage &image);
 
 } // namespace Ocr

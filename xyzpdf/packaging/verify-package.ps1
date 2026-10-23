@@ -177,10 +177,15 @@ $required = @(
     # The program and the three handlers the manifest names, one per DllHost.
     'bin\xyzpdf.exe', 'bin\xyzpdfpreview.dll', 'bin\xyzpdfthumbnail.dll',
     'bin\xyzpdfshell.dll',
-    # The Qt runtime. Qt6Pdf is the renderer and Qt6Svg is what lets QIcon read
-    # :/icons/app.svg -- neither is imported by name in a way a walker checks.
-    'bin\Qt6Core.dll', 'bin\Qt6Gui.dll', 'bin\Qt6Widgets.dll', 'bin\Qt6Pdf.dll',
+    # The Qt runtime. Qt6Svg is what lets QIcon read :/icons/app.svg -- neither is
+    # imported by name in a way a walker checks.
+    'bin\Qt6Core.dll', 'bin\Qt6Gui.dll', 'bin\Qt6Widgets.dll',
     'bin\Qt6Network.dll', 'bin\Qt6PrintSupport.dll', 'bin\Qt6Svg.dll',
+    # The document engine. It replaced Qt6Pdf.dll in F7 and is delay-loaded by the
+    # two shell handlers, so it is in the payload because CMake installs it and not
+    # because windeployqt found an import; its absence is a program that opens a
+    # window and then says every file is unreadable.
+    'bin\pdfium.dll',
     # The plugins Qt loads by name, so nothing in an import table asks for them.
     'plugins\platforms\qwindows.dll', 'plugins\imageformats\qsvg.dll',
     'plugins\styles\qmodernwindowsstyle.dll', 'plugins\tls\qschannelbackend.dll',
@@ -287,7 +292,7 @@ if ($problems.Count -eq 0) {
         } else {
             Write-Host 'starts from the unpacked package with no Qt on PATH'
 
-            $traced = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Pdf.dll',
+            $traced = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
                         'Qt6Network.dll', 'Qt6PrintSupport.dll', 'Qt6Svg.dll',
                         'qwindows.dll', 'qsvg.dll',
                         # Imported by xyzpdf.exe itself, so it is there or the

@@ -3,7 +3,7 @@
 // The library arrives with docs/PLAN.md §4 M5 (结构编辑先上 QPDF，因为它不碰页面内容流), and
 // landing it alone is the point: what gets found out here is that it builds, links, runs, and
 // -- the part no build can tell you -- that a file it has rewritten is still a file the reader
-// opens. Qt PDF and QPDF are the pair every editing feature will use, one to write and one to
+// opens. PDFium and QPDF are the pair every editing feature will use, one to write and one to
 // show, and a writer whose output the reader cannot read is not a writer. So the test below
 // links both, and the second opinion is not a copy of the first: it counts the pages through
 // QPdfDocument and paints one of them.
@@ -13,7 +13,7 @@
 // "永不写用户的 PDF 文件" is the rule the whole feature has to keep, and a test that broke that
 // rule quietly would be the worst kind of passing test.
 
-#include "../src/document/qtpdfbackend.h"
+#include "../src/document/pdfiumbackend.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -134,9 +134,9 @@ int main(int argc, char **argv)
         }
 
         // ---- and the other half: the reader the program actually uses ----
-        QtPdfBackend document;
+        PdfiumBackend document;
         check(document.load(written, QString()) == Document::Status::Ready,
-              "Qt PDF opens what QPDF wrote");
+              "PDFium opens what QPDF wrote");
         check(document.pageCount() == int(pagesBefore) - 1,
               "and agrees about how many pages it has");
         const QImage image = document.render(0, QSize(300, 400), RenderOptions{});

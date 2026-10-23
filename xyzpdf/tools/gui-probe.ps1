@@ -91,6 +91,26 @@
                      f/e/v/d/g/n/h in Chinese) and require exactly that item expanded; the other
                      language's Window letter and l must expand nothing. -Control skips the Go press
                      and exits 1.
+      translatesetup press Ctrl+A then Ctrl+T and read the box that answers when no translation
+                     service is configured: its two lines, its class (QMessageBox, which no
+                     translation changes) and the Open Settings button. Press that button and the
+                     app's OWN settings dialog must come up with the keyboard focus on the
+                     translation-service combo box; the dialog is then printed with PrintWindow and
+                     every row's rectangle required to lie inside its client area -- a box that grew
+                     a row after its height was fixed is a layout fact only a picture can show
+                     (sec.71, sec.110), so the numbers are asserted and the PNG is kept. -Control
+                     keeps every step and then looks for the settings dialog WITHOUT pressing the
+                     button, which must exit 1.
+      xfanotice      one document per run, judged against -ExpectXfa packet|dynamic|absent: the
+                     status line and the delete box must both carry the XFA sentence on a file that
+                     carries a packet -- the two kinds have different status sentences -- and the
+                     status line must carry NEITHER on a file with no XFA at all. See the mode's own
+                     comment for why the status line is never judged on the bare word XFA.
+      replynotice    the cross-page thread file, four readings and no accept button pressed: the
+                     delete box names one orphaned reply for range 1 and says nothing for range 3;
+                     the split box names one at 1 page per piece and nothing at 2 (pages 1 and 2 then
+                     land in the same file). -Control keeps every step and expects the sentence at
+                     range 3, where it cannot be.
 
     Examples (from the repository root):
       powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1 -Mode inventory
@@ -105,6 +125,11 @@
       ... -Mode snapshot -Doc xyzpdf/tests/fixtures/picture.pdf
       ... -Mode strippreview -Doc xyzpdf/tests/fixtures/picture.pdf
       ... -Mode mnemonics -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode translatesetup -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode xfanotice -Doc H:/tmp/f9-samples/field-xfa.pdf -ExpectXfa packet
+      ... -Mode xfanotice -Doc H:/tmp/f9-samples/plain.pdf -ExpectXfa packet   (the control: exit 1)
+      ... -Mode replynotice -Doc H:/tmp/f9-samples/thread-across-pages.pdf
+      ... -Mode replynotice -Control -Doc H:/tmp/f9-samples/thread-across-pages.pdf   (also exit 1)
       ... -Mode findwhole -Control -Doc xyzpdf/tests/fixtures/text.pdf   (the control must exit 1)
 
     -Log takes a UTF-8 file, which is the only way to read a Chinese interface back from this
@@ -113,7 +138,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -155,7 +180,10 @@ param(
   # Instead -Control takes a deliberately wrong route while keeping the SAME verdict: skip the
   # Ctrl+Shift+5 press, click Match case instead of Whole words, expect one page too many, skip
   # the rotation, skip one Alt key. Each of those must exit 1; a control that stays green means
-  # the verdict was never looking at the screen. Only those five modes read this switch.
+  # the verdict was never looking at the screen. Those five read this switch, and so do the three
+  # added for handoff-03 F9: translatesetup looks for the settings dialog without pressing the
+  # button that opens it, xfanotice asks for the packet sentence on a file carrying no packet,
+  # replynotice expects the orphan sentence on a page that holds neither end of the thread.
   [switch]$Control,
   # Run against the installed package instead of the build tree. It cannot be started by exe
   # path (WindowsApps blocks that) and takes no file argument (no AppExecutionAlias is declared),
@@ -168,6 +196,13 @@ param(
   # A mismatch is a Bail, because sec.71 measured that a FAIL printed on a path that cannot set the
   # exit code is decoration, not a check.
   [string]$ExpectForm = 'none',
+  # xfanotice: which XFA news this document must bring. 'packet' and 'dynamic' are the two status
+  # sentences F3 added (an ordinary XFA form, and one that also asks the reader to draw its own
+  # pages), and both also expect the delete box to carry the packet sentence; 'absent' is the
+  # negative half -- plain.pdf must show neither, or the program warns on every file it opens.
+  # This is also where the mode's control lives: -ExpectXfa packet on plain.pdf asks for a sentence
+  # the file cannot produce, and that round must exit 1.
+  [string]$ExpectXfa = 'none',
   [string]$Log = ''
 )
 
@@ -711,11 +746,26 @@ function ClickLanguageRow($rows, [string[]]$names, [string]$tag) {
   Say ('  ' + $tag + ': nothing among the ' + $rows.Count + ' rows is named [' + ($names -join ', ') + ']')
   return $false
 }
+function ParkCursorAway() {
+  # Put the pointer in a screen corner BEFORE the app is launched. A toolbar button's statusTip is
+  # written into the same status-bar slot as a showMessage() line and it replaces it outright -- the
+  # timed message's timer is killed, so it does not come back when the hover ends. Where the last
+  # round left its cursor decided what the next round could read: the second xfanotice round found
+  # "Drag a box and recognize the text in the pixels inside it" where the XFA sentence should have
+  # been, which is a reading of a mouse position and not of the product. Every mode that reads a
+  # status line needed this; only the ones that happen to have started with the cursor elsewhere
+  # ever got an answer.
+  $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+  [W32]::SetCursorPos([int]($b.Width - 6), [int]($b.Height - 6)) | Out-Null
+  Start-Sleep -Milliseconds 200
+}
+
 function Start-ProbeApp([string]$language) {
   # Kill everything first: a leftover instance swallows the launch (single-instance
   # forwarding), and the run then measures a window with no document in it.
   Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
   Start-Sleep -Seconds 3
+  ParkCursorAway
   if (-not (Test-Path $scratch)) { New-Item -ItemType Directory -Path $scratch | Out-Null }
   $ini = Join-Path $scratch 'language.ini'
   $text = "[appearance]`nlanguage=$language`n"
@@ -1177,6 +1227,112 @@ function TakeForeground($procId) {
   Say ('  foreground after  [' + [W32]::Text($fg) + ']')
   if (-not $fg.Equals($hwnd)) { return $null }
   return (Window $procId)
+}
+
+function LongestText($root) {
+  # The summary of an edit dialog is ONE QLabel to which every sentence the editor's answers add is
+  # appended, so the longest Text element is the one carrying them (deletesummary reads it the same
+  # way). The caller prints the count before filtering by length: "no summary printed" has to stay
+  # distinguishable from "no summary found".
+  $longest = ''
+  foreach ($t in @(FindType $root $CT::Text)) {
+    if ($t.Current.Name.Length -gt $longest.Length) { $longest = $t.Current.Name }
+  }
+  return $longest
+}
+
+function CandidateWindows($procId) {
+  # Every window this process owns, both layers: the windows inside the main window's subtree and the
+  # process's own top-level ones. sec.85 measured the delete box in the first, sec.87 measured the
+  # merge box only in the second, so a lookup that tries one and prints nothing explains nothing.
+  $out = @()
+  $main = Window $procId
+  if ($main) { $out += @(FindType $main $CT::Window) }
+  foreach ($w in @($AE::RootElement.FindAll($TS::Children, (New-Object $PC($AE::ProcessIdProperty, $procId))))) {
+    $out += $w
+  }
+  return $out
+}
+
+function PrintCandidates([int]$procId, [string]$why) {
+  Say ('  ' + $why)
+  foreach ($c in @(CandidateWindows $procId)) { Say ('    [' + $c.Current.Name + '] class=' + $c.Current.ClassName) }
+}
+
+function OpenDocumentDialog($procId, [string[]]$rowNeedles, [string]$className) {
+  # Press a Document-menu row and hand back the dialog it opens, matched by CLASS. By class and not
+  # by title because the title is one of our own translatable strings (sec.45) -- the row list
+  # carries both spellings, the window test carries a C++ name no catalogue can reach. The raise is
+  # deletesummary's route (sec.84): a click sent while another window owns the screen lands there
+  # and the row still reports enabled=True. Candidates are printed when nothing matches, because
+  # "the dialog never opened" has at least three different causes and one line cannot tell them.
+  $win = Window $procId
+  if (-not $win) { Bail '  no document window' }
+  [W32]::SwitchToThisWindow([IntPtr]$win.Current.NativeWindowHandle, $true)
+  Start-Sleep -Milliseconds 400
+  $wr = $win.Current.BoundingRectangle
+  [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))
+  Start-Sleep -Milliseconds 700
+  TopMenu $procId @('Document', (CjStr 0x6587, 0x6863)) | Out-Null
+  $row = RowAny $procId $rowNeedles
+  if (-not $row) { Bail ('  no Document-menu row named [' + ($rowNeedles -join ', ') + '] in either language') }
+  Say ('  menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled)
+  ClickAt $row
+  $dlg = WaitClass $procId $className 12
+  if (-not $dlg) {
+    PrintCandidates $procId ('no ' + $className + '; every candidate window of the process:')
+    Bail ('  the ' + $className + ' did not open (candidates printed above)')
+  }
+  return $dlg
+}
+
+function ClickCancel($dlg, [string]$className, [int]$procId) {
+  # Leave a box the way a reader leaves a box they did not mean to press, and check that it left: a
+  # posted click is not an accepted dialog (sec.88), and these boxes are window-modal -- one still
+  # open would eat the next menu press and the second half of a mode would quietly be reading the
+  # first half's window.
+  $cancel = MatchOne $dlg $CT::Button @('Cancel', (CjStr 0x53D6, 0x6D88))
+  if (-not $cancel) {
+    foreach ($b in @(FindType $dlg $CT::Button)) { Say ('    button |' + $b.Current.Name + '|') }
+    Bail ('  no Cancel button in [' + $dlg.Current.Name + ']')
+  }
+  Say ('  pressing |' + $cancel.Current.Name + '| to leave the box')
+  ClickAt $cancel
+  if (-not (WaitClassGone $procId $className 12)) {
+    Bail ('  the ' + $className + ' stayed open after Cancel')
+  }
+}
+
+function RangeText($edit, [string]$text) {
+  # Type a page range into one of our own Qt fields through its UIA Value pattern -- the route
+  # findwhole has used since sec.109 on findField. The dialog recomputes its summary on textChanged,
+  # so the write is the whole interaction; nothing is pressed afterwards.
+  $vp = Pat $edit 'Value'
+  if (-not $vp) { Bail '  the range field offers no Value pattern' }
+  $vp.SetValue($text)
+  Start-Sleep -Milliseconds 700
+}
+
+function FieldOf($dlg) {
+  # The range field of the delete box: this dialog has exactly one Edit (the line beside the
+  # "custom pages" radio). Printed rather than assumed, because a dialog that grows a second field
+  # must not have this mode typing into whichever one UIA happens to list first.
+  $edits = @(FindType $dlg $CT::Edit)
+  Say ('  ' + $edits.Count + ' Edit element(s) in [' + $dlg.Current.Name + ']:')
+  foreach ($e in $edits) {
+    Say ('    |' + $e.Current.Name + '| id=[' + $e.Current.AutomationId + ']')
+  }
+  if ($edits.Count -ne 1) { Bail ('  expected one Edit, found ' + $edits.Count) }
+  return $edits[0]
+}
+
+function ReplyCount([string]$summary) {
+  # The number the orphan sentence names, read out of the sentence rather than assumed from the
+  # document: %n is filled by Qt's plural machinery, and the catalogue side of that is pinned by an
+  # i18n_smoke probe -- the screen is the other half (sec.93). -1 means no sentence was there at all.
+  if ($summary -match ((CjStr 0x8FD9) + ' ([0-9]+) ' + (CjStr 0x6761, 0x56DE, 0x7B54))) { return [int]$Matches[1] }
+  if ($summary -match '([0-9]+) repl') { return [int]$Matches[1] }
+  return -1
 }
 
 if (-not $Installed -and -not (Test-Path $Doc)) { Bail ("no document at $Doc -- pass -Doc <path to a pdf>") }
@@ -3169,6 +3325,339 @@ switch ($Mode) {
       Start-Sleep -Milliseconds 300
     }
     Say '  every expected Alt letter opened exactly its own menu; the negatives opened nothing'
+  }
+  'translatesetup' {
+    # handoff-03 F9: the box F1 puts up when no service is configured has never been on a screen, and
+    # neither has the road out of it. The scratch store this script writes carries one key only
+    # (appearance/language), so no provider is configured and the gate answers NotConfigured -- which
+    # is also why this mode needs no credential of any kind: F1 reads a stored key only once a
+    # provider is chosen, and the box that asks for a key at all is the NeedsConsent branch, left to
+    # hand-running as F9 requires.
+    # The text has to be REAL text: translateText() returns without a word when the selection is
+    # empty, so Ctrl+A comes first (the Edit menu's own Select All) and then Ctrl+T. The notice
+    # appearing is itself the proof that a selection existed -- with nothing selected nothing appears
+    # at all -- and the two lines plus the Open Settings button are what say this is the box that
+    # asks for a service, not the one that asks for consent (that one offers a Send button and only
+    # exists once a key is stored, which this branch does not write).
+    # Then the geometry: the settings dialog grew a whole group for these rows and nobody has looked
+    # at it (sec.71 measured a box whose third column was cut off at 620 wide with every count green;
+    # sec.110 found the find bar eating half a window the same way). So the dialog is printed with
+    # PrintWindow AND judged by rectangles, and both the picture and the numbers go in the log.
+    # -Control keeps every step and then looks for the settings dialog without pressing the button
+    # that opens it. It cannot be there, so the control exits 1 by construction.
+    $toSettingsCj = CjStr 0x53BB, 0x8BBE, 0x7F6E                     # the button, Chinese interface
+    $needServiceCj = CjStr 0x9700, 0x8981, 0x4E00, 0x4E2A, 0x670D, 0x52A1  # main line, Chinese
+    $enterKeyCj = CjStr 0x586B, 0x5199, 0x5BC6, 0x94A5               # informative line, Chinese
+
+    $win = TakeForeground $app.Id
+    if (-not $win) { Bail '  could not take the foreground; Ctrl+A and Ctrl+T would go to another window' }
+    Say ('  document [' + $win.Current.Name + ']')
+    [System.Windows.Forms.SendKeys]::SendWait('^a')
+    Start-Sleep -Milliseconds 900
+    [System.Windows.Forms.SendKeys]::SendWait('^t')
+    # Poll for the class AND its first label: a window on its way in answers an empty Name for a
+    # moment and then every later read is about a stale handle (sec.87). QMessageBox is the widget
+    # class, so this holds whatever the title has been translated into.
+    $box = $null
+    for ($k = 1; $k -le 15 -and -not $box; $k++) {
+      Start-Sleep -Milliseconds 400
+      $b = FindClass $app.Id 'QMessageBox'
+      if ($b -and @(FindType $b $CT::Text).Count -gt 0) { $box = $b }
+    }
+    if (-not $box) {
+      PrintCandidates $app.Id 'no QMessageBox with any label; every candidate window of the process:'
+      Bail '  Ctrl+A then Ctrl+T produced no setup notice (candidates printed above)'
+    }
+    Say ('  notice window [' + $box.Current.Name + '] class=' + $box.Current.ClassName)
+    $texts = @(FindType $box $CT::Text)
+    Say ('  ' + $texts.Count + ' Text element(s):')
+    $joined = ''
+    foreach ($t in $texts) {
+      $flat = $t.Current.Name.Replace("`r", ' ').Replace("`n", ' / ')
+      Say ('    |' + $flat + '|')
+      $joined += $flat + ' | '
+    }
+    $buttons = @(FindType $box $CT::Button)
+    Say ('  ' + $buttons.Count + ' Button element(s):')
+    foreach ($b in $buttons) { Say ('    |' + $b.Current.Name + '| enabled=' + $b.Current.IsEnabled) }
+    $sawNeed = ($joined -like ('*' + $needServiceCj + '*')) -or ($joined -like '*needs an API key*')
+    $sawRoute = ($joined -like ('*' + $enterKeyCj + '*')) -or ($joined -like '*Choose a translation service*')
+    $toSettings = MatchOne $box $CT::Button @('Open Settings', $toSettingsCj)
+    Say ('  main line=' + $sawNeed + '  settings route line=' + $sawRoute + '  button=' +
+         $(if ($toSettings) { '|' + $toSettings.Current.Name + '|' } else { 'NONE' }))
+    if (-not $sawNeed) { Bail '  the notice does not say that translating needs an API key' }
+    if (-not $sawRoute) { Bail '  the notice does not say to choose a service and enter the key in Settings' }
+    if (-not $toSettings) { Bail '  the notice has no settings button in either language' }
+    if ($Control) {
+      $decline = MatchOne $box $CT::Button @('Cancel', (CjStr 0x53D6, 0x6D88))
+      if (-not $decline) { Bail '  CONTROL: the notice has no Cancel button to leave it by' }
+      Say ('  CONTROL: pressing |' + $decline.Current.Name + '| and not the settings button')
+      ClickAt $decline
+      Start-Sleep -Milliseconds 1200
+      if (FindClass $app.Id 'SettingsDialog') {
+        Bail '  CONTROL: the settings dialog came up although no button was pressed -- the focus verdict is not about the notice'
+      }
+      Bail '  CONTROL: no settings dialog without the press; the road out of the notice is live (CONTROL exit 1)'
+    }
+    Say ('  pressing |' + $toSettings.Current.Name + '|')
+    ClickAt $toSettings
+    $dlg = WaitClass $app.Id 'SettingsDialog' 15
+    if (-not $dlg) {
+      PrintCandidates $app.Id 'no SettingsDialog; every candidate window of the process:'
+      Bail '  the settings button did not open the settings dialog'
+    }
+    Start-Sleep -Milliseconds 600
+    Say ('  settings dialog [' + $dlg.Current.Name + '] class=' + $dlg.Current.ClassName)
+    # Where the caret is, read two ways. Every earlier mode in this file judges a Name, a toggle
+    # state or a pixel and never the focus, so "the focus lands on the service row" had not been
+    # measured here at all; the two channels are printed with the verdict so the reading names its
+    # own source (sec.99: a control that cannot change the outcome looks like a check and is one).
+    $byProperty = @()
+    for ($k = 1; $k -le 10 -and -not $byProperty; $k++) {
+      Start-Sleep -Milliseconds 300
+      $dlg = WaitClass $app.Id 'SettingsDialog' 2
+      if ($dlg) { $byProperty = @(@($dlg.FindAll($TS::Descendants, $ANY)) | Where-Object { $_.Current.HasKeyboardFocus }) }
+    }
+    $direct = $null
+    try { $direct = $AE::FocusedElement } catch { Say ('  FocusedElement threw: ' + $_.Exception.Message) }
+    Say ('  HasKeyboardFocus reports ' + $byProperty.Count + ' element(s)')
+    foreach ($f in $byProperty) {
+      Say ('    focused |' + $f.Current.Name + '| type=' + $f.Current.ControlType.ProgrammaticName +
+           ' class=' + $f.Current.ClassName)
+    }
+    Say ('  FocusedElement says [' + $(if ($direct) { $direct.Current.Name + '] class=' + $direct.Current.ClassName } else { '(nothing)' }))
+    Say '  every combo box in the dialog, focused or not (its UIA Name is the row label it sits on,'
+    Say '  not the value it shows -- measured on the first run of this mode; the value is printed'
+    Say '  beside it where the widget offers one, as a reading of the state this run starts in):'
+    foreach ($c in @(FindType $dlg $CT::ComboBox)) {
+      $shown = '(no Value pattern)'
+      $cv = Pat $c 'Value'
+      if ($cv) { try { $shown = '|' + $cv.Current.Value + '|' } catch { $shown = 'threw' } }
+      Say ('    |' + $c.Current.Name + '| focused=' + $c.Current.HasKeyboardFocus + ' value=' + $shown)
+    }
+    if (-not $byProperty.Count) { Bail '  nothing in the settings dialog reports the keyboard focus' }
+    # The service row, in either interface: the Chinese label is the four code points on the line
+    # below (this file stays pure ASCII, so it is not written out here), and it is what the form
+    # layout puts beside the box -- measured above is what the box is called on screen. Matching the
+    # row rather than the value is also what makes this verdict survive a change of provider: the
+    # label of the row the reader was sent to is the claim, not which item that row shows.
+    $want = if ($Language -eq 'zh_CN') { (CjStr 0x7FFB, 0x8BD1, 0x670D, 0x52A1) } else { 'Translation service' }
+    $onService = $false
+    foreach ($f in $byProperty) {
+      if ($f.Current.ControlType.ProgrammaticName -eq 'ControlType.ComboBox' -and $f.Current.Name.Trim() -eq $want) { $onService = $true }
+    }
+    Say ('  focus is on the translation-service row=' + $onService + ' (wanted a combo box named [' + $want + '])')
+    if (-not $onService) { Bail '  the settings dialog opened with the focus somewhere other than the translation service' }
+
+    # The picture, sized by the OUTER window rect and judged against the dialog's own UIA rectangle.
+    # Two rectangles because they are two different things: UIA gives a Qt top-level as its client
+    # area, while the bitmap PrintWindow fills is the whole window including frame and title bar
+    # (sec.74 nearly read a button as pushed out of the window for exactly this reason). One of them
+    # is for the eye, the other is the coordinate space the rows live in.
+    $dh = [IntPtr]$dlg.Current.NativeWindowHandle
+    $gr = [W32]::Rect($dh)
+    $co = [W32]::ClientOrigin($dh)
+    $rc = New-Object W32+RECT
+    [W32]::GetClientRect($dh, [ref]$rc) | Out-Null
+    $fw = [int]($gr.right - $gr.left)
+    $fh = [int]($gr.bottom - $gr.top)
+    $pic = New-Object System.Drawing.Bitmap($fw, $fh)
+    $g = [System.Drawing.Graphics]::FromImage($pic)
+    $hdc = $g.GetHdc()
+    $painted = [W32]::PrintWindow($dh, $hdc, 2)
+    $g.ReleaseHdc($hdc)
+    $g.Dispose()
+    $leaf = [System.IO.Path]::GetFileNameWithoutExtension($Doc)
+    $shot = Join-Path $scratch ('translatesetup-settings-' + $Language + '-' + $leaf + '.png')
+    $pic.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+    $pic.Dispose()
+    $dr = $dlg.Current.BoundingRectangle
+    Say ('  PrintWindow returned ' + $painted + ', window ' + $fw + 'x' + $fh + ' device px (client ' +
+         [int]$rc.right + 'x' + [int]$rc.bottom + ', frame offset ' + ($co.x - $gr.left) + ',' + ($co.y - $gr.top) +
+         '); UIA client rect ' + [int]$dr.X + ',' + [int]$dr.Y + ' ' + [int]$dr.Width + 'x' + [int]$dr.Height +
+         '; picture kept at ' + $shot)
+    $rowTypes = @('ControlType.ComboBox', 'ControlType.Edit', 'ControlType.CheckBox', 'ControlType.Spinner',
+                  'ControlType.Button', 'ControlType.Text', 'ControlType.Group')
+    $measured = 0
+    $offenders = @()
+    foreach ($e in @($dlg.FindAll($TS::Descendants, $ANY))) {
+      $ctn = $e.Current.ControlType.ProgrammaticName
+      if ($rowTypes -notcontains $ctn) { continue }
+      $measured++
+      $r = $e.Current.BoundingRectangle
+      $tag = $ctn.Replace('ControlType.', '')
+      $name = $e.Current.Name.Replace("`r", ' ').Replace("`n", ' / ')
+      if ($name.Length -gt 46) { $name = $name.Substring(0, 46) }
+      Say ('    row ' + $tag + ' |' + $name + '| at ' + [int]$r.X + ',' + [int]$r.Y + ' ' +
+           [int]$r.Width + 'x' + [int]$r.Height)
+      if ($r.Width -le 0 -or $r.Height -le 0) {
+        $offenders += ($tag + ' |' + $name + '| has no rectangle on screen')
+        continue
+      }
+      if ($r.X -lt ($dr.X - 1) -or $r.Y -lt ($dr.Y - 1) -or
+          ($r.X + $r.Width) -gt ($dr.X + $dr.Width + 1) -or
+          ($r.Y + $r.Height) -gt ($dr.Y + $dr.Height + 1)) {
+        $offenders += ($tag + ' |' + $name + '| at ' + [int]$r.X + ',' + [int]$r.Y + ' ' + [int]$r.Width +
+                       'x' + [int]$r.Height + ' is outside the dialog client ' + [int]$dr.X + ',' +
+                       [int]$dr.Y + ' ' + [int]$dr.Width + 'x' + [int]$dr.Height)
+      }
+    }
+    # Cancel, never the accept button: reject() puts back what the dialog staged, accepted() would
+    # write settings (and the provider row is the one thing this run must leave alone).
+    ClickCancel $dlg 'SettingsDialog' $app.Id
+    if ($offenders.Count) {
+      foreach ($o in $offenders) { Say ('  OUTSIDE: ' + $o) }
+      Bail ('  ' + $offenders.Count + ' of ' + $measured + ' rows are not inside the settings dialog -- look at ' + $shot)
+    }
+    Say ('  ' + $measured + ' rows measured, every one inside the dialog client area; ' + $shot)
+  }
+  'xfanotice' {
+    # handoff-03 F9: the two status sentences F3 added, and the delete box line about the XFA copy,
+    # on a screen. One document per run: the program is single-instance and forwards a second launch
+    # to the first, so three documents are three runs and -ExpectXfa is what decides the verdict.
+    #   packet   field-xfa.pdf    -- ordinary XFA form: the second-copy status line, and the box
+    #                               carrying the packet sentence
+    #   dynamic  xfa-dynamic.pdf -- the packet plus the catalog key that asks a reader to draw the
+    #                               pages itself: the dynamic status line (the branch checked FIRST,
+    #                               so this file must not be answered with the weaker sentence) and
+    #                               the same box line
+    #   absent   plain.pdf        -- no packet: neither status line and no box sentence, or the
+    #                               program warns about XFA on every PDF it opens
+    # The status line is never judged on the bare word XFA. That line names the file that opened, and
+    # field-xfa.pdf would satisfy such a needle before any sentence existed -- sec.97's rule that a
+    # receipt has to be impossible before the thing it certifies. In the delete box no file name is
+    # printed, so XFA there is a fair needle.
+    # The control is a combination rather than the -Control switch, exactly as deletesummary does it:
+    # -ExpectXfa packet on plain.pdf asks for a sentence that file cannot produce, and that round must
+    # exit 1.
+    if ($ExpectXfa -ne 'packet' -and $ExpectXfa -ne 'dynamic' -and $ExpectXfa -ne 'absent') {
+      Bail '  -ExpectXfa must be packet, dynamic or absent for this mode'
+    }
+    $leaf = [System.IO.Path]::GetFileName($Doc)
+    Say ('  document [' + $leaf + ']  -ExpectXfa ' + $ExpectXfa)
+    # showMessage(..., 12000) puts the line up and takes it away again, and the document is opened
+    # during the launch wait, so read early and print EVERY round: an empty read would otherwise look
+    # exactly like a sentence that never appears, and the round that started this list showed the
+    # status bar carrying a toolbar hint instead (ParkCursorAway).
+    $status = ''
+    $seen = @()
+    for ($k = 1; $k -le 15 -and ($status -notlike ('*' + $leaf + '*')); $k++) {
+      $status = StatusName $app.Id
+      if ($status -notin $seen) {
+        $seen += $status
+        Say ('  round ' + $k + ': |' + $status.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+      }
+      Start-Sleep -Milliseconds 300
+    }
+    $flat = $status.Replace("`r", ' ').Replace("`n", ' / ')
+    # The companion row every negative reading needs (sec.82): the line has to be about THIS document
+    # before its silence about XFA means anything.
+    if ($flat -notlike ('*' + $leaf + '*')) {
+      Bail '  the status line never names the open document, so it is not an answer to anything'
+    }
+    $dynNeedles = @('dynamic XFA document', (CjStr 0x52A8, 0x6001))
+    $packetNeedles = @('second copy of its form as XFA', (CjStr 0x8FD8, 0x6709, 0x4E00, 0x4EFD))
+    $sawDyn = @($dynNeedles | Where-Object { $flat -like ('*' + $_ + '*') }).Count -gt 0
+    $sawPacket = @($packetNeedles | Where-Object { $flat -like ('*' + $_ + '*') }).Count -gt 0
+    Say ('  status line says packet=' + $sawPacket + ' dynamic=' + $sawDyn)
+    if ($ExpectXfa -eq 'packet') {
+      if (-not $sawPacket) { Bail ('  a document carrying an XFA packet opened without the second-copy sentence [' + $leaf + ']') }
+      if ($sawDyn) { Bail '  the packet file was answered with the dynamic sentence -- the two kinds are not told apart' }
+    } elseif ($ExpectXfa -eq 'dynamic') {
+      if (-not $sawDyn) { Bail ('  a dynamic XFA document opened without the dynamic sentence [' + $leaf + ']') }
+    } elseif ($sawPacket -or $sawDyn) {
+      Bail ('  a document with no XFA at all opened with an XFA status sentence [' + $leaf + ']')
+    }
+    $dlg = OpenDocumentDialog $app.Id @('Delete Pages', (CjStr 0x5220, 0x9664, 0x9875, 0x9762)) 'DeletePagesDialog'
+    # Read twice: once as the box opens, then once after a range is typed, because the summary is
+    # recomputed on every keystroke and a sentence that only survives the untouched box would be a
+    # sentence about a request nobody has made yet.
+    $atOpen = LongestText $dlg
+    Say ('  box at open (' + @(FindType $dlg $CT::Text).Count + ' Text): |' +
+         $atOpen.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    $edit = FieldOf $dlg
+    RangeText $edit '2'
+    $summary = LongestText $dlg
+    Say ('  box with range 2: |' + $summary.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    foreach ($b in @(FindType $dlg $CT::Button)) { Say ('    button |' + $b.Current.Name + '| enabled=' + $b.Current.IsEnabled) }
+    $boxAtOpen = ($atOpen -like '*XFA*')
+    $boxTyped = ($summary -like '*XFA*')
+    $wantBox = ($ExpectXfa -ne 'absent')
+    Say ('  box sentence at open=' + $boxAtOpen + ' after typing=' + $boxTyped + '  expected=' + $wantBox)
+    if ($wantBox) {
+      if (-not $boxAtOpen) { Bail ('  the delete box on a file carrying a packet never says the XFA copy goes [' + $leaf + ']') }
+      if (-not $boxTyped) { Bail ('  the delete box stopped saying it once a range was typed [' + $leaf + ']') }
+    } elseif ($boxAtOpen -or $boxTyped) {
+      Bail '  the delete box says an XFA copy goes on a document that has none'
+    }
+    Say ('  status line and delete box both agree with the file [' + $leaf + ']')
+  }
+  'replynotice' {
+    # handoff-03 F9: the before-the-press sentence sec.47 asked for, in the two boxes that can say it.
+    # The document is the generated cross-page thread -- one /Text note on page 1, one reply naming it
+    # with /IRT on page 2, and 38 more pages for the range box to point at. So four readings, none of
+    # which presses an accept button:
+    #   range 1  the note page goes           -> the box names one orphaned reply, and the number is 1
+    #   range 3  neither end of the thread    -> the box says nothing
+    #   split 1 page per piece                -> the two ends land in two files -> it names 1
+    #   split 2 pages per piece               -> one piece holds both           -> it says nothing
+    # The count is read OUT OF THE SENTENCE (ReplyCount), not from what this mode asked for: %n is
+    # filled by Qt plural machinery and the catalogue half of that is pinned by an i18n_smoke probe,
+    # so the screen has to show the number it shows rather than the number expected.
+    # -Control keeps every step and expects the sentence at range 3, where it cannot be.
+    $replyCj = CjStr 0x6761, 0x56DE, 0x7B54, 0x4F1A, 0x5931, 0x53BB   # the delete box sentence, Chinese
+    $severCj = CjStr 0x88AB, 0x62C6, 0x5230, 0x4E24, 0x4E2A, 0x6587, 0x4EF6, 0x91CC, 0x53BB  # the split one
+    $leaf = [System.IO.Path]::GetFileName($Doc)
+    Say ('  document [' + $leaf + ']' + $(if ($Control) { '  (CONTROL: the sentence will be expected at range 3)' } else { '' }))
+    $dlg = OpenDocumentDialog $app.Id @('Delete Pages', (CjStr 0x5220, 0x9664, 0x9875, 0x9762)) 'DeletePagesDialog'
+    $edit = FieldOf $dlg
+    RangeText $edit '1'
+    $one = LongestText $dlg
+    Say ('  range 1: |' + $one.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    $sawOne = ($one -like ('*' + $replyCj + '*')) -or ($one -like '*reply loses the annotation*') -or ($one -like '*replies lose the annotation*')
+    $nOne = ReplyCount $one
+    Say ('  range 1: sentence=' + $sawOne + ' count=' + $nOne + '  (wanted the sentence and 1)')
+    if (-not $sawOne -or $nOne -ne 1) {
+      Bail ('  naming page 1 -- the note the reply answers -- does not put one orphaned reply in the box (sentence=' +
+            $sawOne + ' count=' + $nOne + ')')
+    }
+    RangeText $edit '3'
+    $three = LongestText $dlg
+    Say ('  range 3: |' + $three.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    $sawThree = ($three -like ('*' + $replyCj + '*')) -or ($three -like '*loses the annotation*')
+    Say ('  range 3: sentence=' + $sawThree + '  expected=' + $(if ($Control) { 'present (CONTROL)' } else { 'absent' }))
+    if ($Control) {
+      if (-not $sawThree) {
+        Bail '  CONTROL: page 3, which holds neither end of the thread, shows no orphan sentence -- the verdict is live (CONTROL exit 1)'
+      }
+      Bail '  CONTROL: the sentence appeared for page 3, so it is not conditional on the request at all'
+    }
+    if ($sawThree) { Bail '  the delete box warns about an orphaned reply for a page that holds neither end of the thread' }
+    ClickCancel $dlg 'DeletePagesDialog' $app.Id
+    $split = OpenDocumentDialog $app.Id @('Split Files', (CjStr 0x62C6, 0x5206, 0x6587, 0x4EF6)) 'SplitPagesDialog'
+    $spin = @(@($split.FindAll($TS::Descendants, (New-Object $PC($AE::ControlTypeProperty, $CT::Spinner))))[0])
+    $rv = Pat $spin 'RangeValue'
+    if (-not $rv) { Bail '  the split box has no RangeValuePattern' }
+    $rv.SetValue(1)
+    Start-Sleep -Milliseconds 700
+    $s1 = LongestText $split
+    Say ('  split, 1 page per piece: |' + $s1.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    $sawS1 = ($s1 -like ('*' + $severCj + '*')) -or ($s1 -like '*land in two different files*')
+    $nS1 = ReplyCount $s1
+    Say ('  split 1: sentence=' + $sawS1 + ' count=' + $nS1 + '  (wanted the sentence and 1)')
+    if (-not $sawS1 -or $nS1 -ne 1) {
+      Bail ('  splitting every page into its own file does not put one severed thread in the box (sentence=' +
+            $sawS1 + ' count=' + $nS1 + ')')
+    }
+    $rv.SetValue(2)
+    Start-Sleep -Milliseconds 700
+    $s2 = LongestText $split
+    Say ('  split, 2 pages per piece: |' + $s2.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    $sawS2 = ($s2 -like ('*' + $severCj + '*')) -or ($s2 -like '*land in two different files*')
+    Say ('  split 2: sentence=' + $sawS2 + '  expected=False (both ends are in one piece)')
+    if ($sawS2) { Bail '  the split box warns about a severed thread when the note and its reply go to the same file' }
+    ClickCancel $split 'SplitPagesDialog' $app.Id
+    Say '  both boxes name the orphaned reply exactly for the requests that make one'
   }
 }
 Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }

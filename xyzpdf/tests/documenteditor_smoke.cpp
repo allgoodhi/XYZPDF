@@ -8181,6 +8181,51 @@ int main(int argc, char **argv)
                 } else {
                     std::cerr << "FAIL: sample xfa: " << e.toStdString() << '\n';
                 }
+                // handoff-03 F9: the two shapes the new screen modes aim at, beside the packet file.
+                // The one above is an ordinary XFA form; a *dynamic* one additionally asks the reader
+                // to draw its own pages (the catalog's /NeedsRendering, table 28) and that is the
+                // stronger of the two status sentences -- so it needs its own file, not a flag on
+                // field-xfa.pdf, because the negative half of that verdict is a file that says neither.
+                {
+                    const QString dynamic = QDir(dir).filePath(QStringLiteral("xfa-dynamic.pdf"));
+                    QFile::remove(dynamic);
+                    e.clear();
+                    check(!writeXfaFieldCopy(fixture, dynamic, QStringLiteral("xfaField"),
+                                             QStringLiteral("typed on page 1"), &e, true, true, true)
+                                  .isEmpty(),
+                          QStringLiteral("sample: the dynamic XFA file is written: %1").arg(e));
+                    const XfaReport dynamicPacket = readXfa(dynamic);
+                    // The row that carries the "reads no dynamic" rows below it: the same qpdf walk
+                    // the editor does, off the bytes -- /NeedsRendering is the catalog's key, so
+                    // printing it here is what keeps §112's wrong-dictionary mistake from coming back.
+                    QPDF probe;
+                    probe.processFile(dynamic.toUtf8().constData());
+                    const QPDFObjectHandle flag
+                        = probe.getRoot().getKey("/NeedsRendering");
+                    std::cout << "SAMPLE dynamic: " << dynamic.toStdString() << " present="
+                              << dynamicPacket.present << " needsRendering="
+                              << (flag.isBool() && flag.getBoolValue() ? 1 : 0) << '\n';
+                }
+                // The cross-page thread, as a file a window can be pointed at: the note is on page 1,
+                // the reply on page 2, and the document has 38 more pages to name in the range box.
+                // Deleting page 1 orphans exactly one reply; deleting page 3 orphans none -- which is
+                // the pair the before-the-press sentence has to be able to tell apart on screen.
+                {
+                    const QString thread = QDir(dir).filePath(QStringLiteral("thread-across-pages.pdf"));
+                    QFile::remove(thread);
+                    e.clear();
+                    check(!writeCrossPageThreadCopy(fixture, thread, &e).isEmpty(),
+                          QStringLiteral("sample: the cross-page thread file is written: %1").arg(e));
+                    const LinkReport links = readLinkedAnnotations(thread);
+                    check(links.replies == 1 && links.repliesOnAnotherPage == 1,
+                          QStringLiteral("sample: the thread file really carries one reply whose "
+                                         "target is on another page (replies=%1, across=%2)")
+                              .arg(links.replies)
+                              .arg(links.repliesOnAnotherPage));
+                    std::cout << "SAMPLE thread: " << thread.toStdString() << " notes="
+                              << links.notes << " replies=" << links.replies
+                              << " repliesOnAnotherPage=" << links.repliesOnAnotherPage << '\n';
+                }
                 // The §51 shape as something a window can be pointed at: the page is gone, and
                 // this document still registers the field that lived on it.
                 DocumentEditor out;

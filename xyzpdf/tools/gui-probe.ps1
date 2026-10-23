@@ -292,9 +292,20 @@ function Bail([string]$why) {
   # A mode that gives up halfway is the mode that might have written something it should not have,
   # so the save guard is read here too -- and the exit code stays 1 either way.
   if ($script:guardArmed) { Guard-Check 'bailing mid-run' | Out-Null }
-  Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+  Kill-ProbeApp
   if ($script:guardBroken) { Say '  GUARD: the file handed to the probe MOVED during this run (hashes above)' }
   exit 1
+}
+function Kill-ProbeApp() {
+  # -ErrorAction SilentlyContinue covers Get-Process; it does not cover the METHOD. Kill() throws
+  # when the process is already on its way out, which is precisely what the Discard and Save answers
+  # of the three-question box do to a last tab -- so a run that did everything right still printed
+  # an exception block (measured 2026-10-23, closeprompt's English round). Swallowing it is safe
+  # because a process that survives this is caught two lines later: the next launch polls for a
+  # window naming its own document and Bails when none appears.
+  foreach ($p in @(Get-Process -Name xyzpdf -ErrorAction SilentlyContinue)) {
+    try { $p.Kill() } catch { }
+  }
 }
 function CjStr([int[]]$codePoints) {
   # This file must stay pure ASCII: Windows PowerShell reads a BOM-less .ps1 as ANSI, so a
@@ -767,7 +778,7 @@ function ParkCursorAway() {
 function Start-ProbeApp([string]$language) {
   # Kill everything first: a leftover instance swallows the launch (single-instance
   # forwarding), and the run then measures a window with no document in it.
-  Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+  Kill-ProbeApp
   Start-Sleep -Seconds 3
   ParkCursorAway
   if (-not (Test-Path $scratch)) { New-Item -ItemType Directory -Path $scratch | Out-Null }
@@ -802,7 +813,7 @@ function Restart-ProbeApp([string]$language) {
   # that judges one has to actually restart. Same kill-everything-then-poll rule as the first
   # launch: a leftover instance swallows the launch, and a fixed sleep has been seen to come back
   # holding an empty window (sec.34).
-  Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+  Kill-ProbeApp
   Start-Sleep -Seconds 3
   return (Start-ProbeApp $language)
 }
@@ -1886,6 +1897,126 @@ switch ($Mode) {
       Bail '  the in-place save wrote the file this probe was handed rather than its own copy'
     }
     Say ('  Ctrl+S wrote the copy: the line names it, the star is gone, the bytes moved, the original did not')
+  }
+  'closeprompt' {
+    # The other half of F8 that has never been on a screen (sec.116): closing a window whose tab
+    # still holds unwritten edits asks for one of three answers -- Save, Discard, Cancel.
+    # MainWindow::confirmDiscardingEdits() asks through WindowDialogs::question, which is a
+    # QMessageBox, so the box is found by that class name and not by its title: the title and the
+    # body are our own translatable strings, and the button texts come from Qt's own catalogue --
+    # loaded for the Chinese interface and deliberately not for the English one -- so neither
+    # language's wording can be assumed here, and both are asked for.
+    #
+    # Three rounds, one per answer, each with its own receipt on disk:
+    #   Cancel   -- the box goes away, the window stays, the star stays, the copy is untouched;
+    #   Discard  -- the window goes away, the copy is untouched;
+    #   Save     -- a fresh launch (the window is gone after Discard), the same edit, and this time
+    #               the window goes away AND the copy moves, with /Rotate 90 really in its bytes.
+    # -Control keeps the same verdict (a box must appear when the window closes) and leaves the one
+    # thing that makes it appear undone: no edit at all. That must exit 1.
+    # Measured 2026-10-23 rather than guessed: the Chinese interface takes these three from Qt's own
+    # catalogue as U+4FDD U+5B58 / U+53D6 U+6D88 / U+4E22 U+5F03 -- the third is 'discard' in the
+    # sense of throwing away, which is neither of the two Chinese words (U+653E U+5F03, U+4E0D U+4FDD
+    # U+5B58) this needle list carried before it was run -- and the English one as |Save| |Cancel|
+    # |Discard|, in that order.
+    $answerSave = @('Save', (CjStr 0x4FDD, 0x5B58))
+    $answerDiscard = @('Discard', "Don't Save", (CjStr 0x4E22, 0x5F03))
+    $answerCancel = @('Cancel', (CjStr 0x53D6, 0x6D88))
+
+    function Prompt-Three([int]$procId, [string]$tag) {
+      # The box, judged as three answers about THIS document. Buttons are printed by PressBoxButton
+      # when one of them is pressed; the count is judged here because a box that grew or lost one is
+      # a different question than the one this mode is written against.
+      $box = Wait-PromptBox $procId $tag
+      if (-not $box) {
+        PrintCandidates $procId ($tag + ': no QMessageBox; every candidate window of the process:')
+        Bail ('  ' + $tag + ': closing an edited document produced no three-answer box')
+      }
+      $buttons = @(FindType $box $CT::Button)
+      Say ('  ' + $tag + ': ' + $buttons.Count + ' Button element(s) in the box')
+      if ($buttons.Count -ne 3) {
+        foreach ($b in $buttons) { Say ('    |' + $b.Current.Name + '|') }
+        Bail ('  ' + $tag + ': the box has ' + $buttons.Count + ' buttons, not the three answers')
+      }
+      # The question has to name the file this probe made: a box about somebody else's document would
+      # be a window that was already on screen, and reading it as this run's receipt is exactly the
+      # stale-handle shape sec.87 wrote down.
+      $body = LongestText $box
+      Say ('  ' + $tag + ': body |' + $body.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+      if (-not $body.Contains($script:guardCopyLeaf)) {
+        Bail ('  ' + $tag + ': the box does not name the copy this probe made [' + $script:guardCopyLeaf + ']')
+      }
+      return $box
+    }
+
+    if ($Control) {
+      Say '  CONTROL: nothing is edited before the close, but the same box verdict stays in place'
+      if (-not (Close-Window $app.Id)) { Bail '  no window to close' }
+      $cbox = Wait-PromptBox $app.Id 'control'
+      if ($cbox) {
+        Bail '  CONTROL: the window asked about unwritten changes although nothing was edited -- the question is not conditional'
+      }
+      Bail '  CONTROL: an untouched document closed without a box -- the box verdict is live (CONTROL exit 1)'
+    }
+
+    # ---- round 1: Cancel keeps everything ----
+    Rotate-CurrentPage $app.Id
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  the caption never grew the unsaved-edits star; it reads [' + (Window $app.Id).Current.Name + ']')
+    }
+    $hashOpen = Copy-Hash
+    Say ('  caption [' + (Window $app.Id).Current.Name + ']  copy [' + $hashOpen + ']')
+    if (-not (Close-Window $app.Id)) { Bail '  no window to close' }
+    $box1 = Prompt-Three $app.Id 'cancel'
+    if (-not (PressBoxButton $box1 $answerCancel 'cancel')) { Bail '  the box has no Cancel button in either language' }
+    if (-not (WaitClassGone $app.Id 'QMessageBox' 15)) { Bail '  the box stayed open after Cancel' }
+    if (-not (Window $app.Id)) { Bail '  Cancel closed the window; the reader kept neither the tab nor the edits' }
+    if (-not (Has-Star $app.Id)) { Bail '  Cancel let the star go, so the tab now claims nothing is unwritten' }
+    if ((Copy-Hash) -ne $hashOpen) { Bail '  Cancel wrote the file -- it is not the answer that changes nothing' }
+    Say ('  Cancel: window still here [' + (Window $app.Id).Current.Name + '], copy still [' + (Copy-Hash) + ']')
+
+    # ---- round 2: Discard closes without writing ----
+    if (-not (Close-Window $app.Id)) { Bail '  no window to close the second time' }
+    $box2 = Prompt-Three $app.Id 'discard'
+    if (-not (PressBoxButton $box2 $answerDiscard 'discard')) { Bail '  the box has no Discard button in either language' }
+    if (-not (Wait-WindowGone $app.Id 30)) { Bail '  the window stayed open after the Discard answer' }
+    if ((Copy-Hash) -ne $hashOpen) { Bail '  Discard wrote the file -- it is the answer that throws the edits away' }
+    Say ('  Discard: the window is gone and the copy is still [' + (Copy-Hash) + '] -- nothing was written')
+
+    # ---- round 3: Save writes, then closes ----
+    # A fresh instance: the window is gone, and the copy on disk is still the bytes it was opened with.
+    $app3 = Restart-ProbeApp $Language
+    if (-not $app3) { Bail '  the relaunch produced no window for the Save round' }
+    Say ('  relaunched [' + (Window $app3.Id).Current.Name + '] for the Save answer')
+    Rotate-CurrentPage $app3.Id
+    if (-not (Wait-Star $app3.Id $true)) { Bail '  the caption never grew the star in the Save round' }
+    $hashBeforeSave = Copy-Hash
+    if ($hashBeforeSave -ne $hashOpen) {
+      Bail ('  the copy changed while nothing was saved (it was [' + $hashOpen + '] and is now [' + $hashBeforeSave + '])')
+    }
+    if (-not (Close-Window $app3.Id)) { Bail '  no window to close in the Save round' }
+    $box3 = Prompt-Three $app3.Id 'save'
+    if (-not (PressBoxButton $box3 $answerSave 'save')) { Bail '  the box has no Save button in either language' }
+    # The save runs before the window goes: drain the readers, write beside the file, verify, replace.
+    if (-not (Wait-WindowGone $app3.Id 40)) {
+      PrintCandidates $app3.Id 'the window is still here after the Save answer; every candidate window:'
+      Bail '  the Save answer did not close the window, so the save did not finish'
+    }
+    $hashAfterSave = Copy-Hash
+    if ($hashAfterSave -eq $hashBeforeSave) {
+      Bail '  the window closed on the Save answer but the copy is byte-for-byte what it was'
+    }
+    # A moved hash alone is not enough: a rewrite that only refreshed its timestamps would move it.
+    $raw = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString([System.IO.File]::ReadAllBytes($script:guardCopy))
+    $rotated = $raw.Contains('/Rotate 90')
+    Say ('  save round: copy [' + $hashBeforeSave + '] -> [' + $hashAfterSave + ']  /Rotate 90 present=' + $rotated)
+    if (-not $rotated) {
+      Bail '  the copy moved but carries no /Rotate 90 -- what was written is not the rotation that was asked for'
+    }
+    if (-not (Guard-Check 'after the three answers')) {
+      Bail '  one of the three answers wrote the file this probe was handed rather than its own copy'
+    }
+    Say '  the three answers do what they say: Cancel keeps, Discard closes clean, Save writes and closes'
   }
   'saverename' {
     # Renaming in the native save box works, and the route is neither of the two obvious ones
@@ -3936,7 +4067,7 @@ switch ($Mode) {
   }
 }
 $guardHeld = Guard-Check 'end of run'
-Get-Process -Name xyzpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+Kill-ProbeApp
 if (-not $guardHeld) {
   Say 'GUARD FAILED: a save mode wrote the file it was handed, not the copy it made'
   exit 1

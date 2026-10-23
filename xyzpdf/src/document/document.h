@@ -57,6 +57,23 @@ struct RenderOptions
     // than printed, which is what asks the renderer for subpixel antialiasing.
     bool optimizedForLcd = false;
 
+    // True when the pixels are going on paper.
+    //
+    // This is the backend's own signal rather than a reading of `optimizedForLcd`:
+    // the two are independent in the library, and a caller that wants neither is
+    // the common case (an image export is not a screen and not a sheet).
+    //
+    // Measured, and it does nothing today: at the print size -- A4 at 300 dpi,
+    // 2480x3508 -- the four fixtures this program is tested against come back
+    // pixel-for-pixel identical with and without it (text.pdf, table.pdf,
+    // graphic.pdf, scan.pdf; 0 pixels differ on all four, and the ink fraction to
+    // three decimal places is the same). It is set because the header calls
+    // FPDF_PRINTING "render for printing" and the print path is the one place that
+    // means it, and it is pinned as inert in tests/documenteditor_smoke.cpp -- so
+    // the day a PDFium build makes this flag change the picture, that row goes red
+    // and says our print numbers are describing a different render.
+    bool printing = false;
+
     // Which part of the page to render, in the coordinate system of the whole
     // page rendered at `scaledSize`. Empty means the whole page.
     //

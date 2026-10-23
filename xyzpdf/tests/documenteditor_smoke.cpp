@@ -8742,6 +8742,48 @@ int main(int argc, char **argv)
                           .arg(QString::fromLatin1(p.name))
                           .arg(widget));
             }
+
+            // ---- the printing flag, pinned as inert ----
+            //
+            // src/print/printjob.cpp sets RenderOptions::printing since F7-F,
+            // because that is the flag the library names for paper. What it does
+            // here is nothing, and that is measured rather than assumed: the same
+            // page at A4/300 dpi, with and without it, is pixel for pixel the same
+            // picture on every fixture this table walks. The row exists for the
+            // other direction -- a future PDFium that starts honouring the flag
+            // would change what paper looks like without changing any code in this
+            // program, and this is the line that says so.
+            {
+                const QSize printSize(2480, 3508);
+                const auto renderPrinted = [&](const QString &path, bool printing) {
+                    PdfiumBackend document;
+                    if (document.load(path, QString()) != Document::Status::Ready)
+                        return QImage();
+                    RenderOptions options;
+                    options.optimizedForLcd = false;
+                    options.printing = printing;
+                    return document.render(0, printSize, options);
+                };
+                const QImage asScreen = renderPrinted(widgetPath, false);
+                const QImage asPaper = renderPrinted(widgetPath, true);
+                check(!asScreen.isNull() && !asPaper.isNull()
+                          && asScreen.size() == printSize && asPaper.size() == printSize,
+                      "the print size renders with and without the printing flag");
+                const QRect whole(QPoint(0, 0), printSize);
+                const int moved = differingWithin(asScreen, asPaper, whole);
+                check(moved == 0,
+                      QStringLiteral("the printing flag changes no pixels at all on paper (%1 of %2 "
+                                     "differ) -- if this ever goes red, every print number in this "
+                                     "file describes a different render")
+                          .arg(moved)
+                          .arg(printSize.width() * printSize.height()));
+                const QImage plainPrint = renderPrinted(source, true);
+                const QRect printBox(250, 883, 834, 125); // paintPoints at 2480/595
+                check(differingWithin(plainPrint, asPaper, printBox) > 0,
+                      QStringLiteral("and the field is still drawn under it, so the flag did not "
+                                     "trade the form layer for nothing (%1 pixels)")
+                          .arg(differingWithin(plainPrint, asPaper, printBox)));
+            }
         }
     }
 

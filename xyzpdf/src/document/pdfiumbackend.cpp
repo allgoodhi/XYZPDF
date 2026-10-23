@@ -668,6 +668,13 @@ QImage PdfiumBackend::render(int page, QSize pixels, const RenderOptions &option
         flags |= FPDF_ANNOT;
     if (options.optimizedForLcd)
         flags |= FPDF_LCD_TEXT;
+    // Measured inert at the print size on every fixture this program is tested
+    // against (document.h's note on `printing` says which four and by how much --
+    // zero). Set because this is the flag the library names for that job, and
+    // pinned as inert in documenteditor_smoke so a build that starts honouring it
+    // in some new way reddens a row instead of changing paper quietly.
+    if (options.printing)
+        flags |= FPDF_PRINTING;
 
     FPDF_RenderPageBitmap(bitmap, handle, startX, startY, sizeX, sizeY, quarterTurns, flags);
     // Field appearances are a second pass, with the same geometry: the form

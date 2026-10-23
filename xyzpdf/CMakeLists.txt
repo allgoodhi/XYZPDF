@@ -310,6 +310,20 @@ set(XYZPDF_SOURCES
     src/render/rendercache.cpp
     src/render/rendertoken.h
 
+    src/services/documentoutput.h
+    src/services/documentoutput.cpp
+    src/services/filechangenotice.h
+    src/services/filechangenotice.cpp
+    src/services/foregroundjobs.h
+    src/services/ocrsession.h
+    src/services/ocrsession.cpp
+    src/services/searchsession.h
+    src/services/searchsession.cpp
+    src/services/translatesession.h
+    src/services/translatesession.cpp
+    src/services/wordexportsession.h
+    src/services/wordexportsession.cpp
+
     src/settings/settingsdialog.h
     src/settings/settingsdialog.cpp
 
@@ -785,6 +799,12 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/watermarkdialog.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
+                src/services/documentoutput.cpp
+                src/services/filechangenotice.cpp
+                src/services/ocrsession.cpp
+                src/services/searchsession.cpp
+                src/services/translatesession.cpp
+                src/services/wordexportsession.cpp
                 src/theme/thememanager.cpp
         LIBRARIES ${XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES})
 endif()
@@ -830,6 +850,12 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/translate/translator.cpp
                 src/render/pagerenderer.cpp
                 src/render/rendercache.cpp
+                src/services/documentoutput.cpp
+                src/services/filechangenotice.cpp
+                src/services/ocrsession.cpp
+                src/services/searchsession.cpp
+                src/services/translatesession.cpp
+                src/services/wordexportsession.cpp
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/documenttabbar.cpp

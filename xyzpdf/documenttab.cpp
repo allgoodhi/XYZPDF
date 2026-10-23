@@ -3,61 +3,40 @@
 #include "src/core/appsettings.h"
 #include "src/core/windowdialogs.h"
 #include "src/document/bookmarkposition.h"
-#include "src/document/pagemetrics.h"
 #include "src/document/qtpdfbackend.h"
 #include "src/edit/documenteditor.h"
-#include "src/export/imageexport.h"
-#include "src/print/printjob.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
-#include "src/translate/translator.h"
 #include "src/ui/bookmarkdialog.h"
 #include "src/ui/deletepagesdialog.h"
 #include "src/ui/bookmarkdialog.h"
 #include "src/ui/findbar.h"
-#include "src/ui/imageexportdialog.h"
 #include "src/ui/mergepagesdialog.h"
 #include "src/ui/movepagesdialog.h"
-#include "src/ui/ocrdialog.h"
 #include "src/ui/outlinepanel.h"
-#include "src/ui/printdialog.h"
 #include "src/ui/propertiesdialog.h"
 #include "src/ui/protectpagesdialog.h"
 #include "src/ui/rotatepagesdialog.h"
 #include "src/ui/searchpanel.h"
 #include "src/ui/splitpagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
-#include "src/ui/translatedialog.h"
 #include "src/ui/watermarkdialog.h"
 #include "src/view/pageview.h"
 
 #include <QApplication>
-#include <QAtomicInt>
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFileInfo>
-#include <QFileSystemWatcher>
-#include <QFutureWatcher>
 #include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QLabel>
 #include <QMessageBox>
-#include <QPainter>
 #include <QPrintDialog>
-#include <QPrinter>
-#include <QProgressDialog>
-#include <QPushButton>
 #include <QSplitter>
 #include <QTabWidget>
-#include <QTimer>
-#include <QToolButton>
 #include <QVBoxLayout>
-#include <QtConcurrent/QtConcurrentRun>
 
-#include <cmath>
 
 namespace {
 
@@ -75,28 +54,6 @@ qint64 prefetchAllowanceFor(qint64 cacheBytes)
     return qMax<qint64>(0, cacheBytes / 8);
 }
 
-// How many pixels to put on the recognition crop's longer side.
-//
-// Recognition quality lives on the height of the letters in pixels: the same
-// page at 50% on screen is often too small to read reliably, and at 800% it is
-// a waste. Sixteen hundred -- roughly 300 dpi for ordinary text -- is where the
-// answers stop improving, so that is the target rather than either extreme.
-constexpr double kOcrTargetPixels = 1600.0;
-
-// The whole page is what gets rendered to produce a crop from, so the crop's
-// scale is also capped where the whole page stays a *UI-thread-sized* job --
-// this render is synchronous, on the thread that draws, and four million
-// pixels is a few dozen milliseconds on this machine's documents. A tiny box on
-// a huge page would otherwise ask for a fifty-thousand-pixel rendering to get
-// its two hundred.
-constexpr qint64 kOcrMaximumPagePixels = 4LL * 1024 * 1024;
-
-// Below this, on the crop's longer side, the picture is brought up before it
-// goes to the recognizer. The cap above can leave a small box at two hundred
-// pixels, which reads badly; doubling costs nothing off-thread and is the
-// difference between "nothing found" and the four words that were there.
-constexpr int kOcrMinimumCropPixels = 480;
-
 } // namespace
 
 DocumentTab::DocumentTab(QWidget *parent)
@@ -112,51 +69,13 @@ DocumentTab::DocumentTab(QWidget *parent)
 
     // ---- the notice that the file changed under the reader ----
     //
-    // Above the page and beside the find bar, because it is about the document
-    // that is on screen and it has to be seen without opening a menu.
-    //
-    // One thing this watcher can never hear: this program writing the file.
-    // v1 is read-only and every save writes a new file the reader names
-    // (AGENTS.md: 永不写用户的 PDF 文件), so there is no path from here back
-    // onto the open document. If a later version ever saves in place, opening
-    // it would raise this bar against ourselves -- which is why the rule is
-    // written down here rather than only in the document tab's header.
-    fileWatcher = new QFileSystemWatcher(this);
-    connect(fileWatcher, &QFileSystemWatcher::fileChanged, this,
-            &DocumentTab::onWatchedFileChanged);
-
-    fileChangeBar = new QWidget(this);
-    fileChangeBar->setObjectName(QStringLiteral("fileChangeBar"));
-    auto *noticeLayout = new QHBoxLayout(fileChangeBar);
-    noticeLayout->setContentsMargins(6, 4, 6, 4);
-    noticeLayout->setSpacing(6);
-    fileChangeLabel = new QLabel(tr("这个文件在磁盘上改过了。"), fileChangeBar);
-    fileChangeLabel->setObjectName(QStringLiteral("fileChangeLabel"));
-    noticeLayout->addWidget(fileChangeLabel, 1);
-
-    auto *reloadButton = new QPushButton(tr("重新加载"), fileChangeBar);
-    reloadButton->setObjectName(QStringLiteral("fileChangeReload"));
-    noticeLayout->addWidget(reloadButton);
-
-    auto *dismissButton = new QToolButton(fileChangeBar);
-    dismissButton->setObjectName(QStringLiteral("fileChangeClose"));
-    dismissButton->setText(QStringLiteral("✕"));
-    dismissButton->setToolTip(tr("关闭这条提示"));
-    noticeLayout->addWidget(dismissButton);
-
-    connect(reloadButton, &QPushButton::clicked, this, &DocumentTab::reloadFromFileChangeNotice);
-    connect(dismissButton, &QToolButton::clicked, this, &DocumentTab::hideFileChangeNotice);
-
-    // 400 ms: long enough that a word processor's several writes for one save
-    // fall inside one wait, short enough that a reader who saved and looked up
-    // at the window is not left wondering. Kept in the middle of the range the
-    // handoff names (300-500).
-    fileChangeTimer = new QTimer(this);
-    fileChangeTimer->setSingleShot(true);
-    fileChangeTimer->setInterval(400);
-    connect(fileChangeTimer, &QTimer::timeout, this, &DocumentTab::onFileChangeSettled);
-
-    fileChangeBar->hide();
+    // The watcher, the 400 ms debounce and the bar above the page are
+    // FileChangeNotice's. What it cannot know is what "read that file again"
+    // means for this tab, so that is the one question handed to it here -- see
+    // the note at the top of src/services/filechangenotice.h for why the bar is
+    // a notice rather than a reload, and for the one change it can never hear.
+    notice = std::make_unique<FileChangeNotice>(this,
+                                                [this](QString *error) { return reload(error); });
 
     pageView = new PageView(this);
     outlinePanel = new OutlinePanel(this);
@@ -187,7 +106,7 @@ DocumentTab::DocumentTab(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(findBar);
-    layout->addWidget(fileChangeBar);
+    layout->addWidget(notice->widget());
     // The reading area takes every spare pixel, and the two bars above it only
     // what they ask for. Without the 1 the layout split the spare height evenly:
     // after Ctrl+F the find bar measured 350-360 px in a 700-720 px tab, half the
@@ -215,16 +134,53 @@ DocumentTab::DocumentTab(QWidget *parent)
     // of them, and the strip has to follow all of them, undo and redo included.
     connect(this, &DocumentTab::editStateChanged, this, &DocumentTab::refreshThumbnailRows);
 
-    connect(searchPanel, &SearchPanel::matchChosen, this, [this](int index) {
-        if (index < 0 || index >= searchMatches.size())
-            return;
-        // One way round for every route into a match: the index moves here, and
-        // everything that reads it -- the page's highlight, the bar's count, the
-        // list's own selected row -- is filled from updateSearchHighlights().
-        currentMatchIndex = index;
-        updateSearchHighlights();
-        pageView->showRange(rangeOf(index));
-    });
+    // The search: the scan, the matches and the two lists they fill live in
+    // SearchSession, which is handed the bar, the sidebar's results tab and the
+    // view to draw on.
+    //
+    // Every service asks this one question for the document instead of holding
+    // one, because a document is replaced by open() -- and a job that outlived
+    // the document it started against is the crash drainRenders() exists to
+    // prevent. Null is the same answer `opened` used to give.
+    const auto openDocument = [this] {
+        return opened ? static_cast<Document *>(backend.get()) : nullptr;
+    };
+    search = std::make_unique<SearchSession>(findBar, searchPanel, pageView, sidebar,
+                                             openDocument);
+    connect(search.get(), &SearchSession::changed, this, &DocumentTab::searchChanged);
+
+    // The Word export is the same job with a different reading loop, so it is
+    // assembled the same way and reports through the tab's own two signals.
+    wordExport = std::make_unique<WordExportSession>(openDocument);
+    connect(wordExport.get(), &WordExportSession::progress, this, &DocumentTab::wordExportProgress);
+    connect(wordExport.get(), &WordExportSession::reportFinished, this,
+            &DocumentTab::wordExportFinished);
+
+    // Printing and exporting to images are the two jobs that run in front of the
+    // reader, on this thread, pumping events between pages -- so they are the
+    // two that hold the tab's foreground count, and the window asks that count
+    // before taking the tab apart.
+    jobs = std::make_unique<ForegroundJobs>();
+    output = std::make_unique<DocumentOutput>(
+        this, pageView, jobs.get(), openDocument, [this] { return hasFormFields(); });
+    connect(output.get(), &DocumentOutput::imageExportFinished, this,
+            &DocumentTab::imageExportFinished);
+
+    // The box the reader drags on a page: its own render, the recognizer, and the
+    // window the answer goes into. The words it reads out may be asked for in
+    // another language, and that is a different service's job -- so the request
+    // comes back through here.
+    ocr = std::make_unique<OcrSession>(this, pageView, openDocument);
+    connect(ocr.get(), &OcrSession::regionCopied, this, &DocumentTab::regionCopied);
+    connect(ocr.get(), &OcrSession::translateRequested, this, &DocumentTab::translateText);
+
+    // Putting the reader's words into another language: which service, whether it
+    // has a key, and whether the reader has agreed to talk to it are settled there.
+    // The one thing it cannot do itself is open the settings, which is the
+    // window's -- so the 「去设置」 button comes back out through this signal.
+    translation = std::make_unique<TranslateSession>(this);
+    connect(translation.get(), &TranslateSession::setupRequested, this,
+            &DocumentTab::translationSetupRequested);
 
     connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
     connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
@@ -267,7 +223,7 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(pageView, &PageView::zoomChanged, this, &DocumentTab::zoomChanged);
     connect(pageView, &PageView::rotationChanged, this, &DocumentTab::rotationChanged);
     connect(pageView, &PageView::selectionChanged, this, &DocumentTab::selectionChanged);
-    connect(pageView, &PageView::regionCaptured, this, &DocumentTab::onRegionCaptured);
+    connect(pageView, &PageView::regionCaptured, ocr.get(), &OcrSession::captureRegion);
     connect(pageView, &PageView::copyRequested, this, &DocumentTab::copySelection);
     connect(pageView, &PageView::translateRequested, this, &DocumentTab::translateSelection);
     connect(pageView, &PageView::linkActivated, this, &DocumentTab::onLinkActivated);
@@ -292,7 +248,7 @@ DocumentTab::~DocumentTab()
     // tab nobody can see. The watcher is a child and would go with this object
     // anyway; saying so here keeps "the path is watched exactly as long as the
     // tab is open on it" true at every point rather than only at the end.
-    unwatchFile();
+    notice->unwatch();
 
     // Where the reader left off, remembered for the next time this file opens.
     // Done first, while the document is still here to ask; a tab that never
@@ -310,18 +266,14 @@ DocumentTab::~DocumentTab()
     // destroyed with this object. Cancelled and waited for here rather than
     // left to finish: a worker holding a pointer to a document that has been
     // freed is not a race that shows up before it crashes.
-    if (searchCancel)
-        searchCancel->storeRelaxed(1);
-    for (QFuture<QVector<TextSearch::Match>> &task : searchTasks)
-        task.waitForFinished();
+    search->cancelPending();
+    search->waitUntilFinished();
 
     // The export reads the same document by the same means, so it is cancelled
     // and waited for here for the same reason -- and it is the one that would
     // take longest to notice, because a document is a lot of pages to read.
-    if (exportCancel)
-        exportCancel->storeRelaxed(1);
-    if (wordExportTask.isRunning())
-        wordExportTask.waitForFinished();
+    wordExport->cancelPending();
+    wordExport->waitUntilFinished();
 
     // The thumbnails render through the same backend on their own worker, so the
     // same wait applies: it must finish before the document it is reading is
@@ -332,171 +284,17 @@ DocumentTab::~DocumentTab()
 
 void DocumentTab::startSearch(const QString &needle, bool caseSensitive, bool wholeWord)
 {
-    searchCase = caseSensitive;
-    searchWhole = wholeWord;
-
-    // What is being searched for, kept here rather than in either of the two
-    // controls that can type it: this is the answer searchText() gives, and
-    // both the bar's label and the toolbar's count are filled in from it.
-    // Without this line the count has nothing to describe -- which is exactly
-    // how the label came to be empty.
-    searchNeedle = needle;
-
-    // Whichever control the needle was typed into, the other one shows it. The
-    // window's toolbar box and this tab's bar are two views of one search, and
-    // two controls showing different needles for the same highlighted pages is
-    // a state a user cannot reason about.
-    if (findBar)
-        findBar->setText(needle);
-
-    // Whatever was running is answering an old question now: its flag is
-    // cleared, and its results are recognised as stale when they arrive -- by
-    // their flag not being the current one.
-    if (searchCancel)
-        searchCancel->storeRelaxed(1);
-    for (auto task = searchTasks.begin(); task != searchTasks.end();) {
-        if (task->isFinished())
-            task = searchTasks.erase(task);
-        else
-            ++task;
-    }
-
-    searchMatches.clear();
-    currentMatchIndex = -1;
-    // New question, new answer: rows from the last scan belong to the last
-    // needle, and would otherwise sit under "搜索中…" as if they still counted.
-    searchPanel->clearMatches();
-
-    if (needle.isEmpty() || !opened) {
-        updateSearchHighlights();
-        return;
-    }
-
-    // If the sidebar is already open, a search is the reason to look at its
-    // third tab. A closed sidebar is left closed: taking a third of the window
-    // because something was typed is what 列出全部 exists to avoid. Asked as
-    // "not hidden" rather than isVisible(), which is also false while this tab
-    // is not the one in front -- the sidebar is still open for when it is.
-    if (!sidebar->isHidden())
-        sidebar->setCurrentWidget(searchPanel);
-
-    const auto cancel = QSharedPointer<QAtomicInt>::create(0);
-    searchCancel = cancel;
-    QtPdfBackend *backendPointer = backend.get();
-    const int pages = backend->pageCount();
-
-    updateSearchHighlights(); // "searching", with nothing found yet
-
-    auto *watcher = new QFutureWatcher<QVector<TextSearch::Match>>(this);
-    connect(watcher, &QFutureWatcher<QVector<TextSearch::Match>>::finished, this,
-            [this, watcher, cancel] {
-                const QVector<TextSearch::Match> found = watcher->result();
-                watcher->deleteLater();
-                // An answer to a question this tab has stopped asking. The flag
-                // is compared rather than a counter incremented, because the
-                // object identity is what the running scan was given.
-                if (cancel != searchCancel)
-                    return;
-                applySearchResults(found);
-            });
-
-    QFuture<QVector<TextSearch::Match>> task =
-        QtConcurrent::run([backendPointer, cancel, needle, caseSensitive, wholeWord, pages] {
-            QVector<TextSearch::Match> found;
-            for (int page = 0; page < pages; ++page) {
-                if (cancel->loadRelaxed())
-                    return found; // abandoned: the page after this one is not worth reading
-                found += TextSearch::matchesInPage(page, backendPointer->text(page), needle,
-                                                   caseSensitive, wholeWord);
-            }
-            return found;
-        });
-    watcher->setFuture(task);
-    searchTasks.append(task);
-}
-
-void DocumentTab::applySearchResults(const QVector<TextSearch::Match> &matches)
-{
-    searchMatches = matches;
-    currentMatchIndex = -1;
-
-    // The first match at or after the page being read, which is where a reader
-    // who searches expects to be taken: the next one from where they are, not
-    // the first one in the document.
-    const int page = pageView->currentPage();
-    for (int index = 0; index < searchMatches.size(); ++index) {
-        if (searchMatches.at(index).page >= page) {
-            currentMatchIndex = index;
-            break;
-        }
-    }
-    if (currentMatchIndex < 0 && !searchMatches.isEmpty())
-        currentMatchIndex = 0; // the hit is behind them: wrap round to the beginning
-
-    searchPanel->setMatches(searchMatches, currentMatchIndex);
-    updateSearchHighlights();
-    if (currentMatchIndex >= 0)
-        pageView->showRange(rangeOf(currentMatchIndex));
-}
-
-PageTextRange DocumentTab::rangeOf(int index) const
-{
-    if (index < 0 || index >= searchMatches.size())
-        return {};
-    const TextSearch::Match &match = searchMatches.at(index);
-    return PageTextRange{match.page, match.from, match.to};
-}
-
-void DocumentTab::updateSearchHighlights()
-{
-    QVector<PageTextRange> ranges;
-    ranges.reserve(searchMatches.size());
-    for (int index = 0; index < searchMatches.size(); ++index)
-        ranges.append(rangeOf(index));
-
-    const PageTextRange current = currentMatchIndex >= 0 ? rangeOf(currentMatchIndex)
-                                                        : PageTextRange();
-    pageView->setSearchHighlights(ranges, current);
-
-    // The statistics, said in the two places a search can be driven from. The
-    // bar in this tab had a label for them from the day it was written, and
-    // nothing ever filled it in: the count was only ever visible through the
-    // tab's own API, which is not where a reader looks for it.
-    if (findBar)
-        findBar->setResultCount(currentMatchIndex, int(searchMatches.size()), isSearching());
-    // The row in front follows the match in front, whichever way it moved --
-    // the bar's buttons, the window's keys, or a press on another row.
-    searchPanel->setCurrentMatch(currentMatchIndex);
-    Q_EMIT searchChanged(currentMatchIndex, int(searchMatches.size()), isSearching());
+    search->start(needle, caseSensitive, wholeWord);
 }
 
 void DocumentTab::stepSearch(int delta)
 {
-    if (searchMatches.isEmpty())
-        return;
-
-    const int count = int(searchMatches.size());
-    if (currentMatchIndex < 0)
-        currentMatchIndex = delta >= 0 ? 0 : count - 1;
-    else
-        // Adding count first so that stepping back from the first match lands on
-        // the last one rather than on -1: the two ends of a document are next to
-        // each other, which is what every reader does.
-        currentMatchIndex = ((currentMatchIndex + delta) % count + count) % count;
-
-    updateSearchHighlights();
-    pageView->showRange(rangeOf(currentMatchIndex));
+    search->step(delta);
 }
 
 void DocumentTab::clearSearch()
 {
-    if (searchCancel)
-        searchCancel->storeRelaxed(1);
-    searchMatches.clear();
-    currentMatchIndex = -1;
-    searchNeedle.clear();
-    searchPanel->clearMatches();
-    updateSearchHighlights();
+    search->clear();
 }
 
 bool DocumentTab::isSearching() const
@@ -506,75 +304,22 @@ bool DocumentTab::isSearching() const
 
 bool DocumentTab::searchRunning() const
 {
-    for (const QFuture<QVector<TextSearch::Match>> &task : searchTasks) {
-        if (!task.isFinished())
-            return true;
-    }
-    return false;
+    return search->running();
 }
 
 void DocumentTab::exportToWord(const QString &path)
 {
-    if (!opened || path.isEmpty() || wordExportTask.isRunning())
-        return;
-
-    // A flag of its own, handed to the worker. When this tab's document is about
-    // to be replaced -- open(), and the destructor -- it is set, and the export
-    // stops at the page it is on rather than reading a document that is being
-    // torn down under it. The same arrangement the search uses, for the same
-    // reason; see drainRenders().
-    exportCancel = QSharedPointer<QAtomicInt>::create(0);
-    const QSharedPointer<QAtomicInt> cancel = exportCancel;
-
-    auto *watcher = new QFutureWatcher<WordExportReport>(this);
-    connect(watcher, &QFutureWatcher<WordExportReport>::finished, this, [this, watcher] {
-        const WordExportReport report = watcher->result();
-        watcher->deleteLater();
-        Q_EMIT wordExportFinished(report);
-    });
-
-    WordExportOptions options;
-    options.cancel = cancel;
-    // Progress comes from the worker thread, so it is handed to this object's
-    // thread rather than run where it is called: a page image is a render, a
-    // scanned document is minutes of them, and the window has to keep painting
-    // while they happen. Queued through a QPointer, because by the time the
-    // message arrives the tab may be gone.
-    QPointer<DocumentTab> alive(this);
-    options.progress = [alive](int done, int total) {
-        if (!alive)
-            return;
-        QMetaObject::invokeMethod(
-            alive.data(),
-            [alive, done, total] {
-                if (alive)
-                    alive->notifyExportProgress(done, total);
-            },
-            Qt::QueuedConnection);
-    };
-
-    // Qualified: this class has a method of the same name, which is the one the
-    // window calls, and the free function is the one that does the reading.
-    auto *document = backend.get();
-    wordExportTask = QtConcurrent::run(
-        [document, path, options] { return ::exportToWord(*document, path, options); });
-    watcher->setFuture(wordExportTask);
-}
-
-void DocumentTab::notifyExportProgress(int done, int total)
-{
-    Q_EMIT wordExportProgress(done, total);
+    wordExport->exportToWord(path);
 }
 
 bool DocumentTab::isExporting() const
 {
-    return wordExportTask.isRunning();
+    return wordExport->isRunning();
 }
 
 void DocumentTab::cancelWordExport()
 {
-    if (exportCancel)
-        exportCancel->storeRelaxed(1);
+    wordExport->cancel();
 }
 
 void DocumentTab::showFindBar()
@@ -664,8 +409,7 @@ void DocumentTab::drainRenders()
     // with a different name. It is cancelled first, so that it stops at the next
     // page boundary rather than reading to the end of a document nobody is
     // going to see.
-    if (searchCancel)
-        searchCancel->storeRelaxed(1);
+    search->cancelPending();
     // And the thumbnails, which render through the same backend on their own
     // worker; cancelled here and waited for below, so a reload cannot free the
     // document out from under a render still reading it.
@@ -674,8 +418,7 @@ void DocumentTab::drainRenders()
     // And the export, which reads the document the same way a search does and is
     // waited for below on the same grounds. Told to stop here rather than left to
     // run out: a search of one page is quick, an export of five hundred is not.
-    if (exportCancel)
-        exportCancel->storeRelaxed(1);
+    wordExport->cancelPending();
 
     // Pumping the event loop is how the renders arrive -- they are queued
     // signals -- and it is bounded, because work that never comes back must not
@@ -719,8 +462,8 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         // The tab is on no file now, and the old file's changes are no longer
         // this tab's to report -- including the failure that may have been
         // caused by a half-written replacement of that very file.
-        unwatchFile();
-        hideFileChangeNotice();
+        notice->unwatch();
+        notice->hideNotice();
         sourceOutlineRows.clear();
         clearSearch();
         // The view is emptied rather than left showing the previous document:
@@ -820,14 +563,14 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
     applySidebarVisibility();
 
     // From here until the next open() or this object's end, this is the file
-    // whose changes the tab reports. watchFile() also drops the previous
-    // path, which is the whole of "switching documents stops watching the old
-    // one" -- a reload calls open() with the same path and gets a fresh watch.
-    watchFile(path);
+    // whose changes the tab reports. watch() also drops the previous path,
+    // which is the whole of "switching documents stops watching the old one" --
+    // a reload calls open() with the same path and gets a fresh watch.
+    notice->watch(path);
     // And a new document has no change to be told about: an old bar here would
     // sit above a page it was never about. This also clears a refusal that the
     // bar might be showing from the last time the button was pressed.
-    hideFileChangeNotice();
+    notice->hideNotice();
 
     Q_EMIT titleChanged(title());
     Q_EMIT pageChanged(pageView->currentPage(), count);
@@ -1031,251 +774,19 @@ void DocumentTab::onDiscarded(const RenderToken &token)
     ++discardedCount;
 }
 
-void DocumentTab::onRegionCaptured(int page, QRectF points)
-{
-    if (!opened || page < 0 || page >= backend->pageCount())
-        return;
-    const QSizeF pagePoints = backend->pageSize(page);
-    if (pagePoints.isEmpty() || points.isEmpty())
-        return;
-
-    // The crop is rendered at a size of its own rather than the size it
-    // happens to be on screen: the user may have zoomed out to see the page
-    // they are cropping, and a crop that arrives at 40% reads badly no matter
-    // how good the recognizer is.
-    double scale = kOcrTargetPixels / qMax(points.width(), points.height());
-    // The whole page is what gets rendered to cut the crop from, so the scale
-    // is also capped where the whole page stays a UI-thread-sized job -- which
-    // is what keeps a tiny box on a huge page from asking for a
-    // fifty-thousand-pixel rendering to get its two hundred.
-    const double pageCap =
-        std::sqrt(double(kOcrMaximumPagePixels))
-        / std::sqrt(double(pagePoints.width()) * double(pagePoints.height()));
-    scale = qBound(1.0, scale, pageCap);
-
-    const int rotation = pageView->rotation();
-    const QSize full = PageMetrics::pixelsFor(PageMetrics::rotated(pagePoints, rotation), scale,
-                                              1.0);
-    // The box is in the page's own coordinates; the image it will be cut from
-    // is the page the way it is drawn, which is a quarter turn away when the
-    // reader has rotated it. One formula, shared with the view -- which is the
-    // reason it lives in PageMetrics rather than here as a copy.
-    const QRectF drawn = PageMetrics::rotatedRect(points, pagePoints, rotation);
-    QRect crop = QRect(int(std::floor(drawn.left() * scale)),
-                       int(std::floor(drawn.top() * scale)),
-                       int(std::ceil(drawn.width() * scale)),
-                       int(std::ceil(drawn.height() * scale)));
-    crop = crop.intersected(QRect(QPoint(0, 0), full));
-    if (crop.isEmpty())
-        return;
-
-    // The crop is rendered here, synchronously, and NOT through PageRenderer.
-    // That is a decision with a story: an asynchronous crop render on the
-    // renderer's threads, still in flight while the user reopens the document,
-    // ended in a fail-fast inside the reload -- reproducible at will in the
-    // integration test, and never seen before because a *view* render is never
-    // still running when the next document loads. Rendering on this thread
-    // makes the overlap impossible by construction: nothing that touches the
-    // document runs concurrently with anything else that does. The cost is a
-    // synchronous render of a few dozen milliseconds, capped by the pixel
-    // budget above, paid at the moment the user releases a box they dragged --
-    // the slow part, the recognition, still runs off this thread.
-    RenderOptions options;
-    options.rotationDegrees = rotation;
-    options.annotations = true;
-    options.clip = crop;
-    options.scaledSize = full;
-    const QImage cropImage = backend->render(page, crop.size(), options);
-    if (cropImage.isNull())
-        return;
-
-    // The snapshot tool wanted the pixels and nothing else: on the clipboard,
-    // and a line in the status bar so that something visibly happened -- a
-    // clipboard that changes silently is a clipboard nobody trusts. Before the
-    // recognizer, because running it here would be work for an answer that is
-    // thrown away.
-    if (pageView->tool() == PageView::Tool::Snapshot) {
-        QGuiApplication::clipboard()->setImage(cropImage);
-        Q_EMIT regionCopied(cropImage.width(), cropImage.height());
-        return;
-    }
-
-    // The translate tool boxes a picture to translate it, so it goes straight
-    // from the pixels to the translation window -- no intermediate recognition
-    // result to click through. The recognize tool still shows what it read.
-    if (pageView->tool() == PageView::Tool::Translate) {
-        startRecognition(cropImage, nullptr, /*thenTranslate=*/true);
-        return;
-    }
-
-    OcrDialog *dialog = new OcrDialog(this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    // The pixels go in before the recognition answer can, so that "复制图片" is
-    // available even if the engine finds nothing to read -- which for a chart or
-    // a photograph is the usual outcome, and not a reason to withhold the picture.
-    // It is handed the screen's own colours, because that is the picture the
-    // reader chose. Recognition still gets `cropImage` as the renderer produced
-    // it: dark-on-light is what the engine expects, and inverting it to match a
-    // night screen would be a way to make the words harder to read for the one
-    // consumer that has no eyes.
-    dialog->setCropImage(cropImage, pageView->nightInverted());
-    // The recognized words can be translated from this window -- the path that
-    // reads a scan or a picture into another language.
-    connect(dialog, &OcrDialog::translateRequested, this, &DocumentTab::translateText);
-    dialog->show();
-    startRecognition(cropImage, dialog);
-}
-
-void DocumentTab::startRecognition(const QImage &crop, QPointer<OcrDialog> dialog,
-                                   bool thenTranslate)
-{
-    // The crop is copied into the worker by value, so the view can go on
-    // scrolling, zooming, even closing this tab while it runs -- nothing in
-    // the task touches this object. The dialog is watched with a QPointer:
-    // the user is free to close it, and a result nobody is waiting for is
-    // dropped rather than kept alive to be shown into nothing.
-    auto *watcher = new QFutureWatcher<Ocr::Result>(this);
-    connect(watcher, &QFutureWatcher<Ocr::Result>::finished, this, [this, watcher, dialog, thenTranslate] {
-        const Ocr::Result result = watcher->result();
-        watcher->deleteLater();
-        if (dialog)
-            dialog->setResult(result);
-        // Translate the recognized words when the reader either chose the
-        // translate tool (thenTranslate) or turned on "划线即翻" for the recognize
-        // tool. Only when there was something to read.
-        const bool wantTranslate =
-            thenTranslate || AppSettings::translateTrigger() == QLatin1String("auto");
-        if (wantTranslate && result.ok && !result.text.trimmed().isEmpty())
-            translateText(result.text);
-    });
-    watcher->setFuture(QtConcurrent::run([crop] {
-        // Onto white paper first, and this is the whole trick. A PDF page has no
-        // background: what the renderer hands back is the ink at full alpha over
-        // transparent *black*, so the crop is a black rectangle with black text
-        // on it, and the recognizer reads exactly nothing from it -- which is
-        // what the first version of this feature did, on every picture, while
-        // looking correct in every debug print. The view flattens a page the
-        // same way before drawing it; this is the same step, for the same
-        // reason.
-        QImage input(crop.size(), QImage::Format_RGB32);
-        input.fill(Qt::white);
-        {
-            QPainter painter(&input);
-            painter.drawImage(0, 0, crop);
-        }
-
-        // A crop that came out small -- a few words boxed on a page whose
-        // scale was capped -- is brought up before recognition. Doubling costs
-        // nothing here, off the thread that draws, and is the difference
-        // between "nothing found" and the words that were there.
-        const int longerSide = qMax(input.width(), input.height());
-        if (longerSide > 0 && longerSide < kOcrMinimumCropPixels) {
-            input = input.scaled(longerSide * 2, longerSide * 2, Qt::KeepAspectRatio,
-                                 Qt::SmoothTransformation);
-        }
-        return Ocr::recognize(input);
-    }));
-}
-
 void DocumentTab::translateSelection()
 {
     translateText(selectedText().trimmed());
 }
 
-void DocumentTab::translateText(const QString &raw)
+void DocumentTab::translateText(const QString &text)
 {
-    const QString text = raw.trimmed();
-    if (text.isEmpty())
-        return; // the action is disabled without text; a shortcut is not
-
-    // Everything the request needs is settled here, on the thread that owns the
-    // window: which service, whether it has a key, and whether the reader has
-    // agreed to talk to it. The worker gets values, not this object.
-    const Translate::Provider provider =
-        Translate::providerFromId(AppSettings::translateProvider());
-    const QString providerId = Translate::providerId(provider);
-
-    QString key;
-    QString storeError;
-    if (provider != Translate::Provider::None)
-        translateKeyStore()->read(providerId, &key, &storeError);
-    if (!storeError.isEmpty()) {
-        // A store that fails is not the same as "no key configured": saying
-        // "输入密钥" while the credential manager is refusing would send the
-        // reader to a field that cannot work either.
-        WindowDialogs::warning(window(), tr("翻译"),
-                               tr("读取 API 密钥失败：%1").arg(storeError));
-        return;
-    }
-    key = key.trimmed();
-
-    switch (Translate::requestGate(provider, key, AppSettings::translateConsentGiven(providerId))) {
-    case Translate::Gate::NotConfigured:
-        askForTranslationSetup();
-        return;
-    case Translate::Gate::NeedsConsent:
-        if (!askForTranslationConsent(provider, key))
-            return;
-        AppSettings::setTranslateConsent(providerId, true);
-        break;
-    case Translate::Gate::Ready:
-        break;
-    }
-
-    // Shown before the request goes out, so the reader sees the words they asked
-    // about immediately and a "translating…" line while the round trip happens --
-    // the request itself runs off this thread, below.
-    auto *dialog = new TranslateDialog(this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setPending(text);
-    dialog->show();
-    startTranslation(text, provider, key, dialog);
-}
-
-void DocumentTab::askForTranslationSetup()
-{
-    QMessageBox box(window());
-    box.setIcon(QMessageBox::Information);
-    box.setWindowTitle(tr("翻译"));
-    box.setText(tr("翻译需要一个服务的 API 密钥。"));
-    box.setInformativeText(tr("请先在设置里选择翻译服务并填写密钥。"));
-    QPushButton *settings = box.addButton(tr("去设置"), QMessageBox::AcceptRole);
-    box.addButton(QMessageBox::Cancel);
-    box.exec();
-    if (box.clickedButton() == settings)
-        Q_EMIT translationSetupRequested();
-}
-
-bool DocumentTab::askForTranslationConsent(Translate::Provider provider, const QString &key)
-{
-    // The service's name and the host its key actually uses, because "a
-    // translation service" is not something a reader can decide about. DeepL's
-    // free and paid tiers answer on different hosts, and the suffix on the key is
-    // the only thing that says which one the words will reach -- so the box says
-    // it before the first request rather than leaving it in a log afterwards.
-    QMessageBox box(window());
-    box.setIcon(QMessageBox::Question);
-    box.setWindowTitle(tr("翻译"));
-    box.setText(tr("选中的文字会发送给 %1（%2）。")
-                    .arg(Translate::providerName(provider),
-                         Translate::endpointHost(provider, key)));
-    box.setInformativeText(tr("只发送选中的文字，不发送文档中的其他内容。"));
-    QPushButton *send = box.addButton(tr("发送"), QMessageBox::AcceptRole);
-    box.addButton(QMessageBox::Cancel);
-    box.exec();
-    return box.clickedButton() == send;
+    translation->translateText(text);
 }
 
 void DocumentTab::setTranslateKeyStoreForTesting(std::unique_ptr<Translate::KeyStore> store)
 {
-    translateStore = std::move(store);
-}
-
-Translate::KeyStore *DocumentTab::translateKeyStore()
-{
-    if (!translateStore)
-        translateStore = Translate::makeSystemKeyStore();
-    return translateStore.get();
+    translation->setKeyStoreForTesting(std::move(store));
 }
 
 void DocumentTab::setSidebarVisible(bool visible)
@@ -1321,101 +832,12 @@ void DocumentTab::onLinkActivated(const Link &link)
 
 void DocumentTab::print()
 {
-    if (!opened)
-        return;
-
-    // From here to the end of the method this tab must not be taken apart: the
-    // settings dialog and the progress box both pump the event loop, and a
-    // 关闭标签 landing in either one would delete the object this call is
-    // standing in. See DocumentTab::ForegroundJob.
-    const ForegroundJob job(this);
-
-    QPrinter printer(QPrinter::HighResolution);
-    PrintDialog dialog(window(), &printer, pageView->currentPage(), pageCount(),
-                       hasFormFields());
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    const Print::Settings settings = dialog.settings();
-
-    // A cancel-able progress dialog over a foreground job. Print::run calls the
-    // callback once per sheet on this thread; pumping events here is what lets
-    // the dialog repaint and its Cancel button be noticed between sheets.
-    auto cancel = QSharedPointer<QAtomicInt>::create(0);
-    QProgressDialog progress(tr("正在打印…"), tr("取消"), 0, 1, window());
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.setAutoReset(false);
-    progress.setValue(0);
-
-    const Print::Report report = Print::run(
-        *backend, printer, settings,
-        [&progress, &cancel](int done, int total) {
-            progress.setMaximum(total);
-            progress.setValue(done);
-            QApplication::processEvents();
-            if (progress.wasCanceled())
-                cancel->storeRelaxed(1);
-        },
-        cancel.data());
-
-    if (!report.ok && !report.cancelled)
-        WindowDialogs::warning(window(), tr("打印"), report.error);
+    output->print();
 }
 
 void DocumentTab::exportImages()
 {
-    if (!opened)
-        return;
-
-    // The same reason printing holds one: two dialogs that pump the loop, and
-    // a render loop between them that does it once per page.
-    const ForegroundJob job(this);
-
-    ImageExportDialog dialog(window(), pageView->currentPage(), pageCount());
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    const QString directory = dialog.directory();
-    if (directory.isEmpty()) {
-        WindowDialogs::warning(window(), tr("导出为图片"), tr("请先选择保存文件夹。"));
-        return;
-    }
-    const QVector<int> pages = dialog.pages();
-    if (pages.isEmpty()) {
-        WindowDialogs::warning(window(), tr("导出为图片"), tr("页码范围里没有可导出的页面。"));
-        return;
-    }
-    const QString base = QFileInfo(documentPath()).completeBaseName();
-
-    // Foreground, like printing: each page is a render under the same lock the
-    // view uses, and pumping events in the callback is what keeps the progress
-    // box live and its Cancel button responsive between pages.
-    auto cancel = QSharedPointer<QAtomicInt>::create(0);
-    QProgressDialog progress(tr("正在导出为图片…"), tr("取消"), 0, pages.size(), window());
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.setAutoReset(false);
-    progress.setValue(0);
-
-    const ImageExport::Report report = ImageExport::run(
-        *backend, pages, directory, base, dialog.format(), dialog.dpi(),
-        [&progress, &cancel](int done, int total) {
-            progress.setMaximum(total);
-            progress.setValue(done);
-            QApplication::processEvents();
-            if (progress.wasCanceled())
-                cancel->storeRelaxed(1);
-        },
-        cancel.data());
-
-    if (report.cancelled)
-        return;
-    if (!report.ok) {
-        WindowDialogs::warning(window(), tr("导出为图片"), report.error);
-        return;
-    }
-    AppSettings::setLastOpenDirectory(directory);
-    Q_EMIT imageExportFinished(report.directory, report.pages);
+    output->exportImages();
 }
 
 DocumentEditor *DocumentTab::editSession()
@@ -1527,133 +949,12 @@ bool DocumentTab::reload(QString *error)
 
 bool DocumentTab::fileChangeNoticeVisible() const
 {
-    return fileChangeBar && fileChangeBar->isVisible();
+    return notice->noticeVisible();
 }
 
 QString DocumentTab::fileChangeNoticeText() const
 {
-    return fileChangeLabel ? fileChangeLabel->text() : QString();
-}
-
-void DocumentTab::watchFile(const QString &path)
-{
-    unwatchFile();
-    if (path.isEmpty())
-        return;
-    watchedPath = path;
-    if (!fileWatcher->addPath(path)) {
-        // Not a failure worth a sentence: the file the reader opened has just
-        // been read, and F5 still works. But without a watch there is nothing
-        // to notice, so the tab must not believe it is watching anything --
-        // otherwise the next change is compared against a path that was never
-        // in the list.
-        watchedPath.clear();
-    }
-}
-
-void DocumentTab::unwatchFile()
-{
-    if (fileChangeTimer)
-        fileChangeTimer->stop();
-    fileChangeSize = -1;
-    if (!watchedPath.isEmpty()) {
-        fileWatcher->removePath(watchedPath);
-        watchedPath.clear();
-    }
-}
-
-void DocumentTab::onWatchedFileChanged(const QString &path)
-{
-    if (path != watchedPath)
-        return;
-
-    // (a) Windows drops a file from a watcher's list when the file is deleted
-    // or renamed. An editor that saves by writing a temporary file and moving
-    // it over the original therefore delivers one change and then goes silent
-    // -- unless the path is put back. This attempt often fails, because the
-    // first signal can be the removal itself and there is no file to add at
-    // that instant; onFileChangeSettled() tries again once the writing has
-    // stopped, and that is the attempt an atomic save needs.
-    if (QFileInfo::exists(path) && !fileWatcher->files().contains(path))
-        fileWatcher->addPath(path);
-
-    // (b) One save is not one signal: a writer flushes the file in pieces and
-    // every piece can raise fileChanged. Showing the bar on the first would
-    // put it on screen while the file was still being written, and a reload
-    // pressed then would read half a document. Restarting the timer turns the
-    // several signals into one wait.
-    fileChangeSize = -1;
-    fileChangeTimer->start();
-}
-
-void DocumentTab::onFileChangeSettled()
-{
-    if (watchedPath.isEmpty())
-        return;
-
-    if (!QFileInfo::exists(watchedPath)) {
-        // Between the two renames of an atomic save, or gone for good. The
-        // watcher has nothing more to report; 重新加载 is still the honest
-        // answer, and reload() is where the sentence about a missing file
-        // lives.
-        showFileChangeNotice();
-        return;
-    }
-
-    // The second half of (a). If the path was not there when the signal
-    // arrived, this is the first moment it can be watched again; a tab that
-    // loses the watch here never hears the next save.
-    if (!fileWatcher->files().contains(watchedPath))
-        fileWatcher->addPath(watchedPath);
-
-    const qint64 size = QFileInfo(watchedPath).size();
-    if (fileChangeSize != size) {
-        // Still moving. The first fire records the size; the next one that
-        // agrees with it is the file the reader would reload. Two equal reads
-        // 400 ms apart is not proof the writer has stopped, but it is the only
-        // evidence available without watching the writer instead of the file.
-        fileChangeSize = size;
-        fileChangeTimer->start();
-        return;
-    }
-
-    showFileChangeNotice();
-}
-
-void DocumentTab::showFileChangeNotice()
-{
-    // Set again for every change: the bar may still be carrying the reason a
-    // previous 重新加载 refused, and that reason is about a file that has
-    // changed once more -- keeping it would describe bytes that are no longer
-    // there.
-    fileChangeLabel->setText(tr("这个文件在磁盘上改过了。"));
-    fileChangeBar->show();
-}
-
-void DocumentTab::hideFileChangeNotice()
-{
-    fileChangeBar->hide();
-    fileChangeLabel->setText(tr("这个文件在磁盘上改过了。"));
-}
-
-void DocumentTab::reloadFromFileChangeNotice()
-{
-    QString error;
-    if (reload(&error))
-        return; // open() hid the bar and started a fresh watch
-
-    if (error.isEmpty()) {
-        // Empty means the reader said no to losing their pending edits. They
-        // have answered the question; the bar stays as it was.
-        return;
-    }
-
-    // Where the button was pressed, and on screen: reload() refused before it
-    // touched the document (the probe in reload() is why a file that is not a
-    // PDF gets here with the page still showing), so this sentence is all that
-    // changes.
-    fileChangeLabel->setText(error);
-    fileChangeBar->show();
+    return notice->noticeText();
 }
 
 void DocumentTab::refreshThumbnailRows()
@@ -2038,25 +1339,4 @@ bool DocumentTab::saveEdits()
                            editor->pageCount(), int(written.size()),
                            editor->passwordOfWrittenFile());
     return true;
-}
-
-void DocumentTab::startTranslation(const QString &text, Translate::Provider provider,
-                                   const QString &key, QPointer<TranslateDialog> dialog)
-{
-    // The same shape as a recognition: the text is copied into the worker, the
-    // window is watched with a QPointer so a result nobody is waiting for is
-    // dropped, and nothing in the task touches this object or the document -- so
-    // a reload under a running translation cannot crash the way a render can.
-    auto *watcher = new QFutureWatcher<Translate::Result>(this);
-    connect(watcher, &QFutureWatcher<Translate::Result>::finished, this, [watcher, dialog] {
-        const Translate::Result result = watcher->result();
-        watcher->deleteLater();
-        if (dialog)
-            dialog->setResult(result);
-    });
-    watcher->setFuture(QtConcurrent::run([text, provider, key] {
-        const std::unique_ptr<Translate::Translator> translator =
-            Translate::makeTranslator(provider, key);
-        return translator->translate(text);
-    }));
 }

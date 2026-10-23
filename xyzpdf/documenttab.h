@@ -12,25 +12,44 @@
 // it later means moving every one of those members: they are all set from menu
 // actions today, and the actions would each have to grow "and apply it to the
 // right tab". See docs/PLAN.md §7.1.
+//
+// ---- what is left in this class ----
+//
+// The view, the document's own state, the edit session, and the assembly of the
+// services that take the document and do a job with it (docs/review-03.md §1.2):
+//
+//   searchsession.h       the scan, the matches, the bar's label and the hits list
+//   wordexportsession.h   the document's text out as a Word file
+//   documentoutput.h      printing and a folder of images, both foreground
+//   ocrsession.h          the box dragged on a page, and reading what is in it
+//   translatesession.h    the two questions before a request, and the request
+//   filechangenotice.h    the watcher, the debounce and the bar above the page
+//   foregroundjobs.h      how many jobs are standing on this tab's stack
+//
+// all in src/services/. The rule they share is the one this class keeps: nothing
+// that reads the document may still be doing it when open() replaces that
+// document, or when the tab is taken apart -- which is what drainRenders() and
+// ~DocumentTab wait for. Two of them have no part in that wait, and each says
+// why at its own top.
 #pragma once
 
 #include "src/document/document.h"
 #include "src/document/outline.h"
-#include "src/document/textsearch.h"
 #include "src/export/wordexport.h"
-#include "src/ocr/ocrengine.h"
 #include "src/render/rendercache.h"
+#include "src/services/documentoutput.h"
+#include "src/services/filechangenotice.h"
+#include "src/services/foregroundjobs.h"
+#include "src/services/ocrsession.h"
+#include "src/services/searchsession.h"
+#include "src/services/translatesession.h"
+#include "src/services/wordexportsession.h"
 #include "src/translate/keystore.h"
-#include "src/translate/translator.h"
 #include "src/ui/propertiesdialog.h"
 #include "src/view/pagelayout.h"
 #include "src/view/pageview.h"
 #include "src/view/zoomcontroller.h"
 
-#include <QFuture>
-#include <QPointer>
-#include <QRectF>
-#include <QSharedPointer>
 #include <QVector>
 #include <QWidget>
 
@@ -38,19 +57,13 @@
 
 class DocumentEditor;
 class FindBar;
-class OcrDialog;
 class OutlinePanel;
 class PageRenderer;
 class PageView;
 class QtPdfBackend;
-class QFileSystemWatcher;
-class QLabel;
 class QTabWidget;
-class QTimer;
 class SearchPanel;
 class ThumbnailPanel;
-class TranslateDialog;
-class QAtomicInt;
 
 class DocumentTab : public QWidget
 {
@@ -105,42 +118,27 @@ public:
 
     // ---- a job that holds this object on the stack ----
     //
-    // Printing and exporting to images run in the foreground: they render page
-    // by page on this thread and pump the event loop between pages so the
-    // progress box stays alive and its Cancel button works. Anything queued
-    // runs in that pump -- and a 关闭标签 arriving there used to take this very
-    // object out of the strip and delete it, with print() still on its stack
-    // and about to render another page through a backend that had just been
-    // freed. Measured in mainwindow_smoke, which is where the shape is visible;
-    // docs/review-03.md §2.4 is where it was first suspected.
-    //
-    // Today the only thing stopping that is the progress box being window
-    // modal, which blocks the menu, the shortcut and the strip's ✕ -- an
-    // accident of the UI rather than a rule, and nothing at all for a route
-    // that does not come through the keyboard. So the job says so, and
-    // MainWindow refuses to take the tab apart while one is running.
+    // Why the tab must not be taken apart while a print or an image export is
+    // running -- including the 关闭标签 that used to delete it from inside the
+    // event pump -- is written at the top of src/services/foregroundjobs.h, and
+    // the counting lives there now that the two jobs are in DocumentOutput.
+    // The name stays here because this is what MainWindow asks about and what a
+    // test stands open on a tab: it is the guard over this tab's own counter.
     class ForegroundJob
     {
     public:
         explicit ForegroundJob(DocumentTab *owner)
-            : tab(owner)
+            : scope(owner ? owner->jobs.get() : nullptr)
         {
-            if (tab)
-                ++tab->foregroundJobs;
-        }
-        ~ForegroundJob()
-        {
-            if (tab)
-                --tab->foregroundJobs;
         }
         ForegroundJob(const ForegroundJob &) = delete;
         ForegroundJob &operator=(const ForegroundJob &) = delete;
 
     private:
-        DocumentTab *tab = nullptr;
+        ForegroundJobs::Scope scope;
     };
 
-    bool hasForegroundJob() const { return foregroundJobs > 0; }
+    bool hasForegroundJob() const { return jobs->busy(); }
 
     // Whether renders are still on their way. The window asks before deciding
     // that a launch with no window has nothing left to do, and a launch that
@@ -169,40 +167,40 @@ public:
     // box, or a selection. The shared path behind translateSelection(); public so
     // the recognition window's "翻译" button can reach it.
     //
-    // Before any byte leaves the machine this checks the two things the reader
-    // must have done: chosen a service with a key, and agreed to send selected
-    // text to it. Neither is a silent default -- an unconfigured program says so
-    // and offers the settings page, and a configured service is asked about once
-    // per provider. See Translate::requestGate.
+    // What it asks before a byte leaves the machine -- the service, the key, the
+    // reader's consent -- is TranslateSession's, and written at the top of
+    // src/services/translatesession.h.
     void translateText(const QString &text);
 
-    // Test seam only: the store the translation path reads its key from. The
-    // program installs nothing here and uses the Windows credential manager; a
-    // test installs an in-memory store so it can neither read a real key nor
-    // write to the machine it runs on. See src/translate/keystore.h.
+    // Test seam only: the store the translation path reads its key from, which
+    // lives with that path. The program installs nothing here and uses the
+    // Windows credential manager; a test installs an in-memory store so it can
+    // neither read a real key nor write to the machine it runs on. See
+    // src/translate/keystore.h. The call stays on the tab because that is where
+    // a test reaches this document from.
     void setTranslateKeyStoreForTesting(std::unique_ptr<Translate::KeyStore> store);
 
     // ---- search ----
     //
-    // The scan runs off the UI thread, which is not a detail: text() is a PDFium
-    // call per page and every one of them takes the same global lock as the
-    // renderer, so a five-hundred-page document searched on the thread that
-    // draws is a window that does not repaint for as long as it takes. See
-    // document.h's note about which calls may sit on that thread.
+    // The scanning, the matches and what the bar and the sidebar's list say
+    // about them live in SearchSession; these are the tab's callers -- the
+    // window's toolbar and keys, the bar's own signals and the tests -- and the
+    // answers they ask for. The scan runs off the UI thread, which is not a
+    // detail: see the note at the top of src/services/searchsession.h.
     void startSearch(const QString &needle, bool caseSensitive, bool wholeWord = false);
     void clearSearch();
     // What is being searched for, and whether case matters. Two views of one
     // search -- the bar in this tab and the box in the window's toolbar -- are
     // told by these what the other one is showing, so that neither can drift.
-    QString searchText() const { return searchNeedle; }
-    bool searchCaseSensitive() const { return searchCase; }
-    bool searchWholeWord() const { return searchWhole; }
+    QString searchText() const { return search->needle(); }
+    bool searchCaseSensitive() const { return search->caseSensitive(); }
+    bool searchWholeWord() const { return search->wholeWord(); }
     // Moves to the next (+1) or previous (-1) match, wrapping round. Doing
     // nothing when there is nothing to move to.
     void stepSearch(int delta);
-    int searchMatchCount() const { return int(searchMatches.size()); }
+    int searchMatchCount() const { return search->matchCount(); }
     // Which match is being looked at, 0-based, or -1 for none.
-    int currentSearchMatch() const { return currentMatchIndex; }
+    int currentSearchMatch() const { return search->currentIndex(); }
     bool isSearching() const;
 
     // The bar the needle is typed into: shown if it is hidden, focused either
@@ -269,13 +267,14 @@ public:
 
     // ---- 打印 ----
     //
-    // Asks for the print choices, then renders and prints. Foreground, with a
-    // cancel-able progress dialog: a QPrinter's paint device is a GUI-thread
-    // thing, so this is not a worker-thread job the way an export is.
+    // Both of these run in DocumentOutput: the dialogs, the render loop and the
+    // progress box. Why they stay in the foreground -- a QPrinter's paint device
+    // being a GUI-thread thing -- is written at the top of
+    // src/services/documentoutput.h; what the tab adds is the guard, because the
+    // object those jobs stand on is this one.
     void print();
 
-    // Writes every page out as a PNG into a folder the reader chooses. Foreground
-    // with a cancel-able progress dialog, like printing.
+    // Writes every page out as a PNG into a folder the reader chooses.
     void exportImages();
 
     // Reads the open file again, putting the reader back where they were.
@@ -296,14 +295,12 @@ public:
 
     // ---- the file changing under the reader ----
     //
-    // One watcher per tab, and the bar above the page that says it fired. The
-    // bar is a notice, not a reload: a document regenerated by the program the
-    // reader is using to write it is a normal thing to see, and taking their
-    // page away to show the new one would be the tab deciding they were done
-    // reading. They press 重新加载 when they are ready.
-    //
-    // Two accessors rather than a widget pointer: the tests ask what a reader
-    // sees (whether the bar is up, what it says), not how it is built.
+    // The watcher, the debounce and the bar above the page are
+    // FileChangeNotice's; these are the two questions a reader sees -- whether
+    // the bar is up and what it says -- asked as accessors rather than a widget
+    // pointer, because how it is built is not the test's business. Why the bar
+    // is a notice and not a reload is written at the top of
+    // src/services/filechangenotice.h.
     bool fileChangeNoticeVisible() const;
     QString fileChangeNoticeText() const;
 
@@ -396,14 +393,11 @@ public:
 
     // ---- 导出 ----
     //
-    // Writes the whole document's text out as a Word file, off the UI thread:
-    // every page of it is a text call and a selection under the same lock the
-    // renderer takes, so an export on the thread that draws is a window that
-    // stops repainting until it is done. The answer arrives in the signal below,
+    // The reading itself is WordExportSession's -- why it is not on the thread
+    // that draws, and why a second one is refused rather than queued, is written
+    // at the top of src/services/wordexportsession.h. These are the tab's three
+    // handles on it: start, ask, stop. The answer arrives in the signals below,
     // which the window is what words and shows.
-    //
-    // One at a time: a second export while one is running is refused rather than
-    // queued, because they would be writing the same file.
     void exportToWord(const QString &path);
     bool isExporting() const;
     // The reader has asked for it to stop, through the window's progress box.
@@ -429,11 +423,10 @@ Q_SIGNALS:
     void sidebarWantedChanged();
     // The render cache's used bytes, for the status bar's honesty about memory.
     void cacheChanged(qint64 usedBytes, qint64 limitBytes);
-    // How far the export has got: pages written of pages in the document. Sent
-    // from the worker thread, once per page -- a page with a picture on it is a
-    // render, and a scanned document is minutes of work nobody can see.
+    // The Word export's two answers, relayed from WordExportSession: how far it
+    // has got (pages written of pages in the document), and what it wrote or why
+    // it did not. The window is what words them.
     void wordExportProgress(int done, int total);
-    // What an export wrote, or why it did not.
     void wordExportFinished(const WordExportReport &report);
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
@@ -480,58 +473,17 @@ private:
     // Bumped whenever a result in flight would be an answer to an old question.
     void invalidateRenders();
 
-    // The box the user dragged over a text-free part of a page: rendered at a
-    // size of its own, then recognized, then answered in a window.
-    void onRegionCaptured(int page, QRectF points);
-
     // A link clicked in the reading tool: jump to the page it names, or -- for
     // an external one -- ask first and then hand the URL to the browser.
     void onLinkActivated(const Link &link);
 
-    // The matches a scan came back with, in page order.
-    void applySearchResults(const QVector<TextSearch::Match> &matches);
-    // One match as the range the view draws and scrolls to, or an empty range
-    // for an index that is not one.
-    PageTextRange rangeOf(int index) const;
-    // Hands the view the matches to draw and which one is in front, and tells
-    // the bar what to say.
-    void updateSearchHighlights();
-    // Whether a scan of this tab's is still running, for the reload that has to
-    // wait for it. See drainRenders().
+    // Whether a scan of this tab's document is still running, for the reload
+    // that has to wait for it. See drainRenders().
     bool searchRunning() const;
-    // Runs the recognition off the UI thread and fills the window in when it
-    // is done. The crop is copied into the worker; the window is watched with
-    // a QPointer, because the user may close it first. When `thenTranslate` is
-    // set (the translate tool boxing a picture), the recognized words are sent
-    // straight to a translation and `dialog` is null.
-    void startRecognition(const QImage &crop, QPointer<OcrDialog> dialog, bool thenTranslate = false);
 
     // Shows the sidebar only when the reader asked for it *and* the document has
     // bookmarks -- the one place those two conditions meet.
     void applySidebarVisibility();
-
-    // The same for a translation: the request runs off the UI thread (a round
-    // trip is a second or more), and the window is watched so a result nobody is
-    // waiting for is dropped. `text` is copied into the worker, and so are the
-    // service and key: the consent check belongs on the thread with the window,
-    // and the worker must not reach into settings or the credential manager.
-    void startTranslation(const QString &text, Translate::Provider provider, const QString &key,
-                          QPointer<TranslateDialog> dialog);
-
-    // The two boxes translateText can raise before a request: one explains that a
-    // key is needed and offers the settings page, the other asks whether the
-    // selected text may be sent to this service. Split out so the consent rule is
-    // one place rather than a condition threaded through the translation path.
-    void askForTranslationSetup();
-    bool askForTranslationConsent(Translate::Provider provider, const QString &key);
-
-    // Created on first use: a tab that never translates never touches the
-    // credential manager.
-    Translate::KeyStore *translateKeyStore();
-
-    // Emits the progress signal, and only ever runs on this object's thread: the
-    // export reports from a worker, and this is how the report gets here.
-    void notifyExportProgress(int done, int total);
 
     // The editor for this document, opening it on the first call. Null when the
     // document cannot be edited -- and the reason has already been said to the
@@ -547,23 +499,6 @@ private:
     // which of the two on the strip's tab.
     void refreshThumbnailRows();
 
-    // Starts watching the path of the document that was just opened, and stops
-    // watching whatever this tab was watching before. One path and not a list:
-    // the only file whose changes mean anything here is the one on screen.
-    void watchFile(const QString &path);
-    void unwatchFile();
-    // A change arrived: remember that something happened, and wait for the
-    // writer to stop before saying so. See the definitions for the two
-    // behaviours this is arranged around.
-    void onWatchedFileChanged(const QString &path);
-    void onFileChangeSettled();
-    void showFileChangeNotice();
-    void hideFileChangeNotice();
-    // The bar's 重新加载 button: reload(), and on a refusal the sentence from
-    // reload() where the reader pressed it. Kept apart from the F5 action
-    // because that one reports through a message box.
-    void reloadFromFileChangeNotice();
-
     // Declared before the renderer, and therefore destroyed after it: the
     // renderer holds a pointer to this document, and a document that goes away
     // first leaves it holding freed memory. Members are destroyed in reverse
@@ -574,22 +509,11 @@ private:
 
     RenderCache cache;
     FindBar *findBar = nullptr;
-    // The bar between the find bar and the page, hidden until the file on disk
-    // changes. Built with the tab rather than on the first change so that the
-    // tests and the theme see one widget whose existence does not depend on
-    // what a writer did.
-    QWidget *fileChangeBar = nullptr;
-    QLabel *fileChangeLabel = nullptr;
-    QFileSystemWatcher *fileWatcher = nullptr;
-    // One single-shot timer for the debounce: every change restarts it, and it
-    // is started once more while the size is still moving. See
-    // onWatchedFileChanged().
-    QTimer *fileChangeTimer = nullptr;
-    QString watchedPath;
-    // The size read on the last settle, or -1 when the next fire is the first
-    // of a new change. Equal twice in a row is what "the writer has stopped"
-    // means here; there is no event that says so.
-    qint64 fileChangeSize = -1;
+    // The watcher, the debounce and the bar between the find bar and the page.
+    // Built with the tab rather than on the first change, so that the tests and
+    // the theme see one widget whose existence does not depend on what a writer
+    // did -- see src/services/filechangenotice.h.
+    std::unique_ptr<FileChangeNotice> notice;
     PageView *pageView = nullptr;
     // The left reading panel: bookmarks, page thumbnails and the hits of the
     // current search, one tab each. It is hidden until the reader opens it
@@ -604,8 +528,10 @@ private:
     // item still reflects what was asked.
     bool sidebarWanted = false;
     // How many foreground jobs (print, image export) are on this object's
-    // stack. See ForegroundJob above.
-    int foregroundJobs = 0;
+    // stack, and the two jobs that put it there. The counter is declared first
+    // and so outlives them; DocumentOutput holds a pointer to it.
+    std::unique_ptr<ForegroundJobs> jobs;
+    std::unique_ptr<DocumentOutput> output;
     // Set while opening; see hasFormFields().
     bool formFieldsInSource = false;
     // What the open-time probe answered about XFA, kept for hasXfa() / hasDynamicXfa() above.
@@ -620,38 +546,26 @@ private:
     // See thumbnailsShowPendingEdits().
     bool thumbnailsPreviewEdits = false;
 
-    // ---- search state ----
+    // ---- search ----
     //
-    // The matches, in page order, and which of them is in front. Replaced
-    // wholesale whenever a scan finishes: a search is a question with one
-    // answer, and half of two answers is not a result.
-    QVector<TextSearch::Match> searchMatches;
-    int currentMatchIndex = -1;
-    // What is being searched for. One string for the tab, and both of the
-    // controls that can type it -- the bar in here and the box in the window's
-    // toolbar -- show this one.
-    QString searchNeedle;
-    // Whether case matters for it, which is a setting of the search rather than
-    // of either control: the toolbar box has no checkbox of its own, so it
-    // searches the way the bar was last set.
-    bool searchCase = false;
-    bool searchWhole = false;
-    // The flag the running scan checks between pages, and the identity of the
-    // scan it belongs to: a scan whose flag is no longer `searchCancel` is
-    // answering a question this tab has stopped asking, and its answer is
-    // dropped.
-    QSharedPointer<QAtomicInt> searchCancel;
-    // The scans that have not finished, so that one is never still running when
-    // the document it is reading is replaced -- in this object's destructor and
-    // in open(), both of which call drainRenders().
-    QVector<QFuture<QVector<TextSearch::Match>>> searchTasks;
+    // The matches, the running scan and its cancel flag, and the bar's label and
+    // the sidebar's rows that go with them. Declared after `backend` and so
+    // destroyed before it: the session reaches the document through a provider
+    // that asks this tab, and a search that outlived the document it was reading
+    // is the crash drainRenders() exists to prevent.
+    std::unique_ptr<SearchSession> search;
 
     // The export, for the same reason and by the same means: it reads the
     // document page by page, and a reload under it is the crash drainRenders()
     // exists to prevent. Its flag is set first, so that the wait is one page
-    // rather than a whole document.
-    QFuture<WordExportReport> wordExportTask;
-    QSharedPointer<QAtomicInt> exportCancel;
+    // rather than a whole document -- both of those live with the session.
+    std::unique_ptr<WordExportSession> wordExport;
+
+    // The box the reader drags on a page: the crop's own render, the recognizer,
+    // and the window the answer goes into. It is not one of the jobs
+    // drainRenders() stops for, and why not is written at the top of
+    // src/services/ocrsession.h.
+    std::unique_ptr<OcrSession> ocr;
 
     Document::Status status = Document::Status::FileError;
     bool opened = false;
@@ -666,10 +580,10 @@ private:
     // already given is a worse trade than holding it for as long as the document
     // is open -- where it is already held anyway, by the renderer.
     QString documentPassword;
-    // The key store translation reads from. Null until the first translation,
-    // then the Windows credential manager -- or, in a test, the in-memory store
-    // handed in through setTranslateKeyStoreForTesting().
-    std::unique_ptr<Translate::KeyStore> translateStore;
+    // The two questions asked before a request, the key it reads, the request and
+    // the window the answer goes into -- see src/services/translatesession.h. The
+    // test seam for the key store is here, because the tab is what a test reaches.
+    std::unique_ptr<TranslateSession> translation;
     // Set while open() is draining renders, so that a stray event delivered from
     // inside that wait cannot start a second open on this tab.
     bool opening = false;

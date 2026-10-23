@@ -1369,8 +1369,13 @@ install(SCRIPT ${deploy_script})
 # call creates its own lupdate target, and "update_translations" runs them all,
 # so several lupdate processes write the same files at once. What came out had
 # two </TS> in it and no longer parsed.
+#
+# mainwindow_smoke joined for the menu mnemonic check: that round builds a window
+# while the English catalogue is installed, so it needs the compiled .qm inside the
+# test binary and not only inside the program. Nothing here calls tr() or
+# translate() with a new literal, so the catalogue gains no entry from the listing.
 set(XYZPDF_TRANSLATION_TARGETS xyzpdf)
-foreach(translated_test i18n_smoke)
+foreach(translated_test i18n_smoke mainwindow_smoke)
     if (TARGET xyzpdf_${translated_test})
         list(APPEND XYZPDF_TRANSLATION_TARGETS xyzpdf_${translated_test})
     endif()

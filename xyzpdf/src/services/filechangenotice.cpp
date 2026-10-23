@@ -18,12 +18,11 @@ FileChangeNotice::FileChangeNotice(QWidget *host, std::function<bool(QString *)>
     // Above the page and beside the find bar, because it is about the document
     // that is on screen and it has to be seen without opening a menu.
     //
-    // One thing this watcher can never hear: this program writing the file.
-    // v1 is read-only and every save writes a new file the reader names
-    // (AGENTS.md: 永不写用户的 PDF 文件), so there is no path from here back
-    // onto the open document. If a later version ever saves in place, opening
-    // it would raise this bar against ourselves -- which is why the rule is
-    // written down here rather than only in the document tab's header.
+    // This program can now write the open file itself (F8's in-place save), and a
+    // watch that reported our own replacement as somebody else's change would put
+    // the bar over the page the reader just saved. beginSelfWrite()/endSelfWrite()
+    // are the two ends of that write; the events that still arrive for it are
+    // recognized in onFileChangeSettled() by the size and time we left behind.
     fileWatcher = new QFileSystemWatcher(this);
     connect(fileWatcher, &QFileSystemWatcher::fileChanged, this,
             &FileChangeNotice::onWatchedFileChanged);
@@ -97,14 +96,42 @@ void FileChangeNotice::unwatch()
     if (fileChangeTimer)
         fileChangeTimer->stop();
     fileChangeSize = -1;
+    selfWrittenSize = -1;
+    selfWrittenModified = -1;
     if (!watchedPath.isEmpty()) {
         fileWatcher->removePath(watchedPath);
         watchedPath.clear();
     }
 }
 
+void FileChangeNotice::beginSelfWrite()
+{
+    selfWriting = true;
+    fileChangeSize = -1;
+    fileChangeTimer->stop();
+    // The path stays in watchedPath: the tab is still about the same file, and
+    // endSelfWrite() has to know which one to watch again.
+    if (!watchedPath.isEmpty())
+        fileWatcher->removePath(watchedPath);
+}
+
+void FileChangeNotice::endSelfWrite(qint64 writtenSize, qint64 writtenModified)
+{
+    selfWriting = false;
+    selfWrittenSize = writtenSize;
+    selfWrittenModified = writtenModified;
+    if (!watchedPath.isEmpty() && QFileInfo::exists(watchedPath)
+        && !fileWatcher->files().contains(watchedPath))
+        fileWatcher->addPath(watchedPath);
+}
+
 void FileChangeNotice::onWatchedFileChanged(const QString &path)
 {
+    // An event delivered while we are replacing the file is our own write, not a
+    // change under the reader. endSelfWrite() reinstates the watch and records what
+    // to compare any event still queued after this point against.
+    if (selfWriting)
+        return;
     if (path != watchedPath)
         return;
 
@@ -131,6 +158,24 @@ void FileChangeNotice::onFileChangeSettled()
 {
     if (watchedPath.isEmpty())
         return;
+    if (selfWriting)
+        return;
+
+    // Our own save: the watcher may have delivered a queued event for the bytes
+    // endSelfWrite() just put there. Recognizing them is what keeps the bar off
+    // the page after 保存. Any later change by another program has a different
+    // size or modified time, does not match, and takes the ordinary path below.
+    if (selfWrittenSize >= 0) {
+        const QFileInfo now(watchedPath);
+        const bool ours = now.exists() && now.size() == selfWrittenSize
+            && now.lastModified().toMSecsSinceEpoch() == selfWrittenModified;
+        selfWrittenSize = -1;
+        selfWrittenModified = -1;
+        if (ours) {
+            fileChangeSize = -1;
+            return;
+        }
+    }
 
     if (!QFileInfo::exists(watchedPath)) {
         // Between the two renames of an atomic save, or gone for good. The

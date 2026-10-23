@@ -158,8 +158,8 @@ void SplitPagesDialog::updateSummary()
     // Said every time, like the other three dialogs here do, and more needed here than
     // there: a split is the one entry in the list that writes no page differently, so the
     // only thing it changes is how many files come out at the end.
-    line += tr("\n\n原来那份文件不会改动，这一步也不写任何文件——要等按下保存修改为，"
-               "这 %1 个文件才会一起出现。")
+    line += tr("\n\n原来那份文件不会改动，这一步也不写任何文件——要等按下保存（它会请你"
+               "另存为），这 %1 个文件才会一起出现。")
                 .arg(pieces.size());
 
     summaryLabel->setText(line);

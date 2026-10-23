@@ -69,6 +69,7 @@ public:
     ~PdfiumBackend() override;
 
     Status load(const QString &path, const QString &password) override;
+    void close() override;
     QString lastError() const override;
     QString path() const override;
     int pageCount() const override;

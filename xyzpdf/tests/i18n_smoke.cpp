@@ -189,12 +189,15 @@ int main(int argc, char **argv)
             // line endings, which is a worse thing to pin in a test than a long
             // string is.
             { "MainWindow", "文档(&D)" },          { "MainWindow", "删除页面(&E)…" },
-            { "MainWindow", "旋转页面(&R)…" },     { "MainWindow", "保存修改为(&S)…" },
+            { "MainWindow", "旋转页面(&R)…" },     { "MainWindow", "保存(&S)" },
+            { "MainWindow", "另存为(&A)…" },
             { "MainWindow", "还有没保存的修改" },
             { "MainWindow", "已写成一个新文件（%n 页）：%1", 1 },
+            { "MainWindow", "这个窗口里有 %n 个标签带着没有写进任何文件的修改。", 1 },
             { "MainWindow", "正在导出为 Word…（共 %n 页）", 1 },
             { "MainWindow", "另有 %n 页既没有文字，也没有渲染出内容，已跳过。", 1 },
-            { "DocumentTab", "把这些修改存成一个新文件" },
+            { "DocumentTab", "要另存为一份新的吗？" },
+            { "DocumentTab", "另存为…" },
             { "DocumentTab", "%1 已修改.pdf" },
             { "DeletePagesDialog", "当前页（第 %1 页）" },
             { "DeletePagesDialog", "现在这份有 %1 页：再删 %2 页，剩下 %3 页。" },
@@ -292,8 +295,8 @@ int main(int argc, char **argv)
             // are worth.
             { "MainWindow", "加密 / 去掉口令(&J)…" },
             { "MainWindow",
-              "记下要写出的那一份需要什么口令、允许做什么，按保存修改为才写成一个新文件；"
-              "正在读的这份不动，那些权限限制也只是写给阅读器看的请求" },
+              "记下要写出的那一份需要什么口令、允许做什么，按保存才写进正在读的这份文件；"
+              "那些权限限制也只是写给阅读器看的请求" },
             { "DocumentTab", "加密 / 去掉口令" },
             { "ProtectPagesDialog", "加密 / 去掉口令" },
             { "ProtectPagesDialog", "加上口令和权限" },
@@ -335,7 +338,7 @@ int main(int argc, char **argv)
             // direction: not a missing translation but a missing question.
             { "MainWindow", "加水印(&W)…" },
             { "MainWindow",
-              "记下要在哪几页上盖什么字，按保存修改为才写成一个新文件；正在读的这份不动，"
+              "记下要在哪几页上盖什么字，按保存才写进正在读的这份文件；"
               "那些字是画在页面上的一张图，复制、翻译、导出都拿不到它们" },
             { "DocumentTab", "加水印" },
             { "WatermarkDialog", "加水印" },
@@ -385,8 +388,6 @@ int main(int argc, char **argv)
             { "MainWindow", "其中 %n 个带网格的表格已转换为可编辑 Word 表格。", 1 },
             { "MainWindow", "其中 %n 处图形（图表、框图、照片等）已按图片插入，"
                             "其所在页面的文字仍是可以编辑的。", 1 },
-            { "MainWindow", "这个窗口里有 %n 个标签带着没有写进任何文件的修改。\n\n关掉窗口就会"
-                            "把这些修改丢掉。要关掉吗？", 1 },
             { "DocumentTab", "\n\n列表里前面 %n 个文件已经记下了，要退回去用撤销。", 1 },
             { "DeletePagesDialog", "\n\n这 %n 页里有 %1 页是合并进来的，屏幕上没有它们的页码，"
                                    "这里删不到它们。", 1 },

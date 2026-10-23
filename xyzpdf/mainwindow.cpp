@@ -871,15 +871,15 @@ void MainWindow::buildMenus()
     //
     // The last three items are the other half of the first seven. 删除页面、旋转页面、
     // 移动页面、合并文件进来、拆分文件、加密 / 去掉口令 and 加水印 record an edit, 撤销
-    // and 重做 move along the list those seven recorded into, and 保存修改为… is the only
-    // one of the ten that writes a file. They sit in this menu rather than spread across
+    // and 重做 move along the list those seven recorded into, and 保存 / 另存为… are the
+    // only two that write a file. They sit in this menu rather than spread across
     // 文件 and 编辑 because they are one list seen from four ends, and a reader looking
     // for any of them is looking for this menu.
     QMenu *documentMenu = menuBar()->addMenu(tr("文档(&D)"));
 
     deletePagesAction = makeAction(tr("删除页面(&E)…"), QKeySequence());
     deletePagesAction->setObjectName(QStringLiteral("deletePagesAction"));
-    deletePagesAction->setToolTip(tr("记下要删掉的页，按保存修改为才写成一个新文件；正在读的这份不动"));
+    deletePagesAction->setToolTip(tr("记下要删掉的页，按保存才写进正在读的这份文件；另存为…会写成新的一份"));
     connect(deletePagesAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->deletePages();
@@ -892,7 +892,7 @@ void MainWindow::buildMenus()
     // on screen and are forgotten with the tab, this one writes the turn into a
     // file. A reader who pressed the wrong one should still find out before the
     // save rather than from a file they did not mean to make.
-    rotatePagesAction->setToolTip(tr("记下要转的角度，按保存修改为才写成一个新文件；正在读的这份不动"));
+    rotatePagesAction->setToolTip(tr("记下要转的角度，按保存才写进正在读的这份文件；另存为…会写成新的一份"));
     connect(rotatePagesAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->rotatePages();
@@ -904,7 +904,7 @@ void MainWindow::buildMenus()
     // menus put on their own items (文件's 打开(&O) and 文档's 重做(&O)).
     movePagesAction = makeAction(tr("移动页面(&M)…"), QKeySequence());
     movePagesAction->setObjectName(QStringLiteral("movePagesAction"));
-    movePagesAction->setToolTip(tr("记下要把哪几页挪到哪儿，按保存修改为才写成一个新文件；正在读的这份不动"));
+    movePagesAction->setToolTip(tr("记下要把哪几页挪到哪儿，按保存才写进正在读的这份文件；另存为…会写成新的一份"));
     connect(movePagesAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->movePages();
@@ -920,8 +920,8 @@ void MainWindow::buildMenus()
     // the only one this leaves alone. A reader who is about to merge three files
     // out of a folder needs to know that none of the three gets written to either.
     mergeFileAction->setToolTip(
-        tr("记下要把哪几页并进来，按保存修改为才写成一个新文件；正在读的这份和"
-           "合并进来的那些都不动"));
+        tr("记下要把哪几页并进来，按保存才写进正在读的这份文件；合并进来的那些不动，"
+           "另存为…会写成新的一份"));
     connect(mergeFileAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->mergeFiles();
@@ -936,10 +936,10 @@ void MainWindow::buildMenus()
     splitFileAction->setObjectName(QStringLiteral("splitFileAction"));
     // Says the two things this item is easy to get wrong about: it writes nothing on
     // its own, and what comes out of the save is a set of files rather than one. A
-    // reader who expected one file from 保存修改为 would otherwise find the folder
-    // fuller than the sentence above the button promised.
+    // split therefore cannot be written back under the original's one name: 保存 asks
+    // for 另存为 when this is pending, and that is what the sentence says.
     splitFileAction->setToolTip(
-        tr("记下要拆成每几页一份，按保存修改为才一次写出那几个文件；正在读的这份不动"));
+        tr("记下要拆成每几页一份；有它在时保存会请你另存为，一次写出那几个文件"));
     connect(splitFileAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->splitPages();
@@ -957,8 +957,8 @@ void MainWindow::buildMenus()
     // reader who believes a PDF they encrypted is private will otherwise choose the wrong
     // tool for the job -- the password is the lock, the boxes are not.
     protectFileAction->setToolTip(
-        tr("记下要写出的那一份需要什么口令、允许做什么，按保存修改为才写成一个新文件；"
-           "正在读的这份不动，那些权限限制也只是写给阅读器看的请求"));
+        tr("记下要写出的那一份需要什么口令、允许做什么，按保存才写进正在读的这份文件；"
+           "那些权限限制也只是写给阅读器看的请求"));
     connect(protectFileAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->protectPages();
@@ -966,7 +966,7 @@ void MainWindow::buildMenus()
     documentMenu->addAction(protectFileAction);
 
     // (&W): 水印 has no Latin letter in it and its pinyin's initials are both taken (S below
-    // on 保存修改为, J above on 加密), so the letter goes on the English name for the thing --
+    // on 保存, J above on 加密), so the letter goes on the English name for the thing --
     // which is also the letter a reader who has used another PDF editor has already memorised.
     watermarkAction = makeAction(tr("加水印(&W)…"), QKeySequence());
     watermarkAction->setObjectName(QStringLiteral("watermarkAction"));
@@ -975,7 +975,7 @@ void MainWindow::buildMenus()
     // pages and then found the words missing from the export needs to have been told that the
     // marks were never words -- on the menu, not only in the box they cancelled.
     watermarkAction->setToolTip(
-        tr("记下要在哪几页上盖什么字，按保存修改为才写成一个新文件；正在读的这份不动，"
+        tr("记下要在哪几页上盖什么字，按保存才写进正在读的这份文件；"
            "那些字是画在页面上的一张图，复制、翻译、导出都拿不到它们"));
     connect(watermarkAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
@@ -983,7 +983,7 @@ void MainWindow::buildMenus()
     });
     documentMenu->addAction(watermarkAction);
 
-    // (&B): 书签 has no Latin letter either, and its pinyin's initial (S) is 保存修改为's; B is the
+    // (&B): 书签 has no Latin letter either, and its pinyin's initial (S) is 保存's; B is the
     // letter the sidebar's own tab and every other reader's menu already use for the thing.
     bookmarkAction = makeAction(tr("编辑书签(&B)…"), QKeySequence());
     bookmarkAction->setObjectName(QStringLiteral("bookmarkAction"));
@@ -991,8 +991,8 @@ void MainWindow::buildMenus()
     // file has until a save writes a new one, so a reader who arranged six rows and saw no change on
     // screen has to be told the list is a request, not an edit to the window they are looking at.
     bookmarkAction->setToolTip(
-        tr("记下这份文档要带哪几条书签，按保存修改为才写成一个新文件；正在读的这份不动，"
-           "侧栏里那棵树也要等新文件打开才是这个样子"));
+        tr("记下这份文档要带哪几条书签，按保存才写进正在读的这份文件；"
+           "侧栏里那棵树也要等保存之后才是这个样子"));
     connect(bookmarkAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->editOutline();
@@ -1024,17 +1024,31 @@ void MainWindow::buildMenus()
 
     documentMenu->addSeparator();
 
-    saveEditsAction = makeAction(tr("保存修改为(&S)…"), QKeySequence(QStringLiteral("Ctrl+S")));
+    // F8: 保存 is the Ctrl+S a reader's fingers already know, and it writes back to
+    // the file on screen. The old row said 保存修改为 because nothing may write a
+    // user's PDF except this one path (AGENTS.md), and that path is the order in
+    // DocumentTab::saveEdits() -- hidden copy, reopen with qpdf, let go of the
+    // reader, ReplaceFileW, reopen. 另存为 is the old behaviour under its own name.
+    saveEditsAction = makeAction(tr("保存(&S)"), QKeySequence(QStringLiteral("Ctrl+S")));
     saveEditsAction->setObjectName(QStringLiteral("saveEditsAction"));
-    // "为" is the whole of the promise: this never writes the file that is open, so
-    // it is not the Ctrl+S a reader's fingers already know. AGENTS.md's 永不写用户的
-    // PDF 文件 is the reason, and the menu has to be honest about it.
-    saveEditsAction->setToolTip(tr("把这些修改写成一个新文件；正在读的这份不动"));
+    saveEditsAction->setToolTip(tr("把这些修改写回正在读的这份文件"));
     connect(saveEditsAction, &QAction::triggered, this, [this] {
         if (DocumentTab *tab = currentTab())
             tab->saveEdits();
     });
     documentMenu->addAction(saveEditsAction);
+
+    saveEditsAsAction
+        = makeAction(tr("另存为(&A)…"), QKeySequence(QStringLiteral("Ctrl+Shift+S")));
+    saveEditsAsAction->setObjectName(QStringLiteral("saveEditsAsAction"));
+    // The sentence the whole old row used to carry, now on the row that still keeps
+    // the promise: a new file, and the one being read is not written at all.
+    saveEditsAsAction->setToolTip(tr("把这些修改另写成一份新文件；正在读的这份不动"));
+    connect(saveEditsAsAction, &QAction::triggered, this, [this] {
+        if (DocumentTab *tab = currentTab())
+            tab->saveEditsAs();
+    });
+    documentMenu->addAction(saveEditsAsAction);
 
     // ---- 转到 ----
     QMenu *goMenu = menuBar()->addMenu(tr("转到(&G)"));
@@ -1470,27 +1484,29 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
     connect(tab, &DocumentTab::documentSavedAs, this,
             [this](const QString &path, const QString &changes, int pages, int fileCount,
                    const QString &password) {
-        // The copy that came out of the edit opens *beside* the document it was
-        // made from, not in its place: the reader asked for a document with those
-        // changes in it, and the quickest way to check that the pages which went
-        // are the pages they meant is to have both on screen, one tab each. Under a
-        // split this is the first piece -- the one tab that says whether the whole
-        // set is what was meant, without forty of them opening.
-        //
-        // With the key the save used, so that a document written with a password
-        // opens instead of asking for one it was just given. Empty for everything
-        // this program did not lock, which is every save that was not a 加密 and did
-        // not carry an encrypted source through.
-        openDocument(path, -1, password);
-        // Ours last, because openDocument puts its own "已打开" up there first and
-        // says less than this does. The two wordings are apart because a split's
-        // page count is the whole document's, not the file that just opened: saying
-        // "40 页" beside one 5-page piece would be a number with no referent.
+        // F8: the tab switched itself to the new file, with the key the save used,
+        // so there is no second tab to open here and nothing left to hand over. The
+        // old handler opened the result beside the original because 保存修改为 left
+        // the tab on the untouched source; Save As now *is* that tab, and a second
+        // tab on the same bytes is the thing openDocument's raise-existing rule
+        // would collapse anyway.
+        Q_UNUSED(path)
+        Q_UNUSED(password)
+        // The two wordings are apart because a split's page count is the whole
+        // document's, not the file that just opened: saying "40 页" beside one
+        // 5-page piece would be a number with no referent.
         setStatusMessage(
             fileCount > 1
                 ? tr("已写成 %1 个新文件（整份 %2 页）：%3").arg(fileCount).arg(pages).arg(changes)
                 : tr("已写成一个新文件（%n 页）：%1", nullptr, pages).arg(changes),
             8000);
+    });
+
+    connect(tab, &DocumentTab::documentSavedInPlace, this, [this](const QString &path) {
+        // One line, and it is the receipt for the Ctrl+S the reader pressed: the
+        // page does not change, no tab opens, and without this the only sign would
+        // be a star disappearing from a tab they may not be looking at.
+        setStatusMessage(tr("已保存到 %1").arg(path), 5000);
     });
 
     connect(tab, &DocumentTab::searchChanged, this, [this, tab](int, int, bool) {
@@ -1854,10 +1870,11 @@ bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
 {
     if (!tab->hasUnsavedEdits())
         return true;
-    // Said in full rather than as "unsaved changes": the edits a reader is about to
-    // throw away are the ones the menu above their hands just recorded, and naming
-    // them is what makes "wait, not those" possible. Closing is the only place this
-    // question can be asked at all -- nothing writes in between.
+    // F8's standard three answers. 保存 writes back to the file and only then lets
+    // the tab go; 不保存 closes without writing; 取消 keeps the tab and everything in
+    // it. The question names the edits rather than saying "unsaved changes", because
+    // the ones about to be thrown away are the ones the menu above their hands just
+    // recorded, and naming them is what makes "wait, not those" possible.
     const QString what = tab->pendingEditsSummary();
     // The file name, not the tab's title: the title carries the dirty star, and
     // 「doc.pdf *」还带着没有写进任何文件的修改 hands the reader the same warning
@@ -1865,33 +1882,57 @@ bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
     const QString file = QFileInfo(tab->documentPath()).fileName();
     const auto answer = WindowDialogs::question(
         this, tr("还有没保存的修改"),
-        tr("「%1」还带着没有写进任何文件的修改：%2。\n\n关掉这个标签就会把这些修改丢掉。"
-           "要关掉吗？")
-            .arg(file, what),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    return answer == QMessageBox::Yes;
+        tr("「%1」还带着没有写进任何文件的修改：%2。\n\n要先保存吗？").arg(file, what),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (answer == QMessageBox::Cancel)
+        return false;
+    if (answer == QMessageBox::Discard)
+        return true;
+    // Save. A failed save, a backed-out save box, and a refusal whose 另存为 was
+    // cancelled all leave the list pending -- and a pending list is the reason this
+    // question was asked, so the close stops rather than losing it.
+    tab->saveEdits();
+    return !tab->hasUnsavedEdits();
 }
 
 bool MainWindow::confirmDiscardingEditsInAllTabs()
 {
-    int holding = 0;
+    QList<DocumentTab *> dirty;
     for (int index = 0; index < tabs->count(); ++index) {
         auto *tab = qobject_cast<DocumentTab *>(tabs->widget(index));
         if (tab && tab->hasUnsavedEdits())
-            ++holding;
+            dirty.append(tab);
     }
-    if (holding == 0)
+    if (dirty.isEmpty())
         return true;
-    // One question for the window rather than one per tab: the reader who closes a
-    // window with three edited documents in it is being asked to give up three
-    // lists, and a dialog that pops three times says nothing about that.
+    // One edited tab gets the question that can name its file and its edits; several
+    // get one question for the window, because a reader closing three edited
+    // documents is being asked to give up three lists and a dialog that pops three
+    // times says nothing about that.
+    if (dirty.size() == 1)
+        return confirmDiscardingEdits(dirty.first());
+
     const auto answer = WindowDialogs::question(
         this, tr("还有没保存的修改"),
-        tr("这个窗口里有 %n 个标签带着没有写进任何文件的修改。\n\n关掉窗口就会把这些修改"
-           "丢掉。要关掉吗？",
-           nullptr, holding),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    return answer == QMessageBox::Yes;
+        tr("这个窗口里有 %n 个标签带着没有写进任何文件的修改。", nullptr, int(dirty.size())),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (answer == QMessageBox::Cancel)
+        return false;
+    if (answer == QMessageBox::Discard)
+        return true;
+    // 保存 saves each tab in turn, and stops at the first one whose save did not
+    // happen -- its question is still open on screen, so the window showing that tab
+    // is where the reader expects to be when the box goes away.
+    for (DocumentTab *tab : std::as_const(dirty)) {
+        tab->saveEdits();
+        if (tab->hasUnsavedEdits()) {
+            tabs->setCurrentWidget(tab);
+            return false;
+        }
+    }
+    return true;
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -2270,11 +2311,12 @@ void MainWindow::updateForCurrentTab()
             action->setEnabled(hasDocument);
     }
 
-    // The other three items in 文档 read this tab's list of edits rather than the
-    // fact that a document is open: there is nothing to undo on a tab that has
-    // recorded none, and nothing to save on one whose list is empty. Undo and redo
-    // say which entry they act on, because a bare 撤销 leaves the reader to
-    // remember a list they never saw.
+    // The other items in 文档 read this tab's list of edits rather than the fact
+    // that a document is open: there is nothing to undo on a tab that has recorded
+    // none, and nothing to save on one whose list is empty. Undo and redo say which
+    // entry they act on, because a bare 撤销 leaves the reader to remember a list
+    // they never saw. 另存为 goes with 保存 here: this program's Save As writes the
+    // pending list, so with no list it has nothing to write and is greyed with it.
     if (undoEditAction) {
         const bool can = tab && tab->canUndoEdits();
         const QString what = can ? tab->undoEditName() : QString();
@@ -2289,6 +2331,8 @@ void MainWindow::updateForCurrentTab()
     }
     if (saveEditsAction)
         saveEditsAction->setEnabled(tab && tab->hasUnsavedEdits());
+    if (saveEditsAsAction)
+        saveEditsAsAction->setEnabled(tab && tab->hasUnsavedEdits());
 
     // The tool buttons show the tool the tab in front is actually using, which
     // is not necessarily the remembered one: the tab may have been given a

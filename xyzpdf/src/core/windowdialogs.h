@@ -59,6 +59,13 @@ QMessageBox::StandardButton question(
                                                                         | QMessageBox::No),
     QMessageBox::StandardButton defaultButton = QMessageBox::NoButton);
 
+// A question whose answers are the caller's own words -- 「另存为…」 and 「取消」,
+// where the standard buttons cannot say what the way out is. Returns the index of
+// the button pressed, or -1 when the box was closed without one. Window modal,
+// like every box in this file.
+int askChoice(QWidget *parent, const QString &title, const QString &text,
+              const QStringList &choices, int defaultChoice = 0);
+
 QString getExistingDirectory(QWidget *parent, const QString &caption,
                              const QString &directory = QString());
 

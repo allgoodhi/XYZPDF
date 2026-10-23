@@ -280,6 +280,7 @@ private:
     QAction *undoEditAction = nullptr;
     QAction *redoEditAction = nullptr;
     QAction *saveEditsAction = nullptr;
+    QAction *saveEditsAsAction = nullptr;
     QAction *findAction = nullptr;
     QAction *findNextAction = nullptr;
     QAction *findPreviousAction = nullptr;

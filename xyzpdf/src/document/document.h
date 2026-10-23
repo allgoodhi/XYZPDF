@@ -158,6 +158,19 @@ public:
     // password filled in.
     virtual Status load(const QString &path, const QString &password) = 0;
 
+    // Lets go of the file while this object -- and everything holding a pointer to
+    // it -- stays alive: afterwards there are no pages, path() still names the file,
+    // and the next load() opens it again. The in-place save (handoff-03 F8) closes
+    // before it replaces the file and loads after.
+    //
+    // With PDFium the file is opened with FILE_SHARE_DELETE (handoff-03 F7), so a
+    // replace would succeed even with the document open; the save closes anyway,
+    // because "nothing of ours is reading the old bytes when they are swapped" is
+    // the rule, not a property of whichever engine is underneath. Qt PDF, the engine
+    // before, did hold a handle that only destroying its document let go of --
+    // F8 measured a sharing violation two seconds after QPdfDocument::close().
+    virtual void close() = 0;
+
     // Why the last load() did not return Ready, as a sentence to show the user:
     // already translated, and already worded. Always set after a failure. A
     // backend that cannot say more than "it failed" is expected to say that

@@ -37,7 +37,7 @@
 // ---- what this dialog does not do ----
 //
 // Nothing is written. Like 拆分文件, this records one entry in the undo list and its whole
-// visible effect lands at 保存修改为 -- so the source file on disk keeps its own protection
+// visible effect lands at 保存 -- so the source file on disk keeps its own protection
 // whichever way this box is answered, and 去掉口令 of somebody else's file cannot damage it.
 // The button stays greyed when the direction chosen has nothing to act on (taking the
 // protection off a file that never had any) or when the request is the answer a save would

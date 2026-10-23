@@ -598,6 +598,18 @@ QString PdfiumBackend::path() const
     return impl->path;
 }
 
+void PdfiumBackend::close()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    // Pages, form environment, document and file handle, in that order -- the same
+    // teardown load() starts with. impl->path is kept on purpose: path() still
+    // answers with the file the tab is about, which is what the in-place save
+    // reopens and what the title reads while the page is briefly empty.
+    impl->close();
+    impl->error.clear();
+    impl->encrypted = false;
+}
+
 int PdfiumBackend::pageCount() const
 {
     QMutexLocker locker(&pdfiumMutex());

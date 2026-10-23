@@ -52,6 +52,17 @@ public:
     void watch(const QString &path);
     void unwatch();
 
+    // Our own in-place save, around the moment the file is replaced. The watcher is
+    // stopped first, because the rule this class enforces is "the file changed under
+    // you" and a write of ours is not that. When the replace is over, endSelfWrite()
+    // starts the watch again and records the size and modified time we just put there:
+    // an event the watcher still delivers for our own bytes is compared against them
+    // and dropped, while a later change by another program does not match and is
+    // reported. `writtenSize` of -1 means nothing was written (the replace failed) and
+    // the file is still the one that was there.
+    void beginSelfWrite();
+    void endSelfWrite(qint64 writtenSize = -1, qint64 writtenModified = -1);
+
     void hideNotice();
 
 private slots:
@@ -79,5 +90,15 @@ private:
     // of a new change. Equal twice in a row is what "the writer has stopped"
     // means here; there is no event that says so.
     qint64 fileChangeSize = -1;
+    // Set between beginSelfWrite() and endSelfWrite(): an event in that window is
+    // our own replace and never reaches the bar.
+    bool selfWriting = false;
+    // The bytes our own save left behind, and -1 when there are none to recognize.
+    // Size and modified time rather than a hash: both are what the settle check
+    // already reads, and a hash of a 300 MB scan on every save would cost more than
+    // the bar is worth. The one change this can miss is another program writing
+    // bytes of exactly this size at exactly this timestamp inside the 400 ms wait.
+    qint64 selfWrittenSize = -1;
+    qint64 selfWrittenModified = -1;
     std::function<bool(QString *)> reload;
 };

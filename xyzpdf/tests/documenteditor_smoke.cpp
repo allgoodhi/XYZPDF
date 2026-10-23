@@ -6720,7 +6720,7 @@ int main(int argc, char **argv)
     // The third operation that changes no page's place, and the only one of the seven
     // that changes what is *drawn* on one. So the checks below are of two kinds: the
     // list-side ones that any of the inert operations already have (undo takes back one
-    // row, a repeat replaces rather than stacks, nothing is on disk before 保存修改为),
+    // row, a repeat replaces rather than stacks, nothing is on disk before 保存),
     // and the pixels-side ones that only this one can need -- which pages end up drawing
     // a masked image, how many such images the file holds, whether a page that shares its
     // content array with an inked page stayed clean.

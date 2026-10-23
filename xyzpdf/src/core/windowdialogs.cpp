@@ -1,6 +1,7 @@
 #include "windowdialogs.h"
 
 #include <QInputDialog>
+#include <QPushButton>
 #include <QWidget>
 
 namespace WindowDialogs {
@@ -80,6 +81,22 @@ QMessageBox::StandardButton question(QWidget *parent, const QString &title, cons
                                      QMessageBox::StandardButton defaultButton)
 {
     return ask(parent, QMessageBox::Question, title, text, buttons, defaultButton);
+}
+
+int askChoice(QWidget *parent, const QString &title, const QString &text,
+              const QStringList &choices, int defaultChoice)
+{
+    QMessageBox box(QMessageBox::Question, title, text, QMessageBox::NoButton, parent);
+    QList<QAbstractButton *> buttons;
+    for (const QString &choice : choices)
+        buttons << box.addButton(choice, QMessageBox::AcceptRole);
+    if (defaultChoice >= 0 && defaultChoice < buttons.size()) {
+        if (auto *button = qobject_cast<QPushButton *>(buttons.at(defaultChoice)))
+            box.setDefaultButton(button);
+    }
+    makeWindowModal(&box, parent);
+    box.exec();
+    return int(buttons.indexOf(box.clickedButton()));
 }
 
 QString getExistingDirectory(QWidget *parent, const QString &caption, const QString &directory)

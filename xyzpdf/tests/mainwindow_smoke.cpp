@@ -20,6 +20,7 @@
 
 #include "../documenttab.h"
 #include "../mainwindow.h"
+#include "../src/ui/deletepagesdialog.h"
 #include "../src/ui/documenttabbar.h"
 #include "../src/ui/findbar.h"
 #include "../src/ui/wrappingtoolbararea.h"
@@ -27,11 +28,14 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCryptographicHash>
+#include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QKeyEvent>
 #include <QLabel>
@@ -189,6 +193,99 @@ bool waitFor(const std::function<bool()> &ready, int timeoutMilliseconds = 10000
         QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
     }
     return true;
+}
+
+// ---- the two ways this run answers a box a window opened ----
+//
+// Both are armed *before* the click that opens the box, because the action ends in
+// exec() and nothing after that line runs until the box is gone. Both keep one waiter
+// alive at a time: a waiter that found nothing keeps ticking towards its own limit,
+// and if the next box opens inside that span the old waiter answers it -- with the old
+// call's answer and the old call's record. documenttab_smoke measured exactly that
+// when two refusals were reported as "no box".
+
+namespace {
+QTimer *dialogWaiter = nullptr;
+
+void retireWaiter(QTimer *timer)
+{
+    if (dialogWaiter == timer)
+        dialogWaiter = nullptr;
+    timer->stop();
+    timer->deleteLater();
+}
+
+void armWaiter(QTimer *timer)
+{
+    if (dialogWaiter)
+        retireWaiter(dialogWaiter);
+    dialogWaiter = timer;
+}
+} // namespace
+
+// Answers one of the document dialogs the way a reader would: waits for it to open,
+// types `pages` into its page box, presses 确定. Same shape as documenttab_smoke's.
+template <typename Dialog>
+void answerNextDialog(const QString &pages)
+{
+    auto *timer = new QTimer;
+    armWaiter(timer);
+    auto ticks = std::make_shared<int>(0);
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, ticks, pages] {
+        Dialog *open = nullptr;
+        for (QWidget *top : QApplication::topLevelWidgets()) {
+            if (auto *candidate = qobject_cast<Dialog *>(top); candidate && candidate->isVisible())
+                open = candidate;
+            for (Dialog *child : top->findChildren<Dialog *>()) {
+                if (child->isVisible())
+                    open = child;
+            }
+        }
+        if (open) {
+            if (auto *box = open->template findChild<QLineEdit *>())
+                box->setText(pages);
+            auto *buttons = open->template findChild<QDialogButtonBox *>();
+            QPushButton *accept = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+            if (accept && accept->isEnabled())
+                accept->click();
+            else
+                open->reject();
+            retireWaiter(timer);
+            return;
+        }
+        if (++*ticks > 100)
+            retireWaiter(timer); // never appeared; nothing to unblock
+    });
+    timer->start(50);
+}
+
+// Answers the next message box by its standard-button role rather than by its label.
+// F8's close question is 保存 / 不保存 / 取消, and the labels are translated: matching
+// on the Chinese spelling would pass here and tell nobody when the English form moves.
+// The box's own text is recorded, so the caller can assert what it said.
+void answerNextBox(QMessageBox::StandardButton which, bool *seen, QString *text)
+{
+    auto *timer = new QTimer;
+    armWaiter(timer);
+    auto ticks = std::make_shared<int>(0);
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, ticks, which, seen, text] {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        if (box) {
+            if (seen)
+                *seen = true;
+            if (text)
+                *text = box->text();
+            if (auto *button = box->button(which))
+                button->click();
+            else
+                box->reject();
+            retireWaiter(timer);
+            return;
+        }
+        if (++*ticks > 250)
+            retireWaiter(timer);
+    });
+    timer->start(20);
 }
 
 // Counts the viewport resizes a scrollbar coming or going causes. That is the
@@ -1547,6 +1644,293 @@ int main(int argc, char **argv)
             check(tab.isNull(), "and the tab is deleted");
         }
     }
+
+    // ---- F8 at the window: 保存, 另存为, and the three answers on the way out ----
+    //
+    // The save itself is measured in documenttab_smoke, on copies, step by step. What
+    // belongs to this window is the two menu items that reach it, the sentences that
+    // tell a reader what the tools they just used actually did, and the question asked
+    // when a window with edits is closed -- which is the one place where 取消, 不保存
+    // and 保存 have to be three different visible outcomes.
+    //
+    // Every file here is a copy in a temporary folder: 保存 writes, and the fixtures
+    // this run has been dropping all the way through are shared with every other block.
+    {
+        QTemporaryDir scratch;
+        check(scratch.isValid(), "setup: a scratch folder for the window's save");
+
+        auto *closeTabAction = window.findChild<QAction *>(QStringLiteral("closeTabAction"));
+        auto *deletePages = window.findChild<QAction *>(QStringLiteral("deletePagesAction"));
+        auto *save = window.findChild<QAction *>(QStringLiteral("saveEditsAction"));
+        auto *saveAs = window.findChild<QAction *>(QStringLiteral("saveEditsAsAction"));
+        auto *strip = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+        check(closeTabAction && deletePages && save && saveAs && strip,
+              "setup: the close, the delete, the two save items and the strip are all in the window");
+
+        const auto pump = [] {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        };
+        // Everything the earlier blocks left open is taken out first, because what
+        // follows counts tabs and answers questions for the whole window. None of it is
+        // edited, so nothing asks on the way out -- the waiter below is only the safety
+        // net for a tab that does.
+        for (int guard = 0; openTabs(window) > 0 && guard < 40; ++guard) {
+            bool asked = false;
+            answerNextBox(QMessageBox::Discard, &asked, nullptr);
+            closeTabAction->trigger();
+            pump();
+        }
+        window.show();
+        pump();
+        check(openTabs(window) == 0,
+              QStringLiteral("setup: the window starts this block empty (%1 tabs)")
+                  .arg(openTabs(window)));
+
+        const QByteArray pristine = [&directory] {
+            QFile in(directory + QStringLiteral("/text.pdf"));
+            if (!in.open(QIODevice::ReadOnly))
+                return QByteArray();
+            return QCryptographicHash::hash(in.readAll(), QCryptographicHash::Sha256);
+        }();
+        check(!pristine.isEmpty(), "setup: the two-page fixture is read for comparison");
+
+        const auto shaOf = [](const QString &file) {
+            QFile in(file);
+            if (!in.open(QIODevice::ReadOnly))
+                return QByteArray();
+            return QCryptographicHash::hash(in.readAll(), QCryptographicHash::Sha256);
+        };
+        const auto openCopy = [&window, &scratch, &directory, &pump](const QString &name) {
+            const QString file = scratch.filePath(name);
+            if (!QFile::copy(directory + QStringLiteral("/text.pdf"), file))
+                return QString();
+            dropFiles(window, {QUrl::fromLocalFile(file).toString()}, Qt::CopyAction);
+            if (!waitFor([&window, &file] {
+                    DocumentTab *front = currentDocumentTab(window);
+                    return front && front->isOpen() && sameFile(front->documentPath(), file);
+                }))
+                return QString();
+            pump();
+            return file;
+        };
+        // One page taken out: the cheapest way to hand a tab a pending list, because the
+        // dialog opens, is filled in and accepted, and what it recorded is then what the
+        // save is asked to write.
+        const auto makeDirty = [&deletePages, &pump](const QString &pages) {
+            answerNextDialog<DeletePagesDialog>(pages);
+            deletePages->trigger();
+            pump();
+        };
+        // The tabs this block opens are let go of between the halves, so that each one
+        // starts with a known number of them. An edited tab asks again on the way out;
+        // the answer here is always 不保存, because these tabs are the setup of a
+        // sentence, not the thing being measured.
+        const auto emptyWindow = [&window, &closeTabAction, &pump] {
+            for (int guard = 0; openTabs(window) > 0 && guard < 40; ++guard) {
+                bool asked = false;
+                answerNextBox(QMessageBox::Discard, &asked, nullptr);
+                closeTabAction->trigger();
+                pump();
+            }
+            window.show();
+            pump();
+        };
+
+        const QString one = openCopy(QStringLiteral("window-save-one.pdf"));
+        check(!one.isEmpty(), "setup: a copy of the two-page fixture opens in the window");
+        QPointer<DocumentTab> tab = currentDocumentTab(window);
+        check(tab && tab->pageCount() == 2, "setup: it is the two-page document");
+
+        // ---- the two items, what they say, and when they are offered ----
+        {
+            check(save && save->text() == QStringLiteral("保存(&S)"),
+                  QStringLiteral("保存 carries its mnemonic inside the word (%1)")
+                      .arg(save ? save->text() : QStringLiteral("<missing>")));
+            check(save && save->shortcut() == QKeySequence(QStringLiteral("Ctrl+S")),
+                  "and Ctrl+S reaches it");
+            check(saveAs && saveAs->text() == QStringLiteral("另存为(&A)…"),
+                  QStringLiteral("另存为… carries its own letter (%1)")
+                      .arg(saveAs ? saveAs->text() : QStringLiteral("<missing>")));
+            check(saveAs && saveAs->shortcut() == QKeySequence(QStringLiteral("Ctrl+Shift+S")),
+                  "and Ctrl+Shift+S reaches that one");
+            // Not in 文件 with the things done to a file: these two write the edits the
+            // 文档 menu records, so they sit beside the tools that made them.
+            bool inDocumentMenu = false;
+            for (QAction *menu : window.menuBar()->actions()) {
+                if (menu->menu() && menu->menu()->actions().contains(save)
+                    && menu->menu()->actions().contains(saveAs))
+                    inDocumentMenu = menu->text().contains(QStringLiteral("文档"));
+            }
+            check(inDocumentMenu, "both of them are in the 文档 menu, where the edits come from");
+            check(save && !save->isEnabled() && saveAs && !saveAs->isEnabled(),
+                  "and with nothing to write both are grey");
+
+            // The row this replaces promised a new file for every edit; F8 puts the
+            // writing back into the file being read. So no sentence left in this window
+            // may still say 保存修改为 -- the name that row had -- and the tools that
+            // record an edit have to say that it waits for 保存. Seven of them do:
+            // 删除/旋转/移动/合并/加密/水印/书签.
+            QString stale;
+            int waitsForSave = 0;
+            for (QAction *action : window.findChildren<QAction *>()) {
+                if (action->toolTip().contains(QStringLiteral("保存修改为"))
+                    || action->text().contains(QStringLiteral("保存修改为")))
+                    stale = action->text().isEmpty() ? action->toolTip() : action->text();
+                if (action->toolTip().contains(QStringLiteral("按保存")))
+                    ++waitsForSave;
+            }
+            check(stale.isEmpty(),
+                  QStringLiteral("and nothing left in the window still offers 保存修改为 (%1)")
+                      .arg(stale));
+            check(waitsForSave == 7,
+                  QStringLiteral("seven tools say their edits wait for 保存 (%1 do)")
+                      .arg(waitsForSave));
+        }
+
+        // ---- 保存 from the menu writes into the file the tab is reading ----
+        {
+            const QByteArray before = shaOf(one);
+            makeDirty(QStringLiteral("1"));
+            check(tab && tab->hasUnsavedEdits(), "the tab has a deletion to write");
+            check(tab && tab->title().endsWith(QStringLiteral(" *")),
+                  QStringLiteral("and the tab's own name says so (%1)")
+                      .arg(tab ? tab->title() : QStringLiteral("<gone>")));
+            check(save && save->isEnabled(), "so 保存 is offered");
+
+            bool boxSeen = false;
+            QString boxText;
+            answerNextBox(QMessageBox::Cancel, &boxSeen, &boxText);
+            save->trigger();
+            pump();
+            check(!boxSeen,
+                  QStringLiteral("the write went through without asking anything (%1)").arg(boxText));
+            check(shaOf(one) != before, "the file on disk is not the file that was there");
+            check(tab && tab->pageCount() == 1 && tab->isOpen(),
+                  QStringLiteral("and the tab is reading the one-page document it just wrote (%1)")
+                      .arg(tab ? tab->pageCount() : -1));
+            check(tab && !tab->hasUnsavedEdits(), "with nothing pending");
+            check(tab && !tab->title().endsWith(QStringLiteral(" *")), "and no star");
+            check(save && !save->isEnabled(), "so 保存 is grey again");
+            check(window.statusBar()->currentMessage().contains(QStringLiteral("已保存")),
+                  QStringLiteral("and the bar says where the bytes went (%1)")
+                      .arg(window.statusBar()->currentMessage()));
+            emptyWindow();
+        }
+
+        // ---- 取消 keeps the tab and writes nothing ----
+        {
+            const QString three = openCopy(QStringLiteral("window-cancel.pdf"));
+            check(!three.isEmpty(), "setup: a fresh copy for the close question");
+            QPointer<DocumentTab> asked = currentDocumentTab(window);
+            const QByteArray before = shaOf(three);
+            makeDirty(QStringLiteral("1"));
+            check(asked && asked->hasUnsavedEdits(), "the tab is edited for the way out");
+
+            bool boxSeen = false;
+            QString boxText;
+            answerNextBox(QMessageBox::Cancel, &boxSeen, &boxText);
+            window.close();
+            pump();
+            check(boxSeen, "closing the window asks about the edits");
+            check(boxText.contains(QStringLiteral("还带着没有写进任何文件的修改")),
+                  QStringLiteral("and names the edits rather than saying \"unsaved changes\" (%1)")
+                      .arg(boxText));
+            check(window.isVisible(), "取消 leaves the window where it was");
+            check(openTabs(window) == 1,
+                  QStringLiteral("with its tab (%1)")
+                      .arg(openTabs(window)));
+            check(asked && asked->hasUnsavedEdits(), "and the pending list still there");
+            check(shaOf(three) == before, "and not one byte written");
+
+            // ---- and 不保存 closes, still writing nothing ----
+            bool discardSeen = false;
+            answerNextBox(QMessageBox::Discard, &discardSeen, nullptr);
+            window.close();
+            pump();
+            check(discardSeen, "the same question, answered 不保存 this time");
+            check(!window.isVisible(), "and the window goes");
+            check(shaOf(three) == before,
+                  "with the file exactly as it was -- which is what separates this answer from "
+                  "the one below");
+            emptyWindow();
+        }
+
+        // ---- 保存 on the way out writes first, then closes ----
+        {
+            const QString four = openCopy(QStringLiteral("window-save-close.pdf"));
+            check(!four.isEmpty(), "setup: a copy for the third answer");
+            QPointer<DocumentTab> closing = currentDocumentTab(window);
+            const QByteArray before = shaOf(four);
+            makeDirty(QStringLiteral("1"));
+            check(closing && closing->hasUnsavedEdits(), "with a deletion pending");
+
+            bool boxSeen = false;
+            answerNextBox(QMessageBox::Save, &boxSeen, nullptr);
+            window.close();
+            pump();
+            check(boxSeen, "the question is answered 保存");
+            check(shaOf(four) != before, "and the file was written before the window went");
+            check(!window.isVisible(), "then the window closed");
+            check(closing && !closing->hasUnsavedEdits(), "with nothing left pending");
+            emptyWindow();
+        }
+
+        // ---- two edited tabs are one question for the window, with a count ----
+        //
+        // The counted sentence is why this half is here at all: three tabs popping
+        // three questions tells a reader nothing about what they are giving up, and the
+        // number is a %n sentence, which is the shape i18n_smoke's probe covers.
+        {
+            const QString first = openCopy(QStringLiteral("window-count-one.pdf"));
+            const QString second = openCopy(QStringLiteral("window-count-two.pdf"));
+            check(!first.isEmpty() && !second.isEmpty(),
+                  "setup: two copies open for the counted question");
+            check(openTabs(window) == 2,
+                  QStringLiteral("setup: and the window has two tabs (%1)").arg(openTabs(window)));
+
+            for (int index = 0; index < strip->count(); ++index) {
+                strip->setCurrentIndex(index);
+                pump();
+                auto *each = qobject_cast<DocumentTab *>(strip->widget(index));
+                if (each && !each->hasUnsavedEdits())
+                    makeDirty(QStringLiteral("1"));
+            }
+            int dirtyTabs = 0;
+            for (int index = 0; index < strip->count(); ++index) {
+                auto *each = qobject_cast<DocumentTab *>(strip->widget(index));
+                if (each && each->hasUnsavedEdits())
+                    ++dirtyTabs;
+            }
+            check(dirtyTabs == 2,
+                  QStringLiteral("setup: both tabs carry something unwritten (%1 do)")
+                      .arg(dirtyTabs));
+
+            bool boxSeen = false;
+            QString boxText;
+            answerNextBox(QMessageBox::Cancel, &boxSeen, &boxText);
+            window.close();
+            pump();
+            check(boxSeen, "closing asks once, not twice");
+            check(boxText.contains(QStringLiteral("2 个标签带着没有写进任何文件的修改")),
+                  QStringLiteral("and says how many tabs it is about (%1)").arg(boxText));
+            check(window.isVisible(), "取消 leaves both of them alone");
+            check(openTabs(window) == 2,
+                  QStringLiteral("with both tabs still in the strip (%1)").arg(openTabs(window)));
+            check(shaOf(first) == pristine && shaOf(second) == pristine,
+                  "and neither of the two files was written by a question that was refused");
+
+            bool discardSeen = false;
+            answerNextBox(QMessageBox::Discard, &discardSeen, nullptr);
+            window.close();
+            pump();
+            check(discardSeen && !window.isVisible(), "不保存 then lets the window go");
+            check(shaOf(first) == pristine && shaOf(second) == pristine,
+                  "and giving up the two lists wrote neither file");
+        }
+    }
+
 
     if (failures == 0) {
         std::cout << "files dropped on the window open, the three tools are wired, and so is Find\n";

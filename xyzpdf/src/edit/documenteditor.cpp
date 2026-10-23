@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QFontMetricsF>
@@ -13,6 +14,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTransform>
+#include <QUuid>
 #include <QVector>
 
 #ifndef NOMINMAX
@@ -2701,6 +2703,216 @@ void DocumentEditor::apply(const Operation &op, QPDF &document, QVector<PageRef>
         present.removeOne({0, original});
 }
 
+bool DocumentEditor::openImportSources(std::vector<std::unique_ptr<QPDF>> *foreign,
+                                       QString *error)
+{
+    // The files the merges draw from, opened here and held open until the last byte is
+    // on disk. They have to outlive the replay: a page copied out of another document
+    // keeps pointing at that file for its stream data, and it is the writer, not the
+    // copy, that reads it (QPDF.hh says so under copyForeignObject). Opening them all
+    // up front rather than one at a time inside the replay also means a file that went
+    // away or changed shape is answered before anything is staged, and that two merges
+    // of one file copy from one handle -- which is what qpdf's copy cache expects.
+    // A std::vector rather than a QVector: this holds unique_ptrs, and Qt's list asks
+    // for a copyable element the moment a non-const operator[] or detach touches it.
+    foreign->clear();
+    foreign->resize(size_t(imports.size()));
+    for (const Operation &op : std::as_const(pending)) {
+        if (op.kind != Operation::Kind::MergeFile || op.importIndex < 0
+            || size_t(op.importIndex) >= foreign->size())
+            continue;
+        if ((*foreign)[size_t(op.importIndex)])
+            continue;
+        const Import &import = imports.at(op.importIndex);
+        auto source = std::make_unique<QPDF>();
+        try {
+            source->processFile(import.path.toUtf8().constData());
+        } catch (const std::exception &e) {
+            *error = tr("%1 这时候打不开了，所以这些修改写不出来。原来的文件没有改动。\n\n"
+                        "解析器说：%2")
+                         .arg(QFileInfo(import.path).fileName(), QString::fromUtf8(e.what()));
+            return false;
+        }
+        const int nowPages = int(QPDFPageDocumentHelper(*source).getAllPages().size());
+        if (nowPages != import.pageCount) {
+            // Not clamped and not carried on with: the summary the reader acted on
+            // named pages of a file that is no longer that file, and writing a
+            // document that has fewer of them than the sentence promised is the silent
+            // kind of wrong this class keeps refusing.
+            *error = tr("%1 在这些修改记下来之后变了：当时是 %2 页，现在只有 %3 页。"
+                        "请撤销那次合并，重新选一遍页码。")
+                         .arg(QFileInfo(import.path).fileName())
+                         .arg(import.pageCount)
+                         .arg(nowPages);
+            return false;
+        }
+        (*foreign)[size_t(op.importIndex)] = std::move(source);
+    }
+    return true;
+}
+
+bool DocumentEditor::writeStaged(const PieceRange &keep, const QString &staged,
+                                 const std::vector<std::unique_ptr<QPDF>> &foreign,
+                                 const Protection &protection, QString *error)
+{
+    try {
+        // The replay: the source read again from disk, then every pending operation
+        // in the order the reader asked for them. This is where an original page
+        // number becomes a position in a document that has already shrunk, which is
+        // the whole reason `present` is carried along.
+        std::unique_ptr<QPDF> document = std::make_unique<QPDF>();
+        document->processFile(sourcePath.toUtf8().constData(),
+                              sourcePassword.isEmpty() ? nullptr
+                                                       : sourcePassword.toUtf8().constData());
+        QVector<PageRef> present = openedDocumentInOrder(originalPages);
+        for (const Operation &op : std::as_const(pending))
+            apply(op, *document, present,
+                  op.importIndex >= 0 && size_t(op.importIndex) < foreign.size()
+                      ? foreign[size_t(op.importIndex)].get()
+                      : nullptr);
+        if (present != live) {
+            // The two ways of working out what the saved file holds -- the in-memory
+            // list and the replay over the real page tree -- have to agree before any
+            // bytes are promised to the reader. They run the same planMerge()/planMove()
+            // functions for that reason, and this is the check that says so: a
+            // disagreement means one of them stopped reading the same list, and the
+            // file about to be written would not be the document the dialogs described.
+            *error = tr("这些修改在内存里是一种页序，写到文件时成了另一种，所以这一份没有写。"
+                        "请把这种情况报上来。");
+            return false;
+        }
+
+        if (keep.count() < present.size()) {
+            // Everything outside this piece's run of pages. Highest position first and
+            // one snapshot of the tree, for the two reasons 删除页面 already documents:
+            // a removal shifts the index of everything after it, and re-asking
+            // getAllPages() between removals numbers the pages against a tree that has
+            // already changed under the handles.
+            QPDFPageDocumentHelper helper(*document);
+            const std::vector<QPDFPageObjectHelper> pages = helper.getAllPages();
+            for (int at = int(pages.size()) - 1; at >= 0; --at) {
+                if (at < keep.first || at > keep.last)
+                    helper.removePage(pages.at(size_t(at)));
+            }
+        }
+
+        // §76/§77: a split copies a field's whole /Kids list along with the pages, so each piece
+        // can be left naming a box that belongs to a page only the other piece has -- and with
+        // it, an answer about a page this file does not contain. Both are put right here, for
+        // every output file, because by now the page list in `document` is the list this file
+        // will have: pages may have left through 删除页面 (in apply()) or through 拆分 (the cut
+        // above). Doing it in two places is how one gets missed -- §68's reason for rebuilding
+        // the outline tree rather than patching it, in a different key.
+        tidyFormForThisDocument(*document);
+
+        // §78: the same argument one key lower. A merged page's own annotations came over as
+        // private copies, but the references *between* them -- a popup's /Parent, a reply's
+        // /IRT -- were left naming the document the page came out of, and a page that loses its
+        // note to 删除页面 leaves a reply threaded to nothing. Also here, also once per output
+        // file, for the reason above: this is the first point at which the page list is the one
+        // this file will have.
+        tidyAnnotationLinksForThisDocument(*document);
+
+        // §55's half of the same argument, one level up: an /AcroForm /XFA packet is the form's
+        // second copy, and it describes the *whole* document -- which pages there are, which
+        // template fields sit on them, and every answer typed into it. Nothing in qpdf reads
+        // it, so until now a save replayed the pages and let the packet say whatever it had
+        // said about a document that no longer exists. Here the page list is final, so this is
+        // where "the packet no longer describes this file" can be answered -- and the answer is
+        // to write no packet, which sends every reader to the AcroForm fields that are still
+        // tidied above for this file's own pages.
+        //
+        // Said per output file rather than once for the save, because that is what the other two
+        // tidies do and what a split makes true: each piece holds part of the collection.
+        if (changesPageCollection())
+            dropXfaForThisDocument(*document);
+
+        // The bookmarks, after the cut and before any writer exists, because this is the one
+        // place that knows both which pages made it into *this* file and in what order. Under
+        // no split `keep` is the whole document, so `here` is `present` -- the same page order
+        // the check above just agreed to. Under a split it is one piece, which is what makes
+        // each piece carry the bookmarks whose pages came out in it and no others; a reference
+        // that is not in `here` -- a page a 删除页面 took out, or one that went into a
+        // different piece -- stays in the tree as a heading rather than vanishing, because
+        // the reader asked for that bookmark and outline.h's own rule for a bookmark with no
+        // page is to show it and not to pretend it is gone.
+        //
+        // The tree is written whole rather than patched onto whatever the source had, which
+        // is what makes 撤销 of a bookmark operation mean "the previous tree, or none": the
+        // pending list holds the last request and this line is the only place that reaches
+        // the file.
+        if (outlineAsked()) {
+            const QVector<PageRef> here = present.mid(keep.first, keep.count());
+            QString outlineError;
+            if (!writeOutline(*document, outlineRowsFor(outlineToWrite(), here),
+                              &outlineError)) {
+                // No removal here, unlike the catch below: stagedPath() only chooses a name,
+                // and the writer that would have put a file behind it has not run yet.
+                *error = outlineError;
+                return false;
+            }
+        }
+
+        // The one place this program talks to a writer about protection, which is why
+        // the whole switch sits here rather than being split between "the bits" and "the
+        // password": the /P integer PDF stores is a combination of these arguments, and
+        // a mapping that lived in two places is how a file ends up saying something the
+        // six boxes never said.
+        QPDFWriter writer(*document, staged.toUtf8().constData());
+        switch (protection.what) {
+        case Protection::What::Carry:
+            // Nothing was asked for, so nothing is set and the writer's default
+            // (preserveEncryption = true) carries the original's /Encrypt dictionary --
+            // including its /P permission bits -- into the copy. That default is off
+            // whenever prefiltering, content normalization or QDF mode is selected, and
+            // off the moment setR6EncryptionParameters is called, so a future line that
+            // adds one of those quietly turns 删页 into a tool that hands out
+            // unprotected copies of protected documents.
+            // tests/documenteditor_smoke.cpp compares the bits on both files for exactly
+            // that reason -- and under a split it compares every piece, since "the copy"
+            // is now N of them.
+            break;
+        case Protection::What::Decrypt:
+            // Write no /Encrypt at all. This needs the password that opened the source
+            // only in the sense that the source had to be opened to be read again --
+            // measurement says nothing more is asked for: an encrypted document opened
+            // by its *user* password still writes out stripped, with different bits, and
+            // without a further key (tests/encryptprobe.cpp). That is why the permission
+            // bits this program puts on a file are described to the reader as advisory.
+            writer.setPreserveEncryption(false);
+            break;
+        case Protection::What::Encrypt: {
+            // R6 / AES-256 and nothing else offered, so there is no compatibility
+            // dropdown here to map: this writes the newest revision the standard has,
+            // which a reader of a PDF from before Acrobat X cannot open. The dialog says
+            // so out loud; this line is where it becomes true.
+            //
+            // The same string for the user and the owner password, and that is not a
+            // shortcut -- see Protection::password. Asking for a second one would promise
+            // a distinction QPDF does not keep on the way in.
+            const QByteArray password = protection.password.toUtf8();
+            writer.setR6EncryptionParameters(
+                password.constData(), password.constData(),
+                /* allow_accessibility = */ true, // not a box: always allowed
+                protection.allowExtract, protection.allowAssembly,
+                protection.allowAnnotate, protection.allowFormFilling,
+                protection.allowModifyOther,
+                protection.allowPrint ? qpdf_r3p_full : qpdf_r3p_none,
+                /* encrypt_metadata_aes = */ true);
+            break;
+        }
+        }
+        writer.write();
+    } catch (const std::exception &e) {
+        // Nothing usable came of the attempt, so nothing of ours is left behind.
+        QFile::remove(staged);
+        *error = tr("写出文件时出错，原来的文件没有改动。\n\n解析器说：%1")
+                     .arg(QString::fromUtf8(e.what()));
+        return false;
+    }
+    return true;
+}
+
 bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *written)
 {
     if (live.isEmpty() && pending.isEmpty()) {
@@ -2827,214 +3039,13 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
     // rule above has one place to be broken in.
     const qint64 stamp = QDateTime::currentMSecsSinceEpoch();
 
-    // The files the merges draw from, opened here and held open until the last byte is
-    // on disk. They have to outlive the replay: a page copied out of another document
-    // keeps pointing at that file for its stream data, and it is the writer, not the
-    // copy, that reads it (QPDF.hh says so under copyForeignObject). Opening them all
-    // up front rather than one at a time inside the replay also means a file that went
-    // away or changed shape is answered before anything is staged, and that two merges
-    // of one file copy from one handle -- which is what qpdf's copy cache expects.
-    // A std::vector rather than a QVector: this holds unique_ptrs, and Qt's list asks
-    // for a copyable element the moment a non-const operator[] or detach touches it.
-    std::vector<std::unique_ptr<QPDF>> foreign(size_t(imports.size()));
-    for (const Operation &op : std::as_const(pending)) {
-        if (op.kind != Operation::Kind::MergeFile || op.importIndex < 0
-            || size_t(op.importIndex) >= foreign.size())
-            continue;
-        if (foreign[size_t(op.importIndex)])
-            continue;
-        const Import &import = imports.at(op.importIndex);
-        auto source = std::make_unique<QPDF>();
-        try {
-            source->processFile(import.path.toUtf8().constData());
-        } catch (const std::exception &e) {
-            *error = tr("%1 这时候打不开了，所以这些修改写不出来。原来的文件没有改动。\n\n"
-                        "解析器说：%2")
-                         .arg(QFileInfo(import.path).fileName(), QString::fromUtf8(e.what()));
-            return false;
-        }
-        const int nowPages = int(QPDFPageDocumentHelper(*source).getAllPages().size());
-        if (nowPages != import.pageCount) {
-            // Not clamped and not carried on with: the summary the reader acted on
-            // named pages of a file that is no longer that file, and writing a
-            // document that has fewer of them than the sentence promised is the silent
-            // kind of wrong this class keeps refusing.
-            *error = tr("%1 在这些修改记下来之后变了：当时是 %2 页，现在只有 %3 页。"
-                        "请撤销那次合并，重新选一遍页码。")
-                         .arg(QFileInfo(import.path).fileName())
-                         .arg(import.pageCount)
-                         .arg(nowPages);
-            return false;
-        }
-        foreign[size_t(op.importIndex)] = std::move(source);
-    }
+    // The files the merges draw from: opened once, and documented at openImportSources().
+    std::vector<std::unique_ptr<QPDF>> foreign;
+    if (!openImportSources(&foreign, error))
+        return false;
 
-    // One piece's bytes, from the source read again off disk. A split runs this once per
-    // piece, which is once per parse of the whole file -- docs/store-submission.md §20
-    // measures what that costs rather than guessing. It is not done by taking one replayed
-    // document and cutting its page tree down N times, because what a piece needs taken out
-    // is exactly what removePage() already does for 删除页面, and a page tree cut by hand has
-    // to push down the attributes that sit on the intermediate /Pages nodes -- /MediaBox
-    // among them -- before any leaf can stand on its own. That is how a hand-cut split
-    // opens on blank pages, and it is not a class of wrong this class writes on purpose.
-    const auto writeOne = [&](const PieceRange &keep, const QString &staged) {
-        try {
-            // The replay: the source read again from disk, then every pending operation
-            // in the order the reader asked for them. This is where an original page
-            // number becomes a position in a document that has already shrunk, which is
-            // the whole reason `present` is carried along.
-            std::unique_ptr<QPDF> document = std::make_unique<QPDF>();
-            document->processFile(sourcePath.toUtf8().constData(),
-                                  sourcePassword.isEmpty() ? nullptr
-                                                           : sourcePassword.toUtf8().constData());
-            QVector<PageRef> present = openedDocumentInOrder(originalPages);
-            for (const Operation &op : std::as_const(pending))
-                apply(op, *document, present,
-                      op.importIndex >= 0 && size_t(op.importIndex) < foreign.size()
-                          ? foreign[size_t(op.importIndex)].get()
-                          : nullptr);
-            if (present != live) {
-                // The two ways of working out what the saved file holds -- the in-memory
-                // list and the replay over the real page tree -- have to agree before any
-                // bytes are promised to the reader. They run the same planMerge()/planMove()
-                // functions for that reason, and this is the check that says so: a
-                // disagreement means one of them stopped reading the same list, and the
-                // file about to be written would not be the document the dialogs described.
-                *error = tr("这些修改在内存里是一种页序，写到文件时成了另一种，所以这一份没有写。"
-                            "请把这种情况报上来。");
-                return false;
-            }
-
-            if (keep.count() < present.size()) {
-                // Everything outside this piece's run of pages. Highest position first and
-                // one snapshot of the tree, for the two reasons 删除页面 already documents:
-                // a removal shifts the index of everything after it, and re-asking
-                // getAllPages() between removals numbers the pages against a tree that has
-                // already changed under the handles.
-                QPDFPageDocumentHelper helper(*document);
-                const std::vector<QPDFPageObjectHelper> pages = helper.getAllPages();
-                for (int at = int(pages.size()) - 1; at >= 0; --at) {
-                    if (at < keep.first || at > keep.last)
-                        helper.removePage(pages.at(size_t(at)));
-                }
-            }
-
-            // §76/§77: a split copies a field's whole /Kids list along with the pages, so each piece
-            // can be left naming a box that belongs to a page only the other piece has -- and with
-            // it, an answer about a page this file does not contain. Both are put right here, for
-            // every output file, because by now the page list in `document` is the list this file
-            // will have: pages may have left through 删除页面 (in apply()) or through 拆分 (the cut
-            // above). Doing it in two places is how one gets missed -- §68's reason for rebuilding
-            // the outline tree rather than patching it, in a different key.
-            tidyFormForThisDocument(*document);
-
-            // §78: the same argument one key lower. A merged page's own annotations came over as
-            // private copies, but the references *between* them -- a popup's /Parent, a reply's
-            // /IRT -- were left naming the document the page came out of, and a page that loses its
-            // note to 删除页面 leaves a reply threaded to nothing. Also here, also once per output
-            // file, for the reason above: this is the first point at which the page list is the one
-            // this file will have.
-            tidyAnnotationLinksForThisDocument(*document);
-
-            // §55's half of the same argument, one level up: an /AcroForm /XFA packet is the form's
-            // second copy, and it describes the *whole* document -- which pages there are, which
-            // template fields sit on them, and every answer typed into it. Nothing in qpdf reads
-            // it, so until now a save replayed the pages and let the packet say whatever it had
-            // said about a document that no longer exists. Here the page list is final, so this is
-            // where "the packet no longer describes this file" can be answered -- and the answer is
-            // to write no packet, which sends every reader to the AcroForm fields that are still
-            // tidied above for this file's own pages.
-            //
-            // Said per output file rather than once for the save, because that is what the other two
-            // tidies do and what a split makes true: each piece holds part of the collection.
-            if (changesPageCollection())
-                dropXfaForThisDocument(*document);
-
-            // The bookmarks, after the cut and before any writer exists, because this is the one
-            // place that knows both which pages made it into *this* file and in what order. Under
-            // no split `keep` is the whole document, so `here` is `present` -- the same page order
-            // the check above just agreed to. Under a split it is one piece, which is what makes
-            // each piece carry the bookmarks whose pages came out in it and no others; a reference
-            // that is not in `here` -- a page a 删除页面 took out, or one that went into a
-            // different piece -- stays in the tree as a heading rather than vanishing, because
-            // the reader asked for that bookmark and outline.h's own rule for a bookmark with no
-            // page is to show it and not to pretend it is gone.
-            //
-            // The tree is written whole rather than patched onto whatever the source had, which
-            // is what makes 撤销 of a bookmark operation mean "the previous tree, or none": the
-            // pending list holds the last request and this line is the only place that reaches
-            // the file.
-            if (outlineAsked()) {
-                const QVector<PageRef> here = present.mid(keep.first, keep.count());
-                QString outlineError;
-                if (!writeOutline(*document, outlineRowsFor(outlineToWrite(), here),
-                                  &outlineError)) {
-                    // No removal here, unlike the catch below: stagedPath() only chooses a name,
-                    // and the writer that would have put a file behind it has not run yet.
-                    *error = outlineError;
-                    return false;
-                }
-            }
-
-            // The one place this program talks to a writer about protection, which is why
-            // the whole switch sits here rather than being split between "the bits" and "the
-            // password": the /P integer PDF stores is a combination of these arguments, and
-            // a mapping that lived in two places is how a file ends up saying something the
-            // six boxes never said.
-            QPDFWriter writer(*document, staged.toUtf8().constData());
-            switch (protection.what) {
-            case Protection::What::Carry:
-                // Nothing was asked for, so nothing is set and the writer's default
-                // (preserveEncryption = true) carries the original's /Encrypt dictionary --
-                // including its /P permission bits -- into the copy. That default is off
-                // whenever prefiltering, content normalization or QDF mode is selected, and
-                // off the moment setR6EncryptionParameters is called, so a future line that
-                // adds one of those quietly turns 删页 into a tool that hands out
-                // unprotected copies of protected documents.
-                // tests/documenteditor_smoke.cpp compares the bits on both files for exactly
-                // that reason -- and under a split it compares every piece, since "the copy"
-                // is now N of them.
-                break;
-            case Protection::What::Decrypt:
-                // Write no /Encrypt at all. This needs the password that opened the source
-                // only in the sense that the source had to be opened to be read again --
-                // measurement says nothing more is asked for: an encrypted document opened
-                // by its *user* password still writes out stripped, with different bits, and
-                // without a further key (tests/encryptprobe.cpp). That is why the permission
-                // bits this program puts on a file are described to the reader as advisory.
-                writer.setPreserveEncryption(false);
-                break;
-            case Protection::What::Encrypt: {
-                // R6 / AES-256 and nothing else offered, so there is no compatibility
-                // dropdown here to map: this writes the newest revision the standard has,
-                // which a reader of a PDF from before Acrobat X cannot open. The dialog says
-                // so out loud; this line is where it becomes true.
-                //
-                // The same string for the user and the owner password, and that is not a
-                // shortcut -- see Protection::password. Asking for a second one would promise
-                // a distinction QPDF does not keep on the way in.
-                const QByteArray password = protection.password.toUtf8();
-                writer.setR6EncryptionParameters(
-                    password.constData(), password.constData(),
-                    /* allow_accessibility = */ true, // not a box: always allowed
-                    protection.allowExtract, protection.allowAssembly,
-                    protection.allowAnnotate, protection.allowFormFilling,
-                    protection.allowModifyOther,
-                    protection.allowPrint ? qpdf_r3p_full : qpdf_r3p_none,
-                    /* encrypt_metadata_aes = */ true);
-                break;
-            }
-            }
-            writer.write();
-        } catch (const std::exception &e) {
-            // Nothing usable came of the attempt, so nothing of ours is left behind.
-            QFile::remove(staged);
-            *error = tr("写出文件时出错，原来的文件没有改动。\n\n解析器说：%1")
-                         .arg(QString::fromUtf8(e.what()));
-            return false;
-        }
-        return true;
-    };
+    // One piece's bytes, from the source read again off disk. writeStaged() is that walk;
+    // it is called once per piece because a split writes one parse of the whole file each.
 
     // Every piece is built before the first one is moved into place: a piece that cannot be
     // written then stops the save with nothing renamed, so the reader is never left with
@@ -3047,7 +3058,7 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
     QVector<Staged> built;
     for (int index = 0; index < pieces.size(); ++index) {
         const QString staged = stagedPath(directory, stamp, index);
-        if (!writeOne(pieces.at(index), staged)) {
+        if (!writeStaged(pieces.at(index), staged, foreign, protection, error)) {
             for (const Staged &one : std::as_const(built))
                 QFile::remove(one.from);
             return false;
@@ -3095,5 +3106,105 @@ bool DocumentEditor::saveAs(const QString &path, QString *error, QStringList *wr
                        .arg(built.size())
                        .arg(leftBehind.size())
         + QLatin1Char('\n') + leftBehind.join(QLatin1Char('\n'));
+    return false;
+}
+
+bool DocumentEditor::stageInPlace(QString *staged, QString *error)
+{
+    if (live.isEmpty() || pending.isEmpty()) {
+        *error = tr("没有待保存的修改。");
+        return false;
+    }
+    // A split is several files by definition, and the one thing an in-place save has to
+    // produce is the one file the reader is reading. The tab refuses this before reaching
+    // here and offers 另存为 instead; this is the backstop that keeps the rule in the class
+    // that would otherwise have to choose which piece gets the original's name.
+    if (pieces().size() > 1) {
+        *error = tr("这份文档还带着拆分，写回原文件只能写成一个文件。请改用另存为。");
+        return false;
+    }
+    const QFileInfo source(sourcePath);
+    if (sourcePath.isEmpty() || !source.exists()) {
+        *error = tr("原来的文件不在了，写不回去。");
+        return false;
+    }
+    const QDir directory = source.absoluteDir();
+
+    const Protection protection = protectionToWrite();
+    std::vector<std::unique_ptr<QPDF>> foreign;
+    if (!openImportSources(&foreign, error))
+        return false;
+
+    // Beside the file it will replace, because the last step is a replace within one
+    // volume: across volumes it is a copy, which is neither atomic nor able to keep the
+    // original's attributes. The suffix is random rather than a clock reading -- two
+    // windows saving one document must not be able to choose one name -- and the file is
+    // hidden because it sits in the reader's folder and is nobody's document.
+    QString candidate;
+    for (;;) {
+        candidate = directory.filePath(
+            QStringLiteral("xyzpdf-save-%1.pdf")
+                .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+        if (!QFileInfo::exists(candidate))
+            break;
+    }
+
+    const PieceRange whole{0, int(live.size()) - 1};
+    if (!writeStaged(whole, candidate, foreign, protection, error))
+        return false;
+
+    SetFileAttributesW(QDir::toNativeSeparators(candidate).toStdWString().c_str(),
+                       FILE_ATTRIBUTE_HIDDEN);
+
+    // The check the ordering exists for: the bytes have to be a PDF this program's own
+    // writer can read back, with the page count the pending list promised, before the
+    // original is touched. qpdf is the second reader here rather than Qt PDF because the
+    // staged file may be encrypted with a key only this class knows, and because it is
+    // the same parser that wrote it -- a file it cannot open is one no later save could
+    // read either.
+    try {
+        QPDF check;
+        const QByteArray password = passwordOfWrittenFile().toUtf8();
+        check.processFile(candidate.toUtf8().constData(),
+                          password.isEmpty() ? nullptr : password.constData());
+        const int pages = int(QPDFPageDocumentHelper(check).getAllPages().size());
+        if (pages != int(live.size())) {
+            QFile::remove(candidate);
+            *error = tr("写出来的文件有 %2 页，而这些修改是 %1 页，所以没有替换原来的文件。"
+                        "原来的文件没有改动。")
+                         .arg(live.size())
+                         .arg(pages);
+            return false;
+        }
+    } catch (const std::exception &e) {
+        QFile::remove(candidate);
+        *error = tr("写出来的文件没能重新打开，所以没有替换原来的文件。原来的文件没有改动。\n\n"
+                    "解析器说：%1")
+                     .arg(QString::fromUtf8(e.what()));
+        return false;
+    }
+
+    if (staged != nullptr)
+        *staged = candidate;
+    return true;
+}
+
+bool DocumentEditor::replaceSource(const QString &source, const QString &staged,
+                                   quint32 *windowsError)
+{
+    // ReplaceFileW rather than MoveFileExW -- which saveAs() uses for a new name --
+    // because this file already belongs to the reader: the call keeps the
+    // original's ACL, attributes and creation time, and does the swap under one
+    // Windows operation. The write-through flag is the one F8 names. Both files
+    // are in the same directory by construction, which is what keeps this a
+    // rename rather than a copy.
+    const std::wstring from = QDir::toNativeSeparators(staged).toStdWString();
+    const std::wstring to = QDir::toNativeSeparators(source).toStdWString();
+    if (ReplaceFileW(to.c_str(), from.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH,
+                     nullptr, nullptr)
+        != 0)
+        return true;
+    if (windowsError != nullptr)
+        *windowsError = quint32(GetLastError());
     return false;
 }

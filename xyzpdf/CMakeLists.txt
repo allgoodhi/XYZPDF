@@ -346,6 +346,8 @@ set(XYZPDF_SOURCES
     src/core/languages.cpp
     src/core/recentdocuments.h
     src/core/recentdocuments.cpp
+    src/core/stagingcleanup.h
+    src/core/stagingcleanup.cpp
     src/core/tempmanager.h
     src/core/tempmanager.cpp
     src/core/thirdpartynotices.h
@@ -879,6 +881,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     endif()
     xyzpdf_add_test(documenttab_smoke
         SOURCES documenttab.cpp
+                src/core/stagingcleanup.cpp
                 src/core/windowdialogs.cpp
                 src/edit/documenteditor.cpp
                 src/view/pageview.cpp

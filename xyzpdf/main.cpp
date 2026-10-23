@@ -3,6 +3,7 @@
 #include "src/cli/instancegateway.h"
 #include "src/core/appsettings.h"
 #include "src/core/languages.h"
+#include "src/core/stagingcleanup.h"
 #include "src/core/tempmanager.h"
 #include "src/theme/thememanager.h"
 #include "src/translate/keystore.h"
@@ -144,6 +145,27 @@ int main(int argc, char *argv[])
             return 0;
         // Still no answer. Rather than drop what the user asked for, carry on
         // and do it here.
+    }
+
+    // The hidden copy a save writes beside a reader's document is taken away by that save --
+    // replaced into the original's name, or removed when the save was refused. A run killed
+    // between the two leaves it there, and this is what comes back for it. Past the instance
+    // door on purpose: a launch that forwarded its work is about to disappear, and the file
+    // the instance it forwarded to is still saving is not its to delete. Nothing here asks the
+    // reader anything -- the rule, and the four cases it answers, are in
+    // src/core/stagingcleanup.h.
+    {
+        const StagingCleanup::Sweep swept = StagingCleanup::sweepStaleRecords();
+        // A developer's log line, not a message box: the reader has never seen these files and
+        // has nothing to decide about them. With an empty list -- every launch but the one
+        // after a kill -- nothing above is printed and this costs one settings read.
+        if (swept.removed || swept.dropped || swept.keptForLater) {
+            qInfo().noquote() << QStringLiteral("[staging] removed=%1 kept=%2 dropped=%3 | %4")
+                                     .arg(swept.removed)
+                                     .arg(swept.keptForLater)
+                                     .arg(swept.dropped)
+                                     .arg(swept.reasons.join(QStringLiteral(" | ")));
+        }
     }
 
     int result = 0;

@@ -7,6 +7,7 @@
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 // Every stored preference this program has, in one place.
 //
@@ -305,6 +306,136 @@ inline bool loadDocumentSession(const QString &path, DocumentSession &out)
     out.zoomMode = valueStore.value(group + QStringLiteral("/zoomMode")).toInt();
     out.zoomPercent = valueStore.value(group + QStringLiteral("/zoomPercent")).toDouble();
     out.layoutMode = valueStore.value(group + QStringLiteral("/layoutMode")).toInt();
+    return true;
+}
+
+// A staged file this program wrote beside a reader's document, and the only kind of
+// record that lets a later launch delete anything.
+//
+// `path` is the whole point of storing this: the sweep on the next launch removes files at
+// paths it can find here and at no others -- a name that merely looks like one of ours is not
+// evidence. `pid` and `program` together say who wrote it, which is what separates "this save
+// is still running somewhere" from "the process that made this file is gone"; a PID alone is a
+// recycled number, so the running process's own image name is compared with the one recorded
+// here. `createdMs` is that process's reading of the file's creation time, the second proof
+// that the bytes at the path are still the ones it staged. Zero means the record was written
+// before the file existed -- which is how a write cut short by a kill is still covered.
+struct StagedRecord
+{
+    QString path;
+    qint64 pid = 0;
+    qint64 createdMs = 0;
+    QString program;
+};
+
+inline QString stagedRecordsKey()
+{
+    return QStringLiteral("staging/records");
+}
+
+// The stored shape: one line per record, the lines joined with a character no Windows path
+// can hold, and the fields in the order `path|pid|createdMs|program`.
+//
+// The path goes first and the reading is done from the right, so that a '|' inside a path --
+// illegal in a file name, but a directory component can carry one through a volume that is
+// not NTFS -- lands in the path rather than shifting the numbers. It is stored as one string
+// rather than a QStringList because IniFormat writes a list as a brace-separated set and a
+// path is full of commas: escaping them works and reading the file by eye does not.
+inline QString stagedRecordLine(const StagedRecord &record)
+{
+    return QStringLiteral("%1|%2|%3|%4")
+        .arg(record.path)
+        .arg(record.pid)
+        .arg(record.createdMs)
+        .arg(record.program);
+}
+
+inline StagedRecord stagedRecordFromLine(const QString &line)
+{
+    StagedRecord record;
+    const int programStart = line.lastIndexOf(QLatin1Char('|'));
+    const int createdStart = line.lastIndexOf(QLatin1Char('|'), programStart - 1);
+    const int pidStart = line.lastIndexOf(QLatin1Char('|'), createdStart - 1);
+    if (programStart <= 0 || createdStart <= 0 || pidStart <= 0)
+        return record; // an empty path, and the caller skips it
+    record.path = line.left(pidStart);
+    record.pid = line.mid(pidStart + 1, createdStart - pidStart - 1).toLongLong();
+    record.createdMs = line.mid(createdStart + 1, programStart - createdStart - 1).toLongLong();
+    record.program = line.mid(programStart + 1);
+    return record;
+}
+
+// Every record, oldest line first. A line that cannot be read is dropped here rather than
+// passed on as an empty path: the sweep's one job is to never delete anything it did not
+// record, and a half-parsed path is the closest this gets to deleting something it did.
+inline QVector<StagedRecord> stagedRecords()
+{
+    QVector<StagedRecord> records;
+    const QStringList lines
+        = settings().value(stagedRecordsKey()).toString().split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const StagedRecord record = stagedRecordFromLine(line);
+        if (!record.path.isEmpty())
+            records.append(record);
+    }
+    return records;
+}
+
+// Put one record in, replacing the one already stored for the same path.
+//
+// Replacing is what lets a staged file be recorded twice -- before its bytes exist, then
+// again once the creation time can be read -- without the list growing by one every save.
+inline void putStagedRecord(const StagedRecord &record)
+{
+    if (record.path.isEmpty())
+        return;
+    QStringList lines;
+    for (const QString &line
+         : settings().value(stagedRecordsKey()).toString().split(QLatin1Char('\n'))) {
+        const StagedRecord existing = stagedRecordFromLine(line);
+        // Case-insensitive because Windows paths are: the same file written down twice with
+        // a different letter's case must not become two records, or the second one outlives
+        // the delete of the first.
+        if (!existing.path.isEmpty()
+            && existing.path.compare(record.path, Qt::CaseInsensitive) != 0)
+            lines << line;
+    }
+    lines << stagedRecordLine(record);
+    QSettings valueStore = settings();
+    valueStore.setValue(stagedRecordsKey(), lines.join(QLatin1Char('\n')));
+    valueStore.sync();
+}
+
+// Drop the record for this path, and say whether one was there. A false answer is the common
+// case: the save paths call this unconditionally, and most of the time they are deleting a
+// staged file that was never recorded because the write came from a build of this program
+// that did not record -- a file's record going missing costs a leftover, never a delete.
+inline bool forgetStagedRecord(const QString &path)
+{
+    if (path.isEmpty())
+        return false;
+    QStringList kept;
+    bool dropped = false;
+    const QStringList lines
+        = settings().value(stagedRecordsKey()).toString().split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const StagedRecord existing = stagedRecordFromLine(line);
+        if (!existing.path.isEmpty()
+            && existing.path.compare(path, Qt::CaseInsensitive) == 0) {
+            dropped = true;
+            continue;
+        }
+        if (!line.isEmpty())
+            kept << line;
+    }
+    if (!dropped)
+        return false;
+    QSettings valueStore = settings();
+    if (kept.isEmpty())
+        valueStore.remove(stagedRecordsKey());
+    else
+        valueStore.setValue(stagedRecordsKey(), kept.join(QLatin1Char('\n')));
+    valueStore.sync();
     return true;
 }
 

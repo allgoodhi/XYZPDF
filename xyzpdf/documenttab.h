@@ -24,9 +24,9 @@
 #include "src/services/foregroundjobs.h"
 #include "src/services/ocrsession.h"
 #include "src/services/searchsession.h"
+#include "src/services/translatesession.h"
 #include "src/services/wordexportsession.h"
 #include "src/translate/keystore.h"
-#include "src/translate/translator.h"
 #include "src/ui/propertiesdialog.h"
 #include "src/view/pagelayout.h"
 #include "src/view/pageview.h"
@@ -50,7 +50,6 @@ class QtPdfBackend;
 class QTabWidget;
 class SearchPanel;
 class ThumbnailPanel;
-class TranslateDialog;
 class QAtomicInt;
 
 class DocumentTab : public QWidget
@@ -155,17 +154,17 @@ public:
     // box, or a selection. The shared path behind translateSelection(); public so
     // the recognition window's "翻译" button can reach it.
     //
-    // Before any byte leaves the machine this checks the two things the reader
-    // must have done: chosen a service with a key, and agreed to send selected
-    // text to it. Neither is a silent default -- an unconfigured program says so
-    // and offers the settings page, and a configured service is asked about once
-    // per provider. See Translate::requestGate.
+    // What it asks before a byte leaves the machine -- the service, the key, the
+    // reader's consent -- is TranslateSession's, and written at the top of
+    // src/services/translatesession.h.
     void translateText(const QString &text);
 
-    // Test seam only: the store the translation path reads its key from. The
-    // program installs nothing here and uses the Windows credential manager; a
-    // test installs an in-memory store so it can neither read a real key nor
-    // write to the machine it runs on. See src/translate/keystore.h.
+    // Test seam only: the store the translation path reads its key from, which
+    // lives with that path. The program installs nothing here and uses the
+    // Windows credential manager; a test installs an in-memory store so it can
+    // neither read a real key nor write to the machine it runs on. See
+    // src/translate/keystore.h. The call stays on the tab because that is where
+    // a test reaches this document from.
     void setTranslateKeyStoreForTesting(std::unique_ptr<Translate::KeyStore> store);
 
     // ---- search ----
@@ -473,25 +472,6 @@ private:
     // bookmarks -- the one place those two conditions meet.
     void applySidebarVisibility();
 
-    // The same for a translation: the request runs off the UI thread (a round
-    // trip is a second or more), and the window is watched so a result nobody is
-    // waiting for is dropped. `text` is copied into the worker, and so are the
-    // service and key: the consent check belongs on the thread with the window,
-    // and the worker must not reach into settings or the credential manager.
-    void startTranslation(const QString &text, Translate::Provider provider, const QString &key,
-                          QPointer<TranslateDialog> dialog);
-
-    // The two boxes translateText can raise before a request: one explains that a
-    // key is needed and offers the settings page, the other asks whether the
-    // selected text may be sent to this service. Split out so the consent rule is
-    // one place rather than a condition threaded through the translation path.
-    void askForTranslationSetup();
-    bool askForTranslationConsent(Translate::Provider provider, const QString &key);
-
-    // Created on first use: a tab that never translates never touches the
-    // credential manager.
-    Translate::KeyStore *translateKeyStore();
-
     // The editor for this document, opening it on the first call. Null when the
     // document cannot be edited -- and the reason has already been said to the
     // reader, because every caller of this is a menu item they just pressed.
@@ -587,10 +567,10 @@ private:
     // already given is a worse trade than holding it for as long as the document
     // is open -- where it is already held anyway, by the renderer.
     QString documentPassword;
-    // The key store translation reads from. Null until the first translation,
-    // then the Windows credential manager -- or, in a test, the in-memory store
-    // handed in through setTranslateKeyStoreForTesting().
-    std::unique_ptr<Translate::KeyStore> translateStore;
+    // The two questions asked before a request, the key it reads, the request and
+    // the window the answer goes into -- see src/services/translatesession.h. The
+    // test seam for the key store is here, because the tab is what a test reaches.
+    std::unique_ptr<TranslateSession> translation;
     // Set while open() is draining renders, so that a stray event delivered from
     // inside that wait cannot start a second open on this tab.
     bool opening = false;

@@ -7,7 +7,6 @@
 #include "src/edit/documenteditor.h"
 #include "src/render/pagerenderer.h"
 #include "src/theme/thememanager.h"
-#include "src/translate/translator.h"
 #include "src/ui/bookmarkdialog.h"
 #include "src/ui/deletepagesdialog.h"
 #include "src/ui/bookmarkdialog.h"
@@ -21,7 +20,6 @@
 #include "src/ui/searchpanel.h"
 #include "src/ui/splitpagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
-#include "src/ui/translatedialog.h"
 #include "src/ui/watermarkdialog.h"
 #include "src/view/pageview.h"
 
@@ -32,15 +30,12 @@
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFileInfo>
-#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QMessageBox>
 #include <QPrintDialog>
-#include <QPushButton>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QVBoxLayout>
-#include <QtConcurrent/QtConcurrentRun>
 
 
 namespace {
@@ -178,6 +173,14 @@ DocumentTab::DocumentTab(QWidget *parent)
     ocr = std::make_unique<OcrSession>(this, pageView, openDocument);
     connect(ocr.get(), &OcrSession::regionCopied, this, &DocumentTab::regionCopied);
     connect(ocr.get(), &OcrSession::translateRequested, this, &DocumentTab::translateText);
+
+    // Putting the reader's words into another language: which service, whether it
+    // has a key, and whether the reader has agreed to talk to it are settled there.
+    // The one thing it cannot do itself is open the settings, which is the
+    // window's -- so the 「去设置」 button comes back out through this signal.
+    translation = std::make_unique<TranslateSession>(this);
+    connect(translation.get(), &TranslateSession::setupRequested, this,
+            &DocumentTab::translationSetupRequested);
 
     connect(findBar, &FindBar::searchRequested, this, &DocumentTab::startSearch);
     connect(findBar, &FindBar::stepRequested, this, &DocumentTab::stepSearch);
@@ -776,100 +779,14 @@ void DocumentTab::translateSelection()
     translateText(selectedText().trimmed());
 }
 
-void DocumentTab::translateText(const QString &raw)
+void DocumentTab::translateText(const QString &text)
 {
-    const QString text = raw.trimmed();
-    if (text.isEmpty())
-        return; // the action is disabled without text; a shortcut is not
-
-    // Everything the request needs is settled here, on the thread that owns the
-    // window: which service, whether it has a key, and whether the reader has
-    // agreed to talk to it. The worker gets values, not this object.
-    const Translate::Provider provider =
-        Translate::providerFromId(AppSettings::translateProvider());
-    const QString providerId = Translate::providerId(provider);
-
-    QString key;
-    QString storeError;
-    if (provider != Translate::Provider::None)
-        translateKeyStore()->read(providerId, &key, &storeError);
-    if (!storeError.isEmpty()) {
-        // A store that fails is not the same as "no key configured": saying
-        // "输入密钥" while the credential manager is refusing would send the
-        // reader to a field that cannot work either.
-        WindowDialogs::warning(window(), tr("翻译"),
-                               tr("读取 API 密钥失败：%1").arg(storeError));
-        return;
-    }
-    key = key.trimmed();
-
-    switch (Translate::requestGate(provider, key, AppSettings::translateConsentGiven(providerId))) {
-    case Translate::Gate::NotConfigured:
-        askForTranslationSetup();
-        return;
-    case Translate::Gate::NeedsConsent:
-        if (!askForTranslationConsent(provider, key))
-            return;
-        AppSettings::setTranslateConsent(providerId, true);
-        break;
-    case Translate::Gate::Ready:
-        break;
-    }
-
-    // Shown before the request goes out, so the reader sees the words they asked
-    // about immediately and a "translating…" line while the round trip happens --
-    // the request itself runs off this thread, below.
-    auto *dialog = new TranslateDialog(this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setPending(text);
-    dialog->show();
-    startTranslation(text, provider, key, dialog);
-}
-
-void DocumentTab::askForTranslationSetup()
-{
-    QMessageBox box(window());
-    box.setIcon(QMessageBox::Information);
-    box.setWindowTitle(tr("翻译"));
-    box.setText(tr("翻译需要一个服务的 API 密钥。"));
-    box.setInformativeText(tr("请先在设置里选择翻译服务并填写密钥。"));
-    QPushButton *settings = box.addButton(tr("去设置"), QMessageBox::AcceptRole);
-    box.addButton(QMessageBox::Cancel);
-    box.exec();
-    if (box.clickedButton() == settings)
-        Q_EMIT translationSetupRequested();
-}
-
-bool DocumentTab::askForTranslationConsent(Translate::Provider provider, const QString &key)
-{
-    // The service's name and the host its key actually uses, because "a
-    // translation service" is not something a reader can decide about. DeepL's
-    // free and paid tiers answer on different hosts, and the suffix on the key is
-    // the only thing that says which one the words will reach -- so the box says
-    // it before the first request rather than leaving it in a log afterwards.
-    QMessageBox box(window());
-    box.setIcon(QMessageBox::Question);
-    box.setWindowTitle(tr("翻译"));
-    box.setText(tr("选中的文字会发送给 %1（%2）。")
-                    .arg(Translate::providerName(provider),
-                         Translate::endpointHost(provider, key)));
-    box.setInformativeText(tr("只发送选中的文字，不发送文档中的其他内容。"));
-    QPushButton *send = box.addButton(tr("发送"), QMessageBox::AcceptRole);
-    box.addButton(QMessageBox::Cancel);
-    box.exec();
-    return box.clickedButton() == send;
+    translation->translateText(text);
 }
 
 void DocumentTab::setTranslateKeyStoreForTesting(std::unique_ptr<Translate::KeyStore> store)
 {
-    translateStore = std::move(store);
-}
-
-Translate::KeyStore *DocumentTab::translateKeyStore()
-{
-    if (!translateStore)
-        translateStore = Translate::makeSystemKeyStore();
-    return translateStore.get();
+    translation->setKeyStoreForTesting(std::move(store));
 }
 
 void DocumentTab::setSidebarVisible(bool visible)
@@ -1422,25 +1339,4 @@ bool DocumentTab::saveEdits()
                            editor->pageCount(), int(written.size()),
                            editor->passwordOfWrittenFile());
     return true;
-}
-
-void DocumentTab::startTranslation(const QString &text, Translate::Provider provider,
-                                   const QString &key, QPointer<TranslateDialog> dialog)
-{
-    // The same shape as a recognition: the text is copied into the worker, the
-    // window is watched with a QPointer so a result nobody is waiting for is
-    // dropped, and nothing in the task touches this object or the document -- so
-    // a reload under a running translation cannot crash the way a render can.
-    auto *watcher = new QFutureWatcher<Translate::Result>(this);
-    connect(watcher, &QFutureWatcher<Translate::Result>::finished, this, [watcher, dialog] {
-        const Translate::Result result = watcher->result();
-        watcher->deleteLater();
-        if (dialog)
-            dialog->setResult(result);
-    });
-    watcher->setFuture(QtConcurrent::run([text, provider, key] {
-        const std::unique_ptr<Translate::Translator> translator =
-            Translate::makeTranslator(provider, key);
-        return translator->translate(text);
-    }));
 }

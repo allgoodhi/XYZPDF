@@ -14,11 +14,13 @@
 // make a backend safe to ask from two threads at once -- that promise belongs to
 // the backend, and each one has to make it in its own header.
 //
-// QtPdfBackend's promise is Qt PDF's global recursive mutex: QPdfMutexLocker, in
-// QtPdf/private/qpdfdocument_p.h, is a std::unique_lock<QRecursiveMutex> that
-// every FPDF call goes through. There is one document object and one lock, not
-// a copy per thread. Two consequences worth having written down, because both
-// are easy to assume away:
+// Each backend makes that promise in its own way and with the same shape: one
+// global recursive mutex that every call into the PDF library goes through, one
+// document object, not a copy per thread. QtPdfBackend borrows Qt PDF's
+// (QPdfMutexLocker, in QtPdf/private/qpdfdocument_p.h, a
+// std::unique_lock<QRecursiveMutex> around every FPDF call); PdfiumBackend
+// owns its own (pdfiumbackend.cpp, pdfiumMutex()). Two consequences worth
+// having written down, because both are easy to assume away:
 //
 //   * One call runs at a time inside PDFium, so there is no multi-core speedup
 //     to be had here. Do not promise one.

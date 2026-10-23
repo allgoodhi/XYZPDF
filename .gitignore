@@ -63,6 +63,12 @@ __pycache__/
 # vcpkg installs into the repository root, next to the sources it builds.
 vcpkg_installed/
 
+# The PDFium release, put there by tools/fetch_pdfium.py. Not in the version
+# control for the same reason vcpkg_installed is not: it is another project's
+# binary, it is 8 MB of it, and a checkout that needs it knows which bytes it
+# wants (the hash is in docs/pdfium-plan.md and in the fetch script).
+pdfium_installed/
+
 # Packaging output. The signing certificate in particular: a private key does
 # not belong in a repository, even a development one.
 #

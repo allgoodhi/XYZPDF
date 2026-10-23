@@ -1,18 +1,21 @@
 // What the rest of the program is allowed to know about a PDF.
 //
-// The only place a rendering library is named is behind this interface. v1 has
-// one implementation, QtPdfBackend, and v2 will add a PDFium one for the things
-// Qt PDF does not expose -- which is the whole reason the seam exists. It is
-// deliberately narrow: it carries what v1 actually calls, not a guess at what
-// v2 will want. Editing is not here at all and must not be: v2 adds a separate
+// The only place a rendering library is named is behind this interface. There
+// are two implementations, QtPdfBackend and PdfiumBackend, and a build carries
+// exactly one of them (documentfactory.cpp is where that is decided; the choice
+// arrived in F7-B for the things Qt PDF does not expose, which is the whole
+// reason the seam exists). It is deliberately narrow: it carries what the
+// program actually calls, not a guess at what the other engine will want.
+// Editing is not here at all and must not be: v2 adds a separate
 // DocumentEditor that holds one of these, so the write path can never be
 // reached through the read-only type. See docs/PLAN.md §3.2 and §7.3.
 //
 // ---- every method here blocks, and shares one lock with the renderer ----
 //
-// Qt PDF serialises every PDFium call behind a single global recursive mutex
-// (see the note at the top of render/pagerenderer.h). So calling any of these
-// from the UI thread is a call that waits for whatever render is in progress --
+// Both backends serialise every PDF library call behind a single global
+// recursive mutex (see the note at the top of render/pagerenderer.h). So calling
+// any of these from the UI thread is a call that waits for whatever render is in
+// progress --
 // hundreds of milliseconds on a scanned page, which the user sees as a frozen
 // window.
 //

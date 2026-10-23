@@ -2576,6 +2576,50 @@ The original file is not touched. This step only records the change; a save is s
     </message>
 </context>
 <context>
+    <name>PdfiumBackend</name>
+    <message>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="208"/>
+        <source>找不到文件：%1</source>
+        <translation>File not found: %1</translation>
+    </message>
+    <message>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="209"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="224"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="256"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="259"/>
+        <source>打开 %1 时出错：%2</source>
+        <translation>Error opening %1: %2</translation>
+    </message>
+    <message>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="209"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="224"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="256"/>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="260"/>
+        <source>文件无法解析</source>
+        <translation>the file cannot be parsed</translation>
+    </message>
+    <message>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="246"/>
+        <source>此文档已加密，需要密码。</source>
+        <translation>This document is encrypted and needs a password.</translation>
+    </message>
+    <message>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="250"/>
+        <source>这个文件不是有效的 PDF，或者已经损坏。</source>
+        <translation>This file is not a valid PDF, or it is damaged.</translation>
+    </message>
+    <message>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="253"/>
+        <source>这个 PDF 使用了不支持的加密方式，无法打开。</source>
+        <translation>This PDF uses an encryption method that is not supported.</translation>
+    </message>
+    <message>
+        <location filename="../../src/document/pdfiumbackend.cpp" line="261"/>
+        <source>文件不存在</source>
+        <translation>the file is not there</translation>
+    </message>
+</context>
+<context>
     <name>PrintDialog</name>
     <message>
         <location filename="../../src/ui/printdialog.cpp" line="23"/>

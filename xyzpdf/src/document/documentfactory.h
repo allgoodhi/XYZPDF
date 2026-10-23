@@ -7,9 +7,9 @@
 // backend in a build, chosen when the program is built, and an interface that
 // could hand out two of them would invite a program that has to work with both.
 //
-// F7-B adds the build-time choice here (docs/pdfium-plan.md's
-// XYZPDF_DOCUMENT_BACKEND); F7-E removes Qt PDF and leaves one branch.
-#pragma once
+// The choice arrived in F7-B and lives in the .cpp: one of the two headers is
+// included, the other is not compiled at all, and the program carries the engine
+// it was built with and no second one. F7-E removes Qt PDF and leaves one branch.
 #pragma once
 
 #include <memory>

@@ -4,9 +4,14 @@
 `tools/build_all_tests.py` **编译**它但**不运行**它（名字里含 `bench` 的目标都被跳过），
 因为它输出的是数字而不是通过/失败。
 
+从 F7-B 起它打两列：第一列 Qt PDF，第二列直接调 PDFium（`src/document/pdfiumbackend.cpp`）。
+第二列只在装好了 PDFium 发布包时存在（`pdfium_installed/`，`tools/fetch_pdfium.py` 放的），
+没装的时候那几行印 `-`，不是 0。
+
 ```
 python tools/build_all_tests.py                       # 编译
 build-local-release\tests\xyzpdf_perf_bench.exe tests/fixtures
+build-local-release\tests\xyzpdf_perf_bench.exe tests/fixtures tests/fixtures/scan.pdf
 ```
 
 不写成"断言某个毫秒数"的测试：任何阈值都会在第一次于一台慢机器上变红时被调高，
@@ -80,6 +85,50 @@ build-local-release\tests\xyzpdf_perf_bench.exe tests/fixtures
 
 按真实出版物的 4.5–5.2 ms/页算，一屏（1–2 页）约 9 ms，低于 60 Hz 的 16.7 ms 一帧；
 整本 172 页全渲染也才 0.7 秒。扫描件是例外，见上面那一行。
+
+## 两个引擎并排（F7-B，2026-10-23）
+
+同一台机器、同一份构建配置（Release，Qt 6.11.2，PDFium 158.0.8111.0，`offscreen`），
+`Document` 接口背后换实现。跑法（四份文件一次跑完；`huge.pdf` 是默认那份，后三份用参数加）：
+
+```
+build-local-release\tests\xyzpdf_perf_bench.exe tests/fixtures tests/fixtures/scan.pdf ^
+    H:\pdf_test\CH340.PDF "H:\pdf_test\VerilogHDL硬件描述语言.pdf"
+```
+
+| 文档 | 测量 | Qt PDF | PDFium |
+|---|---|---|---|
+| `huge.pdf`（600 页合成文字） | 打开 / 读全部页尺寸 | 12.1 / 25.5 ms | **0.35 / 3.21 ms** |
+| | 渲 40 页 / 读全部文字 | 19.7 / 6.49 ms | 21.3 / 7.87 ms |
+| | 全文搜索（600 命中） | 0.16 ms | 0.15 ms |
+| | 600 页灌进 64 MB | 279.0 ms | 300.8 ms（峰值 61.1 MB、18 条，两边相同） |
+| `scan.pdf`（3 页纯图） | 打开 / 读全部页尺寸 | 0.62 / 0.07 ms | 0.12 / 0.03 ms |
+| | 渲 3 页 | 92.8 ms（30.94 ms/页） | **62.3 ms（20.77 ms/页）** |
+| | 文字层 / 搜索命中 | none / 0 | none / 0 |
+| `CH340.PDF`（6 页真实） | 打开 / 读全部页尺寸 | 2.92 / 0.09 ms | 0.21 / 0.12 ms |
+| | 渲 6 页 / 读全部文字 | 30.0 / 9.81 ms | 31.9 / 6.91 ms |
+| | 字符数 / 搜索命中 | 7602 / 32 | 7602 / 32 |
+| `VerilogHDL硬件描述语言.pdf`（172 页真实书） | 打开 / 读全部页尺寸 | 222.1 / 49.3 ms | **0.41 / 1.70 ms** |
+| | 渲 43 页 / 读全部文字 | 241.3 / 267.3 ms | **194.1 / 211.5 ms** |
+| | 字符数 / 搜索命中 | 169468 / 3655 | 169468 / 3655 |
+| | 172 页灌进 64 MB | 664.4 ms | 664.0 ms（峰值 63.7 MB、25 条，两边相同） |
+
+整轮（四份文档、同一进程）的峰值工作集是 190 MB。读这一节要带上的几件事：
+
+1. **顺序永远是先 Qt 后 PDFium**，所以第二列的文件缓存是暖的。打开那一项的差
+   （真书 222.1 → 0.41 ms）与 §5.2 在 `huge.pdf` 上量的方向一致（1.6 vs 0.3 ms），
+   不是本次顺序造出来的；但 Qt 在那 222 ms 里具体做了什么**没有量**，
+   也没有换顺序再跑一遍，所以它是读数而不是严格对照。
+2. **§5.2 那个"文字页慢一倍"的 confound 已经不在了**：这次的 PDFium 后端自己持页
+   （最多 4 页，见 `pdfiumbackend.cpp`），不再每页 `FPDF_LoadPage`/`FPDF_ClosePage`。
+   `huge.pdf` 上 21.3 对 19.7 ms 是两边都持页时量的；真书上 PDFium 反而快
+   （194.1 对 241.3 ms）。
+3. **扫描件这一列 PDFium 明显快**（20.77 对 30.94 ms/页），方向与 §5.2 的 21.19 对 28.75 一致。
+4. **字符数与搜索命中在四份文件上逐份相等**——这是相等断言，不是耗时：
+   第二列读的是同一批文字，不是"也读了一点"。
+5. **缓存峰值逐项相同**，且两边用的是同一个 `RenderCache`：这一项量的是缓存，不是引擎。
+6. 两列的渲染都开着 LCD 文字（`perf_bench` 一直以来的设定），屏幕路径不设它；
+   这一节只用于两列相对比较。仍没有帧时间、没有真实扫描仪的输出、没有 500+ 页的真实书。
 
 ## 没有证明什么
 

@@ -94,7 +94,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics`（二十种模式
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice`（二十三种模式
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -159,6 +159,19 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   各只展开自己那一项。**并行分支的 gui-probe 必须传 `-Exe <它自己的 worktree>\xyzpdf\build-local-release\xyzpdf.exe`**，
   默认值指向主检出。同一轮里它还量到一条所有计数都看不见的产品缺陷（查找栏占半个窗口，§110）——
   又一次"布局这种事只有图能看出来"。
+- **§114 那三个模式（handoff-03 F9）也各带 `-Control`**：`translatesetup`（没选服务时 Ctrl+T → 说明框 →
+  「去设置」→ 设置框、焦点在翻译服务那一格，设置框按外框画图、28 行控件各自判在客户区内）、`xfanotice -ExpectXfa
+  packet|dynamic|absent`、`replynotice`（第 1 页批注、第 2 页回答它的样本）。样本由 `XYZPDF_FORM_SAMPLE_DIR`
+  现造，多了 `xfa-dynamic.pdf` 与 `thread-across-pages.pdf`。**启动前指针先挪到屏幕角**（`ParkCursorAway`）：
+  指针恰好停在工具栏上时，新窗口一出现就收到悬停，状态栏读到的是那颗按钮的提示 —— 读状态栏的模式都受这一条管。
+  同意框（要先有密钥）**不上屏幕**：探针一律不写 Windows 凭据。
+- **有时限的状态栏消息一律走 `MainWindow::setStatusMessage`**（§114）：直接调 `showMessage` 的那条通知
+  会被工具栏悬停的 status tip 永久抹掉（提示替换消息并停掉计时器，指针离开时空提示清栏）。
+  `MainWindow::event` 在提示盖上时暂停那条通知的计时、提示走了就带着剩下的时间放回来。
+- **`DocumentTab` 的服务住在 `src/services/`**（§114，F6）：搜索、文件改动提示、Word 导出、打印与导出图片
+  （`ForegroundJobs`）、截图与识别、翻译，各一个类；`DocumentTab` 留下视图、文档状态、编辑会话与装配。
+  搬过去的用户可见句子仍走 `QCoreApplication::translate("DocumentTab", …)` —— 上下文没换，目录一条没动。
+  新服务要被 `drainRenders()` 与析构等到，凡是读文档的都算。
 - **书签的目的地从文件带下去、原样写回；连接认内容不认位置**（§99，关掉 §75 的路 (a)）。开文件时
   `outlineFromSource()` 按对象链读 `/Dest` 的种类 + 数字（**null 保留**：`/XYZ 0 700 null` 是"缩放别动"），
   `writeOutlineItem()` 原样发出去。哪一行对应哪一条按 **标题 + 页** 取（各一次），**不要按下标连** ——

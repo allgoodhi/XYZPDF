@@ -10,7 +10,7 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
 
 ## 工具链（这台机器上的实际路径）
 
-- Qt 6.11.2 MSVC 2022 64-bit：`E:\qt\6.11.2\msvc2022_64`（需要 Qt PDF 模块）
+- Qt 6.11.2 MSVC 2022 64-bit：`E:\qt\6.11.2\msvc2022_64`（§116 起**不再用 Qt PDF**，渲染引擎是 PDFium）
 - Visual Studio Community：`E:\Microsoft Visual Studio\Community`，MSVC 14.51.36231
 - 生成器 Ninja；cmake 用 `E:\qt\Tools\CMake_64\bin\cmake.exe`
 - Python 3.14 在 PATH 上
@@ -18,6 +18,11 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   **新克隆先在仓库根跑 `vcpkg.exe install --triplet x64-windows`**，否则 CMake 配置就停住（它不
   用 vcpkg 的 toolchain file，路径写死在 `vcpkg_installed/`，那个目录已 gitignore）。目录布局、
   打包与测试方式照 `H:\test\XYZip`。
+- **PDFium**（§116，handoff-03 F7）：钉 `bblanchon/pdfium-binaries` 的 `chromium/8111`，放在仓库根的
+  `pdfium_installed/`（gitignore，和 `vcpkg_installed/` 同一个待遇）。**新克隆先跑**
+  `python xyzpdf/tools/fetch_pdfium.py --from <已解开的目录或 tgz>`（它校验 tgz、`pdfium.dll`、`pdfium.dll.lib`
+  三个 sha256，不对就拒绝）；`--download` 才会去 GitHub。这台机器上的那份在 `H:\test\XYZPDF-wt\third-party\pdfium-8111`。
+  并行 worktree 和 `vcpkg_installed` 一样用 junction 借主检出的 `pdfium_installed`，删 worktree 之前先单独删链接。
 
 **不要删构建树的 CMakeCache.txt** —— 项目不带 CMakePresets，Qt 的位置只存在于缓存里。
 
@@ -179,6 +184,14 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   代价写在代码里：同名同页的两条只有一条能带走。框里那句代价要用**按下之前**的纯查询
   `positionalAtRiskFor(rows)`，不要存"上一次请求"的数 —— 存过，于是那句话在屏幕上永远不会出现。
   **侧栏点击仍只跳页号**（位置进文件了，我们自己不读它）；§70/§80 那条路没动。
+- **Qt 的部署工具跑两趟，旗标要说两遍**（§116）：一趟是 `xyzpdf` 的 POST_BUILD windeployqt（让构建树里的
+  exe 能双击），一趟是安装时 `qt_generate_deploy_app_script` 生成的脚本（包就是从这一趟暂存的）。F7 只在
+  第一趟排除了 `qpdf` 图像插件，第二趟照样把它和它链接的 `Qt6Pdf.dll` 带进包（payload "gained 1, lost 0"）。
+  改一个部署旗标，两处一起改，并且**出一次包看 payload 对照**才算数。
+- **识别线程池的线程不许过期**（§116，F10）：`winrtPool()` 的线程是进程里唯一的 MTA，`QThreadPool` 默认 30 秒
+  空闲就退出 —— 最后一个 MTA 一走，Windows 卸载 `Windows.Media.Ocr.dll`，而 C++/WinRT 的激活工厂缓存还拿着
+  旧指针，下一次识别经已释放的 vtable 调用、进程直接没了（用户操作：两次识别间隔超过 30 秒）。
+  `setExpiryTimeout(-1)`；再给 WinRT 开一个池也照这样做。
 - **测试进程自己的护栏**（§112，F4）：`mainwindow_smoke` 有看门狗，`XYZPDF_SMOKE_TIMEOUT_MS`（默认 120000）
   到点印 FAIL 再 `_Exit(1)` —— §100 那条级联"重新引入时不是变红，是不再结束"，现在不结束也会红。
   `documenttab_smoke` 设了 `XYZPDF_TEST_CRASH_DUMP` 才装进程内的崩溃转储（`XYZPDF_TEST_CRASH_DUMP_DIR`，
@@ -201,16 +214,16 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   以及 `painted-rect.pdf`（§89：同一片矩形画进页面自己的内容流，屏幕那张表里"必须有差异"的那一行）
   （目录名里带 `fixtures` 会被拒绝并算失败）。
   "这台机器上没有真带字段的 PDF"从 §54 起不再成立
-- **像素问题从头测，别从屏幕测**：要看"某一层画不画"就调 `QtPdfBackend::render(0, size, RenderOptions{})`，
-  那才是应用走的那条路：**直接调 `QPdfDocument::render` 会得到假阴性**，因为 Qt 的默认 render flags 不带
-  `Annotations`，而本项目的 `RenderOptions::annotations` 默认是 true（§81 就是这样先量错了一次）。
+- **像素问题从头测，别从屏幕测**：要看"某一层画不画"就调 `PdfiumBackend::render(0, size, RenderOptions{})`
+  （§116 之前是 `QtPdfBackend`），那才是应用走的那条路：绕过它直接调引擎会得到假阴性（§81 那次是 Qt 的默认
+  render flags 不带 `Annotations`；PDFium 这边表单层是 `FPDF_FFLDraw` 的第二趟，只调 `FPDF_RenderPageBitmap`
+  一样看不见字段）。
   屏幕那一支从 §89 起也走 `PrintWindow`（旧的 `CopyFromScreen` 会被盖在上面的第三方窗口污染 —— §81 实测
   四份不同文件给出**完全相同的 band 计数**和**四个不同的 PNG 哈希**，差的是那个窗口自己的时钟），
   修好裁图原点之后它与旧路由**逐字节相同**（plain.pdf 两张图同为 `473abc153a29…`，即 §54/§57/§58 那三次
-  记下的值）。**表单 widget 这一类
-  在这一层天生 0 像素**：同一份 `/AP /N` 挂到 `/Square` 上画满 6000 格、挂到 `/Widget` 上一格不画，
-  注册与否、`/NeedAppearances` 与否都不改变（§82）—— Qt 这版只供 `RenderFlag::Annotations` 一个相关
-  开关，别去找第二个。
+  记下的值）。**表单 widget 从 §116 起画得出来**（F7-C：`FPDFDOC_InitFormFillEnvironment` + `FPDF_FFLDraw`，
+  只画不填；装上的那份 `formpage` 上量过）。Qt PDF 时代那条"widget 在这一层天生 0 像素"（§82）只对旧引擎成立。
+  **未注册**进 `/AcroForm /Fields` 的 widget 仍然 0（§51 那条"注册决定"没变）。
 - **构建是可重现的**（§112，F2；§82 量到的那 4 个字节已消掉）：MSVC 全目标 `/Brepro`（编译与链接），
   rcc 经 `cmake/rcc-deterministic.cmd` 把资源时间戳钉在 2020-01-01（它写的是每个资源文件的 mtime，
   而 `.qm` 是构建时生成的）。同一份源码两次全新构建，四颗产物逐字节相同，两种目录根路径也相同；

@@ -7520,3 +7520,86 @@ handoff-03 的 F8。第二阶段：F6 拆分 + F9 新句子上屏幕（只改 gu
 - **四列全等**，七颗 `same=True`。装上的那份 `-Mode inventory -Installed`：exit 0、26 个非空名字、清场后进程 0。
 
 **§16 现在对到 §114。**
+
+## 116. 第三阶段：PDFium 取代 Qt PDF、就地保存、识别线程那次崩溃，合进 main（2026-10-23）
+
+他把 handoff-03 第三阶段的三段提示词交出去，回来一句"三个都已跑完"。
+
+### 合并之前先查
+
+三个分支都没碰日志与规矩文档，工作区干净，报告在提交说明里。
+
+- **F10**（2 个文件，+84）：§103 那次 0xC0000005 查到底了，而且是**正常使用就会遇到**的：先识别一次，
+  超过 30 秒后再识别第二处，整个阅读器直接消失。`winrtPool()` 的线程是进程里唯一的 MTA；`QThreadPool`
+  默认 30 秒空闲就让线程退出，最后一个 MTA 一走 Windows 卸载 `Windows.Media.Ocr.dll`，C++/WinRT 的激活
+  工厂缓存却还拿着那个工厂，下一次 `pickEngine()` 经已释放的 vtable 调用。它用临时探针量到：第一次识别时
+  vtable 在 `Windows.Media.Ocr.dll`、空闲 30.27 秒后 `<unmapped>` 且那颗 DLL 已不在进程里。修法一行：
+  `setExpiryTimeout(-1)`。测试：同一个框隔 32 秒识别两次。
+- **F7**（60 个文件，+6413/−3705，六片）：`Document` 变成真抽象（工厂 `createDocument()`），`PdfiumBackend`
+  落地，表单层只画（`FPDF_FFLDraw`），两颗壳 DLL 换过去，Qt PDF 那条实现与开发期开关一起删掉，打印旗标量出来是惰性的、
+  不做 flatten。文件句柄（方案 R7）用 `FPDF_LoadCustomDocument` + 我们自己带 `FILE_SHARE_DELETE` 开的句柄：
+  文档开着时别人删得掉、`ReplaceFileW` 换得过去，§104 那条"删不掉"的断言按允许改成"删得掉"。R1 两张图
+  （真书同一页）差 2.40% 像素、最大 61/255，它看过：字位、行距、页边一致，差在笔画灰阶。十条控制。
+  它自己报的一处：这台机器的 Windows 识别器把 text.pdf 那行的 X 读成 ")("，它把那条断言改成"回来的是那一行里的一段"。
+- **F8**（21 个文件，+2096/−639）：保存(&S) 写回、另存为(&A)… 换标签；顺序照 handoff：同目录隐藏副本 → qpdf 重开
+  验页数 → 等读文档的工作结束、放开句柄 → `ReplaceFileW` → 重开并回到原页/缩放/旋转/侧栏；失败时原文件 sha 不变。
+  自己的写入不触发"文件变了"、两秒后别人的写入照样触发；关标签/关窗口的三答框。它量到两条 Qt PDF 行为：
+  `QPdfDocument::close()` 不放开文件句柄（销毁对象才放）；读过普通文件的 `QPdfDocument` 拒绝加密文件的正确口令。
+  两条控制各自红过（18+19 条、6 条）。
+
+### 合并（F10 → F7 → F8）
+
+F10 与 F7 自动合并干净。**F8 与 F7 撞在一处要改写的地方**：F8 给 `QtPdfBackend` 加了 `close()`（放开文件的唯一办法），
+而 F7 把 `QtPdfBackend` 删了。处理：删除照 F7；`close()` 搬进 `Document` 接口，`PdfiumBackend::close()` 拿锁、
+依次放掉页、表单环境、文档与文件句柄，留着 `path()`。PDFium 这边文件本来就带 `FILE_SHARE_DELETE`，关不关都换得过去；
+保存照旧先关 —— 规矩是"换字节时我们没有人在读旧字节"，不是某个引擎的性质。`documenttab.cpp` 自动合并后剩一处
+`QtPdfBackend probe;`（另存为后先试开），换成工厂。主检出第一次用 `fetch_pdfium.py --from` 从 F5 下载的那份装好
+`pdfium_installed/`（三个 sha256 对上）。
+
+英文目录：取 main 重生成，F8 的 38 条按它的对照填回（它那 37 条带着 `type="unfinished"` 的已填译文，这次写成已完成）。
+684 条 = F7 的 663 + 38 − 17，numerus 52。
+
+### 合并后抓到的四处
+
+1. **F10 的新断言在 PDFium 下红了**：两次识别都要读出 "XYZPDF"，而这台机器的识别器把 X 读成 ")("（F7 已量到）。
+   我先查了是不是渲染的错：另用 `pdfium.dll` 按 150%/400%/灰度/不平滑画那一行，都是干净的 "XYZPDF one"；字体是
+   未嵌入的 Helvetica（标准 14 字体）。又试了给裁图四周加白边（手画的框通常贴着字），**照样 ")("**，撤回了。
+   所以这是识别器对这一个字形的问题，不是这次合并要解的。F10 那块要问的是"第二次识别活下来"，改成：第一次读回含
+   "one"、第二次与第一次逐字相同。**在合并后的树上重跑了 F10 的控制**：撤掉 `setExpiryTimeout(-1)` → 44 秒时
+   0xC0000005、没有一条 FAIL，与 F10 报的同形；按 sha256 还原。
+2. **包里还带着 `Qt6Pdf.dll`**：第一次出包 payload 是 "gained 1, lost 0"，msix 21.2 MB —— 正是 F5 说不要的"并存"那一档。
+   没有任何产品二进制导入它；是安装那一步的 Qt 部署脚本（`qt_generate_deploy_app_script`）带进了 `imageformats\qpdf.dll`，
+   而那颗插件链接 `Qt6Pdf.dll`。F7 只在 POST_BUILD 那一趟 windeployqt 上排除了 qpdf，安装时那一趟不知道；F7 按分工没出包，
+   看不见。加 `DEPLOY_TOOL_OPTIONS --exclude-plugins qpdf` 后 payload "lost 2"，**18.8 MB / 66 个文件** —— 比 §115 大 1.2 MB，
+   和 F5 估的"取代 +1.27 MB"对上。构建树里八月留下的两颗旧副本删掉。写进 AGENTS.md（部署工具跑两趟）。
+3. **英文「文档」菜单里 `&Split Files…` 与 F8 新加的 `&Save` 撞了 S**（中文那边拆分是 (&C)，不撞）。这个菜单里
+   l E t M I P W U R S A 都已占用，改成 `Split &Files…`。`check_translations` 只管助记符的写法，不管同一菜单里重复。
+4. F8 的那次"保存会不会把用户的 PDF 变成隐藏文件"我单独量了：它给暂存副本设了隐藏属性再 `ReplaceFileW` 换上去 ——
+   换完后原文件属性是 0x20（原来的），不带隐藏。没问题，只记一笔。
+
+**门禁 27 passed / 0 failed**（F7 加了 `pdfiumbackend_smoke`），目录 684/684。
+
+### 装上的那份上看过的
+
+- `formpage -Installed -OpenViaPicker <field-appearance.pdf>`：exit 0，**字段那块浅紫的外观在页面上画出来了**
+  （第 7–8 带墨量 4520/2702，其余带 ~480 是页面文字）。§94 起"字段画不出来"这句话在装上的字节上第一次不成立。
+- `inventory -Installed`：exit 0、26 个非空名字、清场后进程 0。
+
+**没验的**：就地保存**没在屏幕上按过一次**（F8 的判定全在无头测试里；现有的 `saverename` 模式按 Ctrl+S 期待一个保存框，
+现在 Ctrl+S 会直接写 `-Doc` 那份文件，所以没敢跑它 —— 它要改）；关窗口时的三答框也没在屏幕上见过。识别器读错 X 那件事留着。
+
+产品代码（我这一节）：`document.h` +13、`pdfiumbackend.{h,cpp}` +12、`documenttab.cpp` 注释与工厂各一处、
+`CMakeLists.txt` +8（部署旗标与注释）；测试 `documenttab_smoke` ±10。
+
+## 117. 重打包并重装：PDFium 进了装上的那一份（2026-10-23）
+
+- 打包前快照：`xyzpdf.exe` `bcc8103c0f5e…` / 1,544,192；`pdfium.dll` `a318c39c1374…` / 7,586,816（等于钉的那份）；
+  `xyzpdfpreview.dll` `fba557a4cf6f…`、`xyzpdfthumbnail.dll` `09071d17c0f5…`（两颗都换了后端，换字节是应该的）；
+  `xyzpdfshell.dll` `5a957cae7979…` 与 §113/§115 **逐字节相同**（它的源码一直没变 —— 可重现构建的第二个读数）。
+- 包 19,758,569 字节（18.8 MB），解开 43.5 MB / 66 个文件；payload 对照（相对 §115 那张）：+`bin/pdfium.dll`，
+  −`bin/Qt6Pdf.dll`，−`plugins/imageformats/qpdf.dll`。`verify-package` exit 0。
+- **四列全等，八颗 `same=True`**（这一次把 `pdfium.dll` 也加进了比对表）。
+- 同一节里出了三次包：第一次带着 `Qt6Pdf.dll`（§116 第 2 条）、第二次修掉、第三次带上助记符那一处的 `.qm`；
+  装上的是第三次。exe 第二、三次尺寸相同、哈希不同 —— 差的就是嵌进去的目录。
+
+**§16 现在对到 §116。**

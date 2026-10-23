@@ -47,6 +47,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -221,6 +222,61 @@ void answerNextDialog(const QString &pages)
             timer->deleteLater(); // never appeared; nothing to unblock
     });
     timer->start(50);
+}
+
+// Answers the next message box by pressing the button whose text contains
+// `buttonText`, recording what the box said.
+//
+// A repeating timer rather than singleShot(0), because the save paths pump the
+// event loop before the box opens (drainRenders() does), and a one-shot timer
+// would fire inside that pump, find no box, and leave the real one waiting for a
+// human. Bounded: with no box in five seconds it gives up, and the caller's
+// "was the box seen" check is what turns that into red rather than a hang.
+void answerNextBox(const QString &buttonText, bool *seen, QString *text)
+{
+    // One waiter at a time. A timer that found no box keeps ticking towards its own
+    // five-second limit, and if the next box opens inside that window it is the old
+    // timer that answers it -- with the old call's button and the old call's record.
+    // Measured here: the second and third refusal boxes were answered by the first
+    // save's leftover waiter, which reported "no box" for the calls that owned them.
+    static QTimer *waiting = nullptr;
+    if (waiting) {
+        waiting->stop();
+        waiting->deleteLater();
+        waiting = nullptr;
+    }
+
+    auto *timer = new QTimer;
+    waiting = timer;
+    auto ticks = std::make_shared<int>(0);
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, ticks, buttonText, seen, text] {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        if (box) {
+            if (seen)
+                *seen = true;
+            if (text)
+                *text = box->text();
+            QAbstractButton *target = nullptr;
+            for (QAbstractButton *button : box->buttons()) {
+                if (button->text().contains(buttonText))
+                    target = button;
+            }
+            if (target)
+                target->click();
+            else
+                box->reject();
+            if (waiting == timer)
+                waiting = nullptr;
+            timer->deleteLater();
+            return;
+        }
+        if (++*ticks > 250) {
+            if (waiting == timer)
+                waiting = nullptr;
+            timer->deleteLater();
+        }
+    });
+    timer->start(20);
 }
 
 // One mouse event, straight to the viewport.
@@ -3341,6 +3397,331 @@ int main(int argc, char **argv)
                       QStringLiteral("back on when the range names them again: %1").arg(saidOf(box)));
             }
         }
+    }
+
+    // ---- F8: 保存 writes back into the file the reader has open ----
+    //
+    // The order in DocumentTab::saveEdits() is the whole of this slice: a hidden copy
+    // beside the original, the copy read back with qpdf, every reader of the original
+    // let go, ReplaceFileW, reopen. Each half is asserted on a copy in a scratch folder,
+    // never on a fixture: the tests may write here, and the fixtures are shared with
+    // every other block in this file.
+    //
+    // What the checks are shaped against: a save that reports success without the bytes
+    // changing, a replace that fails but loses the original, a staged file left behind,
+    // and the tab's own write coming back as "this file changed on disk" -- the last one
+    // is why FileChangeNotice grew beginSelfWrite()/endSelfWrite(), and the control for
+    // it is a change made by somebody else afterwards, which still has to raise the bar.
+    {
+        QTemporaryDir scratch;
+        check(scratch.isValid(), "setup: a scratch folder for F8's save");
+        const QString source = scratch.filePath(QStringLiteral("many-pages.pdf"));
+        check(QFile::copy(directory + QStringLiteral("/many-pages.pdf"), source),
+              "setup: a copy of the 40-page fixture to save into");
+
+        auto sha = [](const QString &file) {
+            QFile in(file);
+            if (!in.open(QIODevice::ReadOnly))
+                return QByteArray();
+            return QCryptographicHash::hash(in.readAll(), QCryptographicHash::Sha256);
+        };
+        auto bytesOf = [](const QString &file) {
+            QFile in(file);
+            if (!in.open(QIODevice::ReadOnly))
+                return QByteArray();
+            return in.readAll();
+        };
+        auto overwrite = [](const QString &file, const QByteArray &bytes) {
+            QFile out(file);
+            if (!out.open(QIODevice::ReadWrite))
+                return false;
+            out.seek(0);
+            const bool written = out.write(bytes) == bytes.size();
+            const bool trimmed = out.resize(bytes.size());
+            out.flush();
+            return written && trimmed;
+        };
+        auto pagesIn = [](const QString &file, const QString &password = QString()) {
+            try {
+                QPDF document;
+                const QByteArray key = password.toUtf8();
+                document.processFile(file.toUtf8().constData(),
+                                     key.isEmpty() ? nullptr : key.constData());
+                return int(QPDFPageDocumentHelper(document).getAllPages().size());
+            } catch (const std::exception &) {
+                return -1;
+            }
+        };
+        auto stagedBeside = [](const QString &folder) {
+            return QDir(folder)
+                .entryList({QStringLiteral("xyzpdf-save-*.pdf")}, QDir::Files | QDir::Hidden)
+                .size();
+        };
+
+        const QByteArray originalBytes = bytesOf(source);
+        const QByteArray beforeSave = sha(source);
+        check(!originalBytes.isEmpty() && pagesIn(source) == 40,
+              "setup: the copy is a 40-page PDF");
+
+        check(tab.open(source) == Document::Status::Ready, "the copy opens");
+        // Zoom and turn before standing on page 10: the page has to be in the
+        // viewport at the size it is asked for, or the render that the save below is
+        // supposed to wait for is never requested at all.
+        tab.setZoom(1.75);
+        tab.rotateBy(90);
+        tab.setCurrentPage(9);
+        check(waitFor([view] { return view->hasImageFor(9); }),
+              "the reader is on page 10 and it is drawn");
+        const int pageBefore = tab.currentPage();
+        const double zoomBefore = tab.zoom();
+        const auto modeBefore = tab.zoomMode();
+        const int rotationBefore = tab.rotation();
+        check(pageBefore == 9 && zoomBefore > 1.5 && rotationBefore == 90,
+              QStringLiteral("setup: page 10 at %1 times, the page turned %2 degrees")
+                  .arg(zoomBefore)
+                  .arg(rotationBefore));
+
+        // The last page, so the page the reader stands on keeps its own number: this is
+        // about the view coming back, not about renumbering after a delete above it.
+        answerNextDialog<DeletePagesDialog>(QStringLiteral("40"));
+        tab.deletePages();
+        check(tab.hasUnsavedEdits(), "the last page is on the pending list");
+        check(tab.title().endsWith(QStringLiteral(" *")),
+              QStringLiteral("and the tab says so before the save (%1)").arg(tab.title()));
+
+        // A save that goes through says nothing: a box here would mean the path
+        // refused, and the waiter also keeps a broken save from hanging the run.
+        bool firstBoxSeen = false;
+        QString firstBoxText;
+        answerNextBox(QStringLiteral("取消"), &firstBoxSeen, &firstBoxText);
+        check(tab.saveEdits(), "保存 writes the change back into the file the tab is reading");
+        check(!firstBoxSeen,
+              QStringLiteral("with no box to explain a failure (%1)").arg(firstBoxText));
+        check(!tab.fileChangeNoticeVisible(),
+              "and its own write is not reported as a change from outside");
+        check(!waitFor([&tab] { return tab.fileChangeNoticeVisible(); }, 2000),
+              "not even when the watcher has had two seconds to say something");
+        check(tab.documentPath() == source, "the tab is still on that file");
+        check(sha(source) != beforeSave,
+              "the bytes on disk are not the ones that were there before the save");
+        check(pagesIn(source) == 39,
+              QStringLiteral("a parser opening the file finds 39 pages (%1)").arg(pagesIn(source)));
+        check(tab.pageCount() == 39 && tab.isOpen(),
+              QStringLiteral("the tab reopened it with 39 pages (%1)").arg(tab.pageCount()));
+        check(tab.currentPage() == 9, "on the page the reader was standing on");
+        check(tab.zoom() == zoomBefore && tab.zoomMode() == modeBefore
+                  && tab.rotation() == rotationBefore,
+              QStringLiteral("and the zoom, its mode and the page rotation came back with it "
+                             "(%1 / %2)")
+                  .arg(tab.zoom())
+                  .arg(tab.rotation()));
+        check(!tab.hasUnsavedEdits(), "nothing is pending any more");
+        check(!tab.title().endsWith(QStringLiteral(" *")), "and the star is gone");
+
+        // The control for the suppression: it is the settled size and time of *our* bytes
+        // that are ignored, not every change. An outside write still raises the bar.
+        check(overwrite(source, originalBytes), "setup: another program writes the file");
+        check(waitFor([&tab] { return tab.fileChangeNoticeVisible(); }, 5000),
+              "a later change made by somebody else still raises the bar");
+        if (auto *close = tab.findChild<QToolButton *>(QStringLiteral("fileChangeClose")))
+            close->click();
+
+        // ---- the replace that Windows refuses ----
+        //
+        // An open handle without FILE_SHARE_DELETE: qpdf and Qt PDF can still read the
+        // file (they ask for read sharing), staging succeeds, and ReplaceFileW is the
+        // first step that cannot proceed. The guarantee to pin is that the original is
+        // byte-identical and the staged copy does not survive the refusal.
+        const QString locked = scratch.filePath(QStringLiteral("locked.pdf"));
+        check(QFile::copy(directory + QStringLiteral("/text.pdf"), locked),
+              "setup: a two-page copy for the locked-file case");
+        check(tab.open(locked) == Document::Status::Ready, "the locked copy opens");
+        answerNextDialog<DeletePagesDialog>(QStringLiteral("1"));
+        tab.deletePages();
+        check(tab.hasUnsavedEdits(), "and has a deletion pending");
+
+        const QByteArray lockedBefore = sha(locked);
+        const std::wstring lockedPath = QDir::toNativeSeparators(locked).toStdWString();
+        HANDLE holder = CreateFileW(lockedPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        check(holder != INVALID_HANDLE_VALUE,
+              "setup: another program holds the file without sharing delete");
+
+        bool failureBoxSeen = false;
+        QString failureBoxText;
+        answerNextBox(QStringLiteral("取消"), &failureBoxSeen, &failureBoxText);
+        const bool replaced = tab.saveEdits();
+        if (holder != INVALID_HANDLE_VALUE)
+            CloseHandle(holder);
+
+        check(!replaced, "an in-place save that Windows will not let replace reports failure");
+        check(failureBoxSeen, "and says so in a box rather than silently");
+        check(failureBoxText.contains(QStringLiteral("Windows")),
+              QStringLiteral("naming the Windows error (%1)").arg(failureBoxText));
+        check(sha(locked) == lockedBefore,
+              "the file that could not be replaced is byte-identical");
+        check(pagesIn(locked) == 2, "still with its two pages");
+        check(stagedBeside(scratch.path()) == 0,
+              "and the staged copy written beside it was taken away");
+        check(tab.hasUnsavedEdits(), "the pending list is still there");
+        check(tab.isOpen() && tab.pageCount() == 2, "the original is back on screen");
+
+        // The control: the same save, the same tab, the same list -- with the handle gone
+        // it goes through, which is what makes the refusal above a refusal and not a save
+        // path that never writes anything.
+        bool controlBoxSeen = false;
+        QString controlBoxText;
+        answerNextBox(QStringLiteral("取消"), &controlBoxSeen, &controlBoxText);
+        check(tab.saveEdits(), "the same save goes through once nothing holds the file");
+        check(!controlBoxSeen,
+              QStringLiteral("with nothing to report (%1)").arg(controlBoxText));
+        check(sha(locked) != lockedBefore && pagesIn(locked) == 1,
+              "and this time the file really changed, to the one-page document");
+        check(!tab.hasUnsavedEdits(), "with nothing left pending");
+
+        // ---- 另存为 ----
+        //
+        // The same pending list, written to a name the reader chooses: the tab moves to
+        // the new file and the one it came from keeps every byte it had.
+        const QString asSource = scratch.filePath(QStringLiteral("as-source.pdf"));
+        const QString asTarget = scratch.filePath(QStringLiteral("as-target.pdf"));
+        check(QFile::copy(directory + QStringLiteral("/text.pdf"), asSource),
+              "setup: a two-page copy for 另存为");
+        check(tab.open(asSource) == Document::Status::Ready, "it opens");
+        tab.setCurrentPage(1);
+        check(waitFor([view] { return view->hasImageFor(1); }), "on its second page");
+        answerNextDialog<DeletePagesDialog>(QStringLiteral("1"));
+        tab.deletePages();
+        const QByteArray asBefore = sha(asSource);
+        QString asError;
+        check(tab.saveEditsTo(asTarget, &asError),
+              QStringLiteral("另存为 writes the name it was given (%1)").arg(asError));
+        check(tab.documentPath() == asTarget, "and the tab switches to the new file");
+        check(sha(asSource) == asBefore && pagesIn(asSource) == 2,
+              "the file it came from is byte-identical, still with its two pages");
+        check(pagesIn(asTarget) == 1,
+              QStringLiteral("while the new file holds the deletion (%1)").arg(pagesIn(asTarget)));
+        check(tab.pageCount() == 1, "the tab shows the new file");
+        check(tab.currentPage() == 0,
+              "on the nearest page it has, since page 2 is not in the copy");
+        check(!tab.hasUnsavedEdits(), "and nothing is pending");
+        check(!tab.title().endsWith(QStringLiteral(" *")), "with no star");
+
+        // ---- a file that cannot be written where it is ----
+        //
+        // The read-only attribute is the reachable member of the family the spec names
+        // (WindowsApps needs an ACL this test cannot create, and a dropped network share
+        // cannot be arranged while PDFium holds the file open). The refusal happens
+        // before anything is staged, and the box offers 另存为 -- here answered 取消.
+        const QString readOnly = scratch.filePath(QStringLiteral("read-only.pdf"));
+        check(QFile::copy(directory + QStringLiteral("/text.pdf"), readOnly),
+              "setup: a copy to make read-only");
+        SetFileAttributesW(QDir::toNativeSeparators(readOnly).toStdWString().c_str(),
+                           FILE_ATTRIBUTE_READONLY);
+        check(tab.open(readOnly) == Document::Status::Ready, "a read-only file still opens");
+        answerNextDialog<DeletePagesDialog>(QStringLiteral("1"));
+        tab.deletePages();
+        const QByteArray readOnlyBefore = sha(readOnly);
+        bool readOnlyBoxSeen = false;
+        QString readOnlyBoxText;
+        answerNextBox(QStringLiteral("取消"), &readOnlyBoxSeen, &readOnlyBoxText);
+        check(!tab.saveEdits(), "保存 refuses a read-only file");
+        check(readOnlyBoxSeen, "with a box");
+        check(readOnlyBoxText.contains(QStringLiteral("只读")),
+              QStringLiteral("that says it is read-only (%1)").arg(readOnlyBoxText));
+        check(sha(readOnly) == readOnlyBefore && stagedBeside(scratch.path()) == 0,
+              "nothing was written and nothing staged was left behind");
+        check(tab.hasUnsavedEdits(), "and the edits are still pending");
+        // The control: clear the attribute and the same save goes through, which is what
+        // makes the refusal above the attribute's and not the save path's.
+        SetFileAttributesW(QDir::toNativeSeparators(readOnly).toStdWString().c_str(),
+                           FILE_ATTRIBUTE_NORMAL);
+        bool attributeGoneBoxSeen = false;
+        QString attributeGoneBoxText;
+        answerNextBox(QStringLiteral("取消"), &attributeGoneBoxSeen, &attributeGoneBoxText);
+        check(tab.saveEdits(), "with the attribute gone the same save goes through");
+        check(!attributeGoneBoxSeen,
+              QStringLiteral("with nothing to report (%1)").arg(attributeGoneBoxText));
+        check(pagesIn(readOnly) == 1 && !tab.hasUnsavedEdits(),
+              "and writes the one-page document");
+
+        // ---- a save cannot step on a print ----
+        //
+        // F8 §5 leaves the foreground-job rules alone, and 保存 is a new caller of them:
+        // the job has this tab's document on the stack, and pulling the file out from
+        // under it is the failure §100 is about. Both halves are asked, because a refusal
+        // that never lifted would pass the first alone.
+        const QString busy = scratch.filePath(QStringLiteral("busy.pdf"));
+        check(QFile::copy(directory + QStringLiteral("/text.pdf"), busy),
+              "setup: a copy for the busy-tab case");
+        check(tab.open(busy) == Document::Status::Ready, "it opens");
+        {
+            const DocumentTab::ForegroundJob job(&tab);
+            answerNextDialog<DeletePagesDialog>(QStringLiteral("1"));
+            tab.deletePages();
+            check(tab.hasUnsavedEdits(), "with a deletion pending and a job standing in");
+            bool busyBoxSeen = false;
+            QString busyBoxText;
+            answerNextBox(QStringLiteral("确定"), &busyBoxSeen, &busyBoxText);
+            check(!tab.saveEdits(), "保存 refuses a tab that a print or an export is standing in");
+            check(busyBoxSeen, "and says so in a box");
+            check(busyBoxText.contains(QStringLiteral("打印或导出")),
+                  QStringLiteral("naming the job that is in the way (%1)").arg(busyBoxText));
+            check(tab.hasUnsavedEdits(), "and leaves the list where it was");
+        }
+        {
+            bool afterJobBoxSeen = false;
+            QString afterJobBoxText;
+            answerNextBox(QStringLiteral("取消"), &afterJobBoxSeen, &afterJobBoxText);
+            check(tab.saveEdits(), "the same save goes through the moment the job is over");
+            check(!afterJobBoxSeen,
+                  QStringLiteral("with nothing to report (%1)").arg(afterJobBoxText));
+            check(pagesIn(busy) == 1 && !tab.hasUnsavedEdits(), "and writes the one-page document");
+        }
+
+        // ---- a document opened with a password stays one ----
+        //
+        // No 加密 on the list means Carry: the writer's default preserves the source's
+        // /Encrypt dictionary, and the tab reopens with the key it opened with. Both
+        // halves are asserted -- the file still refuses a reader without the key, and the
+        // tab is open on it -- because either alone would pass with the other broken.
+        const QString sealed = scratch.filePath(QStringLiteral("sealed.pdf"));
+        const QString key = QStringLiteral("hunter2");
+        {
+            DocumentEditor maker;
+            QString error;
+            check(maker.open(directory + QStringLiteral("/text.pdf"), QString(), &error),
+                  QStringLiteral("setup: a plain source for the protected copy: %1").arg(error));
+            DocumentEditor::Protection guard;
+            guard.what = DocumentEditor::Protection::What::Encrypt;
+            guard.password = key;
+            check(maker.protectWith(guard, &error),
+                  QStringLiteral("setup: a password is recorded: %1").arg(error));
+            check(maker.saveAs(sealed, &error),
+                  QStringLiteral("setup: and written out: %1").arg(error));
+        }
+        check(pagesIn(sealed) == -1, "setup: the copy needs a password to be read");
+        check(pagesIn(sealed, key) == 2,
+              QStringLiteral("setup: and qpdf opens it with the key (%1)").arg(pagesIn(sealed, key)));
+        const Document::Status sealedOpen = tab.open(sealed, key);
+        check(sealedOpen == Document::Status::Ready,
+              QStringLiteral("it opens with the key (%1)").arg(int(sealedOpen)));
+        answerNextDialog<DeletePagesDialog>(QStringLiteral("1"));
+        tab.deletePages();
+        bool sealedBoxSeen = false;
+        QString sealedBoxText;
+        answerNextBox(QStringLiteral("取消"), &sealedBoxSeen, &sealedBoxText);
+        check(tab.saveEdits(), "保存 writes a protected document in place");
+        check(!sealedBoxSeen,
+              QStringLiteral("with nothing to report (%1)").arg(sealedBoxText));
+        check(pagesIn(sealed) == -1, "the file still refuses a reader without the key");
+        check(pagesIn(sealed, key) == 1,
+              QStringLiteral("and with it opens as the one-page document (%1)").arg(pagesIn(sealed, key)));
+        check(tab.isOpen() && tab.pageCount() == 1,
+              "the tab itself reopened with the key carried over");
+
+        check(tab.open(path) == Document::Status::Ready,
+              "the fixture is back for the rest of the run");
     }
 
     // ---- 加密 / 去掉口令: the box and the editor refuse the same requests ----

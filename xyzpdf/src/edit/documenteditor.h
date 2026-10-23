@@ -122,7 +122,7 @@
 // many times as they like, and each 撤销 genuinely undoes the whole of what it promised,
 // because nothing had been written yet.
 //
-// The consequence is that a split is *inert* until 保存修改为: the tab says 拆成每 5 页
+// The consequence is that a split is *inert* until 保存: the tab says 拆成每 5 页
 // 一份 and that is the whole of its visible effect.
 //
 // ---- the second inert operation, and the one thing measurement took off the table ----
@@ -158,6 +158,9 @@
 #include <QRectF>
 #include <QString>
 #include <QVector>
+
+#include <memory>
+#include <vector>
 
 class QPDF;
 class QDir;
@@ -850,7 +853,7 @@ public:
 
     // Recording that a save should draw `watermark` on the pages it names. Nothing is written
     // and no page moves, which is why this is a list entry rather than a button that redraws
-    // the document: like 拆分 and 加密, it reaches the file at 保存修改为, and undoing it is
+    // the document: like 拆分 and 加密, it reaches the file at 保存, and undoing it is
     // taking one entry out of a list -- no page is un-drawn, because nothing was drawn yet.
     // Unlike those two it changes what is *inside* a page; see the header note.
     //
@@ -1039,6 +1042,22 @@ public:
     // answer is "several files, and here is a name that is none of them".
     bool saveAs(const QString &path, QString *error, QStringList *written = nullptr);
 
+    // Writes the pending list to a hidden file in the source's own directory and checks
+    // the result by opening it again with qpdf (it has to parse, and hold the page count
+    // this list says). The source is only read: putting the bytes in place is the caller's
+    // last step, after every reader of the original has let go -- the order F8 fixes, and
+    // the reason this stops at a file next to the destination rather than at one named by
+    // a dialog. Refuses a split, which is several files and cannot be one replacement.
+    bool stageInPlace(QString *staged, QString *error);
+
+    // The last step of an in-place save: ReplaceFileW over the source, which keeps
+    // its ACL, attributes and creation time. Apart from stageInPlace() because the
+    // tab has to drain every reader and let go of its own handle between the two.
+    // On failure the original is untouched and `staged` is still on disk for the
+    // caller to delete; `windowsError` is GetLastError(), for the sentence.
+    static bool replaceSource(const QString &source, const QString &staged,
+                              quint32 *windowsError = nullptr);
+
 private:
     // Which pages the pending list says are still in the document. Recomputed from
     // scratch rather than patched, because that is the one way `live` cannot drift
@@ -1075,6 +1094,17 @@ private:
     // operation -- owns the lifetime; see the note in saveAs().
     void apply(const Operation &op, QPDF &document, QVector<PageRef> &present,
                QPDF *mergeSource);
+    // The files the merges in `pending` draw from, opened once for the whole save and held
+    // until the writer has finished with them. One place, because saveAs() and stageInPlace()
+    // both need the same page-count re-check before anything is staged.
+    bool openImportSources(std::vector<std::unique_ptr<QPDF>> *foreign, QString *error);
+    // One output file, from the source read again off disk: the replay, the tidies that need
+    // the final page list, the bookmarks and the writer. One place, for the reason §68 gives
+    // for rebuilding the outline tree rather than patching it -- two copies of this walk is
+    // how a file gets written by one route and described by another.
+    bool writeStaged(const PieceRange &keep, const QString &staged,
+                     const std::vector<std::unique_ptr<QPDF>> &foreign,
+                     const Protection &protection, QString *error);
     // Whether the pending list, as it stands, changes which pages a save writes or how they are
     // ordered -- the four kinds 删除 / 移动 / 合并 / 拆分 against the four that leave the collection
     // alone. Asked once per output file, and the only thing that decides whether an /AcroForm /XFA

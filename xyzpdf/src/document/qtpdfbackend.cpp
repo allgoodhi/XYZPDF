@@ -136,6 +136,16 @@ Document::Status QtPdfBackend::load(const QString &path, const QString &password
     charBoxes.clear();
     charBoxesOrder.clear();
 
+    // A QPdfDocument that already holds a document refuses the right password for a
+    // different, encrypted file: measured in documenttab_smoke's F8 block -- one that
+    // had read a plain PDF answered IncorrectPassword to the correct key, while one
+    // closed first opened the same file. A fresh object also releases the previous
+    // file's handle, which close() alone does not (see close()). So the object is
+    // replaced on every load, and whoever borrowed pdfDocument() has to have forgotten
+    // the old pointer before this call -- DocumentTab::loadDocument() does that first.
+    document = std::make_unique<QPdfDocument>();
+    attachModels();
+
     // The password goes in before the load, not after a failure: Qt PDF reads
     // it once while opening the file, and setting it afterwards reloads the
     // whole document a second time.
@@ -207,6 +217,33 @@ Document::Status QtPdfBackend::load(const QString &path, const QString &password
     loadedPath = path;
     attachModels();
     return Status::Ready;
+}
+
+void QtPdfBackend::close()
+{
+    // QPdfDocument::close() empties the document but keeps the file open. Measured
+    // in documenttab_smoke's F8 block: with the object alive, renaming the path still
+    // failed with a sharing violation two seconds and a hundred event-loop turns after
+    // close(), while destroying the object made the same rename succeed. That handle
+    // is precisely what ReplaceFileW cannot work around, so the object is destroyed
+    // and replaced with an empty one.
+    //
+    // The caller must point its PageRenderer at nullptr first: PageRenderer hands this
+    // same QPdfDocument to QPdfPageRenderer, and that pointer must not outlive the
+    // object by even one event-loop turn.
+    document = std::make_unique<QPdfDocument>();
+    // The cached text and boxes are keyed by page number of a document that is
+    // about to be replaced, exactly like the ones load() clears.
+    attachModels();
+    pageTexts.clear();
+    pageTextsOrder.clear();
+    charBoxes.clear();
+    charBoxesOrder.clear();
+    errorText.clear();
+    neededPassword = false;
+    // loadedPath is deliberately kept: path() still answers with the file the tab
+    // is about, which is what the in-place save reopens and what title() reads
+    // while the page is briefly empty.
 }
 
 QString QtPdfBackend::lastError() const

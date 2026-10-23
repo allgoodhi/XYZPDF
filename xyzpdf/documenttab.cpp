@@ -24,10 +24,12 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QMessageBox>
@@ -51,6 +53,17 @@ namespace {
 qint64 prefetchAllowanceFor(qint64 cacheBytes)
 {
     return qMax<qint64>(0, cacheBytes / 8);
+}
+
+// A file under the Windows apps install root. Its ACLs let an app write only its
+// own private data, and the file a reader opened there is part of the package --
+// so 保存 has one sentence for it rather than a Windows error number, and 另存为 is
+// the way out. Checked by path segment, because the attribute is not what stops
+// the replace: the directory's ACL is.
+bool isWindowsAppsPath(const QString &path)
+{
+    return QDir::toNativeSeparators(path).toCaseFolded().contains(
+        QStringLiteral("\\windowsapps\\"));
 }
 
 } // namespace
@@ -448,9 +461,21 @@ Document::Status DocumentTab::open(const QString &path, const QString &password)
         Q_EMIT editStateChanged();
     }
 
+    const Document::Status result = loadDocument(path, password);
+    opening = false;
+    return result;
+}
+
+Document::Status DocumentTab::loadDocument(const QString &path, const QString &password)
+{
+    // The backend replaces its QPdfDocument on every load (it is the only way to let
+    // go of the file it had, and the only way a correct key for an encrypted file is
+    // taken after a plain one). The renderer borrows that pointer, so it forgets it
+    // before the call and is pointed at the new one below if the load succeeds; on a
+    // failed load it stays null rather than pointing at something destroyed.
+    renderer->setDocument(nullptr);
     const Document::Status result = backend->load(path, password);
     status = result;
-    opening = false;
 
     if (result != Document::Status::Ready) {
         opened = false;
@@ -1284,7 +1309,161 @@ QString DocumentTab::pendingEditsSummary() const
     return editor ? editor->pendingSummary() : QString();
 }
 
+DocumentTab::ReadingState DocumentTab::readingState() const
+{
+    ReadingState state;
+    state.page = pageView->currentPage();
+    state.zoom = pageView->zoom();
+    state.zoomMode = pageView->zoomMode();
+    state.layout = pageView->layoutMode();
+    state.rotation = pageView->rotation();
+    state.sidebarTab = sidebar ? sidebar->currentIndex() : -1;
+    return state;
+}
+
+void DocumentTab::restoreReadingState(const ReadingState &state)
+{
+    pageView->setLayoutMode(state.layout);
+    if (state.zoomMode == ZoomController::Mode::Percent)
+        pageView->setZoom(state.zoom);
+    else
+        pageView->setZoomMode(state.zoomMode);
+    pageView->setRotation(state.rotation);
+    // Clamped by the file that was just written: an in-place save can have fewer
+    // pages than the one the reader was on (删除页面), and page 40 of a 20-page file
+    // is not a place to put them.
+    if (state.page > 0 && pageCount() > 0)
+        pageView->goToPage(qMin(state.page, pageCount() - 1));
+    if (sidebar && state.sidebarTab >= 0 && state.sidebarTab < sidebar->count())
+        sidebar->setCurrentIndex(state.sidebarTab);
+}
+
+void DocumentTab::offerSaveAs(const QString &reason)
+{
+    const int choice = WindowDialogs::askChoice(
+        window(), tr("保存"), reason + QStringLiteral("\n\n") + tr("要另存为一份新的吗？"),
+        {tr("另存为…"), tr("取消")}, 0);
+    if (choice == 0)
+        saveEditsAs();
+}
+
 bool DocumentTab::saveEdits()
+{
+    if (!editor || !editor->isDirty())
+        return false;
+    if (hasForegroundJob()) {
+        // A foreground job is holding the tab on the stack and reading the
+        // document; the rules in src/services/foregroundjobs.h are unchanged by
+        // F8, and a replace would pull the file out from under a print.
+        WindowDialogs::warning(window(), tr("保存"),
+                               tr("这个标签正在打印或导出，完成之后才能保存。"));
+        return false;
+    }
+    const QString path = documentPath();
+    if (path.isEmpty())
+        return false;
+
+    // Refused before anything is staged, because each of these is a fact about
+    // where the file is rather than about the bytes: a hidden copy written beside
+    // it would be perfect and still could not go back. 另存为 is the way out, and
+    // the box names it rather than leaving the reader with a Windows error.
+    const QFileInfo source(path);
+    if (!source.exists()) {
+        offerSaveAs(tr("%1 不在了，可能已经被移走，或者网络位置断开了。")
+                        .arg(source.fileName()));
+        return false;
+    }
+    if (isWindowsAppsPath(path)) {
+        offerSaveAs(tr("%1 在 Windows 应用的安装目录里，这个程序改不了它。")
+                        .arg(source.fileName()));
+        return false;
+    }
+    if (!source.isWritable()) {
+        offerSaveAs(tr("%1 是只读文件，写不回去。").arg(source.fileName()));
+        return false;
+    }
+    if (!QFileInfo(source.absolutePath()).isWritable()) {
+        offerSaveAs(tr("%1 所在的文件夹不允许写入。").arg(source.fileName()));
+        return false;
+    }
+    if (editor->pieceCount() > 1) {
+        offerSaveAs(tr("这份文档还带着拆分，写回原文件只能写成一个文件。"));
+        return false;
+    }
+
+    const ReadingState state = readingState();
+    const QString passwordAfter = editor->passwordOfWrittenFile();
+
+    // The copy is written and checked before this tab lets go of anything: a
+    // staging failure leaves the original and the view exactly as they were.
+    QString staged;
+    QString error;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool stagedOk = editor->stageInPlace(&staged, &error);
+    QApplication::restoreOverrideCursor();
+    if (!stagedOk) {
+        WindowDialogs::warning(window(), tr("保存"), error);
+        return false;
+    }
+
+    // No reader of the original may still be inside it when the replace happens:
+    // drainRenders() stops the search, the thumbnails and the export and waits for
+    // them, and backend->close() destroys the QPdfDocument, which is what actually
+    // releases the file (close() alone does not -- see QtPdfBackend::close()). The
+    // order is F8's and cannot move -- ReplaceFileW cannot step on a handle Windows
+    // still sees.
+    //
+    // The renderer is pointed away first. It borrows the QPdfDocument and hands the
+    // same pointer to QPdfPageRenderer, so it has to forget it before the object goes;
+    // loadDocument() points it at the new one.
+    drainRenders();
+    notice->beginSelfWrite();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    renderer->setDocument(nullptr);
+    backend->close();
+    quint32 windowsError = 0;
+    const bool replaced = DocumentEditor::replaceSource(path, staged, &windowsError);
+    QApplication::restoreOverrideCursor();
+
+    if (!replaced) {
+        // The original is byte-identical; the staged file is ours and goes. The
+        // editor was never touched, so the reader keeps their work and the file
+        // they were reading comes back on screen before the box is answered.
+        QFile::remove(staged);
+        notice->endSelfWrite();
+        const Document::Status back = loadDocument(path, documentPassword);
+        if (back == Document::Status::Ready)
+            restoreReadingState(state);
+        offerSaveAs(tr("没能把新文件换上去（Windows 错误 %1）。原来的文件没有改动，"
+                       "这些修改还留在这里。")
+                        .arg(windowsError));
+        return false;
+    }
+
+    // The file now holds the list, so the tab stops being dirty. The reopen uses
+    // the key the written file asks for: a 加密 that was pending replaced the old
+    // one, and a carried /Encrypt still needs the key this tab opened with.
+    editor.reset();
+    Q_EMIT editStateChanged();
+    const Document::Status result = loadDocument(path, passwordAfter);
+    // After loadDocument(), because that starts a fresh watch, and watch()/unwatch()
+    // is where a stale self-write signature is dropped. The size and time are the
+    // bytes we just put there; the watcher's queued event for them is recognized
+    // in FileChangeNotice::onFileChangeSettled() and does not raise the bar.
+    notice->endSelfWrite(QFileInfo(path).size(),
+                         QFileInfo(path).lastModified().toMSecsSinceEpoch());
+    if (result != Document::Status::Ready) {
+        WindowDialogs::warning(
+            window(), tr("保存"),
+            tr("新文件已经放回原处，但重新打开它失败：%1").arg(lastError()));
+        return false;
+    }
+    restoreReadingState(state);
+    Q_EMIT documentSavedInPlace(path);
+    return true;
+}
+
+bool DocumentTab::saveEditsAs()
 {
     if (!editor || !editor->isDirty())
         return false;
@@ -1299,43 +1478,82 @@ bool DocumentTab::saveEdits()
         suggested = source.absolutePath() + QLatin1Char('/') + suggested;
 
     const QString destination = WindowDialogs::getSaveFileName(
-        window(), tr("把这些修改存成一个新文件"), suggested, tr("PDF 文档 (*.pdf)"));
+        window(), tr("另存为"), suggested, tr("PDF 文档 (*.pdf)"));
     if (destination.isEmpty())
         return false;
+
+    QString error;
+    if (saveEditsTo(destination, &error))
+        return true;
+    if (!error.isEmpty())
+        WindowDialogs::warning(window(), tr("另存为"), error);
+    return false;
+}
+
+bool DocumentTab::saveEditsTo(const QString &destination, QString *error)
+{
+    const auto refuse = [error](const QString &why) {
+        if (error)
+            *error = why;
+        return false;
+    };
+    if (destination.isEmpty())
+        return refuse(QString());
+    if (!editor || !editor->isDirty())
+        return refuse(tr("没有待保存的修改。"));
+    if (hasForegroundJob())
+        return refuse(tr("这个标签正在打印或导出，完成之后才能保存。"));
+
+    const ReadingState state = readingState();
+    const QString changes = editor->pendingSummary();
+    const int pages = editor->pageCount();
+    QString writeError;
+    QStringList written;
 
     // Synchronous, with the wait cursor over it, rather than off the thread that
     // draws: QPDF reads the file's structure and copies its streams, and neither
     // needs a renderer, a lock shared with one, or a progress report -- there is
     // one page-tree to read and one file to write, so the dialog this would go in
     // could only spin. docs/store-submission.md §10 has the measured cost.
-    const QString changes = editor->pendingSummary();
-    QString error;
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    QStringList written;
-    const bool done = editor->saveAs(destination, &error, &written);
+    const bool done = editor->saveAs(destination, &writeError, &written);
     QApplication::restoreOverrideCursor();
+    if (!done)
+        return refuse(writeError);
 
-    if (!done) {
-        WindowDialogs::warning(window(), tr("保存修改"), error);
-        return false;
-    }
     AppSettings::setLastOpenDirectory(QFileInfo(destination).absolutePath());
-    // The list is still pending, so the star stays on this tab and 撤销 still has
-    // something to take back: what was written is a copy of the source with the
-    // operations played onto it, not the document being read.
-    Q_EMIT editStateChanged();
     // The name to open comes from the save rather than from the box: under a split the
     // typed name is not a file that exists, and the first piece is. One tab opens even
     // when forty came out, because the check a reader makes on a split set is whether
     // the first file is the one they meant -- and the status line names the count so
     // they know how many are in the folder before going to look.
-    //
-    // The password rides along because the copy may well be locked and the reader has just
-    // typed the key: making them type it again, in a different box, one line after pressing
-    // 确定, is a second chance to get it wrong rather than a feature. Empty here means the
-    // copy opens with no prompt at all.
-    Q_EMIT documentSavedAs(written.isEmpty() ? destination : written.first(), changes,
-                           editor->pageCount(), int(written.size()),
-                           editor->passwordOfWrittenFile());
+    const QString first = written.isEmpty() ? destination : written.first();
+    // The password rides along because the copy may well be locked: making the
+    // reader type the key again, in a different box, one line after pressing
+    // 确定, is a second chance to get it wrong rather than a feature.
+    const QString password = editor->passwordOfWrittenFile();
+
+    // The new file has to be readable before this tab moves to it. If it is not,
+    // the bytes are still there to look at but the document on screen -- and the
+    // pending list in the editor -- stay where they are.
+    {
+        QtPdfBackend probe;
+        if (probe.load(first, password) != Document::Status::Ready) {
+            const QString why = probe.lastError();
+            return refuse(
+                tr("修改已经写成 %1，但这个程序打不开它。原来的文档和这里的修改都还在。"
+                   "\n\n%2")
+                    .arg(first, why));
+        }
+    }
+
+    // open() clears the editor on purpose: the pending list is in the file now,
+    // and this tab is about that file rather than about the one it came from.
+    if (open(first, password) != Document::Status::Ready) {
+        const QString why = lastError();
+        return refuse(why.isEmpty() ? tr("写好的 %1 打不开。").arg(first) : why);
+    }
+    restoreReadingState(state);
+    Q_EMIT documentSavedAs(first, changes, pages, int(written.size()), password);
     return true;
 }

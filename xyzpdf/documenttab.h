@@ -330,7 +330,7 @@ public:
     //
     // What ties these together is that they share one list: 删除页面、旋转页面、
     // 移动页面、合并文件进来、拆分文件、加密 / 去掉口令 and 加水印 record an operation, 撤销
-    // takes the last one back, and 保存修改为 writes whatever the list says. Each of the seven
+    // takes the last one back, and 保存 writes whatever the list says. Each of the seven
     // can be run again before anything is saved.
     //
     // The merge is the one that reaches outside this document: the pages it adds
@@ -368,13 +368,22 @@ public:
     void editOutline();
     void undoEdit();
     void redoEdit();
-    // Names the file to write into, replays the list onto the source and writes
-    // it. Under a 拆分文件 the name that is typed is the one the pieces are cut from:
-    // the same dialog, and N files come out instead of one, all of them staged before
-    // any of them is moved into place. Returns false when there was nothing to save,
-    // the reader backed out of the save box, or the write failed -- in the last case
-    // the reason has already been said, since every caller of this is a menu item.
+    // 保存: replays the list onto the source and puts the result back at the path
+    // this tab is reading (docs/handoff-03.md F8's order: a hidden copy beside the
+    // original, reopened with qpdf to check it, the tab's own reader let go of, then
+    // ReplaceFileW, then reopened). The pending list is cleared on success, because
+    // the file now holds it. Returns false when there was nothing to save, the
+    // reader backed out, or the write failed -- a refusal has already been said, and
+    // offers 另存为 where the reason is the file rather than the edits.
     bool saveEdits();
+    // 另存为…: asks for a name and writes the pending list there. This tab then shows
+    // what was written (the first piece under a 拆分文件) and the file it came from is
+    // untouched. Returns false when there was nothing to save or the box was backed out.
+    bool saveEditsAs();
+    // The same write without the file box: `destination` is the name, and a failure
+    // is answered in `error` rather than in a box. Used by saveEditsAs() and by tests;
+    // empty `destination` is the reader backing out and does nothing.
+    bool saveEditsTo(const QString &destination, QString *error = nullptr);
 
     bool canUndoEdits() const;
     bool canRedoEdits() const;
@@ -435,17 +444,19 @@ Q_SIGNALS:
     // this size in pixels. The window says so: this class has no status bar,
     // and §95 measured that it never did.
     void regionCopied(int width, int height);
-    // An edit wrote a new document: where it is, what the list of operations was
-    // ("删除 3 页"), how many pages the whole document has, how many files came
-    // out -- which is one unless a 拆分文件 was in that list, in which case `path` is
-    // the first piece -- and the password the copy asks for, empty when it asks for none.
-    // The last of those is not the typed one but the one that fits the file that came out
-    // (DocumentEditor::passwordOfWrittenFile()), because a save that carried the source's
-    // own encryption through wrote a copy locked with the key this tab already has. The
-    // window opens the result in a tab of its own -- the tab this came from is still
-    // showing the file the edits were made against, which is the whole design.
+    // 另存为 wrote a new document, and this tab is now showing it: where it is, what
+    // the list of operations was ("删除 3 页"), how many pages the whole document has,
+    // how many files came out -- which is one unless a 拆分文件 was in that list, in
+    // which case `path` is the first piece -- and the password the copy asks for, empty
+    // when it asks for none. The last of those is not the typed one but the one that
+    // fits the file that came out (DocumentEditor::passwordOfWrittenFile()), because a
+    // save that carried the source's own encryption through wrote a copy locked with
+    // the key this tab already has. The window words it; the tab switch has happened.
     void documentSavedAs(const QString &path, const QString &changes, int pageCount,
                          int fileCount, const QString &password);
+    // 保存 wrote the pending list back to the file this tab was already reading, at
+    // the same path. For the status bar; nothing opened and nothing to switch to.
+    void documentSavedInPlace(const QString &path);
     // The list of pending edits changed: something to undo, or nothing left to
     // undo. What the window redraws the 文档 menu and the tab's title from.
     void editStateChanged();
@@ -466,6 +477,32 @@ private:
     // Waits for the renders in flight to come back, before the document under
     // them is replaced. See the note in the definition.
     void drainRenders();
+
+    // Loads `path` and rebuilds every part of the view that reads it, without the
+    // new-document bookkeeping open() does (the editor reset and the reentry guard).
+    // The in-place save calls it twice: once for the file it just replaced, once to
+    // put the untouched original back after a replace that failed -- and the second
+    // of those must not throw the pending list away.
+    Document::Status loadDocument(const QString &path, const QString &password);
+
+    // What the reader is looking at, so that a save that changes the bytes (and an
+    // in-place save whose page count may have changed) does not also move the page,
+    // the zoom, the rotation or the sidebar tab they had chosen.
+    struct ReadingState
+    {
+        int page = 0;
+        double zoom = 1.0;
+        ZoomController::Mode zoomMode = ZoomController::Mode::Percent;
+        PageLayout::Mode layout = PageLayout::Mode::Continuous;
+        int rotation = 0;
+        int sidebarTab = -1;
+    };
+    ReadingState readingState() const;
+    void restoreReadingState(const ReadingState &state);
+
+    // A refusal that is about the file rather than the edits: says why 保存 cannot
+    // write back here and offers 另存为, which is the way out that keeps the work.
+    void offerSaveAs(const QString &reason);
 
     void onPageImageNeeded(const RenderToken &token);
     void onPageRendered(const RenderToken &token, const QImage &image);

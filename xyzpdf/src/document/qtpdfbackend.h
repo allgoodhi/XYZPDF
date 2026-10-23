@@ -53,6 +53,16 @@ public:
     // must not outlive the backend.
     QPdfDocument *pdfDocument() const;
 
+    // Lets go of the file while keeping this object -- and everything holding a
+    // pointer to *this* -- alive. Qt PDF's handle is what stops Windows replacing
+    // the file (F8's in-place save has to let it go first), and the way to let it
+    // go is to destroy the QPdfDocument, which close() alone does not do; an empty
+    // one takes its place, so path(), title() and the view's own questions keep
+    // answering. Whoever borrowed pdfDocument() -- DocumentTab's PageRenderer --
+    // has to have forgotten that pointer before this call, and gets the new one
+    // from the load that follows.
+    void close();
+
 private:
     // A page's text and the boxes of its lines, kept for a few pages.
     //

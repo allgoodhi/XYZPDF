@@ -15,7 +15,7 @@
 // ---- what the reader is agreeing to ----
 //
 // Nothing is written. 拆分文件 records one entry in the undo list, and its whole visible
-// effect is that a later 保存修改为 writes N files instead of one. That is unusual enough
+// effect is that a later 保存 asks for 另存为 and writes N files instead of one. That is unusual enough
 // among the four commands in this menu -- each of which changes which pages exist or
 // where they sit -- that the summary says it in those words, and shows what the first
 // piece of such a set would be called, since a piece's name is derived from a destination

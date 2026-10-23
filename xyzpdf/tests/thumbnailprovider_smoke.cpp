@@ -144,7 +144,11 @@ int main(int argc, char **argv)
 
     SetEnvironmentVariableW(L"PATH", L"C:\\Windows\\System32");
 
-    HMODULE module = LoadLibraryExW(dllPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    // Plain load, no LOAD_WITH_ALTERED_SEARCH_PATH: DllHost looks for the
+    // handler's imports beside itself, not beside the DLL, and that is the only
+    // reason the delay-load hook exists. Handing the loader the DLL's directory
+    // would let a missed delay-load entry pass.
+    HMODULE module = LoadLibraryExW(dllPath.c_str(), nullptr, 0);
     check(module != nullptr, "the provider DLL loads with PATH restricted to System32");
     if (!module) {
         printf("  LoadLibrary of %S failed with 0x%08lX\n", dllPath.c_str(), GetLastError());
@@ -264,6 +268,23 @@ int main(int argc, char **argv)
         }
         DeleteObject(bitmap);
     }
+
+    // The engine actually in this process, against the build's own switch. Same
+    // assertion as the preview handler's, and the same reason: a provider left on
+    // the other backend would still return a picture, so only the module identity
+    // can tell the two apart. Checked once, after a thumbnail has existed -- that
+    // is the call that makes a delay-loaded engine load.
+#if defined(XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+    check(GetModuleHandleW(L"pdfium.dll") != nullptr,
+          "the thumbnail's engine is pdfium.dll, as this build was configured");
+    check(GetModuleHandleW(L"Qt6Pdf.dll") == nullptr,
+          "and Qt's PDF engine is not loaded in this process");
+#else
+    check(GetModuleHandleW(L"Qt6Pdf.dll") != nullptr,
+          "the thumbnail's engine is Qt6Pdf.dll, as this build was configured");
+    check(GetModuleHandleW(L"pdfium.dll") == nullptr,
+          "and PDFium is not loaded in this process");
+#endif
 
     // Refusing a request is better than drawing a wrong one: at zero there is no
     // page to show, and a bitmap of an undefined size is how a tile ends up blank.

@@ -409,9 +409,14 @@ int main(int argc, char **argv)
     // consult for a bare module name is System32, which is where DllHost.exe is.
     // Anything the handler finds otherwise, it finds the way it will in the real
     // host -- or not at all, which is the failure this test exists to catch.
+    // No LOAD_WITH_ALTERED_SEARCH_PATH here: that flag would quietly add the
+    // handler's own directory to the search path for its imports, so a delay-load
+    // entry that went missing would be found anyway, by the wrong mechanism. The
+    // DLL has no static non-system imports (dumpbin -dependents lists them all
+    // under delay load), so a plain load is both the honest model and the strict one.
     SetEnvironmentVariableW(L"PATH", L"C:\\Windows\\System32");
 
-    HMODULE module = LoadLibraryExW(dllPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    HMODULE module = LoadLibraryExW(dllPath.c_str(), nullptr, 0);
     check(module != nullptr, "the handler DLL loads with PATH restricted to System32");
     if (!module) {
         printf("  LoadLibrary of %S failed with 0x%08lX\n", dllPath.c_str(), GetLastError());
@@ -557,6 +562,22 @@ int main(int argc, char **argv)
                   "what it shows now is not the paper it showed while held");
             check(drewSomething(child, 420, 560),
                   "a real document produced a page with ink on it, not a flat rectangle");
+
+            // Which engine this pane actually loaded, asserted against the switch
+            // this build was configured with. A handler still wired to the other
+            // backend loads the other DLL, and F7-D's whole point is that it does
+            // not -- two engines in the package is the state this slice ends.
+#if defined(XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+            check(GetModuleHandleW(L"pdfium.dll") != nullptr,
+                  "the pane's engine is pdfium.dll, as this build was configured");
+            check(GetModuleHandleW(L"Qt6Pdf.dll") == nullptr,
+                  "and Qt's PDF engine is not loaded in this process");
+#else
+            check(GetModuleHandleW(L"Qt6Pdf.dll") != nullptr,
+                  "the pane's engine is Qt6Pdf.dll, as this build was configured");
+            check(GetModuleHandleW(L"pdfium.dll") == nullptr,
+                  "and PDFium is not loaded in this process");
+#endif
 
             const unsigned long before = colourAt(child, 420, 560);
             SendMessageW(child, WM_VSCROLL, MAKEWPARAM(SB_PAGEDOWN, 0), 0);

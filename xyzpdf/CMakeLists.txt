@@ -88,8 +88,9 @@ find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets Network Svg Concurrent
 # asking for the module would make it tempting.
 #
 # Still required in a PDFium-configured build, and not by the program: the tests
-# and the two shell handlers name QtPdfBackend until F7-D/F7-E move them, and
-# they are compiled here. F7-E is where this line and Qt6Pdf.dll leave the build.
+# name QtPdfBackend until F7-E moves them, and they are compiled here. F7-E is
+# where this line and Qt6Pdf.dll leave the build. The two shell handlers used to
+# be in this list; since F7-D they ask the factory like the program does.
 find_package(Qt6 6.7 REQUIRED COMPONENTS Pdf)
 
 # vcpkg installs into ../vcpkg_installed/<triplet> from the repository root, and
@@ -335,10 +336,11 @@ if(XYZPDF_DOCUMENT_BACKEND STREQUAL "pdfium" AND NOT XYZPDF_PDFIUM_AVAILABLE)
 endif()
 
 # Compiles the engine the program was configured with into TARGET, and links
-# exactly that one. Used by the program and by pdfprobe -- the two targets that
-# answer "what does the shipped reader see". Tests and the shell handlers keep
-# naming Qt PDF until F7-D/F7-E move them; each of those lists its backend source
-# itself, so a PDFium-configured build does not accidentally change what they test.
+# exactly that one. Used by the program, by pdfprobe and (since F7-D) by both
+# shell handlers -- every target that exists in the package and so has to answer
+# with the same engine the reader uses. Tests keep naming Qt PDF until F7-E; each
+# of those lists its backend source itself, so a PDFium-configured build does not
+# accidentally change what they test.
 function(xyzpdf_use_document_backend TARGET)
     if(XYZPDF_DOCUMENT_BACKEND STREQUAL "pdfium")
         target_sources(${TARGET} PRIVATE
@@ -1165,6 +1167,13 @@ endif()
 option(XYZPDF_BUILD_PREVIEWHANDLER_SMOKE "Build the preview handler smoke test" OFF)
 if(XYZPDF_BUILD_PREVIEWHANDLER_SMOKE AND WIN32)
     xyzpdf_add_test(previewhandler_smoke LIBRARIES ole32)
+    # The test watches which engine DLL ends up in its process, and the answer it
+    # expects is this build's switch. A handler wired to the other backend -- the
+    # failure F7-D exists to prevent -- reddens that line instead of passing.
+    if(XYZPDF_DOCUMENT_BACKEND STREQUAL "pdfium")
+        target_compile_definitions(xyzpdf_previewhandler_smoke PRIVATE
+                                   XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+    endif()
 endif()
 
 # The thumbnail provider, driven the same way and for the same reason: it is a DLL
@@ -1177,6 +1186,10 @@ endif()
 option(XYZPDF_BUILD_THUMBNAILPROVIDER_SMOKE "Build the thumbnail provider smoke test" OFF)
 if(XYZPDF_BUILD_THUMBNAILPROVIDER_SMOKE AND WIN32)
     xyzpdf_add_test(thumbnailprovider_smoke LIBRARIES ole32 gdi32)
+    if(XYZPDF_DOCUMENT_BACKEND STREQUAL "pdfium")
+        target_compile_definitions(xyzpdf_thumbnailprovider_smoke PRIVATE
+                                   XYZPDF_DOCUMENT_BACKEND_PDFIUM)
+    endif()
 endif()
 
 # The context menu verb, both halves: the command line building is compiled in and
@@ -1300,9 +1313,9 @@ endif()
 #
 # It goes through the same Document seam as the reader, so a page cannot look one
 # way in the window and another way in the pane. That is three source files of the
-# document layer, which is the cost of the seam being the only place Qt PDF is
-# named -- and the proof that it is a usable seam, being a second consumer that
-# asked for no changes to it.
+# document layer plus whichever backend the build carries -- the cost of the seam
+# being the only place an engine is named, and the proof that it is a usable seam,
+# being two more consumers that asked for no changes to it.
 #
 # QT_NO_VERSION_TAGGING: Qt's version tag is an imported *data* symbol, and a data
 # symbol cannot be delay loaded -- with it, /DELAYLOAD:Qt6Core.dll is rejected
@@ -1310,17 +1323,31 @@ endif()
 # wrong Qt; this DLL loads the Qt that sits beside it, by full path, so there is
 # no wrong Qt for it to meet. See previewdependencies.cpp for why the full path.
 if(WIN32)
+    # Which engine DLL the two handlers delay-load follows the build switch. Qt's
+    # Qt6Pdf.dll sits among the Qt DLLs; PDFium's pdfium.dll is self-contained
+    # (docs/pdfium-plan.md sec.6.1). The reason to delay-load is the same either
+    # way: the library lives beside our DLL, not beside DllHost.exe.
+    if(XYZPDF_DOCUMENT_BACKEND STREQUAL "pdfium")
+        set(XYZPDF_ENGINE_DELAYLOAD /DELAYLOAD:pdfium.dll)
+    else()
+        set(XYZPDF_ENGINE_DELAYLOAD /DELAYLOAD:Qt6Pdf.dll)
+    endif()
+
     add_library(xyzpdfpreview SHARED
         src/windows/previewhandler.cpp
         src/windows/previewdependencies.h
         src/windows/previewdependencies.cpp
         src/windows/previewhandler.def
         src/document/documentfactory.cpp
-        src/document/qtpdfbackend.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp)
+    # The configured engine, and only it: the package carries one backend, and the
+    # pane has to show the one the window shows. Before F7-D this list named
+    # qtpdfbackend.cpp directly, which meant a PDFium-configured package still put
+    # Qt PDF in the pane.
+    xyzpdf_use_document_backend(xyzpdfpreview)
     target_link_libraries(xyzpdfpreview PRIVATE
-        Qt6::Core Qt6::Gui Qt6::Pdf
+        Qt6::Core Qt6::Gui
         ole32 shell32 user32 gdi32 delayimp)
     target_compile_definitions(xyzpdfpreview PRIVATE QT_NO_VERSION_TAGGING
                                                     XYZPDF_SHELL_HANDLER)
@@ -1332,9 +1359,18 @@ if(WIN32)
     target_link_options(xyzpdfpreview PRIVATE
         /DELAYLOAD:Qt6Core.dll
         /DELAYLOAD:Qt6Gui.dll
-        /DELAYLOAD:Qt6Pdf.dll)
+        ${XYZPDF_ENGINE_DELAYLOAD})
     set_target_properties(xyzpdfpreview PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    # The delay-load hook finds the engine beside this DLL. The program's own
+    # POST_BUILD copy also puts pdfium.dll here, but a target that can be built on
+    # its own should not depend on another target having been built first.
+    if(XYZPDF_DOCUMENT_BACKEND STREQUAL "pdfium")
+        add_custom_command(TARGET xyzpdfpreview POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "$<TARGET_FILE_DIR:xyzpdfpreview>"
+            VERBATIM)
+    endif()
     install(TARGETS xyzpdfpreview
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -1343,8 +1379,8 @@ if(WIN32)
     # Its own DLL because that is the layout docs/PLAN.md §3.3 prescribes, and
     # because COM gives each surrogate CLSID its own DllHost process -- the two are
     # never in the same process whatever the file layout, so splitting them costs
-    # nothing but the three document sources below, which is the price of the
-    # seam being the only place Qt PDF is named.
+    # nothing but the three document sources below plus the configured backend,
+    # which is the price of the seam being the only place an engine is named.
     #
     # The delay-load options and QT_NO_VERSION_TAGGING are the same argument as the
     # one recorded on the target above; previewdependencies.cpp is compiled into
@@ -1355,20 +1391,26 @@ if(WIN32)
         src/windows/previewdependencies.cpp
         src/windows/thumbnailprovider.def
         src/document/documentfactory.cpp
-        src/document/qtpdfbackend.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp)
+    xyzpdf_use_document_backend(xyzpdfthumbnail)
     target_link_libraries(xyzpdfthumbnail PRIVATE
-        Qt6::Core Qt6::Gui Qt6::Pdf
+        Qt6::Core Qt6::Gui
         ole32 gdi32 delayimp)
     target_compile_definitions(xyzpdfthumbnail PRIVATE QT_NO_VERSION_TAGGING
                                                        XYZPDF_SHELL_HANDLER)
     target_link_options(xyzpdfthumbnail PRIVATE
         /DELAYLOAD:Qt6Core.dll
         /DELAYLOAD:Qt6Gui.dll
-        /DELAYLOAD:Qt6Pdf.dll)
+        ${XYZPDF_ENGINE_DELAYLOAD})
     set_target_properties(xyzpdfthumbnail PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    if(XYZPDF_DOCUMENT_BACKEND STREQUAL "pdfium")
+        add_custom_command(TARGET xyzpdfthumbnail POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${XYZPDF_PDFIUM_ROOT}/bin/pdfium.dll" "$<TARGET_FILE_DIR:xyzpdfthumbnail>"
+            VERBATIM)
+    endif()
     install(TARGETS xyzpdfthumbnail
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 

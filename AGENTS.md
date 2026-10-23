@@ -99,7 +99,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saverename|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice`（二十三种模式
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice`（二十五种模式；`saverename` 仍收，是 `saveas` 的别名
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -153,7 +153,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   pathforms 自带两根硬 Bail：R1 反斜杠**必须**打进我们的标题、R5 一个不存在的文件**必须**打不进（R5 那行
   `folderShowsTarget=True`：框正显示目标所在目录却什么都没开 —— **"看得见"不是"接受了"**）；`-Doc` 与 `-Target`
   同名就直接拒跑，因为启动实例的标题里本来就有那个文件名，"标题变了没"在碰框之前就已经是 True。
-  还有一条量出来的产品行为：应用那一格"最近目录"是**打开与保存共用的**，一次 `保存修改为` 也会改写它，
+  还有一条量出来的产品行为：应用那一格"最近目录"是**打开与保存共用的**，一次「另存为」也会改写它，
   所以下一轮 picker 可能落在你上次存出去的那个目录里（§62 那问的是第三个来源）。
   `build-local-release/gui-verify/` 下那些是历次草稿，在 gitignore 的构建树里、丢了找不回来 ——
   量出可用的新路由就收进 `tools/gui-probe.ps1`
@@ -170,6 +170,30 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   现造，多了 `xfa-dynamic.pdf` 与 `thread-across-pages.pdf`。**启动前指针先挪到屏幕角**（`ParkCursorAway`）：
   指针恰好停在工具栏上时，新窗口一出现就收到悬停，状态栏读到的是那颗按钮的提示 —— 读状态栏的模式都受这一条管。
   同意框（要先有密钥）**不上屏幕**：探针一律不写 Windows 凭据。
+- **会按保存的探针模式只开它自己复制出来的那份**（§118，handoff-04 G2）：`saveinplace` / `closeprompt` /
+  `saveas` 先把 `-Doc` 复制进 `%TEMP%\xyzpdf-gui-probe\save-<随机>\`，原件跑前、每次 Bail、跑完各比一次 sha256，
+  动了就 exit 1。`-Installed` 下护栏自己把副本交给 picker（副本名每趟现取，调用方不可能事先知道）。
+  判"真写进去了"不要只看哈希变没变：qpdf 每次重写带新的时间戳与文档 ID，同一份改动存两次字节就不同，
+  三个模式都另查副本里有没有 `/Rotate 90`。三答框里的按钮按**名字完全相等**挑 —— `Save` 是 `Don't Save` 的子串，
+  挑错就写了文件。
+- **关窗三答框是「保存 / 不保存 / 取消」**（§118）：`WindowDialogs::askSaveBeforeClosing()`，标准按钮（按角色挑），
+  只把 Discard 改写成「不保存(&N)」/ `Do&n't Save` —— Qt 自带目录给的是「丢弃 / Discard」（扔掉），不是 Windows 上
+  对"要先保存吗？"的回答。
+- **表单填写**（§118，handoff-04 G1）：能力是 `Document` 之外的第二个接口 `src/document/formfill.h`，`DocumentTab`
+  用 `dynamic_cast` 取，所以只读的类型碰不到写路径。量到的三件定了写法：点击换算一律 `FPDF_DeviceToPage` /
+  `PageToDevice`（页面自己的未旋转 user space，原点左下）；读 `/V` 用 `FPDFAnnot_GetFormFieldValue`（`GetStringValue(
+  "/V")` 对同一份文件答空串）；**还带焦点的字不在 `FPDF_SaveAsCopy` 写出的字节里**，先 `FORM_ForceToKillFocus` 再写。
+  保存是两段：PDFium 先写同目录隐藏暂存，有结构修改时 `DocumentEditor` 以它为来源再写第二份，验证后走 F8 那条
+  `ReplaceFileW`。`FPDF_SaveAsCopy` **保留加密与权限**（量过 R3/RC4）。`FFI_SetTimer` 用 Win32 `SetTimer` 不用 `QTimer`：
+  这份源码也编进两颗 `/DELAYLOAD` 的壳 DLL，`QTimer::staticMetaObject` 是数据符号、延迟加载不了（LNK1194）。
+  字段撤销是逐键的（打 5 个字要撤 5 次）。没有 V8：字段脚本不跑，开屏说一句。
+- **识别器要按文字的族挑**（§118，handoff-04 G3）：`pickEngine()` 按用户语言顺序拿引擎，这台机器是 zh-Hans-CN 在前，
+  于是拉丁文字交给了中文引擎 —— 它把 "XYZPDF" 的 X 读成 ")("（14 种预处理里 4 种读对），en-US 引擎 14/14 全对；
+  反过来 en-US 对中文图回空。现在第一趟的回答自己说明"不是我这一族"时（一个字没读出、或 CJK 引擎读出的东西里没有
+  CJK 字）再问另一族的第一个引擎，非空才采纳；只装一族的机器行为不变。离屏平台（offscreen）上 Qt 没有字体，
+  画中文图测识别要在真实平台的测试里（`ocr_smoke`）。`tests/ocrprobe.cpp` 是那张 28 格表的判据。
+- **菜单助记字母不重复由测试管着**（§118，handoff-04 G4）：`mainwindow_smoke` 中英各遍历一次菜单栏与所有子菜单，
+  同一菜单里撞字母就红并点名两项。页面右键菜单是栈上临时构造的，没进这条（眼睛核过：复制 C、翻译 T）。
 - **有时限的状态栏消息一律走 `MainWindow::setStatusMessage`**（§114）：直接调 `showMessage` 的那条通知
   会被工具栏悬停的 status tip 永久抹掉（提示替换消息并停掉计时器，指针离开时空提示清栏）。
   `MainWindow::event` 在提示盖上时暂停那条通知的计时、提示走了就带着剩下的时间放回来。

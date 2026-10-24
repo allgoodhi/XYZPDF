@@ -121,6 +121,11 @@ public:
     bool stageFieldValues(const QString &directory, QString *staged, QString *error) override;
 
 private:
+    // The Word export's reader of page objects (src/document/pdfiumcontent.cpp). A
+    // friend rather than a member so that only the targets that export link it: the
+    // two shell DLLs and most tests never see that file.
+    friend struct PdfiumContentReader;
+
     struct Impl;
     std::unique_ptr<Impl> impl;
 };

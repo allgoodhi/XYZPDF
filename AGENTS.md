@@ -219,6 +219,18 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   `ReplaceFileW`。`FPDF_SaveAsCopy` **保留加密与权限**（量过 R3/RC4）。`FFI_SetTimer` 用 Win32 `SetTimer` 不用 `QTimer`：
   这份源码也编进两颗 `/DELAYLOAD` 的壳 DLL，`QTimer::staticMetaObject` 是数据符号、延迟加载不了（LNK1194）。
   字段撤销是逐键的（打 5 个字要撤 5 次）。没有 V8：字段脚本不跑，开屏说一句。
+- **转 Word 是"排出来像 PDF"，不是"把字抽出来"**（§124 重写）：`pdfiumcontent.cpp` 把一页读成 `PageContent`
+  （每个字的墨框/占位框/基线/字号/字体/粗细/颜色/绘制顺序，路径，图片原字节，链接）→ `pageanalysis.cpp` 的 `analysePage()`
+  排成 `LayoutPage`（`layoutmodel.h`）→ `DocxWriter`。每页一节、页面尺寸照搬；段落**保留 PDF 的换行**（`w:br`）+ 精确行距；
+  **每一行用 GDI 量出 Word 会排多宽，差额写成字符间距**（`AdvanceWidths`），否则 Word 的字宽比 PDF 宽一点就多折一行、
+  整页往下推 —— 172 页的书曾回来 303 页。缩进按**笔位**（loose 框）不按墨框：中文字的墨比占位窄近 1pt，按墨算正好让最后一个字折行。
+  **判据只有图**：导出 → WPS 打成 PDF → 逐页渲染对比；第一道数是**页数**（书 172 → 172）。这台机器上 COM 的 `Word.Application`
+  答话的是 WPS（`E:\wps`）。几条量出来的规矩：PDF 里的空格要看"下一个字有没有真的前进过它的半格"（"1 9 8 3" 是排版软件的负字距）；
+  粗细按**字体那一面**比（含 `,Italic` 那段，不能按映射后的家族）；页眉页脚要**从页边往里连续**（一行代码碰巧重复两次不是页脚）；
+  被后画的不透明形状盖住的字不写；整页是图纸（≥300 条线、字平均不到 8 个一段）或扫描（图占 60% 以上、字 ≤40）就整页成图；
+  名字说不出字体（`CIDFont+F2`）时用内嵌字体自己的家族名。
+- **bash heredoc 里写 C++ 不要带反斜杠**（§124 踩了四次）：这个环境的 Bash 工具会把 heredoc 里的 `\n` `\\d` `\\0` 先吃掉一层，
+  `"\n"` 变成真换行（C2001）、正则 `\\d` 变成 `\d`、`'\\0'` 变成真 NUL 字节（`grep` 报 "Binary file matches"）。带反斜杠的改动用 Edit/Write。
 - **识别器要按文字的族挑**（§118，handoff-04 G3）：`pickEngine()` 按用户语言顺序拿引擎，这台机器是 zh-Hans-CN 在前，
   于是拉丁文字交给了中文引擎 —— 它把 "XYZPDF" 的 X 读成 ")("（14 种预处理里 4 种读对），en-US 引擎 14/14 全对；
   反过来 en-US 对中文图回空。现在第一趟的回答自己说明"不是我这一族"时（一个字没读出、或 CJK 引擎读出的东西里没有

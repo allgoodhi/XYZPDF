@@ -248,6 +248,24 @@ int dumpFields(const QString &path)
                                       .toStdString()
                                   : std::string("(none)"))
                       << " value=[" << asciiSafe(text).toStdString() << "]\n";
+            // A choice field's answer is not the whole answer: a multi-select list box's
+            // /V is an array, and FPDFAnnot_GetFormFieldValue answers only its first
+            // entry (measured in handoff-05 H1: five options, three picked, one value).
+            // The per-option reads below are the library's own answer to "which rows
+            // are selected", which is what the screen modes need to check a Ctrl+click
+            // and what no string read can produce. Printed as separate lines rather
+            // than squeezed into FIELD so the existing line's shape does not change.
+            if (form) {
+                const int options = FPDFAnnot_GetOptionCount(form, annot);
+                for (int option = 0; option < options; ++option) {
+                    FPDF_WCHAR label[256] = {0};
+                    FPDFAnnot_GetOptionLabel(form, annot, option, label, sizeof(label));
+                    std::cout << "OPTION field=[" << asciiSafe(fromWide(name)).toStdString()
+                              << "] index=" << option << " label=["
+                              << asciiSafe(fromWide(label)).toStdString() << "] selected="
+                              << (FPDFAnnot_IsOptionSelected(form, annot, option) ? 1 : 0) << '\n';
+                }
+            }
             ++fields;
             FPDFPage_CloseAnnot(annot);
         }
@@ -283,6 +301,27 @@ int dumpFields(const QString &path)
 //     the harness has to scroll to is a field whose rectangle it has to recompute
 //     after the scroll -- and a stale rectangle clicks somewhere else quietly.
 //
+// handoff-06 H5 added the three choice fields the H2 sample did not carry: a
+// closed combo box, an editable combo box, and a multi-select list box. Their
+// placement is the measurement rather than a layout choice:
+//
+//   * the combo sits at the bottom of the page with nothing under it, because the
+//     popup PDFium paints hangs BELOW the field and the mode reads its ink there --
+//     a text field under the popup would put its own glyphs into that region and a
+//     "the list is open" count would then be a count of something else;
+//   * the list box is tall enough for four rows at the fit-the-whole-page zoom the
+//     form modes settle at, so each row is a band of ink the mode can click, and
+//     the rows are short words rather than sentences so no row wraps;
+//   * the editable combo sits in the right-hand column at the height of beta, in
+//     space nothing else uses, because it is clicked and typed into and its own
+//     rectangle must not overlap the combo's popup region.
+//
+// The /Ff values are the ones tests/formsample.h measured off the library
+// (PDF 32000-1 table 229 counting bits from 1): Combo 1<<17, Edit 1<<18,
+// MultiSelect 1<<21. A multi-select list's /V is an array (table 226); the
+// sample starts with no /V at all, which is the honest empty state, and the
+// screen mode's first read asserts that none of the four options is selected.
+//
 // The object numbers are planned, not counted, and they follow the layout
 // tests/formsample.h writes, because that is where widgetBody()'s fixed
 // "/P 4 0 R" comes from: the page has to be object 4. Every slot the xref
@@ -303,19 +342,27 @@ int writeFormSample(const QString &path)
     const QRectF gamma{60, 560, 200, 30};
     const QRectF delta{60, 490, 200, 30};
     const QRectF agree{60, 430, 16, 16};
+    // Four rows at the whole-page zoom; the mode finds them as ink bands inside this
+    // rectangle rather than assuming PDFium's row height.
+    const QRectF list{60, 300, 200, 88};
+    // Nothing below it: the popup is painted under this field and read there.
+    const QRectF choice{60, 210, 200, 28};
+    // Right-hand column, clear of the popup's x range and of every label.
+    const QRectF typeable{330, 620, 180, 28};
 
-    QVector<QByteArray> objects(18);
+    QVector<QByteArray> objects(21);
     objects[1] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>";
     objects[2] = "<< /Type /Pages /Kids [4 0 R] /Count 1 >>";
     // /AcroForm exactly as tests/formsample.h writes it -- no /NeedAppearances:
     // the headless sample does not carry it either, and a viewer told to rebuild
     // every appearance is a viewer that may rebuild the checkbox's painted /Yes,
     // which is the pixel difference formcheck reads.
-    objects[3] = QByteArray("<< /Type /AcroForm /Fields [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R]"
+    objects[3] = QByteArray("<< /Type /AcroForm /Fields [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R "
+                            "18 0 R 19 0 R 20 0 R]"
                             " /DA (/Helv 12 Tf 0 g ) /DR << /Font << /Helv 11 0 R >> >> >>");
     objects[4] = QByteArray("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate 0"
                             " /Resources << /Font << /Helv 11 0 R >> >> /Contents 10 0 R"
-                            " /Annots [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R] >>");
+                            " /Annots [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 18 0 R 19 0 R 20 0 R] >>");
     // /V empty rather than absent: a field with no /V at all is the shape the
     // reader's own save has to fill in, and the harness's first reading of the
     // file then says nothing about what typing did. The order of /Fields is also
@@ -331,15 +378,33 @@ int writeFormSample(const QString &path)
     objects[9] = FormSampleFile::widgetBody(
         QStringLiteral("agree"), "/Btn", agree,
         " /V /Off /AS /Off /MK << /CA 8 >> /AP << /N << /Off 16 0 R /Yes 17 0 R >> >>");
+    // The three choice shapes H5 puts on screen. /V () is the empty answer for both
+    // combos: an empty string, which is what a reader's first keypress replaces. The
+    // list box carries no /V at all -- an empty selection is the absence of a value,
+    // and the array table (226) has no entry that means "nothing selected".
+    objects[18] = FormSampleFile::widgetBody(
+        QStringLiteral("list"), "/Ch", list,
+        " /Ff 2097152 /Opt [(one) (two) (three) (four)] /DA (/Helv 12 Tf 0 g )");
+    objects[19] = FormSampleFile::widgetBody(
+        QStringLiteral("choice"), "/Ch", choice,
+        " /Ff 131072 /V () /Opt [(red) (green) (blue) (amber)] /DA (/Helv 12 Tf 0 g )");
+    objects[20] = FormSampleFile::widgetBody(
+        QStringLiteral("typeable"), "/Ch", typeable,
+        " /Ff 393216 /V () /Opt [(red) (green) (blue) (amber)] /DA (/Helv 12 Tf 0 g )");
     // The labels, to the right of the four boxes and beside the checkbox, in the
     // page's own content stream so they are page ink and not a field's face: a
-    // label inside a field would be typed over by the first keystroke.
+    // label inside a field would be typed over by the first keystroke. The three
+    // new ones sit to the right of their boxes -- outside every rectangle the modes
+    // measure, including the combo's popup region, which is the field's own width.
     const QByteArray labels
         = QByteArray("BT /Helv 11 Tf 1 0 0 1 270 710 Tm (alpha) Tj ET\n"
                      "BT /Helv 11 Tf 1 0 0 1 270 640 Tm (beta) Tj ET\n"
                      "BT /Helv 11 Tf 1 0 0 1 270 570 Tm (gamma) Tj ET\n"
                      "BT /Helv 11 Tf 1 0 0 1 270 500 Tm (delta) Tj ET\n"
-                     "BT /Helv 11 Tf 1 0 0 1 90 434 Tm (agree) Tj ET\n");
+                     "BT /Helv 11 Tf 1 0 0 1 90 434 Tm (agree) Tj ET\n"
+                     "BT /Helv 11 Tf 1 0 0 1 270 380 Tm (list) Tj ET\n"
+                     "BT /Helv 11 Tf 1 0 0 1 270 218 Tm (choice) Tj ET\n"
+                     "BT /Helv 11 Tf 1 0 0 1 520 630 Tm (typeable) Tj ET\n");
     objects[10] = QByteArray("<< /Length ") + QByteArray::number(labels.size())
         + QByteArray(" >>\nstream\n") + labels + QByteArray("endstream");
     objects[11] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
@@ -383,11 +448,12 @@ int writeFormSample(const QString &path)
     FPDF_CloseDocument(check);
     FPDF_DestroyLibrary();
     // One line per box rather than a sentence that has to be edited when a field
-    // is added: the five rectangles above are the claim, and this is the same
+    // is added: the eight rectangles above are the claim, and this is the same
     // claim read back, so a field placed off the page or under another one shows
     // up here before a screen round wastes itself on it.
     const QVector<QPair<const char *, QRectF>> boxes{
-        {"alpha", alpha}, {"beta", beta}, {"gamma", gamma}, {"delta", delta}, {"agree", agree}};
+        {"alpha", alpha}, {"beta", beta}, {"gamma", gamma}, {"delta", delta}, {"agree", agree},
+        {"list", list}, {"choice", choice}, {"typeable", typeable}};
     for (const auto &box : boxes) {
         std::cout << "box " << box.first << '=' << box.second.x() << ',' << box.second.y() << ' '
                   << box.second.width() << 'x' << box.second.height() << '\n';

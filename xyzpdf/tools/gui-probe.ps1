@@ -161,16 +161,35 @@
                      is on the composition string: if it does not land, this mode exits 1 with all
                      three readings printed. -Control requests no context on the app window and sends
                      no composition, still expects the two characters in gamma, and exits 1.
+      formcombo      the combo box, three rounds: (1) press its own dropdown button, require the ink
+                     BELOW the field to go from 0 to a painted list whose rows are dark ink bands,
+                     press the second band and require the saved file's value to be the file's second
+                     option; (2) the same list opened by Alt+Down while the field holds the keyboard,
+                     third band pressed, the file's THIRD option required -- a different answer on
+                     purpose, so a stale round-1 value cannot pass it; (3) the editable combo: click,
+                     type a made-up token, save, read it back. Every round ends in Ctrl+S and in the
+                     file's own answer, so "the popup painted" and "the value persisted" stay two
+                     separate readings. -Control presses no dropdown button and no key: it focuses the
+                     field, saves, requires the value to stay empty, and exits 1.
+      formlist       the multi-select list box: a plain press on the first row, then Ctrl+press on the
+                     third, then Ctrl+S -- and the saved file must answer BOTH rows, read off the
+                     per-option lines pdfprobe prints (a multi-select /V is an array and the ordinary
+                     value read answers only its first entry). Row positions are ink bands inside the
+                     field's own rectangle, measured off the picture, not assumed from PDFium's row
+                     height. -Control's second press is plain, so the file answers the last row only
+                     and the mode exits 1 -- which is what makes the Ctrl in the positive a cause.
 
-    THE FORM MODES. The four above are handoff-05 H2: form filling had been measured only in
-    headless tests (sec.118 says so), so nothing in it had ever been on a screen. They aim at a
-    sample this harness makes itself -- %TEMP%\xyzpdf-gui-probe\form-screen.pdf, written by
-    xyzpdf_pdfprobe --write-form-sample beside the -Exe that was handed in: four text fields and a
-    checkbox on one unrotated page, each with a label in the page's own content stream. Field
-    rectangles are read back out of the copy the app opened (--fields), never typed into this file,
-    so the arithmetic that turns one into a screen point is checked against the same bytes the
-    reader is looking at. All four press Ctrl+S, so all four are save modes and all four open the
-    guard's copy rather than whatever -Doc named.
+    THE FORM MODES. formfill/formtab/formcheck/formime are handoff-05 H2: form filling had been
+    measured only in headless tests (sec.118 says so), so nothing in it had ever been on a screen.
+    formcombo/formlist are handoff-06 H5: H1's choice fields (two combos, one multi-select list)
+    existed only in headless tests when H2 wrote the first four. All six aim at a sample this
+    harness makes itself -- %TEMP%\xyzpdf-gui-probe\form-screen.pdf, written by
+    xyzpdf_pdfprobe --write-form-sample beside the -Exe that was handed in: four text fields, a
+    checkbox, a list box and two combos on one unrotated page, each with a label in the page's own
+    content stream. Field rectangles are read back out of the copy the app opened (--fields), never
+    typed into this file, so the arithmetic that turns one into a screen point is checked against
+    the same bytes the reader is looking at. All six press Ctrl+S, so all six are save modes and
+    all six open the guard's copy rather than whatever -Doc named.
 
     THE SAVE GUARD. The three modes above press Ctrl+S, Ctrl+Shift+S or the Save answer of a
     question box, and every one of those writes a PDF. None of them is allowed to write a file
@@ -210,7 +229,11 @@
       ... -Mode formtab -Doc xyzpdf/tests/fixtures/text.pdf
       ... -Mode formcheck -Doc xyzpdf/tests/fixtures/text.pdf
       ... -Mode formime -Doc xyzpdf/tests/fixtures/text.pdf
-      The four form modes replace -Doc with the sample they make, so the path handed in is only what
+      ... -Mode formcombo -Doc xyzpdf/tests/fixtures/text.pdf -Log H:/tmp/formcombo-en.txt
+      ... -Mode formcombo -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      ... -Mode formlist -Doc xyzpdf/tests/fixtures/text.pdf -Log H:/tmp/formlist-en.txt
+      ... -Mode formlist -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      The six form modes replace -Doc with the sample they make, so the path handed in is only what
       the guard hashes and copies; a fixtures path is fine and is not opened.
       The three above write nothing outside %TEMP%\xyzpdf-gui-probe\save-<random>\: -Doc is copied
       and never opened, so a fixtures path is a perfectly good thing to hand them.
@@ -221,7 +244,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -270,7 +293,9 @@ param(
   # And so do the three save modes: saveinplace leaves Ctrl+S unpressed, closeprompt closes a
   # document nothing has edited, saveas presses neither the chord nor the menu row -- each keeps the
   # verdict it is written against, so each has to exit 1 rather than quietly report a save it never
-  # made.
+  # made. The six form modes read it the same way: formfill types nothing, formtab skips the Tab,
+  # formcheck clicks nothing, formime sends no composition, formcombo never opens the dropdown,
+  # formlist's second press drops the Ctrl -- and every one of them keeps its verdict.
   [switch]$Control,
   # Run against the installed package instead of the build tree. It cannot be started by exe
   # path (WindowsApps blocks that) and takes no file argument (no AppExecutionAlias is declared),
@@ -434,6 +459,40 @@ public static class W32 {
   public const uint INPUT_MOUSE = 0;
   public const uint MOUSEEVENTF_WHEEL = 0x0800;
   public const ushort VK_CONTROL = 0x11;
+  public const ushort VK_ALT = 0x12;
+  // One modifier held around OTHER input, for the two gestures H5 needs and PressVk cannot
+  // express: Ctrl+click on a multi-select list's second row, and Alt+Down on a combo box.
+  // Sent as its own SendInput call rather than bundled with the mouse/key event, because the
+  // click is W32::Click (mouse_event) and merging the two APIs in one array is not something
+  // this file has measured; the key state is read when Qt processes the later message, which
+  // is exactly what a held key is.
+  public static uint KeyDown(ushort vk) {
+    INPUT[] inp = new INPUT[1];
+    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = vk;
+    inp[0].ki.wScan = (ushort)MapVirtualKeyW(vk, 0);
+    return SendInput(1, inp, 40);
+  }
+  public static uint KeyUp(ushort vk) {
+    INPUT[] inp = new INPUT[1];
+    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = vk; inp[0].ki.dwFlags = KEYEVENTF_KEYUP;
+    inp[0].ki.wScan = (ushort)MapVirtualKeyW(vk, 0);
+    return SendInput(1, inp, 40);
+  }
+  // Alt held between the two halves of one virtual key -- the shape the product reads for
+  // "open the combo's list" (pageview passes the event and the backend turns Alt+Down into a
+  // press on the field's own dropdown button, measured in handoff-05 H1).
+  public static uint PressAltVk(ushort vk) {
+    INPUT[] inp = new INPUT[4];
+    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = VK_ALT;
+    inp[0].ki.wScan = (ushort)MapVirtualKeyW(VK_ALT, 0);
+    inp[1].type = INPUT_KEYBOARD; inp[1].ki.wVk = vk;
+    inp[1].ki.wScan = (ushort)MapVirtualKeyW(vk, 0);
+    inp[2].type = INPUT_KEYBOARD; inp[2].ki.wVk = vk; inp[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    inp[2].ki.wScan = (ushort)MapVirtualKeyW(vk, 0);
+    inp[3].type = INPUT_KEYBOARD; inp[3].ki.wVk = VK_ALT; inp[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    inp[3].ki.wScan = (ushort)MapVirtualKeyW(VK_ALT, 0);
+    return SendInput(4, inp, 40);
+  }
   // Ctrl+wheel, because that is the ONLY zoom route this product has (pageview.cpp's wheelEvent
   // takes Ctrl+wheel and nothing else; there is no zoom menu and no Ctrl+/- shortcut). The form
   // modes need the whole page in one picture, and a page opened at fit-width is twice as tall as
@@ -1608,8 +1667,8 @@ function ReplyCount([string]$summary) {
 # presses Ctrl+S, so each of them writes a PDF, and the file they write has to be one this script
 # made. They do not even open the -Doc that was handed in -- see the sample hook below.
 $script:saveModes = @('saveinplace', 'closeprompt', 'saveas', 'saverename',
-                      'formfill', 'formtab', 'formcheck', 'formime')
-$script:formModes = @('formfill', 'formtab', 'formcheck', 'formime')
+                      'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist')
+$script:formModes = @('formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist')
 $script:guardArmed = $false
 $script:guardBroken = $false
 $script:guardOrig = ''
@@ -1834,10 +1893,11 @@ function Wait-Status([int]$procId, [string[]]$needles, [int]$rounds = 40) {
 }
 
 # ---- the form modes' shared routes ------------------------------------------------------
-# Four modes, one page, five fields, and every one of them does the same three things: aim at a
-# field on the screen, change it, and read the file back. The routes live here once because
-# sec.87's lesson is about harnesses as much as products -- a second copy of a route is how one of
-# the four ends up working in only one language.
+# Six modes, one page, eight fields (the four text boxes and the checkbox of handoff-05 H2, plus
+# the list box and the two combos handoff-06 H5 added), and every one of them does the same three
+# things: aim at a field on the screen, change it, and read the file back. The routes live here
+# once because sec.87's lesson is about harnesses as much as products -- a second copy of a route
+# is how one of the six ends up working in only one language.
 function UForm([string]$s) {
   # The PowerShell twin of pdfprobe's asciiSafe(): printable ASCII stays as it is, everything else
   # becomes U+XXXX, space separated. A field value has to be compared exactly and this file must
@@ -1861,6 +1921,10 @@ function Read-FormFields([string]$path, [string]$tag) {
   foreach ($l in @($raw)) { Say ('  ' + $tag + ' |' + $l + '|') }
   if ($LASTEXITCODE -ne 0) { Bail ('  ' + $tag + ': --fields exited ' + $LASTEXITCODE + ' on [' + $path + ']') }
   $fields = @()
+  # Per-option reads, one list per choice field. A multi-select list's /V is an array and the
+  # FIELD line above carries only its first entry (handoff-05 H1 measured that), so "both rows
+  # are still selected" cannot be a value comparison -- it is these lines or nothing.
+  $script:ffOptions = @{}
   foreach ($l in @($raw)) {
     $t = "$l"
     if ($t -match '^pages:\s*(\d+)\s*$') { $script:ffPages = [int]$Matches[1] }
@@ -1870,6 +1934,14 @@ function Read-FormFields([string]$path, [string]$tag) {
       $script:ffMediaL = [double]$Matches[2]; $script:ffMediaB = [double]$Matches[3]
       $script:ffMediaR = [double]$Matches[4]; $script:ffMediaT = [double]$Matches[5]
       $script:ffRotate = [int]$Matches[6]
+    }
+    elseif ($t -match '^OPTION\s+field=\[(.*?)\]\s+index=(\d+)\s+label=\[(.*?)\]\s+selected=(\d+)\s*$') {
+      $of = $Matches[1]
+      if (-not $script:ffOptions.ContainsKey($of)) {
+        $script:ffOptions[$of] = New-Object System.Collections.Generic.List[object]
+      }
+      $script:ffOptions[$of].Add([pscustomobject]@{
+        index = [int]$Matches[2]; label = $Matches[3]; selected = [int]$Matches[4] })
     }
     elseif ($t -match '^FIELD\s+(\d+)\s+page=(\d+)\s+name=\[(.*?)\]\s+type=(\S+)\s+flags=(-?\d+)\s+rect\(l,b,r,t\)=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\s+value=\[(.*)\]\s*$') {
       $fields += [pscustomobject]@{
@@ -1883,7 +1955,7 @@ function Read-FormFields([string]$path, [string]$tag) {
   if ($script:ffRotate -ne 0) { Bail ('  ' + $tag + ': the page is rotated ' + $script:ffRotate + '; the mapping is for rotate 0') }
   if ($script:ffFormEnv -ne 'opened') { Bail ('  ' + $tag + ': the form environment answered [' + $script:ffFormEnv + '], so no field can be filled') }
   if ($script:ffFormType -ne 1) { Bail ('  ' + $tag + ': formtype is ' + $script:ffFormType + ', not the AcroForm 1 the sample carries') }
-  if (@($fields).Count -lt 5) { Bail ('  ' + $tag + ': only ' + @($fields).Count + ' fields came back; the sample carries five') }
+  if (@($fields).Count -lt 8) { Bail ('  ' + $tag + ': only ' + @($fields).Count + ' fields came back; the sample carries eight') }
   $script:ffFields = $fields
   return $fields
 }
@@ -1891,6 +1963,35 @@ function Field-At([string]$name, [string]$tag) {
   foreach ($f in @($script:ffFields)) { if ($f.name -eq $name) { return $f } }
   Bail ('  ' + $tag + ': no field named [' + $name + ']; the copy carries ' +
         ((@($script:ffFields) | ForEach-Object { $_.name }) -join ', '))
+}
+function Selected-Labels([string]$name, [string]$tag) {
+  # Which options the file says are selected, in the file's own option order. The absence of
+  # OPTION lines is a Bail rather than an empty answer: a choice field the library could not
+  # enumerate and a choice field with nothing picked would otherwise both read as "none", and
+  # the name of the difference is a defect in the reading (sec.82's same-row companion rule).
+  if (-not $script:ffOptions.ContainsKey($name)) {
+    Bail ('  ' + $tag + ': no OPTION line for [' + $name + '] -- the file carries no option list this ' +
+          'reader could read, so "nothing is selected" would be a statement about the reading')
+  }
+  # The options are walked without @(). On this PowerShell (5.1.26100.9711) wrapping a
+  # System.Collections.Generic.List[object] in an array subexpression throws
+  # "'parameter type mismatch'" (an ArgumentException with no mention of the list), while the same
+  # wrapper over List[string] or ArrayList is fine and a plain foreach over List[object] is fine
+  # too -- measured standalone before the fix, after this mode's first round answered "0 options"
+  # while the log above carried all four. The reading was the harness, not the file.
+  $list = $script:ffOptions[$name]
+  $out = @()
+  foreach ($o in $list) { if ($o.selected -eq 1) { $out += $o.label } }
+  return $out
+}
+function Option-Labels([string]$name, [string]$tag) {
+  # The same list, unselected or not: a click on "the second row" is a click on whatever the
+  # file calls the second option, and that has to be asked rather than assumed here.
+  if (-not $script:ffOptions.ContainsKey($name)) { Bail ('  ' + $tag + ': no OPTION line for [' + $name + ']') }
+  $list = $script:ffOptions[$name]
+  $out = @()
+  foreach ($o in $list) { $out += $o.label }
+  return $out
 }
 function Page-Shot([string]$tag) {
   # One picture of the page area, plus the rectangle the paper occupies inside it. Everything a
@@ -2135,15 +2236,23 @@ function Caret-Map([string]$tag) {
   # holding a caret for as long as the text is there (both shots see it). It therefore only answers
   # while the fields it is asked about are empty; after the first token is typed, which field has what
   # is read out of the saved file (distinct tokens), not from here.
+  #
+  # SECOND LIMIT, measured when H5 added the choice fields: only a TEXT field paints nothing around
+  # an empty value. On the same picture, with nothing typed anywhere, the multi-select list box read
+  # 420 px (its four option labels) and the two combo boxes read 274 and 242 px (their own chrome and
+  # arrow) -- so a caret map over every field would answer "the keyboard is in the list box" for
+  # every text field this suite ever asks about. The map is over the text fields on purpose; the
+  # choice modes read their values out of the saved file instead of out of pixels.
+  $textFields = @($script:ffFields | Where-Object { $_.type -eq 'TEXTFIELD' })
   $s1 = Page-Shot ($tag + '-1')
   $first = @{}
-  foreach ($f in $script:ffFields) {
+  foreach ($f in $textFields) {
     $first[$f.name] = Region-Ink $s1 (Map-Rect $s1 $f.l $f.b $f.r $f.t)
   }
   Start-Sleep -Milliseconds 700
   $s2 = Page-Shot ($tag + '-2')
   $m = [ordered]@{}
-  foreach ($f in $script:ffFields) {
+  foreach ($f in $textFields) {
     $second = Region-Ink $s2 (Map-Rect $s2 $f.l $f.b $f.r $f.t)
     $m[$f.name] = [math]::Max($first[$f.name], $second)
   }
@@ -2227,13 +2336,13 @@ function Zoom-WholePage([string]$tag) {
   }
   Bail ('  ' + $tag + ': ten notches of Ctrl+wheel never put the whole page inside the crop')
 }
-function Click-Field($shot, $f, [string]$tag) {
-  $m = Map-Rect $shot $f.l $f.b $f.r $f.t
-  Assert-InCrop $shot $m ($tag + ' field ' + $f.name)
-  # Who is at that screen point, and who owns the keyboard. A click is aimed at a place, not at a
-  # window, so the picture being ours says nothing about the click arriving -- an overlapping window
-  # (a third-party topmost one, a candidate window) would swallow it and every later reading would
-  # describe something else. Same reason saveinplace checks the foreground before Ctrl+S.
+function Click-Mapped($shot, $m, [string]$tag, [string]$what, [switch]$Ctrl) {
+  # One press at a mapped place, with the two readings that make the click's arrival
+  # evidence: the point is inside the page crop on screen, and the window at that point is
+  # this process. Both were learned the expensive way (sec.89's crop origin; sec.84's click
+  # landing on somebody else's window), so they are shared rather than retyped -- H5's
+  # dropdown rows and list rows are aimed at the same kind of place a field is.
+  Assert-InCrop $shot $m ($tag + ' ' + $what)
   $hit = [W32]::Hit([int]$m.sx, [int]$m.sy)
   $hitPid = [uint32]0
   [W32]::GetWindowThreadProcessId($hit, [ref]$hitPid) | Out-Null
@@ -2243,11 +2352,97 @@ function Click-Field($shot, $f, [string]$tag) {
     Bail ('  ' + $tag + ': the point maps to pid ' + $hitPid + ' (' + [W32]::Cls($hit) +
           '), not to this app ' + $app.Id + ' -- the click would land on somebody else''s window')
   }
-  Say ('  ' + $tag + ': clicking ' + $f.name + ' at screen ' + [int]$m.sx + ',' + [int]$m.sy +
-       ' (bitmap ' + [int]$m.bx0 + '-' + [int]$m.bx1 + ' x ' + [int]$m.by0 + '-' + [int]$m.by1 + ')')
+  Say ('  ' + $tag + ': clicking ' + $what + ' at screen ' + [int]$m.sx + ',' + [int]$m.sy +
+       ' (bitmap ' + [int]$m.bx0 + '-' + [int]$m.bx1 + ' x ' + [int]$m.by0 + '-' + [int]$m.by1 + ')' +
+       $(if ($Ctrl) { ' with Ctrl held' } else { '' }))
+  if ($Ctrl) {
+    # The modifier goes down before the press and up after the release, and each call's own
+    # count is checked: a Ctrl that SendInput did not insert would make this an ordinary
+    # click, and the control run would then be measuring the wrong gesture (sec.99's rule).
+    $down = [W32]::KeyDown([W32]::VK_CONTROL)
+    if ($down -ne 1) { Bail ('  ' + $tag + ': SendInput inserted ' + $down + ' of 1 Ctrl-down events, last error ' + ([W32]::LastError())) }
+    Start-Sleep -Milliseconds 200
+  }
   [W32]::Click([int]$m.sx, [int]$m.sy)
+  if ($Ctrl) {
+    Start-Sleep -Milliseconds 200
+    $up = [W32]::KeyUp([W32]::VK_CONTROL)
+    if ($up -ne 1) { Bail ('  ' + $tag + ': SendInput inserted ' + $up + ' of 1 Ctrl-up events, last error ' + ([W32]::LastError())) }
+  }
   Start-Sleep -Milliseconds 600
 }
+function Click-Field($shot, $f, [string]$tag) {
+  Click-Mapped $shot (Map-Rect $shot $f.l $f.b $f.r $f.t) $tag ('field ' + $f.name)
+}
+function Click-Band($shot, $m, $band, [string]$tag, [string]$what, [switch]$Ctrl) {
+  # The centre of one ink band as a click: bands are found by Ink-Bands in bitmap rows, so
+  # this converts nothing -- it adds the frame and crop origin the same way Map-Rect does,
+  # and the shared Click-Mapped then does the geometric and process checks.
+  $bx = ($m.bx0 + $m.bx1) / 2
+  $by = [double]$band.cy
+  $point = @{ bx0 = $bx; bx1 = $bx; by0 = $by; by1 = $by;
+              sx = $shot.frameLeft + $shot.cropLeft + $bx;
+              sy = $shot.frameTop + $shot.cropTop + $by }
+  Click-Mapped $shot $point $tag $what -Ctrl:$Ctrl
+}
+function Ink-Bands($shot, $m, [string]$tag) {
+  # Rows inside a mapped rectangle that carry DARK ink, grouped into bands. This is how the
+  # modes find a combo's popup rows and a list box's own rows without assuming PDFium's row
+  # height: the layout is measured off the picture. The threshold is darkness, not
+  # non-whiteness, on purpose -- the popup's own background is light, so a non-white count
+  # would make the whole box one band; the glyphs are what separates them (and a selected row,
+  # measured on the open combo, is a solid dark bar rather than a light highlight).
+  #
+  # The first version counted a row as ink from two dark pixels and treated the popup's own
+  # one-pixel border as text: every row of the box qualified, all four options merged into one
+  # 91-row band (measured on the open combo). So the region is INSET past a vertical border, and
+  # a band shorter than three rows is not text either -- the box's top and bottom rules are one
+  # row each. The inset is a border rule, not a colour rule (sec.91's lesson): it says where the
+  # geometry's frame can be, not what colour it is.
+  #
+  # Two blank rows split two bands. The second version tolerated a two-row gap and, with a value
+  # already in the combo, the popup's SELECTED row (painted as a solid dark bar, rows 547-558 in
+  # the kept picture) sat exactly two blank rows under the first row's glyphs (540-544) -- so
+  # "the third band" was the fourth option. One row of slack rather than two, and the row
+  # centres are the glyph bands, which is what a click on a row means.
+  #
+  # One dark pixel makes a row ink, not three. Asking for three lost the list box's second
+  # option: at this zoom a 12 pt glyph's thin rows carry a single dark pixel (row 406 of "two" in
+  # the kept picture, count profile 5 2 1 5 2), which split the band in half and left two
+  # two-row fragments that the height rule below then dropped -- four rows on the box read as
+  # two. What keeps the box's own rules out is the inset and the three-row height, not the count.
+  $inset = 4
+  $x0 = [int][math]::Max(0, [math]::Floor($m.bx0)) + $inset
+  $x1 = [int][math]::Min($shot.width - 1, [math]::Ceiling($m.bx1)) - $inset
+  $y0 = [int][math]::Max(0, [math]::Floor($m.by0)) + 2
+  $y1 = [int][math]::Min($shot.height - 1, [math]::Ceiling($m.by1)) - 2
+  $bands = @()
+  $start = -1
+  $last = -1
+  for ($y = $y0; $y -le $y1; $y++) {
+    $n = 0
+    for ($x = $x0; $x -le $x1; $x++) {
+      $o = $y * $shot.stride + $x * 4
+      if ($shot.bytes[$o] -lt 150 -and $shot.bytes[$o + 1] -lt 150 -and $shot.bytes[$o + 2] -lt 150) { $n++ }
+    }
+    if ($n -ge 1) {
+      if ($start -lt 0) { $start = $y }
+      $last = $y
+    } elseif ($start -ge 0 -and ($y - $last) -gt 1) {
+      if (($last - $start) -ge 3) { $bands += @{ y0 = $start; y1 = $last; cy = ($start + $last) / 2 } }
+      $start = -1
+    }
+  }
+  if ($start -ge 0 -and ($last - $start) -ge 3) {
+    $bands += @{ y0 = $start; y1 = $last; cy = ($start + $last) / 2 }
+  }
+  $parts = @()
+  foreach ($b in $bands) { $parts += ('' + $b.y0 + '-' + $b.y1) }
+  Say ('  ' + $tag + ': ' + $bands.Count + ' dark band(s) in rows ' + $y0 + '-' + $y1 + ' of columns ' +
+       $x0 + '-' + $x1 + ' (inset ' + $inset + '): ' + ($parts -join ' '))
+  return $bands
+}
+
 function Click-Blank([string]$tag) {
   # A click on paper that carries nothing, so a field loses the keyboard the way it does under a
   # reader's hand before they save. G1 measured that text still in a focused field stays out of the
@@ -2278,6 +2473,19 @@ function Press-Key([int]$vk, [bool]$shift, [string]$tag) {
   if ($ins -ne $want) {
     Bail ('  ' + $tag + ': SendInput inserted ' + $ins + ' of ' + $want + ' events for vk ' + $vk +
           ', last error ' + ([W32]::LastError()) + ' -- the key never went out, so nothing after it is evidence')
+  }
+  Start-Sleep -Milliseconds 200
+}
+function Press-KeyAlt([int]$vk, [string]$tag) {
+  # Alt held around one virtual key, for the one gesture H5 asks of the product by keyboard:
+  # a combo box's list opens on Alt+Down (the backend turns that pair into a press on the
+  # field's own dropdown button -- handoff-05 H1's measurement). Four events, and the count
+  # is checked for the same reason Press-Key's is: a key that never went out must not read as
+  # "Alt+Down does nothing".
+  $ins = [W32]::PressAltVk([uint16]$vk)
+  if ($ins -ne 4) {
+    Bail ('  ' + $tag + ': SendInput inserted ' + $ins + ' of 4 events for Alt+vk ' + $vk +
+          ', last error ' + ([W32]::LastError()) + ' -- the chord never went out, so nothing after it is evidence')
   }
   Start-Sleep -Milliseconds 200
 }
@@ -3829,6 +4037,250 @@ switch ($Mode) {
     }
     Say ('  formime: the composition commit put [' + $wantU + '] into gamma and the save wrote it; beside it B(delta)=[' +
          $dv + '] C(alpha)=[' + $av + ']')
+  }
+  'formcombo' {
+    # The combo box, three rounds, each ended by Ctrl+S and by the file's own answer --
+    # because "the popup painted" and "the value persisted" are different claims:
+    #   round 1  a press on the field's own dropdown button opens a list PDFium paints
+    #            itself; its rows are found as dark ink bands under the field, the second
+    #            one is pressed, and the saved file must answer with the second option;
+    #   round 2  the same list opened with Alt+Down (the product's keyboard route), the
+    #            third row pressed -- a different option on purpose, so a file that still
+    #            held round 1's answer would fail this round rather than pass it;
+    #   round 3  the editable combo: a click, a made-up word typed, Ctrl+S, read back.
+    # The ink under the field is the geometric half: with the list closed that region is
+    # empty because the sample leaves it empty (pdfprobe.cpp's comment says why), so the
+    # difference is the popup and nothing else. -Control presses no dropdown button and no
+    # key: it focuses the field, presses Ctrl+S, and still expects round 1's answer, so it
+    # exits 1.
+    Form-TitleCheck 'formcombo'
+    Read-FormFields $script:guardCopy 'formcombo-before' | Out-Null
+    $choice = Field-At 'choice' 'formcombo'
+    $typeable = Field-At 'typeable' 'formcombo'
+    if ((UForm $choice.value) -ne '') {
+      Bail ('  formcombo: choice starts at [' + (UForm $choice.value) + '], not empty')
+    }
+    $choiceOptions = @(Option-Labels 'choice' 'formcombo')
+    if ($choiceOptions.Count -lt 4) {
+      Bail ('  formcombo: the file carries ' + $choiceOptions.Count + ' option(s) for choice, not the four the sample writes')
+    }
+    $sel0 = @(Selected-Labels 'choice' 'formcombo')
+    if ($sel0.Count -ne 0) {
+      Bail ('  formcombo: choice starts with [' + ($sel0 -join ', ') + '] selected, though the sample writes an empty value')
+    }
+    $shot = Zoom-WholePage 'formcombo'
+    $mField = Map-Rect $shot $choice.l $choice.b $choice.r $choice.t
+    Assert-InCrop $shot $mField 'formcombo the combo field'
+    $mBelow = Map-Rect $shot $choice.l ($choice.b - 110) $choice.r ($choice.b - 2)
+    $inkClosed = Region-Ink $shot $mBelow
+    Say ('  formcombo: ink below the closed combo: ' + $inkClosed)
+    if ($Control) {
+      Say '  CONTROL: the dropdown button is not pressed; the field is focused and Ctrl+S is pressed'
+      Click-Field $shot $choice 'formcombo-control'
+      if (Wait-Star $app.Id $true 8) {
+        Bail '  CONTROL: the caption grew the unsaved-edits star from a focus change alone -- nothing was picked'
+      }
+      $sv = Save-AndRead 'formcombo' $true
+      Read-FormFields $script:guardCopy 'formcombo-control-after' | Out-Null
+      $c = Field-At 'choice' 'formcombo'
+      Say ('  CONTROL: save line=' + $sv.sawMsg + ' copy moved=' + $sv.moved + '; choice reads [' + (UForm $c.value) + ']')
+      if ($sv.moved) {
+        Bail '  CONTROL: the copy moved although no value was picked -- a moved file would not be evidence of the pick'
+      }
+      if ((UForm $c.value) -ne '') {
+        Bail ('  CONTROL: choice came back [' + (UForm $c.value) + '] with the dropdown never opened')
+      }
+      Bail '  CONTROL: with the dropdown unpressed the value stayed empty and Ctrl+S changed nothing (CONTROL exit 1)'
+    }
+    # ---- round 1: the dropdown button ----
+    $btn = Map-Rect $shot ($choice.r - 3) ($choice.b + 3) ($choice.r - 1) ($choice.t - 3)
+    Click-Mapped $shot $btn 'formcombo-open' 'the dropdown button'
+    Start-Sleep -Milliseconds 900
+    $shotOpen = Page-Shot 'formcombo-open-list'
+    $mBelowOpen = Map-Rect $shotOpen $choice.l ($choice.b - 110) $choice.r ($choice.b - 2)
+    $inkOpen = Region-Ink $shotOpen $mBelowOpen
+    $bands = @(Ink-Bands $shotOpen $mBelowOpen 'formcombo-open-list')
+    Say ('  formcombo: ink below the open combo: ' + $inkOpen + ' against ' + $inkClosed + ' closed')
+    if ($inkOpen -le ($inkClosed + 100)) {
+      Bail ('  formcombo: the press on the dropdown button painted ' + ($inkOpen - $inkClosed) +
+            ' px below the field (closed ' + $inkClosed + ', open ' + $inkOpen + ') -- the list is not on screen')
+    }
+    if ($bands.Count -lt 4) {
+      Bail ('  formcombo: the open list reads ' + $bands.Count + ' row(s) of dark ink under the field while the file ' +
+            'carries ' + $choiceOptions.Count + ' options -- clicking "the second row" would not be a click on the second option')
+    }
+    Say ('  formcombo: pressing the second row; the file''s second option is [' + $choiceOptions[1] + ']')
+    Click-Band $shotOpen $mBelowOpen $bands[1] 'formcombo-pick' 'the second row of the open list'
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  formcombo: the caption never grew the star after picking a row; it reads [' + (Window $app.Id).Current.Name + ']')
+    }
+    $shotPicked = Page-Shot 'formcombo-picked'
+    $mBelowPicked = Map-Rect $shotPicked $choice.l ($choice.b - 110) $choice.r ($choice.b - 2)
+    $inkPicked = Region-Ink $shotPicked $mBelowPicked
+    Say ('  formcombo: ink below the field after the pick: ' + $inkPicked + ' (closed ' + $inkClosed + ')')
+    if ($inkPicked -gt ($inkClosed + 60)) {
+      Bail ('  formcombo: the list is still painted below the field (' + $inkPicked + ' px, closed ' + $inkClosed +
+            ') after a row was pressed -- the press did not close it')
+    }
+    Click-Blank 'formcombo'
+    $sv = Save-AndRead 'formcombo' $true
+    Check-Save $sv 'formcombo'
+    Read-FormFields $script:guardCopy 'formcombo-after' | Out-Null
+    $c = Field-At 'choice' 'formcombo'
+    Say ('  read back: choice=[' + (UForm $c.value) + ']')
+    if ((UForm $c.value) -ne $choiceOptions[1]) {
+      Bail ('  formcombo: choice came back [' + (UForm $c.value) + '], not the row that was pressed [' +
+            $choiceOptions[1] + ']')
+    }
+    # ---- round 2: the keyboard route, Alt+Down ----
+    # A fresh picture because the save reopened the document and the zoom is fit-width again.
+    # The field is clicked first: Alt+Down is the product's answer only while that combo holds
+    # the keyboard (backend keyPressed reads the focused annot).
+    $shot2 = Zoom-WholePage 'formcombo-alt'
+    Click-Field $shot2 $choice 'formcombo-alt-focus'
+    $shotFocus = Page-Shot 'formcombo-alt-focused'
+    $mBelowFocus = Map-Rect $shotFocus $choice.l ($choice.b - 110) $choice.r ($choice.b - 2)
+    $inkFocus = Region-Ink $shotFocus $mBelowFocus
+    Say ('  formcombo: ink below the field after the click that focuses it: ' + $inkFocus)
+    Press-KeyAlt 0x28 'formcombo-alt'
+    Start-Sleep -Milliseconds 900
+    $shotAlt = Page-Shot 'formcombo-alt-open'
+    $mBelowAlt = Map-Rect $shotAlt $choice.l ($choice.b - 110) $choice.r ($choice.b - 2)
+    $inkAlt = Region-Ink $shotAlt $mBelowAlt
+    $bandsAlt = @(Ink-Bands $shotAlt $mBelowAlt 'formcombo-alt-open')
+    Say ('  formcombo: Alt+Down -> ink below the field ' + $inkAlt + ' against ' + $inkFocus + ' before it')
+    if ($inkAlt -le ($inkFocus + 100)) {
+      Bail ('  formcombo: Alt+Down painted ' + ($inkAlt - $inkFocus) + ' px below the focused combo (' +
+            $inkFocus + ' -> ' + $inkAlt + ') -- the list did not open')
+    }
+    if ($bandsAlt.Count -lt 4) {
+      Bail ('  formcombo: the list Alt+Down opened reads ' + $bandsAlt.Count + ' row(s) while the file carries ' +
+            $choiceOptions.Count + ' options')
+    }
+    Say ('  formcombo: pressing the third row; the file''s third option is [' + $choiceOptions[2] + ']')
+    Click-Band $shotAlt $mBelowAlt $bandsAlt[2] 'formcombo-alt-pick' 'the third row of the list Alt+Down opened'
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  formcombo: the caption never grew the star after the Alt+Down pick; it reads [' + (Window $app.Id).Current.Name + ']')
+    }
+    Click-Blank 'formcombo-alt'
+    $sv2 = Save-AndRead 'formcombo-alt' $true
+    Check-Save $sv2 'formcombo-alt'
+    Read-FormFields $script:guardCopy 'formcombo-alt-after' | Out-Null
+    $c2 = Field-At 'choice' 'formcombo-alt'
+    Say ('  read back: choice=[' + (UForm $c2.value) + ']')
+    if ((UForm $c2.value) -ne $choiceOptions[2]) {
+      Bail ('  formcombo: after Alt+Down and a row press, choice came back [' + (UForm $c2.value) +
+            '], not [' + $choiceOptions[2] + '] -- a file still holding round 1''s answer means the pick did not land')
+    }
+    # ---- round 3: the editable combo takes a typed answer ----
+    $shot3 = Zoom-WholePage 'formcombo-edit'
+    $token = 'E' + [guid]::NewGuid().ToString('N').Substring(0, 6).ToUpper()
+    Click-Field $shot3 $typeable 'formcombo-edit'
+    $shotEdit = Page-Shot 'formcombo-edit-focused'
+    $mBelowType = Map-Rect $shotEdit $typeable.l ($typeable.b - 110) $typeable.r ($typeable.b - 2)
+    $inkBelowType = Region-Ink $shotEdit $mBelowType
+    Say ('  formcombo: ink below the editable combo after the click: ' + $inkBelowType)
+    Say ('  formcombo: typing [' + $token + '] into the editable combo')
+    Type-Text $token 'formcombo-edit'
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  formcombo: the caption never grew the star after typing into the editable combo; it reads [' +
+            (Window $app.Id).Current.Name + ']')
+    }
+    Click-Blank 'formcombo-edit'
+    $sv3 = Save-AndRead 'formcombo-edit' $true
+    Check-Save $sv3 'formcombo-edit'
+    Read-FormFields $script:guardCopy 'formcombo-edit-after' | Out-Null
+    $t = Field-At 'typeable' 'formcombo-edit'
+    Say ('  read back: typeable=[' + (UForm $t.value) + ']')
+    if ((UForm $t.value) -ne $token) {
+      Bail ('  formcombo: the editable combo came back [' + (UForm $t.value) + '], not the typed [' + $token + ']')
+    }
+    if (-not (Guard-Check 'after formcombo')) { Bail '  formcombo: the original moved during the run' }
+    Say ('  formcombo: the dropdown row [' + $choiceOptions[1] + '], Alt+Down row [' + $choiceOptions[2] +
+         '] and the typed [' + $token + '] are all in the saved copy')
+  }
+  'formlist' {
+    # The multi-select list box. A plain press on the first row and a Ctrl+press on the third,
+    # then the file has to answer BOTH rows -- read off the per-option lines pdfprobe prints,
+    # because the ordinary value read answers only the first selected entry (handoff-05 H1).
+    # The control's second press is plain: the file then answers the last row only, so it exits
+    # 1 -- which is what makes the Ctrl in the positive a cause rather than decoration.
+    #
+    # The rows are dark ink bands inside the field's own rectangle: PDFium lays the options out
+    # itself, so the row height is measured off the picture rather than assumed.
+    Form-TitleCheck 'formlist'
+    Read-FormFields $script:guardCopy 'formlist-before' | Out-Null
+    $list = Field-At 'list' 'formlist'
+    $options = @(Option-Labels 'list' 'formlist')
+    if ($options.Count -lt 4) {
+      Bail ('  formlist: the file carries ' + $options.Count + ' option(s), not the four the sample writes')
+    }
+    $sel0 = @(Selected-Labels 'list' 'formlist')
+    Say ('  formlist: before any click, ' + $sel0.Count + ' option(s) selected: [' + ($sel0 -join ', ') + ']')
+    if ($sel0.Count -ne 0) {
+      Bail ('  formlist: the list starts with [' + ($sel0 -join ', ') + '] selected, though the sample carries no value')
+    }
+    $shot = Zoom-WholePage 'formlist'
+    $m = Map-Rect $shot $list.l $list.b $list.r $list.t
+    Assert-InCrop $shot $m 'formlist the list box'
+    $bands = @(Ink-Bands $shot $m 'formlist')
+    if ($bands.Count -lt 3) {
+      Bail ('  formlist: the list box paints ' + $bands.Count + ' row(s) of dark ink in its rectangle while the ' +
+            'file carries ' + $options.Count + ' options -- there is no third row to Ctrl+click')
+    }
+    $ink0 = Region-Ink $shot $m
+    Say ('  formlist: ink inside the list before any click: ' + $ink0)
+    Say ('  formlist: pressing the first row; the file''s first option is [' + $options[0] + ']')
+    Click-Band $shot $m $bands[0] 'formlist-first' 'the first row'
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  formlist: the caption never grew the star after the first press; it reads [' + (Window $app.Id).Current.Name + ']')
+    }
+    $shotB = Page-Shot 'formlist-after-first'
+    $mB = Map-Rect $shotB $list.l $list.b $list.r $list.t
+    $ink1 = Region-Ink $shotB $mB
+    $bandsB = @(Ink-Bands $shotB $mB 'formlist-after-first')
+    Say ('  formlist: ink inside the list after the first press: ' + $ink1 + ' (before ' + $ink0 + ')')
+    if ($ink1 -le $ink0) {
+      Bail ('  formlist: the first press painted nothing new inside the list (' + $ink0 + ' -> ' + $ink1 + ') -- no row was selected')
+    }
+    if ($bandsB.Count -lt 3) {
+      Bail ('  formlist: after the first press the list reads ' + $bandsB.Count + ' row(s); the third row to press is not there')
+    }
+    if ($Control) {
+      Say '  CONTROL: the second press is a plain click, with no Ctrl held'
+      Click-Band $shotB $mB $bandsB[2] 'formlist-third-control' 'the third row, without Ctrl'
+    } else {
+      Say '  formlist: the second press is Ctrl+click on the third row'
+      Click-Band $shotB $mB $bandsB[2] 'formlist-third' 'the third row' -Ctrl
+    }
+    $shotC = Page-Shot 'formlist-after-second'
+    $mC = Map-Rect $shotC $list.l $list.b $list.r $list.t
+    $ink2 = Region-Ink $shotC $mC
+    Say ('  formlist: ink inside the list after the second press: ' + $ink2)
+    Click-Blank 'formlist'
+    $sv = Save-AndRead 'formlist' $true
+    Check-Save $sv 'formlist'
+    Read-FormFields $script:guardCopy 'formlist-after' | Out-Null
+    $sel = @(Selected-Labels 'list' 'formlist')
+    $dash = Field-At 'list' 'formlist'
+    Say ('  read back: list=[' + (UForm $dash.value) + '], selected [' + ($sel -join ', ') + '] of [' +
+         ($options -join ', ') + ']')
+    $sawFirst = ($sel -contains $options[0])
+    $sawThird = ($sel -contains $options[2])
+    if ($Control) {
+      if ($sel.Count -ne 1 -or -not $sawThird) {
+        Bail ('  CONTROL: a plain second press left [' + ($sel -join ', ') + '] selected -- the control expected only [' +
+              $options[2] + '], so this round proves nothing about the Ctrl in the positive (CONTROL exit 1)')
+      }
+      Bail ('  CONTROL: without Ctrl the second press replaced the first selection, and the file holds only [' +
+            $options[2] + '] (CONTROL exit 1)')
+    }
+    if (-not $sawFirst -or -not $sawThird -or $sel.Count -ne 2) {
+      Bail ('  formlist: after a press and a Ctrl+press the file answers [' + ($sel -join ', ') +
+            '] -- both [' + $options[0] + '] and [' + $options[2] + '] were expected')
+    }
+    if (-not (Guard-Check 'after formlist')) { Bail '  formlist: the original moved during the run' }
+    Say ('  formlist: [' + $options[0] + '] and [' + $options[2] + '] both survive the save')
   }
   'uacache' {
     # sec.37 recorded that a status-bar message's UIA Name can lag what is on screen and blamed the

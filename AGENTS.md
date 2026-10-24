@@ -99,7 +99,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime`（二十九种模式；`saverename` 仍收，是 `saveas` 的别名
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime|formcombo|formlist`（三十一种模式；`saverename` 仍收，是 `saveas` 的别名
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -198,6 +198,16 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   启动时 `StagingCleanup::sweepStaleRecords()` 只删**记过、仍隐藏、创建时间对得上、记它的进程已不在**的那一颗；
   没记过的同名文件连看都不看；删不动就留着下次再试。**这是本程序唯一会删读者文件夹里文件的地方**。
   另存为与拆分的暂存不隐藏、不记（失败话里把文件名念给了读者），被杀在拆分中间会留一颗看得见的文件。
+- **已签名的文档**（§122，handoff-06 H4）：签名按 PDF 32000-1 §12.8.1 数**签名字典**（字段的 `/V`），不数签名字段 ——
+  `FPDF_GetSignatureCount` 会把空白模板里没有 `/V` 的 `/Sig` 字段也算一颗（它的 `/ByteRange` 0 个数、`/Contents` 0 字节）。
+  状态栏明说"本版不验证签名本身"。**有签名且只改了字段 → `FPDF_INCREMENTAL`**：判据是字节，写出文件的前缀与原文件逐字节相同、
+  `/ByteRange` 两段 SHA-256 前后相同（加密的也量过）；没签名照旧 `FPDF_NO_INCREMENTAL`（否则文件一次次长胖）。走 qpdf 的八种
+  结构修改必然重写整份文件，所以那八个框在按下之前说"保存之后这 %n 个数字签名都会失效"。DocMDP 认证签名 P=1：字段点不进、
+  八个框灰；P=2/3：字段可填、结构框灰。`/Lock`（FieldMDP）PDFium 不管，`DocumentTab` 把 qpdf 读出的名字交给表单层封住。
+  样本 `tests/formsample.h` 的 `writeSigned()`（从规范造，`/ByteRange` 按装好的字节算）。读签名在共用的 `pdfiumbackend.cpp`，
+  所以两颗壳 DLL 各多了约 1 KB 和五颗签名函数的导入。
+- **经 picker 开完文档要把指针挪开**（§122）：点完「文件」菜单指针停在工具栏上方，悬停提示一直盖着开文档时那句话；
+  `-OpenViaPicker` 那条路现在开完就 `ParkCursorAway`。
 - **关窗三答框是「保存 / 不保存 / 取消」**（§118）：`WindowDialogs::askSaveBeforeClosing()`，标准按钮（按角色挑），
   只把 Discard 改写成「不保存(&N)」/ `Do&n't Save` —— Qt 自带目录给的是「丢弃 / Discard」（扔掉），不是 Windows 上
   对"要先保存吗？"的回答。

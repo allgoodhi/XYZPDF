@@ -2545,6 +2545,11 @@ if ($Installed) {
 if ($Installed -and $OpenViaPicker) {
   # Before the mode runs, so every mode that reads a document can be pointed at the installed copy.
   if (-not (Open-PackagedDocument $app $OpenViaPicker)) { Bail 'no document reached the packaged instance' }
+  # The picker route clicked the File menu, so the pointer is left resting over the menu bar and
+  # toolbar: a status tip would then sit on top of the open-time notice for as long as it stays
+  # there (sec.122 read the select tool's tip instead of the signature sentence). Parked the same
+  # way the launch parks it; the notice comes back with the time it had left (sec.114).
+  ParkCursorAway
 }
 
 switch ($Mode) {

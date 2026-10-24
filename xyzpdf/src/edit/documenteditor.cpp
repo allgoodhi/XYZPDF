@@ -1,5 +1,7 @@
 #include "documenteditor.h"
 
+#include "../core/stagingcleanup.h"
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -2988,7 +2990,7 @@ bool DocumentEditor::writeStaged(const PieceRange &keep, const QString &staged,
         writer.write();
     } catch (const std::exception &e) {
         // Nothing usable came of the attempt, so nothing of ours is left behind.
-        QFile::remove(staged);
+        StagingCleanup::removeStaged(staged);
         *error = tr("写出文件时出错，原来的文件没有改动。\n\n解析器说：%1")
                      .arg(QString::fromUtf8(e.what()));
         return false;
@@ -3245,18 +3247,32 @@ bool DocumentEditor::stageInPlace(QString *staged, QString *error,
     }
 
     const PieceRange whole{0, int(live.size()) - 1};
-    if (!writeStaged(whole, candidate, foreign, protection, error, fieldValuesFrom))
+    // Recorded before a byte of it exists, because that is the window this is for: a save
+    // killed between this line and the swap below leaves a hidden file in the reader's folder
+    // and no process that remembers writing it. The next launch reads the list and takes it
+    // away -- see src/core/stagingcleanup.h for the rule that lets it delete anything there.
+    StagingCleanup::record(candidate);
+    if (!writeStaged(whole, candidate, foreign, protection, error, fieldValuesFrom)) {
+        // Nothing of ours stays behind on this branch -- and the record goes with it, whether
+        // or not writeStaged got as far as making a file: it removes what it wrote when its
+        // writer throws, and returns before creating anything when a check refuses.
+        StagingCleanup::removeStaged(candidate);
         return false;
+    }
 
     SetFileAttributesW(QDir::toNativeSeparators(candidate).toStdWString().c_str(),
                        FILE_ATTRIBUTE_HIDDEN);
+    // Again, and this time the file is there to read its creation time from -- the second
+    // proof the sweep compares against, and it replaces the record above rather than joining
+    // it, because the list is keyed by path.
+    StagingCleanup::record(candidate);
 
     // The check the ordering exists for: the bytes have to be a PDF this program's own
     // writer can read back, with the page count the pending list promised, before the
     // original is touched.
     QString checkError;
     if (!verifyStagedFile(candidate, int(live.size()), passwordOfWrittenFile(), &checkError)) {
-        QFile::remove(candidate);
+        StagingCleanup::removeStaged(candidate);
         if (error)
             *error = checkError;
         return false;

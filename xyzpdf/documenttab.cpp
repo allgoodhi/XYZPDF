@@ -1,6 +1,7 @@
 #include "documenttab.h"
 
 #include "src/core/appsettings.h"
+#include "src/core/stagingcleanup.h"
 #include "src/core/windowdialogs.h"
 #include "src/document/bookmarkposition.h"
 #include "src/document/documentfactory.h"
@@ -1497,9 +1498,11 @@ bool DocumentTab::saveEdits()
     if (staged_ok && structural) {
         staged_ok = editor->stageInPlace(&staged, &error, fieldStage);
         // The replay has read it. It is ours, it is hidden, and it is not the reader's
-        // document, so it does not stay in their folder.
+        // document, so it does not stay in their folder -- and its record goes with it, which
+        // is what keeps the list this program reads on the next launch about files that are
+        // still sitting there.
         if (!fieldStage.isEmpty()) {
-            QFile::remove(fieldStage);
+            StagingCleanup::removeStaged(fieldStage);
             fieldStage.clear();
         }
     } else if (staged_ok && fields > 0) {
@@ -1511,7 +1514,7 @@ bool DocumentTab::saveEdits()
     QApplication::restoreOverrideCursor();
     if (!staged_ok) {
         if (!fieldStage.isEmpty())
-            QFile::remove(fieldStage);
+            StagingCleanup::removeStaged(fieldStage);
         WindowDialogs::warning(window(), tr("保存"), error);
         return false;
     }
@@ -1541,10 +1544,13 @@ bool DocumentTab::saveEdits()
     QApplication::restoreOverrideCursor();
 
     if (!replaced) {
-        // The original is byte-identical; the staged file is ours and goes. The
-        // editor was never touched, so the reader keeps their work and the file
-        // they were reading comes back on screen before the box is answered.
-        QFile::remove(staged);
+        // The original is byte-identical; the staged file is ours and goes, and its record
+        // goes with it -- but only if it went. If something else has the folder locked, this
+        // is the one case where leaving the file is the right answer, and the list is what
+        // makes the next launch try again without anybody asking. The editor was never
+        // touched, so the reader keeps their work and the file they were reading comes back on
+        // screen before the box is answered.
+        StagingCleanup::removeStaged(staged);
         notice->endSelfWrite();
         const Document::Status back = loadDocument(path, documentPassword);
         if (back == Document::Status::Ready)
@@ -1554,6 +1560,12 @@ bool DocumentTab::saveEdits()
                         .arg(windowsError));
         return false;
     }
+
+    // The swap is what this file was written for, so there is nothing at that path any more
+    // -- ReplaceFileW moved it into the original's name. Only the record is left to clear, and
+    // clearing it is the whole of the promise: a path this program stops recording is a path
+    // it will never delete again.
+    StagingCleanup::forget(staged);
 
     // The file now holds the list, so the tab stops being dirty. The reopen uses
     // the key the written file asks for: a 加密 that was pending replaced the old
@@ -1664,7 +1676,7 @@ bool DocumentTab::saveEditsTo(const QString &destination, QString *error)
     QApplication::setOverrideCursor(Qt::WaitCursor);
     const bool done = session->saveAs(destination, &writeError, &written, fieldStage);
     if (!fieldStage.isEmpty())
-        QFile::remove(fieldStage);
+        StagingCleanup::removeStaged(fieldStage);
     QApplication::restoreOverrideCursor();
     if (!done)
         return refuse(writeError);

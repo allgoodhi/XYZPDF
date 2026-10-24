@@ -20,6 +20,7 @@
 
 #include "../documenttab.h"
 #include "../src/core/appsettings.h"
+#include "../src/core/stagingcleanup.h"
 #include "../src/edit/documenteditor.h"
 #include "../src/theme/thememanager.h"
 #include "../src/translate/keystore.h"
@@ -69,6 +70,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPrinter>
+#include <QProcess>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollBar>
@@ -4474,6 +4476,393 @@ int main(int argc, char **argv)
         check(tab.isOpen() && tab.pageCount() == 1,
               "the tab itself reopened with the key carried over");
 
+        check(tab.open(path) == Document::Status::Ready,
+              "the fixture is back for the rest of the run");
+    }
+
+    // ---- H3: 暂存文件不留在读者的文件夹里 ----
+    //
+    // What a save leaves behind when the process is killed between writing the hidden copy
+    // beside a reader's document and swapping it in. The rule is in src/core/stagingcleanup.h
+    // and it is narrower than tidying a folder: only a path this program wrote down itself,
+    // only while the file at it is still hidden and still the one that was staged, and only
+    // once the process that wrote it has gone.
+    //
+    // The two ends are asserted apart because they look identical from the folder: a sweep
+    // that deletes nothing and a save that records nothing both leave the same file there. So
+    // the first half asks the two functions that stage a file whether they wrote down where
+    // they put it -- PDFium's first stage and qpdf's, plus a whole 保存 through the tab, which
+    // is what takes the record off again. The second half plants records over real files and
+    // asks the sweep for each of its four answers: recorded and orphaned -> deleted; never
+    // recorded -> not even looked at; the writer still running -> left alone; the delete
+    // refused -> kept on the list for the next launch.
+    //
+    // Nothing here asks the reader a question, so nothing here expects a box: a dialog in the
+    // sweep would not be a red assertion, it would be this run sitting still until the
+    // watchdog lifted it -- which is why the four cases are driven through the class and not
+    // through a window.
+    {
+        QTemporaryDir scratch;
+        check(scratch.isValid(), "setup: a scratch folder for the staging records");
+        // One spelling for every comparison below: the list is keyed by the same cleaned
+        // absolute path the product records, and a drive letter or a separator that disagrees
+        // with itself reads as "no records here" -- a green that measured nothing.
+        const QString folder = StagingCleanup::normalized(scratch.path());
+        const QString thisProgram
+            = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+
+        auto clearRecords = [] {
+            const QVector<AppSettings::StagedRecord> existing = AppSettings::stagedRecords();
+            for (const AppSettings::StagedRecord &entry : existing)
+                AppSettings::forgetStagedRecord(entry.path);
+        };
+        auto recordsHere = [folder] {
+            QVector<AppSettings::StagedRecord> found;
+            const QVector<AppSettings::StagedRecord> all = AppSettings::stagedRecords();
+            for (const AppSettings::StagedRecord &entry : all) {
+                if (entry.path.startsWith(folder, Qt::CaseInsensitive))
+                    found.append(entry);
+            }
+            return found;
+        };
+        // A file shaped exactly like a staged one: our own bytes, a name from the same pattern
+        // the writers use, and the hidden attribute the save sets.
+        auto stageFile = [folder](const QString &name) {
+            const QString path = QDir(folder).filePath(name);
+            QFile out(path);
+            if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                return QString();
+            out.write("%PDF-1.7\n% a staged copy whose save never came back\n");
+            out.close();
+            SetFileAttributesW(QDir::toNativeSeparators(path).toStdWString().c_str(),
+                               FILE_ATTRIBUTE_HIDDEN);
+            return path;
+        };
+        // Write down a record the way the sweep reads it. `createdMs` of -1 takes the file's
+        // own creation time, which is what a save that got as far as hiding it puts there.
+        auto plant = [thisProgram](const QString &path, qint64 pid, qint64 createdMs) {
+            AppSettings::StagedRecord entry;
+            entry.path = StagingCleanup::normalized(path);
+            entry.pid = pid;
+            entry.program = thisProgram;
+            entry.createdMs
+                = createdMs >= 0
+                    ? createdMs
+                    : QFileInfo(path).birthTime().toMSecsSinceEpoch();
+            AppSettings::putStagedRecord(entry);
+        };
+        auto hiddenStagedHere = [folder] {
+            return QDir(folder)
+                .entryList({QStringLiteral("xyzpdf-save-*.pdf")}, QDir::Files | QDir::Hidden)
+                .size();
+        };
+        // A process that came and went, for the one fact the sweep cannot make up: the writer
+        // is gone. QProcess closes its handle on destruction, so by the time the number comes
+        // back nothing holds the process object either.
+        auto deadPid = [] {
+            qint64 pid = 0;
+            {
+                QProcess doomed;
+                doomed.start(QStringLiteral("cmd.exe"),
+                             {QStringLiteral("/c"), QStringLiteral("exit")});
+                if (doomed.waitForStarted(5000)) {
+                    // Read the number while the process is still there: it is the process's
+                    // own, and an ended QProcess is not obliged to remember it.
+                    pid = qint64(doomed.processId());
+                    doomed.waitForFinished(5000);
+                }
+            }
+            return pid;
+        };
+
+        const qint64 dead = deadPid();
+        check(dead > 0, "setup: a process that started and ended, to be a dead pid");
+        note(QStringLiteral("h3: dead pid=%1 this pid=%2 program=%3")
+                 .arg(dead)
+                 .arg(QCoreApplication::applicationPid())
+                 .arg(thisProgram));
+
+        // ---- the two write sites record what they wrote ----
+        //
+        // PDFium's first stage of a form save (src/document/pdfiumbackend.cpp) and qpdf's
+        // stage of an in-place one (src/edit/documenteditor.cpp). Both have to put the path,
+        // this process and the file's own creation time in the list, because a record missing
+        // any of the three is a leftover nobody may touch.
+        {
+            QString why;
+            const QString formCopy = QDir(folder).filePath(QStringLiteral("fillable.pdf"));
+            check(FormSampleFile::write(formCopy, 0, false, &why),
+                  QStringLiteral("setup: a form sample to stage: %1").arg(why));
+            check(tab.open(formCopy) == Document::Status::Ready,
+                  QStringLiteral("h3: the form copy opens (%1)").arg(tab.lastError()));
+            clearRecords();
+            QString fieldStage;
+            QString stageError;
+            auto *surface = tab.formSurface();
+            check(surface != nullptr, "h3: the opened document has a form surface");
+            const bool staged = surface && surface->stageFieldValues(folder, &fieldStage,
+                                                                     &stageError);
+            check(staged, QStringLiteral("h3: the form stage wrote its copy (%1)")
+                              .arg(stageError));
+            const QVector<AppSettings::StagedRecord> afterForm = recordsHere();
+            check(afterForm.size() == 1,
+                  QStringLiteral("h3: and put exactly one record down for it (%1)")
+                      .arg(afterForm.size()));
+            if (afterForm.size() == 1) {
+                const AppSettings::StagedRecord &entry = afterForm.at(0);
+                check(entry.path == StagingCleanup::normalized(fieldStage),
+                      QStringLiteral("h3: the recorded path is the file (%1 vs %2)")
+                          .arg(entry.path, fieldStage));
+                check(entry.pid == qint64(QCoreApplication::applicationPid()),
+                      QStringLiteral("h3: and the pid is the process that wrote it (%1)")
+                          .arg(entry.pid));
+                check(entry.program == thisProgram, "h3: and so is the program beside it");
+                check(entry.createdMs > 0
+                          && entry.createdMs
+                              == QFileInfo(fieldStage).birthTime().toMSecsSinceEpoch(),
+                      QStringLiteral("h3: and the creation time is read off the file, not a "
+                                     "clock (%1)")
+                          .arg(entry.createdMs));
+            }
+            // The record is what a later launch deletes by, so taking the file away has to take
+            // the record with it -- otherwise the next sweep is reading a list of names that
+            // are no longer anybody's.
+            check(StagingCleanup::removeStaged(fieldStage),
+                  "h3: deleting a staged copy reports success");
+            check(recordsHere().isEmpty() && !QFileInfo::exists(fieldStage),
+                  "h3: and its record went with it");
+
+            // qpdf's stage, the second of the two in a save that has both filled fields and
+            // page edits -- and the whole of one that only has page edits.
+            const QString structCopy = QDir(folder).filePath(QStringLiteral("struct-copy.pdf"));
+            check(QFile::copy(directory + QStringLiteral("/many-pages.pdf"), structCopy),
+                  "setup: a copy of the 40-page fixture to stage a delete into");
+            DocumentEditor editor;
+            check(editor.open(structCopy, QString(), &why),
+                  QStringLiteral("h3: the editor opens the copy: %1").arg(why));
+            check(editor.deletePages(QVector<int> {39}, &why),
+                  QStringLiteral("h3: and one page is on the pending list: %1").arg(why));
+            clearRecords();
+            QString stagedInPlace;
+            check(editor.stageInPlace(&stagedInPlace, &why),
+                  QStringLiteral("h3: the in-place stage wrote its copy: %1").arg(why));
+            const QVector<AppSettings::StagedRecord> afterStage = recordsHere();
+            check(afterStage.size() == 1,
+                  QStringLiteral("h3: with one record beside it (%1)")
+                      .arg(afterStage.size()));
+            if (afterStage.size() == 1) {
+                const AppSettings::StagedRecord &entry = afterStage.at(0);
+                check(entry.path == StagingCleanup::normalized(stagedInPlace)
+                          && entry.pid == qint64(QCoreApplication::applicationPid())
+                          && entry.createdMs > 0,
+                      QStringLiteral("h3: and it names the file, this process and the time "
+                                     "(%1)").arg(entry.createdMs));
+                check(QFileInfo(stagedInPlace).exists(),
+                      "h3: the staged file is on disk until the swap takes it");
+            }
+            StagingCleanup::removeStaged(stagedInPlace);
+            clearRecords();
+        }
+
+        // ---- a whole 保存 takes its own record off ----
+        //
+        // The tab is the one that calls ReplaceFileW, so it is the one that has to stop
+        // recording the file that swap consumed. Asserted as "nothing left in either place":
+        // the folder holds no hidden staged copy and the list holds nothing pointing at this
+        // folder -- a record that outlived its own swap would be the sweep deleting a file
+        // somebody else later put at that name.
+        {
+            const QString source = QDir(folder).filePath(QStringLiteral("save-through.pdf"));
+            check(QFile::copy(directory + QStringLiteral("/text.pdf"), source),
+                  "setup: a copy for the save that goes through");
+            check(tab.open(source) == Document::Status::Ready, "h3: it opens");
+            clearRecords();
+            answerNextDialog<DeletePagesDialog>(QStringLiteral("1"));
+            tab.deletePages();
+            check(tab.hasUnsavedEdits(), "h3: with a deletion pending");
+            bool boxSeen = false;
+            QString boxText;
+            answerNextBox(QStringLiteral("取消"), &boxSeen, &boxText);
+            check(tab.saveEdits(),
+                  QStringLiteral("h3: 保存 writes it back in place (%1)").arg(boxText));
+            check(!boxSeen, "h3: with nothing to report");
+            check(recordsHere().isEmpty(),
+                  "h3: and no record is left for the file that was swapped in");
+            check(hiddenStagedHere() == 0, "h3: and no hidden staged copy in the folder");
+        }
+
+        // ---- the sweep's four answers ----
+        //
+        // One recorded file and one that only looks the same, in the same folder, in a single
+        // run: that pairing is the point. A sweep that went looking by name pattern would take
+        // both, and every count in this block would still be the number it wanted -- the
+        // unrecorded neighbour is what makes "只删自己记过的" a measured thing rather than a
+        // sentence in a comment.
+        {
+            clearRecords();
+            const QString orphan = stageFile(QStringLiteral("xyzpdf-save-orphan.pdf"));
+            const QString sibling = stageFile(QStringLiteral("xyzpdf-save-sibling.pdf"));
+            check(!orphan.isEmpty() && !sibling.isEmpty(), "setup: two hidden staged-shaped files");
+            plant(orphan, dead, -1);
+            check(recordsHere().size() == 1, "setup: only one of them is recorded");
+
+            const StagingCleanup::Sweep swept = StagingCleanup::sweepStaleRecords();
+            note(QStringLiteral("h3 sweep orphan: removed=%1 kept=%2 dropped=%3 [%4]")
+                     .arg(swept.removed)
+                     .arg(swept.keptForLater)
+                     .arg(swept.dropped)
+                     .arg(swept.reasons.join(QStringLiteral(" | "))));
+            check(swept.removed == 1,
+                  QStringLiteral("h3: the recorded one was taken away (%1)").arg(swept.removed));
+            check(!QFileInfo::exists(orphan), "h3: and it is gone from the folder");
+            check(QFileInfo::exists(sibling),
+                  "h3: the file nobody recorded is still exactly where it was");
+            check(recordsHere().isEmpty(), "h3: and its record went with the file");
+            StagingCleanup::forget(sibling);
+            QFile::remove(sibling);
+        }
+
+        // The writer still holds the name: another window, or another copy of this program, is
+        // mid-save. Left alone, and kept on the list. Then the same file with a dead number
+        // beside it goes -- which is what says the pid is what held it, not the folder, not the
+        // name, not the attributes.
+        {
+            clearRecords();
+            const QString live = stageFile(QStringLiteral("xyzpdf-save-live.pdf"));
+            plant(live, qint64(QCoreApplication::applicationPid()), -1);
+            const StagingCleanup::Sweep held = StagingCleanup::sweepStaleRecords();
+            note(QStringLiteral("h3 sweep live: removed=%1 kept=%2 dropped=%3 [%4]")
+                     .arg(held.removed)
+                     .arg(held.keptForLater)
+                     .arg(held.dropped)
+                     .arg(held.reasons.join(QStringLiteral(" | "))));
+            check(held.removed == 0 && held.keptForLater == 1,
+                  QStringLiteral("h3: a save still running is not cleaned up (removed=%1 kept=%2)")
+                      .arg(held.removed)
+                      .arg(held.keptForLater));
+            check(QFileInfo::exists(live), "h3: the file is where it was");
+            check(recordsHere().size() == 1, "h3: and it is still on the list");
+
+            plant(live, dead, -1);
+            const StagingCleanup::Sweep after = StagingCleanup::sweepStaleRecords();
+            check(after.removed == 1 && !QFileInfo::exists(live),
+                  QStringLiteral("h3: the same record with the writer gone does take it away "
+                                 "(removed=%1)").arg(after.removed));
+        }
+
+        // A delete that Windows refuses -- another program has the file open with no sharing --
+        // keeps the record so the next launch can try again, and says nothing. Closing the
+        // handle and sweeping once more is the control inside the case: it shows the first
+        // answer was the handle and not a broken delete path.
+        {
+            clearRecords();
+            const QString held = stageFile(QStringLiteral("xyzpdf-save-held.pdf"));
+            plant(held, dead, -1);
+            const std::wstring native = QDir::toNativeSeparators(held).toStdWString();
+            HANDLE blocker = CreateFileW(native.c_str(), GENERIC_READ, 0, nullptr,
+                                         OPEN_EXISTING, FILE_ATTRIBUTE_HIDDEN, nullptr);
+            check(blocker != INVALID_HANDLE_VALUE,
+                  "setup: the staged file is held open with no sharing at all");
+            const StagingCleanup::Sweep refused = StagingCleanup::sweepStaleRecords();
+            note(QStringLiteral("h3 sweep held: removed=%1 kept=%2 dropped=%3 [%4]")
+                     .arg(refused.removed)
+                     .arg(refused.keptForLater)
+                     .arg(refused.dropped)
+                     .arg(refused.reasons.join(QStringLiteral(" | "))));
+            check(refused.removed == 0 && refused.keptForLater == 1,
+                  QStringLiteral("h3: a file that will not delete stays on the list (kept=%1)")
+                      .arg(refused.keptForLater));
+            check(QFileInfo::exists(held) && recordsHere().size() == 1,
+                  "h3: both the file and its record are still there");
+            CloseHandle(blocker);
+            const StagingCleanup::Sweep retried = StagingCleanup::sweepStaleRecords();
+            check(retried.removed == 1 && !QFileInfo::exists(held) && recordsHere().isEmpty(),
+                  QStringLiteral("h3: and the next sweep finishes it (removed=%1)")
+                      .arg(retried.removed));
+        }
+
+        // The other two refusals, which both end with the file kept and the record dropped:
+        // a reader who unhid it has claimed it, and a path whose creation time does not match
+        // is a path that now holds a different file. Neither is ours to delete, and a record
+        // that can never be acted on is not a plan.
+        {
+            clearRecords();
+            const QString claimed = stageFile(QStringLiteral("xyzpdf-save-claimed.pdf"));
+            plant(claimed, dead, -1);
+            SetFileAttributesW(QDir::toNativeSeparators(claimed).toStdWString().c_str(),
+                               FILE_ATTRIBUTE_NORMAL);
+            const StagingCleanup::Sweep unhidden = StagingCleanup::sweepStaleRecords();
+            check(unhidden.removed == 0 && unhidden.dropped == 1
+                      && QFileInfo::exists(claimed) && recordsHere().isEmpty(),
+                  QStringLiteral("h3: a file that is no longer hidden is left, and unrecorded "
+                                 "(removed=%1 dropped=%2)")
+                      .arg(unhidden.removed)
+                      .arg(unhidden.dropped));
+            QFile::remove(claimed);
+
+            const QString swapped = stageFile(QStringLiteral("xyzpdf-save-swapped.pdf"));
+            const qint64 birth = QFileInfo(swapped).birthTime().toMSecsSinceEpoch();
+            plant(swapped, dead, birth + 60000); // a time two minutes off its own file
+            const StagingCleanup::Sweep mismatch = StagingCleanup::sweepStaleRecords();
+            check(mismatch.removed == 0 && mismatch.dropped == 1
+                      && QFileInfo::exists(swapped) && recordsHere().isEmpty(),
+                  QStringLiteral("h3: a creation time that does not match leaves the file alone "
+                                 "(removed=%1 dropped=%2)")
+                      .arg(mismatch.removed)
+                      .arg(mismatch.dropped));
+            QFile::remove(swapped);
+        }
+
+        // The two shapes a record can have before it is ever useful: a path that no longer has
+        // a file behind it (the save took it away in a run this list never caught up with), and
+        // a record made before the bytes existed -- createdMs 0, which is exactly what a kill
+        // inside the writer leaves. The first drops the line; the second still deletes, because
+        // the hidden file at a path we recorded is the case this whole class exists for.
+        {
+            clearRecords();
+            const QString absent = QDir(folder).filePath(QStringLiteral("xyzpdf-save-absent.pdf"));
+            plant(absent, dead, 0);
+            const StagingCleanup::Sweep gone = StagingCleanup::sweepStaleRecords();
+            check(gone.dropped == 1 && gone.removed == 0 && recordsHere().isEmpty(),
+                  QStringLiteral("h3: a record whose file is already gone is only bookkeeping "
+                                 "(dropped=%1 removed=%2)")
+                      .arg(gone.dropped)
+                      .arg(gone.removed));
+
+            const QString halfway = stageFile(QStringLiteral("xyzpdf-save-halfway.pdf"));
+            plant(halfway, dead, 0);
+            const StagingCleanup::Sweep stamped
+                = StagingCleanup::sweepStaleRecords();
+            note(QStringLiteral("h3 sweep halfway: removed=%1 kept=%2 dropped=%3 [%4]")
+                     .arg(stamped.removed)
+                     .arg(stamped.keptForLater)
+                     .arg(stamped.dropped)
+                     .arg(stamped.reasons.join(QStringLiteral(" | "))));
+            check(stamped.removed == 1 && !QFileInfo::exists(halfway),
+                  QStringLiteral("h3: a half-recorded hidden file still goes (removed=%1)")
+                      .arg(stamped.removed));
+        }
+
+        // A PID that is not this program's -- the number was recycled by something else
+        // entirely. Recorded with a live pid under a program name that no longer fits, the
+        // sweep has to read it as "the writer is gone" rather than "somebody is saving".
+        {
+            clearRecords();
+            const QString recycled = stageFile(QStringLiteral("xyzpdf-save-recycled.pdf"));
+            AppSettings::StagedRecord entry;
+            entry.path = recycled;
+            entry.pid = qint64(QCoreApplication::applicationPid());
+            entry.program = QStringLiteral("not-this-program.exe");
+            entry.createdMs = QFileInfo(recycled).birthTime().toMSecsSinceEpoch();
+            AppSettings::putStagedRecord(entry);
+            const StagingCleanup::Sweep reuse = StagingCleanup::sweepStaleRecords();
+            check(reuse.removed == 1 && !QFileInfo::exists(recycled),
+                  QStringLiteral("h3: a recycled pid is not the writer any more (removed=%1)")
+                      .arg(reuse.removed));
+        }
+
+        clearRecords();
+        check(AppSettings::stagedRecords().isEmpty(), "h3: the list is left empty for the next block");
         check(tab.open(path) == Document::Status::Ready,
               "the fixture is back for the rest of the run");
     }

@@ -1,5 +1,7 @@
 #include "pdfiumbackend.h"
 
+#include "../core/stagingcleanup.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -2038,9 +2040,16 @@ bool PdfiumBackend::stageFieldValues(const QString &directory, QString *staged, 
     }
 
     QFile file(candidate);
+    // Recorded before the file is opened, so that a kill inside FPDF_SaveAsCopy -- the window
+    // this exists for -- leaves a path the next launch can be told about. The second call,
+    // once the copy is hidden, is what puts its creation time in the record; see
+    // src/core/stagingcleanup.h for the rule that lets that sweep delete anything.
+    StagingCleanup::record(candidate);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         *error = tr("打开 %1 时出错：%2").arg(QFileInfo(candidate).fileName(),
                                              tr("文件无法写入"));
+        // No file was made, so only the record has to go.
+        StagingCleanup::forget(candidate);
         return false;
     }
     FormFileWriter writer;
@@ -2050,12 +2059,13 @@ bool PdfiumBackend::stageFieldValues(const QString &directory, QString *staged, 
     file.close();
 
     if (!saved || writer.failed || !flushed) {
-        QFile::remove(candidate);
+        StagingCleanup::removeStaged(candidate);
         *error = tr("这份文档的表单没能写出来。原来的文件没有改动。");
         return false;
     }
     SetFileAttributesW(QDir::toNativeSeparators(candidate).toStdWString().c_str(),
                        FILE_ATTRIBUTE_HIDDEN);
+    StagingCleanup::record(candidate);
     *staged = candidate;
     return true;
 }

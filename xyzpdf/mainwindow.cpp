@@ -2707,6 +2707,12 @@ bool MainWindow::event(QEvent *event)
             noticeDeadline.setRemainingTime(left);
             statusBar()->showMessage(notice, int(left));
             return true;
+        } else if (!noticeDeadline.hasExpired()) {
+            // An empty tip for a notice nothing covered: the notice was set while a tip was
+            // already up (a file opened from File > Open lands under the menu row's tip), so the
+            // tip that clears it now would clear the notice instead. It is still on the bar and
+            // still timed; the empty tip is simply not let through.
+            return true;
         }
     }
     return QMainWindow::event(event);

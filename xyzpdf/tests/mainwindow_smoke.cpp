@@ -646,6 +646,26 @@ int main(int argc, char **argv)
                   QStringLiteral("and when the pointer leaves, the document's sentence is back (%1)")
                       .arg(window.statusBar()->currentMessage()));
         }
+        // The other order: the tip is up first and the sentence arrives under it -- which is how
+        // every document opened through File > Open arrives, the menu row's tip still showing when
+        // the file lands. The empty tip that follows was then nobody's to stop, and it cleared the
+        // bar (the installed copy read an empty status line after every picker open, sec.128).
+        {
+            QStatusTipEvent menuRow(QStringLiteral("a menu row's tip"));
+            QApplication::sendEvent(&window, &menuRow);
+            auto *reload = window.findChild<QAction *>(QStringLiteral("reloadAction"));
+            check(reload != nullptr, "setup: the reload action, to set a sentence under the tip");
+            if (reload)
+                reload->trigger();
+            const QString underTip = window.statusBar()->currentMessage();
+            check(underTip.contains(QStringLiteral("已重新加载")),
+                  QStringLiteral("setup: the reload's sentence went up over the tip (%1)").arg(underTip));
+            QStatusTipEvent leaving{QString()};
+            QApplication::sendEvent(&window, &leaving);
+            check(window.statusBar()->currentMessage() == underTip,
+                  QStringLiteral("and the menu closing does not clear it (%1)")
+                      .arg(window.statusBar()->currentMessage()));
+        }
 
         const QString plainSaid = saidFor(plain);
         std::cout << "MEASURE status plain: [" << plainSaid.toStdString() << "]\n";

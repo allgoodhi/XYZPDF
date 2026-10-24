@@ -99,7 +99,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice`（二十五种模式；`saverename` 仍收，是 `saveas` 的别名
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime`（二十九种模式；`saverename` 仍收，是 `saveas` 的别名
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -176,6 +176,28 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   判"真写进去了"不要只看哈希变没变：qpdf 每次重写带新的时间戳与文档 ID，同一份改动存两次字节就不同，
   三个模式都另查副本里有没有 `/Rotate 90`。三答框里的按钮按**名字完全相等**挑 —— `Save` 是 `Don't Save` 的子串，
   挑错就写了文件。
+- **表单的四个屏幕模式**（§120，handoff-05 H2）：`formfill` / `formtab` / `formcheck` / `formime` 都在保存护栏里，
+  样本由 `xyzpdf_pdfprobe --write-form-sample` 现造（只新建，路径已存在就拒绝），读回字段值用 `xyzpdf_pdfprobe --fields`
+  （只读；非 ASCII 印成 `U+XXXX`，因为控制台是 GBK）。**`--fields` 等 PDFium 调用之前必须 `FPDF_InitLibrary()`**：
+  不调时 `LoadDocument` / `GetPageCount` 照答，`FPDF_LoadPage` 直接把进程带走、一句话不说。
+  `formime` 的 IMM32 那一路在这台机器上拿不到输入上下文（`ImmGetContext` 恒 0），那是探针的边界；同一模式的 TSF
+  真按键一路把中文提交进了字段 —— 中文输入法进字段这件事在屏幕上成立。TSF 那路连跑两次会因为输入法切到英文模式
+  而读到拼音字母，那是输入法状态，不是产品。
+- **字段里的 Tab 要过 `focusNextPrevChild()` 那扇门**（§120）：`QWidget::event()` 在 `keyPressEvent()` 之前就把 Tab /
+  Shift+Tab 交给 `focusNextPrevChild()`，基类答"挪焦点"，于是键盘跑到标签条（H2 屏幕上量到的）。`PageView` 在字段有键盘时
+  答 false；Qt 把 Shift+Tab 报成 `Key_Backtab`，键表里要有它。**测这一类要经窗口送键，而且旁边要有第二个能拿焦点的控件**：
+  孤零零一个 `DocumentTab`（或没激活的窗口）里基类自己就答 false，去掉修复也全绿 —— 这块测试写了三版才红得起来。
+- **表单代码分两半**（§120，handoff-05 H1）：`pdfiumbackend.cpp`（渲染 + `FPDF_FFLDraw` + `Document` 接口，应用与两颗壳 DLL
+  共用）、`pdfiumformfill.cpp`（输入路由、回调、暂存保存，只编进应用）、`pdfiumformfillstub.cpp`（壳 DLL 用的空答案）。
+  `xyzpdf_use_document_backend(... DRAWING)` 选后者。壳 DLL 因此回到 136,192 / 94,208 字节；`dumpbin /imports` 里只有画字段
+  那五个 PDFium 函数。**新的填写代码放进 `pdfiumformfill.cpp`**，放错一半就是两颗壳 DLL 又胖回去。
+  PDFium 的两个读数定了写法：没有先到的 `FORM_OnMouseMove` 时按下会被拒（点另一个字段键盘不跟过去，§120 修掉）；
+  组合框下拉是 PDFium 自己画的，下拉的行 `HasFormFieldAtPoint` 答 -1，所以按下不能先过命中测试。
+- **暂存文件按记录收走**（§120，handoff-05 H3）：两处隐藏暂存（就地保存的 `xyzpdf-save-<uuid>.pdf`、表单保存的
+  `xyzpdf-form-<uuid>.pdf`）开写前把全路径记进设置、藏好后带上创建时间再记一次，换上去或删掉之后撤记录。
+  启动时 `StagingCleanup::sweepStaleRecords()` 只删**记过、仍隐藏、创建时间对得上、记它的进程已不在**的那一颗；
+  没记过的同名文件连看都不看；删不动就留着下次再试。**这是本程序唯一会删读者文件夹里文件的地方**。
+  另存为与拆分的暂存不隐藏、不记（失败话里把文件名念给了读者），被杀在拆分中间会留一颗看得见的文件。
 - **关窗三答框是「保存 / 不保存 / 取消」**（§118）：`WindowDialogs::askSaveBeforeClosing()`，标准按钮（按角色挑），
   只把 Discard 改写成「不保存(&N)」/ `Do&n't Save` —— Qt 自带目录给的是「丢弃 / Discard」（扔掉），不是 Windows 上
   对"要先保存吗？"的回答。

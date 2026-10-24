@@ -7658,3 +7658,53 @@ F10 与 F7 自动合并干净。**F8 与 F7 撞在一处要改写的地方**：F
 **没在屏幕上验的**：表单填写（点字段、打字、中文输入法、Tab）—— G1 全在无头测试里，还没有探针模式；识别结果在屏幕上的样子。
 
 **§16 现在对到 §118。**
+
+## 120. 第五批：表单补全、表单上屏幕、暂存文件按记录收走，合进 main；Tab 那条缺陷修掉（2026-10-24）
+
+他把 handoff-05 的三段提示词交出去，回来一句"那边做完了"（分支名沿用了第四批的两个，是新起的分支）。
+三个分支都没碰日志与规矩文档，工作区干净。合并前我删了第四批留下的 `_scratch`、`tmp-ocr` 与 `tmp\gui-probe-save`
+（他点了头；`tmp` 下这一批新写的东西没动）。
+
+### 各分支
+
+- **H2 表单上屏幕**（`gui-probe.ps1` +1612，`pdfprobe` 两个只读/只新建子命令）：`formfill`、`formcheck` 中英正例 0、控制 1；
+  **`formtab` 正例红在产品上**：字段拿着键盘时按 Tab，键盘跑到文档标签条，哪个字段都没有光标。另报：一个字段拿着键盘时
+  点另一个字段键盘不跟过去；`formime` 的 IMM32 一路拿不到输入上下文，TSF 真按键把「汉字」「中文」提交进了字段。
+- **H3 暂存文件按记录收走**（`stagingcleanup.{h,cpp}` 新，十条控制）：只删记过、仍隐藏、创建时间对得上、记它的进程已不在的那一颗；
+  没记过的同名邻居、PID 还活着的、被占住的都不动。PID 一支打不开就当"还在"。
+- **H1 表单补全**（+2467/−1205）：组合框下拉（PDFium 自己画；下拉的行命中测试答 -1，按下不再先过命中测试）、Alt+↓、可编辑组合框、
+  多选列表框（`/V` 是数组；放手前答不出就答"改了"，免得 Ctrl+S 静默丢掉第二个选择）、滚轮分流；表单输入那半拆进只编进应用的
+  `pdfiumformfill.cpp`，两颗壳 DLL 185,344 → 136,192、145,408 → 94,208。它还量到并修了 H2 那第二条的根：没有先到的
+  `FORM_OnMouseMove` 时 PDFium 拒绝按下。
+
+### 合并（H2 → H3 → H1）
+
+H2、H3 干净。H1 与 H3 撞在一处：H1 把 `stageFieldValues()` 搬进 `pdfiumformfill.cpp`，H3 正好改了它。取 H1 那边，把 H3 的三处
+（开写前记、失败走 `removeStaged`、藏好后再记）原样补进新家；`pdfiumbackend.cpp` 里 H3 加的 include 去掉。英文目录 0 新。
+
+### Tab 那条（我修的）
+
+`QWidget::event()` 在 `keyPressEvent()` 之前把 Tab / Shift+Tab 交给 `focusNextPrevChild()`，基类答"挪焦点" —— `keyPressEvent` 里
+"Tab 归字段"那句从来没执行过。G1 的 Tab 测试直接问后端，走不到这扇门。修：`PageView::focusNextPrevChild()` 在字段有键盘时答 false；
+键表加 `Key_Backtab`（Qt 对 Shift+Tab 的叫法）。
+
+测试写了三版才有能红的控制，值得记：第一版一个独立的 `DocumentTab`，窗口没激活，Qt 没有焦点控件，基类自己就答 false；
+第二版激活了窗口，可一个孤零零的 `DocumentTab` 里没有第二个能拿焦点的控件，基类照样答 false —— **两版去掉修复都全绿**。
+第三版在旁边放一个 `QLineEdit`（就像真窗口里的标签条），去掉修复红 3 条（"after 0,0 0x0" —— 正是 H2 屏幕上那个"哪个字段都没有"），
+只去掉 `Key_Backtab` 红 1 条。写进 AGENTS.md。
+
+**在合并后的开发版上重跑 `formtab`**：中英正例 exit 0（Tab 后光标在 beta，第一串进 beta、Shift+Tab 回来第二串进 alpha），控制 exit 1。
+
+**门禁 27 passed / 0 failed**，目录 692 条，numerus 53。
+
+## 121. 重打包并重装；表单在装上的那一份上填进去、存下来（2026-10-24）
+
+- 打包前快照：`xyzpdf.exe` `db3fa08c3f6b…` / 1,620,992；`xyzpdfpreview.dll` `aa71b839adb8…` / **136,192**、
+  `xyzpdfthumbnail.dll` `60298f3011b7…` / **94,208**（H1 的瘦身，回到 §117 附近）；`xyzpdfshell.dll` `5a957cae7979…` 第四次逐字节相同。
+- 包 19,794,747 字节（18.9 MB），66 个文件，payload 与 §119 相同；`verify-package` exit 0；**四列全等，八颗 `same=True`**。
+- 装上的那份（`-Installed`，护栏复制样本、把副本交给 picker）：`formfill` exit 0（屏幕上打进 alpha、保存、读回就是打的那串）；
+  `formtab` exit 0（Tab 在装上的字节上也走到下一个字段）；`formcheck` exit 0（点一下 `/V`=Yes、再点 Off）；
+  `formime` exit 1 —— IMM32 一路拿不到上下文（探针边界），TSF 一路把「汉字」提交进 delta，第三路这一趟读到拼音字母
+  `zhongwen`（输入法被上一路切成了英文模式，开发版那趟是「中文」）。每趟原件不变、清场后进程 0。
+
+**§16 现在对到 §120。**

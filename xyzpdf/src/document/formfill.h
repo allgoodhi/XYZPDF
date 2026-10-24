@@ -177,6 +177,21 @@ public:
     virtual bool mouseReleased(int page, const Frame &frame, const QPointF &devicePoint,
                                Qt::KeyboardModifiers modifiers) = 0;
     virtual bool mouseDoubleClicked(int page, const Frame &frame, const QPointF &devicePoint) = 0;
+    // The wheel, counted in detents: positive is away from the reader, the sign Qt's
+    // angleDelta().y() already has. One detent is one row, and one detent is one call to
+    // the engine -- measured on this build, FORM_OnMouseWheel ignores the magnitude it is
+    // handed (a dy of -1 and a dy of -120 each moved a list's selection by exactly one
+    // row), so a caller that passed the raw delta of a touchpad's flick would scroll a
+    // twenty-row list by one row and a caller that passed each small delta separately
+    // would scroll it by fifteen.
+    //
+    // True only when a list box has the keyboard *and* the point is inside it. The same
+    // call answered false over blank paper, over a list that had just lost its focus, and
+    // over a combo box -- with its own dropdown open, where the point is inside the
+    // dropdown -- which is the whole of the routing rule: a focused list scrolls itself
+    // and everything else scrolls the page.
+    virtual bool mouseWheeled(int page, const Frame &frame, const QPointF &devicePoint,
+                              int detents, Qt::KeyboardModifiers modifiers) = 0;
     // A Qt::Key code. The backend turns it into the Windows virtual key PDFium
     // asks for; the view does not get to know that there is a Windows numbering.
     virtual bool keyPressed(int qtKey, Qt::KeyboardModifiers modifiers) = 0;

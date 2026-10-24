@@ -65,6 +65,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QVBoxLayout>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -3324,6 +3325,258 @@ int main(int argc, char **argv)
                 check(probe.isEncrypted(), "fill: and the copy is still encrypted");
             }
         }
+
+        // ---- the choice fields: a pick, the star, the file, and the picture ----
+        //
+        // H1 1/2 put the dropdown, the editable box and the multi-select list into the
+        // backend, and pdfiumbackend_smoke pins each of them there. This is the seam the
+        // backend cannot see: the view's press routing (a dropdown row is not on the page
+        // as far as its hit test is concerned), the tab's dirty answer, the save, and a
+        // second reader opening the bytes. The multi-select array is asserted here for
+        // the reason the backend test says out loud: the ordinary field read answers only
+        // the first of what was picked, so only qpdf can say the second one survived.
+        {
+            const QString choicePath = formDir.filePath(QStringLiteral("choices.pdf"));
+            QString choiceWhy;
+            check(FormSampleFile::write(choicePath, 0, false, &choiceWhy),
+                  QStringLiteral("choice: the sample is written (%1)").arg(choiceWhy));
+            const QByteArray choiceBefore = readAllBytes(choicePath);
+            const QString choiceKept = formDir.filePath(QStringLiteral("choices-before.pdf"));
+            check(writeAllBytes(choiceKept, choiceBefore),
+                  "choice: setup: the file as it is before any pick is kept");
+
+            const FormSampleFile::Geometry choiceFields;
+            DocumentTab choiceTab;
+            choiceTab.resize(900, 700);
+            choiceTab.show();
+            check(choiceTab.open(choicePath) == Document::Status::Ready,
+                  QStringLiteral("choice: the sample opens in a tab (%1)")
+                      .arg(choiceTab.lastError()));
+            PageView *choiceView = viewOf(choiceTab);
+            check(waitFor([choiceView] { return choiceView->isRendered(0); }),
+                  "choice: and the page with the choice fields is drawn");
+            const auto at = [choiceView](const QPointF &userSpace) {
+                const QRectF page = choiceView->pageRectInViewport(0);
+                return QPointF(page.left() + userSpace.x() / 595.0 * page.width(),
+                               page.top() + (842.0 - userSpace.y()) / 842.0 * page.height());
+            };
+            QWidget *choiceCanvas = choiceView->viewport();
+
+            // The dropdown button, then a row of the list the engine draws under the
+            // field: neither point is one the page's hit test can name, and the backend's
+            // tests are the place that measured the routing. Here the presses go through
+            // the view, which is what a reader actually does.
+            const QPointF button = at(FormSampleFile::comboBoxButton(choiceFields.comboBox));
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, button);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, button);
+            check(waitFor([&choiceTab] { return choiceTab.view()->fieldHasFocus(); }),
+                  "choice: the dropdown button gives the combo box the keyboard");
+            const QPointF firstRow
+                = at(QPointF(choiceFields.comboBox.center().x(),
+                             FormSampleFile::popupRowY(choiceFields.comboBox, 0)));
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, firstRow);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, firstRow);
+            check(waitFor([&choiceTab] { return choiceTab.hasFieldEdits(); }),
+                  "choice: picking a row is an unsaved change");
+            check(choiceTab.title() == QStringLiteral("choices.pdf *"),
+                  QStringLiteral("choice: and the title carries the star (%1)")
+                      .arg(choiceTab.title()));
+
+            check(choiceTab.saveEdits(), "choice: 保存 writes the pick back in place");
+            check(!choiceTab.hasUnsavedEdits(), "choice: after the save nothing is unsaved");
+            check(choiceTab.title() == QStringLiteral("choices.pdf"),
+                  "choice: and the star is off again");
+            {
+                QPDF read;
+                read.processFile(choicePath.toUtf8().constData());
+                QString value;
+                std::vector<QPDFPageObjectHelper> pages =
+                    QPDFPageDocumentHelper(read).getAllPages();
+                for (QPDFPageObjectHelper &page : pages) {
+                    for (const QPDFObjectHandle &annot : page.getAnnotations()) {
+                        if (annot.getKey("/T").getStringValue() == "pick")
+                            value = QString::fromUtf8(annot.getKey("/V").getUTF8Value().c_str());
+                    }
+                }
+                note(QStringLiteral("choice: qpdf reads the combo box as [%1]").arg(value));
+                check(value == QStringLiteral("a"),
+                      "choice: the row the reader picked is the answer the file carries");
+            }
+            check(waitFor([choiceView] { return choiceView->isRendered(0); }),
+                  "choice: the saved page is drawn again before the next pick");
+
+            // The list box: a plain click on the first row, then a Ctrl+click on the row
+            // the file already had -- the shape pdfiumbackend_smoke measured, where the
+            // live text (the label picked last) ends up exactly equal to the file's own
+            // answer while the selection is two rows. The pair's /V is an array, and the
+            // ordinary reads cannot tell that anything changed; the star has to.
+            const QPointF listRowFirst
+                = at(QPointF(choiceFields.multiListBox.center().x(),
+                             FormSampleFile::listRowY(choiceFields.multiListBox, 0)));
+            const QPointF listRowSecond
+                = at(QPointF(choiceFields.multiListBox.center().x(),
+                             FormSampleFile::listRowY(choiceFields.multiListBox, 1)));
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, listRowFirst);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, listRowFirst);
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, listRowSecond, false,
+                      Qt::ControlModifier);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, listRowSecond, false,
+                      Qt::ControlModifier);
+            check(waitFor([&choiceTab] { return choiceTab.hasFieldEdits(); }),
+                  "choice: a click and a Ctrl+click in the list box are an unsaved change");
+            check(choiceTab.title() == QStringLiteral("choices.pdf *"),
+                  QStringLiteral("choice: and the star is back (%1)").arg(choiceTab.title()));
+            check(choiceTab.saveEdits(), "choice: 保存 writes both selected rows");
+            {
+                QPDF read;
+                read.processFile(choicePath.toUtf8().constData());
+                QStringList answers;
+                std::vector<QPDFPageObjectHelper> pages =
+                    QPDFPageDocumentHelper(read).getAllPages();
+                for (QPDFPageObjectHelper &page : pages) {
+                    for (const QPDFObjectHandle &annot : page.getAnnotations()) {
+                        if (annot.getKey("/T").getStringValue() != "many")
+                            continue;
+                        const QPDFObjectHandle value = annot.getKey("/V");
+                        if (value.isArray()) {
+                            for (int index = 0; index < value.getArrayNItems(); ++index)
+                                answers.append(QString::fromUtf8(
+                                    value.getArrayItem(index).getUTF8Value().c_str()));
+                        } else {
+                            answers.append(
+                                QString::fromUtf8(value.getUTF8Value().c_str()));
+                        }
+                    }
+                }
+                answers.sort();
+                note(QStringLiteral("choice: qpdf reads the multi-select /V as [%1]")
+                         .arg(answers.join(QStringLiteral(", "))));
+                check(answers == QStringList{QStringLiteral("one"), QStringLiteral("two")},
+                      "choice: /V is an array holding both selected rows and nothing else");
+            }
+
+            // The picture, read the way sec.89 reads one: two renders of one rectangle,
+            // the file before the picks and the file after them. "There are pixels in the
+            // box" would still be true with the old answer painted in it.
+            const auto signature = [](const QString &path, const QRectF &box) {
+                PdfiumBackend reader;
+                if (reader.load(path, QString()) != Document::Status::Ready)
+                    return QStringLiteral("(no picture)");
+                RenderOptions options;
+                const QImage image = reader.render(0, QSize(595, 842), options);
+                if (image.isNull())
+                    return QStringLiteral("(no picture)");
+                const int left = int(box.left());
+                const int right = int(box.right());
+                const int top = int(842.0 - box.bottom());
+                const int bottom = int(842.0 - box.top());
+                quint64 hash = 1469598103934665603ULL;
+                int ink = 0;
+                for (int y = top; y < bottom; ++y) {
+                    for (int x = left; x < right; ++x) {
+                        const QRgb pixel = image.pixel(x, y);
+                        if (qGray(pixel) < 250)
+                            ++ink;
+                        hash = (hash ^ quint64(pixel)) * 1099511628211ULL;
+                    }
+                }
+                return QStringLiteral("ink=%1 hash=%2").arg(ink).arg(hash, 0, 16);
+            };
+            const QString comboBefore = signature(choiceKept, choiceFields.comboBox);
+            const QString comboAfter = signature(choicePath, choiceFields.comboBox);
+            const QString listBefore = signature(choiceKept, choiceFields.multiListBox);
+            const QString listAfter = signature(choicePath, choiceFields.multiListBox);
+            note(QStringLiteral("choice render: combo before [%1] after [%2]; "
+                                "list before [%3] after [%4]")
+                     .arg(comboBefore, comboAfter, listBefore, listAfter));
+            check(comboBefore != comboAfter,
+                  "choice: a reopened page draws the answer the reader picked");
+            check(listBefore != listAfter,
+                  "choice: and the list box draws its two selected rows");
+        }
+    }
+
+    // ---- Tab walks the form, through the widget ----
+    //
+    // Found on screen by handoff-05 H2: with a field holding the keyboard, Tab left the
+    // page for the document tab strip. QWidget::event() offers Tab to focusNextPrevChild()
+    // before keyPressEvent(), so a key the view meant for the field was spent as a focus
+    // move. G1's Tab test asked the backend directly and could not see it; this one sends
+    // the key to the widget, which is the door a real Tab comes through. Shift+Tab arrives
+    // as Qt::Key_Backtab, a name the key table did not have.
+    {
+        QTemporaryDir tabDir;
+        check(tabDir.isValid(), "setup: a scratch folder for the Tab walk");
+        const QString tabPath = tabDir.filePath(QStringLiteral("tab-walk.pdf"));
+        QString why;
+        check(FormSampleFile::write(tabPath, 0, false, &why),
+              QStringLiteral("setup: the fillable sample is written: %1").arg(why));
+        const FormSampleFile::Geometry fields;
+
+        // Beside a second widget that takes focus, the way the real window has its tab
+        // strip: a lone DocumentTab has nothing for focusNextPrevChild() to move to, so
+        // the base answer is already "not a focus move" and the block passed with the fix
+        // taken out (measured; the window's tab strip is where H2 saw the keyboard land).
+        QWidget host;
+        auto *hostLayout = new QVBoxLayout(&host);
+        auto *elsewhere = new QLineEdit(&host);
+        elsewhere->setObjectName(QStringLiteral("somewhereElseToTabTo"));
+        hostLayout->addWidget(elsewhere);
+        auto *walkPointer = new DocumentTab(&host);
+        hostLayout->addWidget(walkPointer, 1);
+        DocumentTab &walk = *walkPointer;
+        host.resize(900, 760);
+        host.show();
+        check(walk.open(tabPath) == Document::Status::Ready,
+              QStringLiteral("setup: the sample opens (%1)").arg(walk.lastError()));
+        PageView *view = viewOf(walk);
+        check(waitFor([view] { return view->isRendered(0); }), "setup: and is drawn");
+        const QPointF centre = FormSampleFile::userCentre(fields.textField);
+        const QRectF page = view->pageRectInViewport(0);
+        const QPointF onScreen(page.left() + centre.x() / 595.0 * page.width(),
+                               page.top() + (842.0 - centre.y()) / 842.0 * page.height());
+        sendMouse(view->viewport(), QEvent::MouseButtonPress, onScreen);
+        sendMouse(view->viewport(), QEvent::MouseButtonRelease, onScreen);
+        check(waitFor([view] { return view->fieldHasFocus(); }),
+              "setup: a click gives the text field the keyboard");
+        // The window has to be the active one with the view as Qt's focus widget: with no
+        // focus widget, QWidget::focusNextPrevChild() finds nothing to move to and answers
+        // false by itself, and the Tab is delivered as a key whether or not the view
+        // declines -- the first version of this block passed with the fix taken out.
+        host.activateWindow();
+        view->setFocus(Qt::TabFocusReason);
+        check(waitFor([view] { return QApplication::focusWidget() == view; }),
+              QStringLiteral("setup: the page view is the window's focus widget (it is %1)")
+                  .arg(QApplication::focusWidget()
+                           ? QString::fromLatin1(QApplication::focusWidget()->metaObject()->className())
+                           : QStringLiteral("nothing")));
+
+        FormFill *surface = view->formSurface();
+        int firstPage = -1;
+        QRectF firstRect;
+        check(surface && surface->focusedFieldRect(&firstPage, &firstRect),
+              "setup: and the form can say which field that is");
+
+        QKeyEvent tabKey(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+        QApplication::sendEvent(view, &tabKey);
+        int nextPage = -1;
+        QRectF nextRect;
+        const bool stillInForm = surface && surface->focusedFieldRect(&nextPage, &nextRect);
+        check(stillInForm && view->fieldHasFocus(),
+              "Tab keeps the keyboard in the form rather than leaving the page");
+        check(stillInForm && nextRect != firstRect,
+              QStringLiteral("and moves it to another field (before %1,%2 %3x%4, after %5,%6 %7x%8)")
+                  .arg(firstRect.x()).arg(firstRect.y()).arg(firstRect.width()).arg(firstRect.height())
+                  .arg(nextRect.x()).arg(nextRect.y()).arg(nextRect.width()).arg(nextRect.height()));
+
+        QKeyEvent backKey(QEvent::KeyPress, Qt::Key_Backtab, Qt::ShiftModifier);
+        QApplication::sendEvent(view, &backKey);
+        int backPage = -1;
+        QRectF backRect;
+        check(surface && surface->focusedFieldRect(&backPage, &backRect) && backRect == firstRect,
+              QStringLiteral("and Shift+Tab (Qt::Key_Backtab) brings it back to the first one "
+                             "(%1,%2 %3x%4)")
+                  .arg(backRect.x()).arg(backRect.y()).arg(backRect.width()).arg(backRect.height()));
     }
 
     // ---- night reading ----

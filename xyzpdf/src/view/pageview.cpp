@@ -1806,6 +1806,43 @@ void PageView::wheelEvent(QWheelEvent *event)
     if (!event->modifiers().testFlag(Qt::ControlModifier)) {
         // What was carried belongs to a zoom gesture that has ended.
         wheelCarried = 0;
+
+        // A list box that has the keyboard scrolls itself, and the page stays where it
+        // is. That is the whole of the routing rule, and it is the engine's answer
+        // rather than a guess about where the pointer is: measured on this build,
+        // FORM_OnMouseWheel says yes only when the point is inside the widget that has
+        // focus and that widget is a list -- it said no over blank paper, over a list
+        // that had just lost its focus, and over a combo box with its own dropdown
+        // open. So the call goes out first and the page scrolls only on a no.
+        //
+        // The tools are the press's own list, because a field can only have the keyboard
+        // if a press put it there: two conditions that disagreed would let a tool keep
+        // scrolling a list it could no longer click.
+        if (form && activeTool != Tool::Recognize && activeTool != Tool::Snapshot
+            && activeTool != Tool::Translate && form->fillable()) {
+            const QPoint at = event->position().toPoint();
+            const int page = pageAtPoint(at);
+            if (page >= 0) {
+                // Detents, not the raw delta: one call to the engine is one row however
+                // large the number handed to it is, so a touchpad's flick would scroll
+                // a twenty-row list by one row and each of its small deltas would scroll
+                // it by one row too. ZoomController::wheelSteps() is the same counting
+                // the zoom gesture already does.
+                const int detents
+                    = ZoomController::wheelSteps(formWheelCarried, event->angleDelta().y());
+                if (detents != 0
+                    && form->mouseWheeled(page, formFrameFor(page), formDevicePoint(page, at),
+                                          detents, event->modifiers())) {
+                    applyFormCallbacks();
+                    event->accept();
+                    return;
+                }
+            }
+        }
+        // The page scrolls on the event itself, exactly as it did before the form layer
+        // existed, so what was half-way to a detent is thrown away rather than carried
+        // into the next gesture and counted twice.
+        formWheelCarried = 0;
         QAbstractScrollArea::wheelEvent(event);
         return;
     }
@@ -1813,6 +1850,8 @@ void PageView::wheelEvent(QWheelEvent *event)
     // Through the accumulator rather than straight into a division: a touchpad
     // sends deltas far smaller than a detent and `delta / 120` threw every one
     // of them away. See ZoomController::wheelSteps().
+    // What the form's half-detent belongs to is a scroll gesture, and this is a zoom.
+    formWheelCarried = 0;
     const int steps = ZoomController::wheelSteps(wheelCarried, event->angleDelta().y());
     if (steps == 0) {
         // Accepted even though nothing happened: the gesture is a zoom, and
@@ -1850,6 +1889,21 @@ void PageView::wheelEvent(QWheelEvent *event)
     verticalScrollBar()->setValue(qRound(target.y()));
 
     event->accept();
+}
+
+bool PageView::focusNextPrevChild(bool next)
+{
+    // QWidget::event() hands Tab and Shift+Tab to this function *before* keyPressEvent()
+    // ever sees them, and the base answer moves the keyboard to the next widget in the
+    // window -- which is what handoff-05 H2 measured on screen: with a field holding the
+    // keyboard, Tab took it to the document tab strip, the field let go, and no field had
+    // the caret. keyPressEvent() below says Tab is the field's; it never got the chance.
+    // Returning false is how a widget tells QWidget::event() "not a focus move, deliver it
+    // as a key". G1's own Tab test asked the backend directly (keyPressed(Key_Tab)), so it
+    // never went through this door.
+    if (form && form->hasFocusedField())
+        return false;
+    return QAbstractScrollArea::focusNextPrevChild(next);
 }
 
 void PageView::keyPressEvent(QKeyEvent *event)

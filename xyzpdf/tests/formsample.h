@@ -25,8 +25,9 @@
 // ---- what is on the page ----
 //
 // One text field, one checkbox, one radio group with two kids, one combobox, one listbox,
-// one push button and one signature field, laid out top-down so each rectangle is a line
-// of the page and a click can name the one it landed in. The checkbox carries /AP for both
+// one push button, one signature field, one editable combobox and one multi-select list
+// box, laid out top-down so each rectangle is a line of the page and a click can name the
+// one it landed in. The checkbox carries /AP for both
 // of its states, because a checkbox without one cannot be un-checked: the toggle *is* the
 // appearance. `rotate` puts /Rotate on the page, which is the reading the form layer's
 // coordinate space is decided by (the note at the top of src/document/formfill.h has the
@@ -99,6 +100,13 @@ struct Geometry
     QRectF listBox {60, 380, 140, 60};
     QRectF pushButton {60, 340, 100, 20};
     QRectF signature {300, 600, 100, 30};
+    // The two shapes handoff-05 H1 4 asks for, and the two a click cannot answer on
+    // its own: an editable combo box (a /Ch that is also a text field, so a reader can
+    // type an answer that is in none of its options) and a multi-select list box (whose
+    // /V is an array rather than a string, which is what makes the ordinary value read
+    // answer only the first of what the reader picked).
+    QRectF editableComboBox {60, 300, 140, 20};
+    QRectF multiListBox {60, 200, 140, 60};
 };
 
 // One object body per number, then the xref the reader needs. `objects` is 1-based:
@@ -148,10 +156,45 @@ QPointF userCentre(const QRectF &rect)
 // The same point in the pixel grid of a page drawn at one device pixel per point with no
 // reader rotation -- which is what the flat frame in this test is. Device y grows
 // downwards from the top of the drawn page, so the flip is the page's own height.
+QPointF flatDevicePoint(const QPointF &userSpace)
+{
+    return QPointF(userSpace.x(), 842.0 - userSpace.y());
+}
+
 QPointF flatDevice(const QRectF &rect)
 {
-    const QPointF at = userCentre(rect);
-    return QPointF(at.x(), 842.0 - at.y());
+    return flatDevicePoint(userCentre(rect));
+}
+
+// ---- where a choice field's rows are ----
+//
+// Read off chromium/8111 rather than off the specification, because the specification
+// says nothing about where a reader draws a dropdown: a row is 11.1 pt tall at this
+// sample's font size, a list box's first row starts at the field's own upper edge, and a
+// combo box's list hangs *below* its lower one -- so a row's centre is 5.55 pt inside
+// whichever edge the rows grow from. (QRectF::bottom() is the larger y, which in the
+// page's user space is the upper edge; the names are the widget toolkit's, the space is
+// the PDF's.)
+//
+// A test that has to name a row clicks these, and that is the only reason they are here:
+// a build that moved the rows would fail the assertion loudly instead of quietly clicking
+// the wrong one.
+double listRowY(const QRectF &field, int row)
+{
+    return field.bottom() - 5.55 - 11.1 * row;
+}
+
+double popupRowY(const QRectF &field, int row)
+{
+    return field.top() - 5.55 - 11.1 * row;
+}
+
+// The dropdown button: measured, a press two points inside the field's right edge opened
+// the list and one fifteen points inside did not, so the button is the right-hand ten
+// points or so of the field's own rectangle.
+QPointF comboBoxButton(const QRectF &field)
+{
+    return QPointF(field.right() - 2, field.center().y());
 }
 
 // A widget annotation. `extra` carries what each kind needs beyond the shared keys:
@@ -179,12 +222,12 @@ QByteArray widgetBody(const QString &name, const char *fieldType, const QRectF &
 bool write(const QString &path, int pageRotation, bool withXfaPacket, QString *error)
 {
     Geometry sample;
-    QVector<QByteArray> objects(18);
+    QVector<QByteArray> objects(20);
     objects[1] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>";
     objects[2] = "<< /Type /Pages /Kids [4 0 R] /Count 1 >>";
     objects[3] = QByteArray("<< /Type /AcroForm /Fields [5 0 R 6 0 R 7 0 R 10 0 R 11 0 R "
-                             "12 0 R 13 0 R] /DA (/Helv 9 Tf 0 g ) /DR << /Font << /Helv "
-                             "9 0 R >> >>");
+                             "12 0 R 13 0 R 18 0 R 19 0 R] /DA (/Helv 9 Tf 0 g ) /DR << "
+                             "/Font << /Helv 9 0 R >> >>");
     if (withXfaPacket)
         // The XFA copy of the form: /AcroForm /XFA holding (subtype, stream) pairs
         // (PDF 32000-1 sec.12.7.6.3, the shape sec.55 built and sec.114 reads on
@@ -194,7 +237,7 @@ bool write(const QString &path, int pageRotation, bool withXfaPacket, QString *e
     objects[4] = QByteArray("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate ")
         + QByteArray::number(pageRotation)
         + " /Resources << /Font << /Helv 9 0 R >> >> /Annots [5 0 R 6 0 R 8 0 R 10 0 R "
-          "11 0 R 12 0 R 13 0 R 15 0 R] >>";
+          "11 0 R 12 0 R 13 0 R 15 0 R 18 0 R 19 0 R] >>";
     objects[5] = widgetBody(QStringLiteral("name"), "/Tx", sample.textField,
                             " /V (typed on page 1) /DA (/Helv 10 Tf 0 g )");
     // A checkbox without an /AP for each of its states is a checkbox a reader cannot
@@ -228,6 +271,26 @@ bool write(const QString &path, int pageRotation, bool withXfaPacket, QString *e
     } else {
         objects[14] = "null";
     }
+    // The two shapes handoff-05 H1 4 asks the generator for, and the /Ff values the
+    // library reads rather than the ones a name suggests. PDF 32000-1's choice-field
+    // table counts its bits from 1, so a bit's value is 1 << (bit - 1): Combo is bit 18
+    // (131072), Edit bit 19 (262144) and MultiSelect bit 22 (2097152). Bits 19 and 20
+    // were got the wrong way round twice while measuring this -- Edit is 262144 and
+    // Sort is 524288, not the other way about -- which is why the sum is written out
+    // and the two halves named beside it.
+    //
+    // 393216 = Combo | Edit: a field that both offers a list and takes a typed answer.
+    objects[18] = widgetBody(QStringLiteral("typeable"), "/Ch", sample.editableComboBox,
+                             " /Ff 393216 /V (b) /Opt [(a) (b) (c)] /DA (/Helv 10 Tf 0 g )");
+    // 2097152 = MultiSelect, and its /V is an array because that is what the
+    // specification says a multi-select field's value is (table 226). The array is what
+    // makes the ordinary value read useless on this field: FPDFAnnot_GetFormFieldValue
+    // answers the first of what the reader picked and FPDFAnnot_GetStringValue("/V")
+    // answers nothing at all, so a test that wants the whole answer has to read the
+    // array itself (which is what documenttab_smoke does, with qpdf).
+    objects[19] = widgetBody(QStringLiteral("many"), "/Ch", sample.multiListBox,
+                             " /Ff 2097152 /V [(two)] /Opt [(one) (two) (three) (four)] "
+                             "/DA (/Helv 10 Tf 0 g )");
     objects[15] = widgetBody(QString(), "", sample.radioTwo,
                              " /Parent 7 0 R /AS /On /MK << /CA (Two) >>");
     // The two appearance states of the checkbox. Empty content, /Length 0: they exist so

@@ -217,6 +217,13 @@ public:
     // has to decide which 撤销 the reader meant (G1 4), and that is a fact about the
     // view's input rather than about the document.
     bool fieldHasFocus() const;
+
+protected:
+    // Declines while a field has the keyboard, so that Tab reaches keyPressEvent() and
+    // walks the form instead of leaving the page. See the definition.
+    bool focusNextPrevChild(bool next) override;
+
+public:
     // The undo and redo the focused field offers itself, which is what decides
     // whether the structural list gets the keystroke or the field does.
     bool canUndoInField() const;
@@ -624,6 +631,12 @@ private:
     // delivers a whole notch at a time and never uses this; a touchpad
     // delivers nothing else. See ZoomController::wheelSteps().
     int wheelCarried = 0;
+    // The same accumulator for the wheel that goes to a field instead of to the page:
+    // a list box scrolls one row per detent, and the engine ignores the magnitude it is
+    // handed, so a touchpad's small deltas have to be counted up here too. Kept apart
+    // from wheelCarried because the two gestures are not the same gesture and a carry
+    // left over from one must not become a row scrolled in the other.
+    int formWheelCarried = 0;
     qint64 prefetchBytes = 0;    // Set while goToPage() moves the scrollbar, so that the scroll handler does
     // not recompute the current page from the new position and announce a
     // different one moments after the jump announced its own.

@@ -42,6 +42,7 @@
 #include "src/services/foregroundjobs.h"
 #include "src/services/ocrsession.h"
 #include "src/services/searchsession.h"
+#include "src/services/signaturesession.h"
 #include "src/services/translatesession.h"
 #include "src/services/wordexportsession.h"
 #include "src/translate/keystore.h"
@@ -63,6 +64,8 @@ class PageRenderer;
 class PageView;
 class QTabWidget;
 class SearchPanel;
+class SignaturePanel;
+class SignatureSession;
 class ThumbnailPanel;
 
 class DocumentTab : public QWidget
@@ -271,12 +274,36 @@ public:
     // How many digital signatures the open document carries, and whether one of them is
     // a certification signature (0 when not). Read by the backend from the file at open
     // with fpdf_signature.h; both are properties of the bytes on disk and neither is
-    // checked cryptographically -- 文档 says so at open, and the eight edit boxes warn
-    // that a structural save invalidates them. The count is of signature dictionaries,
+    // checked here -- the checking is SignatureSession's, and it is asynchronous, so a
+    // count is available before any verdict is. The count is of signature dictionaries,
     // the same thing DocumentEditor's qpdf pass counts, so the number a reader is shown
     // and the number a save costs are one number.
     int signatureCount() const { return backend->signatureCount(); }
     int docMdpPermission() const { return backend->docMdpPermission(); }
+
+    // ---- what the checking answered (handoff-07 I1) ----
+    //
+    // Empty until a verification has come back, and a document with no signatures never
+    // starts one. The sentence is built by SignatureVerify::summary(), which puts 内容被改过
+    // first whatever the file's own order is; the window is what puts it on the status bar,
+    // because this class has no status bar (§95) and the timeout belongs to that one.
+    QString signatureSummary() const;
+    // How many of the answers came out 有效, for the properties dialog's row.
+    int signatureValidCount() const;
+    // The sidebar's rows, for the tests that would otherwise have to read pixels: how many,
+    // what a row says, where pressing it goes.
+    int signatureRowCount() const;
+    QString signatureRowText(int row) const;
+    int signatureRowPage(int row) const;
+    void selectSignatureRow(int row);
+    // Whether the 签名 page is showing (a document with no signatures has no such page, and
+    // that is the assertion a test can make without measuring geometry).
+    bool signaturePanelVisible() const;
+
+    // Starts the verification of the document that was just opened, when it carries
+    // signatures. Split out of open() because the reader's agreement to go to the network for
+    // the revocation question is asked here, on the UI thread, and only the first time.
+    void startSignatureVerification();
 
     // Whether the thumbnail strip is showing pending edits rather than the file
     // as it is on disk (docs/review-03.md §1.3). The main view always shows the
@@ -458,6 +485,11 @@ Q_SIGNALS:
     // How the search is going: which match is in front, how many there are, and
     // whether the count is still being worked out.
     void searchChanged(int current, int total, bool searching);
+    // The document's signatures have been checked. The window re-reads signatureSummary() and
+    // puts it on the status bar, because an answer that arrives a second after the open is
+    // still about the document in front of the reader -- and because this class has no status
+    // bar to put it on itself (§95).
+    void signaturesVerified();
     // The reader asked for the sidebar somewhere other than the window's menu --
     // the find bar's 列出全部. The window re-reads the wish so its 导航侧栏 item
     // cannot say the panel is shut while it is open.
@@ -597,6 +629,10 @@ private:
     OutlinePanel *outlinePanel = nullptr;
     ThumbnailPanel *thumbnailPanel = nullptr;
     SearchPanel *searchPanel = nullptr;
+    // The fourth page of the sidebar, and the one that only exists for a document that carries
+    // signatures: an unsigned document has it removed from the tab widget at open, rather than
+    // shown empty, because an empty 签名 tab invites the reader to go looking for what is missing.
+    SignaturePanel *signaturePanel = nullptr;
     // Whether the reader asked for the sidebar, kept separate from whether it is
     // shown: a document with no bookmarks cannot show one, but the window's menu
     // item still reflects what was asked.
@@ -639,6 +675,11 @@ private:
     // that asks this tab, and a search that outlived the document it was reading
     // is the crash drainRenders() exists to prevent.
     std::unique_ptr<SearchSession> search;
+
+    // The signature check, for the same reason and by the same means: it reads the file again,
+    // on its own thread, and a document that goes away under it is the crash the wait exists to
+    // prevent. Declared after `backend` and so destroyed before it.
+    std::unique_ptr<SignatureSession> signatures;
 
     // The export, for the same reason and by the same means: it reads the
     // document page by page, and a reload under it is the crash drainRenders()

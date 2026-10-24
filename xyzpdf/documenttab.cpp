@@ -19,11 +19,13 @@
 #include "src/ui/protectpagesdialog.h"
 #include "src/ui/rotatepagesdialog.h"
 #include "src/ui/searchpanel.h"
+#include "src/ui/signaturepanel.h"
 #include "src/ui/splitpagesdialog.h"
 #include "src/ui/thumbnailpanel.h"
 #include "src/ui/watermarkdialog.h"
 #include "src/view/pageview.h"
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QClipboard>
 #include <QDateTime>
@@ -95,18 +97,24 @@ DocumentTab::DocumentTab(QWidget *parent)
     outlinePanel = new OutlinePanel(this);
     thumbnailPanel = new ThumbnailPanel(this);
     searchPanel = new SearchPanel(this);
+    signaturePanel = new SignaturePanel(this);
 
-    // The reading sidebar is one panel with three tabs -- the document's
-    // bookmarks, a column of page thumbnails and the hits of the current search
-    // -- because all three are "get me to a place in this document", and a
-    // reader switches between them, not looks at them at once. It sits beside
-    // the page, hidden until opened (see sidebarWanted).
+    // The reading sidebar is one panel with four tabs -- the document's bookmarks, a column of
+    // page thumbnails, the hits of the current search, and the signatures the file carries --
+    // because all four are "get me to a place in this document, or tell me about it", and a
+    // reader switches between them, not looks at them at once. It sits beside the page, hidden
+    // until opened (see sidebarWanted).
+    //
+    // The 签名 tab is the one that is not always there: it is removed for a document with no
+    // signatures, in applySidebarVisibility() rather than here, because the tab has to answer the
+    // document that is open now and the one that replaces it.
     sidebar = new QTabWidget(this);
     sidebar->setObjectName(QStringLiteral("readingSidebar"));
     sidebar->setTabPosition(QTabWidget::North);
     sidebar->addTab(outlinePanel, tr("大纲"));
     sidebar->addTab(thumbnailPanel, tr("缩略图"));
     sidebar->addTab(searchPanel, tr("搜索"));
+    sidebar->addTab(signaturePanel, tr("签名"));
     sidebar->hide();
 
     auto *readingSplit = new QSplitter(Qt::Horizontal, this);
@@ -162,6 +170,23 @@ DocumentTab::DocumentTab(QWidget *parent)
     search = std::make_unique<SearchSession>(findBar, searchPanel, pageView, sidebar,
                                              openDocument);
     connect(search.get(), &SearchSession::changed, this, &DocumentTab::searchChanged);
+
+    // The signature check: one verification per opened document, on a worker, answering into the
+    // sidebar's fourth tab and into the window's status line. It is asked for the setting rather
+    // than reading it, so that a test can answer "no network" without writing a preference.
+    signatures = std::make_unique<SignatureSession>();
+    signatures->revocationCheckWanted = [] {
+        return AppSettings::signatureRevocationCheckEnabled()
+            && AppSettings::signatureRevocationConsentGiven();
+    };
+    connect(signatures.get(), &SignatureSession::verified, this, [this] {
+        signaturePanel->setSignatures(signatures->signatures());
+        applySidebarVisibility();
+        Q_EMIT signaturesVerified();
+    });
+    connect(signaturePanel, &SignaturePanel::jumpToPage, this, [this](int page) {
+        setCurrentPage(page);
+    });
 
     // The Word export is the same job with a different reading loop, so it is
     // assembled the same way and reports through the tab's own two signals.
@@ -314,6 +339,12 @@ DocumentTab::~DocumentTab()
     wordExport->cancelPending();
     wordExport->waitUntilFinished();
 
+    // The signature verification reads the same file, so it is waited for by the same means. It
+    // cannot be cut short in the middle of a call into Windows, which is why this one waits
+    // rather than cancels.
+    signatures->cancelPending();
+    signatures->waitUntilFinished();
+
     // The thumbnails render through the same backend on their own worker, so the
     // same wait applies: it must finish before the document it is reading is
     // destroyed with this object.
@@ -458,6 +489,12 @@ void DocumentTab::drainRenders()
     // waited for below on the same grounds. Told to stop here rather than left to
     // run out: a search of one page is quick, an export of five hundred is not.
     wordExport->cancelPending();
+    // And the signature check, which reads the file again -- once through PDFium for the
+    // signature dictionaries, once through qpdf for the field names and pages. It holds no
+    // pointer to this tab's document so it cannot dangle, but a verification of the file the
+    // reader is about to replace would answer about bytes that are on their way out, and the
+    // panel would show an answer for the wrong document.
+    signatures->cancelPending();
 
     // Pumping the event loop is how the renders arrive -- they are queued
     // signals -- and it is bounded, because work that never comes back must not
@@ -466,7 +503,7 @@ void DocumentTab::drainRenders()
     timer.start();
     constexpr int kGiveUpAfter = 2000;
     while ((renderer->inFlight() > 0 || searchRunning() || isExporting()
-            || thumbnailPanel->rendering())
+            || thumbnailPanel->rendering() || signatures->running())
            && timer.elapsed() < kGiveUpAfter) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     }
@@ -636,6 +673,12 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
     // has them, otherwise the thumbnails, which it always does.
     sidebar->setCurrentIndex(outlinePanel->hasOutline() ? 0 : 1);
     applySidebarVisibility();
+    // A signed document gets its answer checked; an unsigned one does not get a thread, a second
+    // parse, or a tab. The panel is filled when the check comes back, through the signal wired in
+    // the constructor.
+    signaturePanel->setSignatures({});
+    signatures->reset();
+    startSignatureVerification();
 
     // From here until the next open() or this object's end, this is the file
     // whose changes the tab reports. watch() also drops the previous path,
@@ -880,6 +923,19 @@ void DocumentTab::applySidebarVisibility()
     // the file has no bookmarks. So the only conditions are "the reader asked"
     // and "there is a document".
     sidebar->setVisible(sidebarWanted && opened);
+
+    // The 签名 page is the one whose contents depend on the file: an unsigned document has
+    // nothing to put in it, and a tab that is always there invites the reader to open an empty
+    // list and wonder. A verification that has not come back yet keeps the page: the document
+    // does carry signatures -- the backend said so at open -- and a page that appears a second
+    // later in front of a reader who is already looking at the sidebar is worse than one that
+    // waits for the answer it is about to show.
+    if (opened) {
+        const bool hasAny = backend->signatureCount() > 0;
+        const int index = sidebar->indexOf(signaturePanel);
+        if (index >= 0)
+            sidebar->setTabVisible(index, hasAny);
+    }
 }
 
 bool DocumentTab::hasOutline() const
@@ -1095,6 +1151,77 @@ void DocumentTab::refreshThumbnailRows()
     thumbnailsPreviewEdits = differs;
 }
 
+QString DocumentTab::signatureSummary() const
+{
+    if (!opened || !signatures->answered())
+        return {};
+    return SignatureVerify::summary(signatures->signatures());
+}
+
+int DocumentTab::signatureValidCount() const
+{
+    return signatures->countWithVerdict(SignatureVerify::Verdict::Valid);
+}
+
+int DocumentTab::signatureRowCount() const
+{
+    return signaturePanel->signatureRowCount();
+}
+
+QString DocumentTab::signatureRowText(int row) const
+{
+    return signaturePanel->rowText(row);
+}
+
+int DocumentTab::signatureRowPage(int row) const
+{
+    return signaturePanel->pageOfRow(row);
+}
+
+void DocumentTab::selectSignatureRow(int row)
+{
+    // The press rather than the selection: what a reader does to a signature row is click it, and
+    // the thing worth testing is that the click reaches the page.
+    signaturePanel->pressRow(row);
+}
+
+bool DocumentTab::signaturePanelVisible() const
+{
+    const int index = sidebar->indexOf(signaturePanel);
+    return index >= 0 && sidebar->isTabVisible(index);
+}
+
+void DocumentTab::startSignatureVerification()
+{
+    if (!opened || backend->signatureCount() <= 0)
+        return;
+
+    // The reader's agreement, asked the way the translation service asks its own (F1): once,
+    // before the first connection, saying what will be contacted and what will not. Refusing
+    // stores nothing, so the question comes again for the next document rather than being
+    // answered once forever by a no.
+    if (AppSettings::signatureRevocationCheckEnabled()
+        && !AppSettings::signatureRevocationConsentGiven()) {
+        QMessageBox box(this);
+        box.setWindowTitle(tr("数字签名"));
+        box.setIcon(QMessageBox::Question);
+        box.setText(tr("检查证书有没有被吊销要联网。"));
+        box.setInformativeText(
+            tr("XYZPDF 会连接这份文档的证书里写着的吊销地址（CRL 文件或 OCSP 服务器），"
+               "去问一次这张证书还作不作数。发出去的是证书里本来就带着的那两个地址，"
+               "不是文档的内容，也不是你的任何文件。\n\n"
+               "这会告诉对方这台机器正在看这一份文档。不确定就选「不检查」，"
+               "签名结论里会写明「未联网检查吊销状态」。"));
+        box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+        box.button(QMessageBox::Yes)->setText(tr("允许联网检查"));
+        box.button(QMessageBox::No)->setText(tr("不检查"));
+        if (box.exec() == QMessageBox::Yes)
+            AppSettings::setSignatureRevocationConsent(true);
+    }
+
+    signatures->start(documentPath(), documentPassword);
+}
+
 PropertiesDialog::Info DocumentTab::propertiesInfo() const
 {
     PropertiesDialog::Info info;
@@ -1109,6 +1236,10 @@ PropertiesDialog::Info DocumentTab::propertiesInfo() const
     info.pagePoints = backend->pageSize(info.sizedPage);
     info.metadata = backend->metadata();
     info.signatureCount = backend->signatureCount();
+    // How many of them the check answered 有效. Zero while the verification is still running,
+    // which is why the dialog's row only adds the second number once there is one to add --
+    // "0 个有效" under a count of two would say the signatures failed when nothing has answered.
+    info.validSignatureCount = signatures->answered() ? signatureValidCount() : -1;
     return info;
 }
 

@@ -28,6 +28,7 @@
 
 #include <QHash>
 #include <QMutex>
+#include <QMutexLocker>
 #include <QRectF>
 #include <QSet>
 #include <QString>
@@ -61,8 +62,37 @@ inline QRecursiveMutex &pdfiumMutex()
     return mutex;
 }
 
+// The library's init/destroy pair, counted. It moved out of pdfiumbackend.cpp when
+// signatureverify.cpp (handoff-07 I1) started opening its own FPDF_DOCUMENT beside
+// the view's: two files that each counted to zero in their own static would have
+// had the second one call FPDF_DestroyLibrary while the first still holds a
+// document. One counter per module is the whole point of it living here, in the
+// same way pdfiumMutex() already does -- an inline function's local static is
+// merged across the translation units that include it.
+inline int &pdfiumUsers()
+{
+    static int users = 0;
+    return users;
+}
+
+inline void acquirePdfium()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (pdfiumUsers()++ == 0)
+        FPDF_InitLibrary();
+}
+
+inline void releasePdfium()
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (--pdfiumUsers() == 0)
+        FPDF_DestroyLibrary();
+}
+
 struct PdfFileHandle
 {
+    // The file PDFium reads through, with the one property that makes R7 worth the trouble: the
+    // handle does not stop DeleteFileW or ReplaceFileW.
     HANDLE handle = INVALID_HANDLE_VALUE;
     FPDF_FILEACCESS access{};
 
@@ -76,6 +106,34 @@ struct PdfFileHandle
         }
     }
 };
+
+// The block reader FPDF_FILEACCESS asks for, over one of the handles above.
+//
+// Shared by the two files that hand PDFium a file (pdfiumbackend.cpp for every
+// document the program reads, signatureverify.cpp for the throwaway handle it opens
+// to ask about signatures) because a byte-position bug in one of them is a wrong
+// page image in the other, and having to fix it twice is how such a bug survives.
+//
+// Returns 1 on success, 0 on any failure -- the shape FPDF_FILEACCESS asks for.
+// PDFium only ever asks for positions and sizes inside m_FileLen.
+inline int pdfiumReadBlock(void *param, unsigned long position, unsigned char *buffer,
+                           unsigned long size)
+{
+    auto *file = static_cast<PdfFileHandle *>(param);
+    LARGE_INTEGER offset;
+    offset.QuadPart = static_cast<LONGLONG>(position);
+    if (!SetFilePointerEx(file->handle, offset, nullptr, FILE_BEGIN))
+        return 0;
+
+    unsigned long done = 0;
+    while (done < size) {
+        DWORD got = 0;
+        if (!ReadFile(file->handle, buffer + done, size - done, &got, nullptr) || got == 0)
+            return 0;
+        done += got;
+    }
+    return 1;
+}
 
 // A few pages held open, oldest let go. Qt PDF keeps its pages open and that is
 // part of why its per-page render figure is lower than a probe that loads and

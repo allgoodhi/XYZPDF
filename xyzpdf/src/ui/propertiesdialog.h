@@ -54,6 +54,11 @@ public:
         // answer and does not deserve a line that makes the empty metadata fields
         // beside it ambiguous.
         int signatureCount = 0;
+        // How many of them the checker answered 有效. Negative means the check has not answered
+        // at all yet, which is a different thing from zero: the row says "N 个" alone rather than
+        // "N 个，0 个有效", because the latter would report two failed signatures on a document
+        // whose verification is still running.
+        int validSignatureCount = -1;
     };
 
     PropertiesDialog(QWidget *parent, const Info &info);

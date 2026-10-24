@@ -73,6 +73,7 @@ private:
     QComboBox *translateTriggerBox = nullptr;
     QCheckBox *shellBox = nullptr;
     QLabel *shellNote = nullptr;
+    QCheckBox *revocationBox = nullptr;
     // Which service the text in the key field belongs to, and whether it has
     // been edited since it was loaded. The service can change under the field,
     // so the field alone does not say whose key it is.
@@ -87,6 +88,7 @@ private:
     AppTheme originalTheme = AppTheme::Default;
     bool originalRecent = true;
     bool originalShell = false;
+    bool originalRevocation = false;
     qint64 originalCache = 0;
     QString originalProvider;
     QString originalTrigger;

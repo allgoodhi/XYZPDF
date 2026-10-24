@@ -43,6 +43,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     originalTheme = ThemeManager::currentTheme();
     originalRecent = RecentDocuments::isEnabled();
     originalShell = AppSettings::shellIntegrationEnabled();
+    originalRevocation = AppSettings::signatureRevocationCheckEnabled();
     originalCache = AppSettings::renderCacheBytes(RenderCache::DefaultMaximumBytes);
     originalProvider = AppSettings::translateProvider();
     originalTrigger = AppSettings::translateTrigger();
@@ -240,6 +241,40 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         });
     }
 
+    // ---- 签名 ----
+    {
+        auto *group = new QGroupBox(tr("数字签名"), this);
+        auto *form = new QFormLayout(group);
+
+        revocationBox = new QCheckBox(tr("联网检查证书是否被吊销"), group);
+        revocationBox->setChecked(AppSettings::signatureRevocationCheckEnabled());
+        form->addRow(QString(), revocationBox);
+
+        // Said rather than implied, because the default is the state a reader is most likely to
+        // leave alone: without this box ticked the program never reaches the network over a
+        // signature, and a verdict of 有效 then means "not revoked as far as anything cached can
+        // tell", which is what the panel's own line says too.
+        auto *note = new QLabel(
+            tr("不勾选时，证书链只在离线状态下检查，签名结论里会写明「未联网检查吊销状态」。"
+               "勾选以后，检查一份文档会连接该文档证书里写着的吊销地址（CRL 或 OCSP 服务器）；"
+               "第一次联网前会再问你一次。"),
+            group);
+        note->setWordWrap(true);
+        form->addRow(QString(), note);
+
+        layout->addWidget(group);
+
+        connect(revocationBox, &QCheckBox::toggled, this, [this](bool enabled) {
+            AppSettings::setSignatureRevocationCheckEnabled(enabled);
+            // Turning the switch off also takes the agreement back: the consent means "you may
+            // go out for signatures", and a reader who has just said no to that has not left a
+            // yes lying around for the next document to use.
+            if (!enabled)
+                AppSettings::setSignatureRevocationConsent(false);
+            Q_EMIT settingsChanged();
+        });
+    }
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText(tr("确定"));
     buttons->button(QDialogButtonBox::Cancel)->setText(tr("取消"));
@@ -261,6 +296,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         AppSettings::setTheme(originalTheme);
         ThemeManager::apply(originalTheme);
         AppSettings::setRenderCacheBytes(originalCache);
+        AppSettings::setSignatureRevocationCheckEnabled(originalRevocation);
         RecentDocuments::setEnabled(originalRecent);
         AppSettings::setTranslateProvider(originalProvider);
         AppSettings::setTranslateTrigger(originalTrigger);

@@ -468,10 +468,6 @@ int main(int argc, char **argv)
             // shape rule, so each is asked for n=1 and n=40 by name -- and the plain
             // sentences beside them are probed because the sweep stops at the newest
             // entries, which is how an English screen ends up with a Chinese sentence.
-            { "MainWindow",
-              "已打开 %1 —— 这份文档带着 %n 个数字签名，本版不验证签名本身。", 1 },
-            { "MainWindow",
-              "\n\n这份文档带着 %n 个数字签名，本版不验证签名本身。", 1 },
             { "MainWindow", "认证签名不允许任何改动：表单字段只能看，不能填。" },
             { "MainWindow", "认证签名只允许填写表单：别的修改都会被挡住。" },
             { "DocumentEditor", "\n\n保存之后这 %n 个数字签名都会失效。", 1 },
@@ -479,6 +475,43 @@ int main(int argc, char **argv)
             { "DocumentEditor", "\n\n这份文档的认证签名只允许填写表单，页面改动不能确定。" },
             { "PropertiesDialog", "数字签名" },
             { "PropertiesDialog", "%n 个", 1 },
+            // handoff-07 I1. The two 本版不验证签名本身 rows above were the ones lupdate
+            // reported as removed this time -- the checker replaced that sentence with a verdict
+            // -- so they are gone from the catalogue and from the probes together, and the rows
+            // below are what the same status line says now. Every counted one is asked at n=1 and
+            // at n=40 by the loop after this table, which is the only machine that watches a `%n`
+            // row: a catalogue whose two numerus forms are identical passes every other shape
+            // rule there is.
+            { "MainWindow",
+              "已打开 %1 —— 这份文档带着 %n 个数字签名，正在检查。", 1 },
+            { "PropertiesDialog", "%1 个，其中 %n 个有效", 1 },
+            { "SignatureVerify", "这份文档带着 %n 个数字签名：", 1 },
+            { "SignatureVerify", "%n 个有效", 1 },
+            { "SignatureVerify", "%n 个内容被改过", 1 },
+            { "SignatureVerify", "%n 个无法验证", 1 },
+            { "SignatureVerify", "%n 个证书不受信任或已过期", 1 },
+            { "SignatureVerify", "签名之后还有 %n 次增量更新。", 1 },
+            { "SignatureVerify", "这是文档认证签名，保存时只允许第 %n 级改动。", 1 },
+            // The four verdict words and the lines the panel expands to. Probed by name because
+            // a verdict that reaches an English interface in Chinese is the worst place for it:
+            // the reader is deciding whether to trust a document on the strength of that line.
+            { "SignatureVerify", "有效" },
+            { "SignatureVerify", "内容被改过" },
+            { "SignatureVerify", "证书不受信任或已过期" },
+            { "SignatureVerify", "无法验证" },
+            { "SignatureVerify", "未联网检查吊销状态。" },
+            { "SignatureVerify", "已联网检查过吊销状态。" },
+            { "SignatureVerify", "%1（签名者自己声明的时间）" },
+            { "SignatureVerify", "%1（时间戳）" },
+            { "SignatureVerify", "不支持的签名格式：%1" },
+            { "SignatureVerify", "签名人：%1" },
+            { "SignatureVerify", "在第 %1 页" },
+            { "SignatureVerify", "地点：%1" },
+            { "DocumentTab", "签名" },
+            { "DocumentTab", "检查证书有没有被吊销要联网。" },
+            { "DocumentTab", "允许联网检查" },
+            { "DocumentTab", "不检查" },
+            { "SettingsDialog", "联网检查证书是否被吊销" },
         };
 
         for (const Probe &probe : probes) {

@@ -222,6 +222,11 @@ void ProtectPagesDialog::updateSummary()
                        "看到的这些页。");
     }
 
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
+
     line += removing
         ? tr("\n\n原来那份文件不会改动，这一步也不写任何文件——要等按下保存，"
              "去掉口令的那一份才会出现。")
@@ -232,5 +237,5 @@ void ProtectPagesDialog::updateSummary()
     okayButton->setText(removing  ? tr("去掉口令")
                           : keyed ? tr("加密")
                                   : tr("只改权限"));
-    okayButton->setEnabled(usable);
+    okayButton->setEnabled(usable && !(editor && editor->structuralEditsRefused()));
 }

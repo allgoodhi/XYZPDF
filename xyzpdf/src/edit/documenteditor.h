@@ -157,6 +157,7 @@
 
 #include <QRectF>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <memory>
@@ -703,6 +704,44 @@ public:
     // args.gn's `pdf_enable_v8=false`), so none of it runs whichever way this reads.
     bool hasFormScript() const { return sourceHasScript; }
 
+    // ---- the file's digital signatures (PDF 32000-1 sec.12.8) ----
+    //
+    // Read once in open() beside the form probe above, from the same parsed catalogue:
+    // how many signature fields carry a signature dictionary, and the /P of the
+    // document's certification signature (0 when there is none). The backend reads the
+    // same two answers with fpdf_signature.h for the reader-facing sentence; these are
+    // the writer's copy, because the eight edit boxes have to say what a save costs
+    // while no backend is on the stack.
+    //
+    // Nothing here validates a signature; "how many" and "what it permits" are facts
+    // the file states, and the sentence a reader gets says the checking is not done.
+    int signatureCount() const { return sourceSignatureCount; }
+    int docMdpPermission() const { return sourceDocMdp; }
+
+    // Whether the certification signature forbids what this class writes. /P 1 forbids
+    // every change, and /P 2 or 3 permit form filling (and, for 3, annotations) but not
+    // pages, protection, watermarks or bookmarks -- and this program writes no
+    // annotations, so every one of the eight boxes is refused for each P the file can
+    // carry. What each box does with this is disable 确定 and append
+    // certificationNotice()'s sentence.
+    bool structuralEditsRefused() const { return sourceDocMdp > 0; }
+
+    // The sentence a structural-edit box appends when the file is signed: the count is
+    // of this source's signatures, not of a pending request, which is the §80 rule --
+    // what a save of a rewritten file costs is decided before anything is pressed.
+    // Empty when there are no signatures.
+    QString signatureInvalidationNotice() const;
+    // Why 确定 is grey, for the boxes above. Empty when the file permits the edit.
+    QString certificationNotice() const;
+
+    // The form fields a signed signature field's /Lock seals, by their fully
+    // qualified names (PDF 32000-1 sec.12.8.4, table 233). Read in open() beside the
+    // two above, because PDFium exposes no API for /Lock -- and, measured on
+    // chromium/8111, does not enforce one either. DocumentTab hands this list to the
+    // form layer, which then treats each of these as display-only. Empty when no
+    // signature seals anything.
+    QStringList lockedFieldNames() const { return sourceLockedFieldNames; }
+
     // ---- what a request would cost the threads between annotations (§47) ----
     //
     // Three questions, all of them asked *before the press*, and all of them answered off the
@@ -1168,6 +1207,15 @@ private:
     // Whether the file asks for scripts, read beside the two above for the sentence the
     // reader of a scripted form gets at open time. See hasFormScript().
     bool sourceHasScript = false;
+    // How many signature dictionaries the file's form fields carry, and the /P of its
+    // certification signature (0 when there is none). Read in open() while the parser
+    // still holds the document; see signatureCount() / docMdpPermission().
+    int sourceSignatureCount = 0;
+    int sourceDocMdp = 0;
+    // The terminal field names a signed signature field's /Lock seals. Read in open() for
+    // the same reason the two above are: the form layer needs it before the reader's first
+    // click, and this class keeps no parser open afterwards.
+    QStringList sourceLockedFieldNames;
     // The threads between annotations that the file on disk can resolve, as page pairs. Read in
     // open() for the same reason the four lines above are read there, and asked again by
     // repliesAtRiskForDelete() / repliesAtRiskForSplit() on every keystroke (§47).

@@ -212,6 +212,11 @@ void WatermarkDialog::updateSummary()
         }
     }
 
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
+
     // Same ending as the other five dialogs here, for the same reason: nothing on this screen
     // has written a file, and a watermark is the one of them that changes what a page looks
     // like, which is exactly when a reader most needs to know the original is untouched.
@@ -219,5 +224,6 @@ void WatermarkDialog::updateSummary()
 
     summaryLabel->setText(line);
     okayButton->setText(hasPages && hasWords ? tr("盖这 %n 页", nullptr, present) : tr("确定"));
-    okayButton->setEnabled(hasWords && hasPages && !again);
+    okayButton->setEnabled(hasWords && hasPages && !again
+                           && !(editor && editor->structuralEditsRefused()));
 }

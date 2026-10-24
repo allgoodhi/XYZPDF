@@ -55,6 +55,7 @@
 
 #include <fpdf_annot.h>
 #include <fpdf_formfill.h>
+#include <fpdf_signature.h>
 #include <fpdfview.h>
 
 namespace FormSampleFile {
@@ -392,6 +393,184 @@ QPointF deviceCentre(const QString &path, QPointF userSpace, QSize pixels, int q
         FPDF_ClosePage(page);
     FPDF_CloseDocument(document);
     return ok ? QPointF(x, y) : QPointF();
+}
+
+// ---- a signed sample (PDF 32000-1 sec.12.8) ----
+//
+// The shape comes from the specification, not from the reader that has to recognise it:
+// a signature field is a /Sig field whose /V names a signature dictionary (table 252),
+// and that dictionary's /ByteRange is four numbers -- two (offset, length) pairs -- with
+// /Contents between the two spans. The bytes here are a placeholder for a real PKCS#7
+// blob; nothing in this program validates cryptography, and the only claim the tests
+// make about the ranges is that the bytes they name do not move.
+//
+// The numbers are written in two passes rather than typed: the first pass puts a
+// fixed-width 10-digit placeholder in every slot, the assembled buffer is then searched
+// for each /Contents hole, and the placeholder is replaced with the offsets that hole
+// actually has. Because the replacement has exactly the placeholder's width, every
+// offset collected by assemblePdf() stays valid. A hand-typed ByteRange would be a claim
+// about bytes written after it, which is the same trap that made assemblePdf a function.
+//
+// /Perms /DocMDP in the catalog plus the signature dictionary's one /Reference entry is
+// how sec.12.8.2.2 states a certification signature; /P is what it permits (1 nothing,
+// 2 form filling and signing, 3 those and annotations). The /Lock dictionary of table
+// 233 belongs to the signature field, and names the fields it seals.
+struct SignedGeometry
+{
+    QRectF textField {60, 600, 200, 30};
+    QRectF signature {300, 600, 100, 30};
+    QRectF secondSignature {420, 600, 100, 30};
+    // Only present when writeSigned() is asked for a locked field: a second text field,
+    // listed by the first signature's /Lock.
+    QRectF lockedField {60, 540, 200, 30};
+};
+
+// `docMdp` 0 writes a signed document with no certification signature; 1, 2 and 3 write
+// one whose /P is that number. `signatures` is 1 or 2. `lockField` adds the second text
+// field and seals it from the first signature.
+bool writeSigned(const QString &path, int docMdp, int signatures, bool lockField, QString *error)
+{
+    // A generator that can make a shape the specification does not have is worse than
+    // one that refuses, because the test on the other side would be pinning the mistake.
+    if (signatures < 1 || signatures > 2 || docMdp < 0 || docMdp > 3) {
+        *error = QStringLiteral("a signed sample takes 1 or 2 signatures and P in 0..3");
+        return false;
+    }
+    const SignedGeometry sample;
+    QVector<QByteArray> objects(12);
+    QByteArray catalog = "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R";
+    if (docMdp > 0)
+        catalog += " /Perms << /DocMDP 10 0 R >>";
+    objects[1] = catalog + " >>";
+    objects[2] = "<< /Type /Pages /Kids [4 0 R] /Count 1 >>";
+
+    QByteArray fieldList = "[5 0 R 6 0 R";
+    QByteArray annotList = "[5 0 R 6 0 R";
+    if (signatures > 1) {
+        fieldList += " 7 0 R";
+        annotList += " 7 0 R";
+    }
+    if (lockField) {
+        fieldList += " 9 0 R";
+        annotList += " 9 0 R";
+    }
+    fieldList += "]";
+    annotList += "]";
+    objects[3] = "<< /Type /AcroForm /Fields " + fieldList
+        + " /DA (/Helv 9 Tf 0 g ) /DR << /Font << /Helv 8 0 R >> >> >>";
+    objects[4] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font "
+        "<< /Helv 8 0 R >> >> /Annots " + annotList + " >>";
+
+    objects[5] = widgetBody(QStringLiteral("name"), "/Tx", sample.textField,
+                            " /V (before) /DA (/Helv 10 Tf 0 g )");
+    QByteArray lock;
+    if (lockField)
+        lock = " /Lock << /Type /SigFieldLock /Action /Include /Fields [(locked)] >>";
+    objects[6] = widgetBody(QStringLiteral("sig1"), "/Sig", sample.signature,
+                            " /V 10 0 R" + lock);
+    objects[7] = signatures > 1
+        ? widgetBody(QStringLiteral("sig2"), "/Sig", sample.secondSignature, " /V 11 0 R")
+        : QByteArray("null");
+    objects[8] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+    objects[9] = lockField
+        ? widgetBody(QStringLiteral("locked"), "/Tx", sample.lockedField,
+                     " /V (sealed) /DA (/Helv 10 Tf 0 g )")
+        : QByteArray("null");
+
+    // The two /Contents placeholders, in hex because a /Contents is a hexadecimal string
+    // (table 252). Different patterns so that each signature's hole can be found by its
+    // own bytes rather than by counting the same pattern twice.
+    const QByteArray firstMarker = QByteArray("AB").repeated(32);
+    const QByteArray secondMarker = QByteArray("CD").repeated(32);
+    const QByteArray rangePlaceholder
+        = "[0000000000 0000000000 0000000000 0000000000]";
+    const auto signatureBody = [&](const QByteArray &marker, bool certification) {
+        QByteArray body = "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter "
+                          "/adbe.pkcs7.detached /ByteRange "
+            + rangePlaceholder + " /Contents <" + marker
+            + "> /M (D:20261024120000+08'00')";
+        if (certification && docMdp > 0)
+            body += " /Reference [ << /Type /SigRef /TransformMethod /DocMDP "
+                    "/TransformParams << /Type /TransformParams /V /1.2 /P "
+                + QByteArray::number(docMdp) + " >> >> ]";
+        return body + " >>";
+    };
+    objects[10] = signatureBody(firstMarker, true);
+    objects[11] = signatures > 1 ? signatureBody(secondMarker, false) : QByteArray("null");
+
+    QByteArray bytes = assemblePdf(objects, 1);
+    const auto padded = [](int value) {
+        return QByteArray::number(value).rightJustified(10, '0');
+    };
+    const auto fillRange = [&](const QByteArray &marker) {
+        const QByteArray hole = "<" + marker + ">";
+        const int holeStart = bytes.indexOf(hole);
+        if (holeStart < 0)
+            return false;
+        const int holeEnd = holeStart + hole.size();
+        const int rangeStart = bytes.lastIndexOf(rangePlaceholder, holeStart);
+        if (rangeStart < 0)
+            return false;
+        const QByteArray range = "[" + padded(0) + " " + padded(holeStart) + " "
+            + padded(holeEnd) + " " + padded(bytes.size() - holeEnd) + "]";
+        bytes.replace(rangeStart, rangePlaceholder.size(), range);
+        return true;
+    };
+    if (!fillRange(firstMarker) || (signatures > 1 && !fillRange(secondMarker))) {
+        *error = QStringLiteral("the signature holes could not be located in the sample");
+        return false;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        *error = QStringLiteral("could not write %1").arg(path);
+        return false;
+    }
+    file.write(bytes);
+    file.close();
+    return true;
+}
+
+// The two spans a signature covers, concatenated, read out of a file that is already in
+// hand. The tests hash this before and after a save: a signature's own claim is that
+// these bytes do not move.
+QByteArray signatureCoveredBytes(const QByteArray &file, const QVector<int> &range)
+{
+    if (range.size() != 4)
+        return {};
+    QByteArray covered;
+    for (int pair = 0; pair < 2; ++pair) {
+        const qint64 offset = range.at(pair * 2);
+        const qint64 length = range.at(pair * 2 + 1);
+        if (offset < 0 || length < 0 || offset + length > file.size())
+            return {};
+        covered += file.mid(int(offset), int(length));
+    }
+    return covered;
+}
+
+// What PDFium itself says the nth signature covers. Loaded by the library rather than
+// parsed here, so a sample whose /ByteRange PDFium cannot read fails loudly instead of
+// agreeing with a reader written by the same hand.
+QVector<int> signatureByteRange(const QString &path, int index,
+                                const QString &password = QString())
+{
+    FPDF_DOCUMENT document = FPDF_LoadDocument(
+        path.toUtf8().constData(),
+        password.isEmpty() ? nullptr : password.toUtf8().constData());
+    if (!document)
+        return {};
+    QVector<int> answer;
+    if (index >= 0 && index < FPDF_GetSignatureCount(document)) {
+        FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document, index);
+        int buffer[8] = {0};
+        const unsigned long count
+            = signature ? FPDFSignatureObj_GetByteRange(signature, buffer, 8) : 0;
+        for (unsigned long slot = 0; slot < count; ++slot)
+            answer.append(buffer[slot]);
+    }
+    FPDF_CloseDocument(document);
+    return answer;
 }
 
 } // namespace FormSampleFile

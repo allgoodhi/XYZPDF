@@ -432,6 +432,10 @@ void BookmarkDialog::updateSummary()
         }
     }
 
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
     // Same ending as the other six boxes, for the same reason: nothing on this screen has written a
     // file, and a bookmark a reader cannot see until after the save is exactly what needs saying twice.
     line += tr("\n\n原来那份文件不会改动。这一步只是记下修改，要它成为一个文件，还得走保存。");
@@ -439,7 +443,7 @@ void BookmarkDialog::updateSummary()
     summaryLabel->setText(line);
     okayButton->setText(asked.isEmpty() ? tr("去掉全部书签")
                                        : tr("写这 %n 条书签", nullptr, asked.size()));
-    okayButton->setEnabled(okay);
+    okayButton->setEnabled(okay && !(editor && editor->structuralEditsRefused()));
 
     // Which way a row can go is not arithmetic the box keeps to itself: it is the same "is there a
     // sibling on this side" question the summary would have to answer, so it is asked of the list once

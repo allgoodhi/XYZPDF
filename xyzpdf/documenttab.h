@@ -268,6 +268,16 @@ public:
     // parser open to ask again.
     bool hasFormScript() const { return sourceHasScript; }
 
+    // How many digital signatures the open document carries, and whether one of them is
+    // a certification signature (0 when not). Read by the backend from the file at open
+    // with fpdf_signature.h; both are properties of the bytes on disk and neither is
+    // checked cryptographically -- 文档 says so at open, and the eight edit boxes warn
+    // that a structural save invalidates them. The count is of signature dictionaries,
+    // the same thing DocumentEditor's qpdf pass counts, so the number a reader is shown
+    // and the number a save costs are one number.
+    int signatureCount() const { return backend->signatureCount(); }
+    int docMdpPermission() const { return backend->docMdpPermission(); }
+
     // Whether the thumbnail strip is showing pending edits rather than the file
     // as it is on disk (docs/review-03.md §1.3). The main view always shows the
     // file; the strip shows what a save would write. See refreshThumbnailRows().

@@ -106,13 +106,17 @@ void RotatePagesDialog::updateSummary()
                    .arg(pages.size());
     else
         line = tr("%1：%n 页。", nullptr, pages.size()).arg(directionName());
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
     // Same sentence the delete dialog ends with, for the same reason: nothing
     // here has written a file yet.
     summaryLabel->setText(tr("%1\n\n原来那份文件不会改动。这一步只是记下修改，"
                              "要它成为一个文件，还得走保存。")
                               .arg(line));
 
-    okayButton->setEnabled(present > 0);
+    okayButton->setEnabled(present > 0 && !(editor && editor->structuralEditsRefused()));
 }
 
 QString RotatePagesDialog::directionName() const

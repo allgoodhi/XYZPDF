@@ -35,6 +35,7 @@
 #include "../src/services/filechangenotice.h"
 
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -51,6 +52,7 @@
 
 #include <fpdf_annot.h>
 #include <fpdf_formfill.h>
+#include <fpdf_signature.h>
 #include <fpdfview.h>
 
 #include <cmath>
@@ -72,7 +74,9 @@ void check(bool condition, const QString &what)
 
 void note(const QString &what)
 {
-    std::cout << what.toStdString() << '\n';
+    // Flushed: a run that hangs must leave the last row it reached behind, or the log
+    // says nothing about where to look (sec.99's rule about a print that never came out).
+    std::cout << what.toStdString() << '\n' << std::flush;
 }
 
 QString fixture(const QString &directory, const QString &name)
@@ -1355,6 +1359,411 @@ void checkChoiceFields(const QString &scratch)
     }
 }
 
+// ---- a signed document: what the file says, and what a save does to it ----
+//
+// The criterion handoff-06 H4 states is bytes, not validity: an incremental update
+// appends a revision, so the saved file's first N bytes (N = the source's length) are
+// the source's own, and the two spans its /ByteRange names hash the same before and
+// after. The sample's ranges are computed in the generator from the assembled bytes
+// (formsample.h); this function first proves they name real bytes -- the first span
+// ends at a '<', the second starts just past a '>' -- so a reader that agreed with a
+// range pointing at nothing could not pass by accident.
+void checkSignatures(const QString &scratch)
+{
+    const SignedGeometry fields;
+    const FormFill::Frame frame = flatFrame();
+    const auto readAll = [](const QString &path) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return file.readAll();
+    };
+    const auto digest = [](const QByteArray &bytes) {
+        return QString::fromLatin1(
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    };
+
+    const QString signedPath = scratch + QStringLiteral("/signed.pdf");
+    const QString twoPath = scratch + QStringLiteral("/signed-twice.pdf");
+    const QString p1Path = scratch + QStringLiteral("/certified-p1.pdf");
+    const QString p2Path = scratch + QStringLiteral("/certified-p2.pdf");
+    const QString lockedPath = scratch + QStringLiteral("/signed-locked.pdf");
+    QString why;
+    check(writeSigned(signedPath, 0, 1, false, &why),
+          QStringLiteral("signed: setup: a signed sample is written: %1").arg(why));
+    check(writeSigned(twoPath, 0, 2, false, &why),
+          QStringLiteral("signed: setup: a twice-signed sample is written: %1").arg(why));
+    check(writeSigned(p1Path, 1, 1, false, &why),
+          QStringLiteral("signed: setup: a P=1 sample is written: %1").arg(why));
+    check(writeSigned(p2Path, 2, 1, false, &why),
+          QStringLiteral("signed: setup: a P=2 sample is written: %1").arg(why));
+    check(writeSigned(lockedPath, 0, 1, true, &why),
+          QStringLiteral("signed: setup: a locked-field sample is written: %1").arg(why));
+
+    const QByteArray original = readAll(signedPath);
+    check(!original.isEmpty(), "signed: and the signed sample can be read back");
+    // The two cycle sizes of the signed document, kept for the unsigned comparison after
+    // this block: the whole point of the branch is that an append costs a whole revision
+    // every time while a rewrite costs only what changed.
+    qint64 signedFirstCycle = 0;
+    qint64 signedSecondCycle = 0;
+
+    // ---- the file's own claim, read through PDFium ----
+    {
+        PdfiumBackend document;
+        check(document.load(signedPath, QString()) == Document::Status::Ready,
+              QStringLiteral("signed: the signed sample opens (%1)").arg(document.lastError()));
+        note(QStringLiteral("signed: count=%1 docMdp=%2")
+                 .arg(document.signatureCount())
+                 .arg(document.docMdpPermission()));
+        check(document.signatureCount() == 1, "signed: one signature is counted");
+        check(document.docMdpPermission() == 0,
+              "signed: and a signature with no /Perms certifies nothing");
+
+        const QVector<int> range = signatureByteRange(signedPath, 0);
+        QStringList rangeNumbers;
+        for (int one : range)
+            rangeNumbers << QString::number(one);
+        note(QStringLiteral("signed: ByteRange=[%1]").arg(rangeNumbers.join(QStringLiteral(", "))));
+        check(range.size() == 4, "signed: PDFium reads a four-number ByteRange");
+        if (range.size() == 4) {
+            check(range.at(0) == 0, "signed: the first span starts at byte zero");
+            check(range.at(1) > 0 && range.at(1) < original.size()
+                      && original.at(range.at(1)) == '<',
+                  "signed: and ends at the '<' that opens /Contents");
+            check(range.at(2) > range.at(1) && range.at(2) <= original.size()
+                      && original.at(range.at(2) - 1) == '>',
+                  "signed: the second span starts just past the '>'");
+            check(range.at(2) + range.at(3) == original.size(),
+                  QStringLiteral("signed: and runs to the end of the file (%1 + %2 vs %3)")
+                      .arg(range.at(2))
+                      .arg(range.at(3))
+                      .arg(original.size()));
+            check(!signatureCoveredBytes(original, range).isEmpty(),
+                  "signed: so the covered bytes are real bytes of this file");
+        }
+
+        // ---- the save that only fills a field ----
+        check(document.mousePressed(0, frame, flatDevice(fields.textField), {}),
+              "signed: the text field takes a press");
+        document.mouseReleased(0, frame, flatDevice(fields.textField), {});
+        document.commitText(QStringLiteral("SIGNED-EDIT"));
+        document.takeRepaints();
+        document.releaseFocus();
+        QString staged;
+        QString stageError;
+        check(document.stageFieldValues(scratch, &staged, &stageError),
+              QStringLiteral("signed: the field values stage out (%1)").arg(stageError));
+        const QByteArray stagedBytes = readAll(staged);
+        note(QStringLiteral("signed: source %1 bytes, staged %2 bytes, prefix=%3")
+                 .arg(original.size())
+                 .arg(stagedBytes.size())
+                 .arg(stagedBytes.left(original.size()) == original ? 1 : 0));
+        check(stagedBytes.size() > original.size(),
+              "signed: the staged file is the source plus a revision, not a rewrite");
+        check(stagedBytes.left(original.size()) == original,
+              "signed: the source's own bytes are the staged file's prefix, unchanged");
+        if (range.size() == 4) {
+            const QByteArray before = signatureCoveredBytes(original, range);
+            const QByteArray after = signatureCoveredBytes(stagedBytes, range);
+            note(QStringLiteral("signed: covered sha256 before=%1 after=%2")
+                     .arg(digest(before), digest(after)));
+            check(!before.isEmpty() && digest(before) == digest(after),
+                  "signed: both spans of the ByteRange hash the same before and after");
+        }
+        check(signatureByteRange(staged, 0).size() == 4,
+              "signed: and the staged file still carries a readable signature");
+        const QString stagedValue = fieldValue(staged, QStringLiteral("name"), &why);
+        check(stagedValue.contains(QStringLiteral("SIGNED-EDIT")),
+              QStringLiteral("signed: with the reader's answer inside it (%1)").arg(stagedValue));
+
+        // Two 保存 cycles, which is what the branch is really for. Reading the first
+        // save's own file and saving once more is the shape a reader's evening takes;
+        // staging twice from one open document was measured too and says nothing about
+        // it (3059 bytes then 3059: PDFium writes a revision against the file the
+        // document was loaded from, not against what it staged a moment ago).
+        QString round2Path;
+        QString round2Error;
+        {
+            PdfiumBackend again;
+            check(again.load(staged, QString()) == Document::Status::Ready,
+                  QStringLiteral("signed: the file the first save wrote reopens (%1)")
+                      .arg(again.lastError()));
+            check(again.signatureCount() == 1,
+                  "signed: and still counts the signature it was opened with");
+            again.mousePressed(0, frame, flatDevice(fields.textField), {});
+            again.mouseReleased(0, frame, flatDevice(fields.textField), {});
+            again.commitText(QStringLiteral("SIGNED-EDIT ROUND-2"));
+            again.takeRepaints();
+            again.releaseFocus();
+            check(again.stageFieldValues(scratch, &round2Path, &round2Error),
+                  QStringLiteral("signed: a second 保存 on the saved file stages (%1)")
+                      .arg(round2Error));
+        }
+        const QByteArray round2Bytes = readAll(round2Path);
+        signedFirstCycle = stagedBytes.size();
+        signedSecondCycle = round2Bytes.size();
+        note(QStringLiteral("signed: two save cycles -- source %1, first %2, second %3 bytes")
+                 .arg(original.size())
+                 .arg(stagedBytes.size())
+                 .arg(round2Bytes.size()));
+        check(round2Bytes.size() > stagedBytes.size(),
+              "signed: a second cycle costs another revision on top of the first");
+        check(round2Bytes.left(original.size()) == original,
+              "signed: and the source's bytes are still the prefix of that");
+        if (range.size() == 4) {
+            check(digest(signatureCoveredBytes(round2Bytes, range))
+                      == digest(signatureCoveredBytes(original, range)),
+                  "signed: with both spans of the ByteRange still hashing the same");
+        }
+        QFile::remove(staged);
+        QFile::remove(round2Path);
+    }
+
+    // ---- the same two cycles on a form with no signature dictionary in it ----
+    //
+    // The whole-form sample carries a /Sig widget with no /V. FPDF_GetSignatureCount
+    // counts that field (measured: 1, with no /ByteRange numbers and no /Contents bytes
+    // behind it), while PDF 32000-1 sec.12.8.1 calls the dictionary the signature, so an
+    // empty field is nothing. The backend's count keeps the specification's answer, and
+    // that is the number 文档 says out loud and the number that picks which save flag
+    // runs -- the two rows below are the reading and the consequence.
+    {
+        const QString unsignedPath = scratch + QStringLiteral("/unsigned-again.pdf");
+        check(write(unsignedPath, 0, false, &why),
+              QStringLiteral("signed: setup: an unsigned form sample is written: %1").arg(why));
+        PdfiumBackend wholeForm;
+        check(wholeForm.load(unsignedPath, QString()) == Document::Status::Ready,
+              "signed: the unsigned form sample opens");
+        int rawCount = 0;
+        int rawRangeNumbers = 0;
+        unsigned long rawContents = 0;
+        if (FPDF_DOCUMENT raw = FPDF_LoadDocument(unsignedPath.toUtf8().constData(), nullptr)) {
+            rawCount = FPDF_GetSignatureCount(raw);
+            FPDF_SIGNATURE signature = FPDF_GetSignatureObject(raw, 0);
+            int buffer[8] = {0};
+            rawRangeNumbers = signature ? int(FPDFSignatureObj_GetByteRange(signature, buffer, 8))
+                                        : 0;
+            rawContents = signature ? FPDFSignatureObj_GetContents(signature, nullptr, 0) : 0;
+            FPDF_CloseDocument(raw);
+        }
+        note(QStringLiteral("signed unsigned: the library counts %1 signature field(s) in the "
+                            "whole-form sample; its first answers /ByteRange %2 numbers and "
+                            "/Contents %3 bytes, and the reader counts %4")
+                 .arg(rawCount)
+                 .arg(rawRangeNumbers)
+                 .arg(rawContents)
+                 .arg(wholeForm.signatureCount()));
+        check(rawCount == 1 && rawRangeNumbers == 0 && rawContents == 0,
+              "signed: the empty /Sig field is counted by the library and holds no signature");
+        check(wholeForm.signatureCount() == 0,
+              "signed: so the reader counts no signature in a blank signature field");
+        QFile::remove(unsignedPath);
+
+        const QString fieldOnlyPath = scratch + QStringLiteral("/field-only.pdf");
+        {
+            // One text field and nothing else: no /Sig widget, so the writer's count is
+            // the zero this branch is chosen for. The shape is the specification's -- a
+            // /Tx widget registered in /AcroForm /Fields, the same three numbers every
+            // other sample here uses -- written with the generator's own helpers rather
+            // than with the whole-form one, because that one always carries a signature
+            // field.
+            QVector<QByteArray> objects(7);
+            objects[1] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>";
+            objects[2] = "<< /Type /Pages /Kids [4 0 R] /Count 1 >>";
+            objects[3] = "<< /Type /AcroForm /Fields [5 0 R] /DA (/Helv 9 Tf 0 g ) /DR << "
+                         "/Font << /Helv 6 0 R >> >> >>";
+            objects[4] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate 0 "
+                         "/Resources << /Font << /Helv 6 0 R >> >> /Annots [5 0 R] >>";
+            objects[5] = widgetBody(QStringLiteral("name"), "/Tx", fields.textField,
+                                    " /V (plain) /DA (/Helv 10 Tf 0 g )");
+            objects[6] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+            QFile sample(fieldOnlyPath);
+            check(sample.open(QIODevice::WriteOnly | QIODevice::Truncate),
+                  QStringLiteral("signed: setup: the field-only sample is written (%1)").arg(why));
+            sample.write(assemblePdf(objects, 1));
+            sample.close();
+        }
+        const QByteArray plainBefore = readAll(fieldOnlyPath);
+        QString firstStage;
+        {
+            PdfiumBackend document;
+            check(document.load(fieldOnlyPath, QString()) == Document::Status::Ready,
+                  "signed: the field-only document opens");
+            check(document.signatureCount() == 0,
+                  "signed: and it counts no signature");
+            check(document.fillable(), "signed: while still being a form to fill");
+            document.mousePressed(0, frame, flatDevice(fields.textField), {});
+            document.mouseReleased(0, frame, flatDevice(fields.textField), {});
+            document.commitText(QStringLiteral("PLAIN-EDIT"));
+            document.takeRepaints();
+            document.releaseFocus();
+            QString error;
+            check(document.stageFieldValues(scratch, &firstStage, &error),
+                  QStringLiteral("signed: the field-only document stages (%1)").arg(error));
+        }
+        const QByteArray firstBytes = readAll(firstStage);
+        QString secondStage;
+        {
+            PdfiumBackend again;
+            check(again.load(firstStage, QString()) == Document::Status::Ready,
+                  "signed: the field-only document's own save reopens");
+            again.mousePressed(0, frame, flatDevice(fields.textField), {});
+            again.mouseReleased(0, frame, flatDevice(fields.textField), {});
+            again.commitText(QStringLiteral("PLAIN-EDIT ROUND-2"));
+            again.takeRepaints();
+            again.releaseFocus();
+            QString error;
+            check(again.stageFieldValues(scratch, &secondStage, &error),
+                  QStringLiteral("signed: and a second 保存 stages (%1)").arg(error));
+        }
+        const QByteArray secondBytes = readAll(secondStage);
+        note(QStringLiteral("signed field-only: two cycles -- source %1, first %2, second %3 "
+                            "bytes (the signed sample above went %4 to %5)")
+                 .arg(plainBefore.size())
+                 .arg(firstBytes.size())
+                 .arg(secondBytes.size())
+                 .arg(signedFirstCycle)
+                 .arg(signedSecondCycle));
+        check(firstBytes.left(plainBefore.size()) != plainBefore,
+              "signed: a save of a document with no signature rewrites instead of appending");
+        // The claim the other half of the ternary buys: the second cycle of an unsigned
+        // document costs the words that changed, while the signed one above cost another
+        // whole revision.
+        check(secondBytes.size() - firstBytes.size() < signedSecondCycle - signedFirstCycle,
+              QStringLiteral("signed: and a second unsigned cycle grows less than an append "
+                             "cycle does (got %1 after %2, the append went %3 after %4)")
+                  .arg(secondBytes.size())
+                  .arg(firstBytes.size())
+                  .arg(signedSecondCycle)
+                  .arg(signedFirstCycle));
+        QFile::remove(firstStage);
+        QFile::remove(secondStage);
+    }
+
+    // ---- two signatures, and the second range as well ----
+    {
+        PdfiumBackend document;
+        check(document.load(twoPath, QString()) == Document::Status::Ready,
+              "signed: the twice-signed sample opens");
+        check(document.signatureCount() == 2,
+              QStringLiteral("signed: both signatures are counted (%1)")
+                  .arg(document.signatureCount()));
+        const QByteArray bytes = readAll(twoPath);
+        for (int index = 0; index < 2; ++index) {
+            const QVector<int> range = signatureByteRange(twoPath, index);
+            check(range.size() == 4
+                      && range.at(0) == 0 && bytes.at(range.at(1)) == '<'
+                      && bytes.at(range.at(2) - 1) == '>'
+                      && range.at(2) + range.at(3) == bytes.size(),
+                  QStringLiteral("signed: signature %1 names its own Contents hole").arg(index));
+        }
+    }
+
+    // ---- DocMDP: P=1 takes no input, P=2 takes form input ----
+    {
+        PdfiumBackend sealed;
+        check(sealed.load(p1Path, QString()) == Document::Status::Ready,
+              "signed: the P=1 sample opens");
+        note(QStringLiteral("signed: P=1 docMdp=%1 fillable=%2 fieldAt=%3")
+                 .arg(sealed.docMdpPermission())
+                 .arg(sealed.fillable())
+                 .arg(int(sealed.fieldAt(0, frame, flatDevice(fields.textField)))));
+        check(sealed.docMdpPermission() == 1, "signed: the certification signature says P=1");
+        check(!sealed.fillable(), "signed: P=1 makes the form read-only");
+        check(sealed.fieldAt(0, frame, flatDevice(fields.textField)) == FormFill::Field::None,
+              "signed: and a click on the field answers no field at all");
+        check(!sealed.mousePressed(0, frame, flatDevice(fields.textField), {}),
+              "signed: so no press reaches the form");
+        check(!sealed.hasFocusedField(), "signed: and nothing took the keyboard");
+
+        PdfiumBackend fillable;
+        check(fillable.load(p2Path, QString()) == Document::Status::Ready,
+              "signed: the P=2 sample opens");
+        check(fillable.docMdpPermission() == 2, "signed: the certification signature says P=2");
+        check(fillable.fillable(), "signed: P=2 leaves the form fillable");
+        check(fillable.mousePressed(0, frame, flatDevice(fields.textField), {}),
+              "signed: and the text field takes a press");
+        fillable.mouseReleased(0, frame, flatDevice(fields.textField), {});
+        check(fillable.hasFocusedField(), "signed: with the keyboard following it");
+        fillable.commitText(QStringLiteral("P2-EDIT"));
+        fillable.takeRepaints();
+        fillable.releaseFocus();
+        QString staged;
+        QString stageError;
+        check(fillable.stageFieldValues(scratch, &staged, &stageError),
+              QStringLiteral("signed: a P=2 field edit still stages (%1)").arg(stageError));
+        const QByteArray p2Bytes = readAll(p2Path);
+        const QByteArray p2Staged = readAll(staged);
+        check(p2Staged.left(p2Bytes.size()) == p2Bytes,
+              "signed: and it is an incremental update of the certified file");
+        QFile::remove(staged);
+
+        // P=3 says filling and annotations and nothing else. This version writes no
+        // annotations, so what a reader gets is the same door P=2 opens: the field takes
+        // the keyboard. Measured rather than inferred from the branch, because "P=3 is
+        // like P=2 here" is a claim about this program, not about the specification.
+        const QString p3Path = scratch + QStringLiteral("/certified-p3.pdf");
+        check(writeSigned(p3Path, 3, 1, false, &why),
+              QStringLiteral("signed: setup: a P=3 sample is written: %1").arg(why));
+        PdfiumBackend annotating;
+        check(annotating.load(p3Path, QString()) == Document::Status::Ready,
+              "signed: the P=3 sample opens");
+        check(annotating.docMdpPermission() == 3,
+              QStringLiteral("signed: the certification signature says P=3 (%1)")
+                  .arg(annotating.docMdpPermission()));
+        check(annotating.fillable(), "signed: P=3 leaves the form fillable");
+        check(annotating.mousePressed(0, frame, flatDevice(fields.textField), {}),
+              "signed: and the text field takes a press like the P=2 file does");
+        annotating.mouseReleased(0, frame, flatDevice(fields.textField), {});
+        check(annotating.hasFocusedField(), "signed: with the keyboard following it");
+    }
+
+    // ---- the field a signature's /Lock seals ----
+    //
+    // Measured before any guard of ours was written: PDFium itself does not honour a
+    // /Lock. On chromium/8111 the sealed field answered fieldAt=6, took the press and
+    // took the keyboard, exactly like an unsealed one -- so the guard is ours. The
+    // application reads the names from DocumentEditor's qpdf pass (table 233) and hands
+    // them over before the first gesture; this block comes through the same door with
+    // the one name the sample's /Lock lists. The reading itself is measured in
+    // documenteditor_smoke.
+    {
+        PdfiumBackend locked;
+        check(locked.load(lockedPath, QString()) == Document::Status::Ready,
+              "signed: the locked-field sample opens");
+        locked.setLockedFieldNames({QStringLiteral("locked")});
+
+        const FormFill::Field sealedHit
+            = locked.fieldAt(0, frame, flatDevice(fields.lockedField));
+        const bool sealedPressed
+            = locked.mousePressed(0, frame, flatDevice(fields.lockedField), {});
+        const bool sealedFocused = locked.hasFocusedField();
+        const bool unsealedPressed
+            = locked.mousePressed(0, frame, flatDevice(fields.textField), {});
+        note(QStringLiteral("signed lock: sealed fieldAt=%1 press=%2 focused=%3, "
+                            "unsealed press=%4")
+                 .arg(int(sealedHit))
+                 .arg(sealedPressed ? 1 : 0)
+                 .arg(sealedFocused ? 1 : 0)
+                 .arg(unsealedPressed ? 1 : 0));
+        check(sealedHit == FormFill::Field::None,
+              "signed lock: a sealed field is not a field the pointer can point at");
+        check(!sealedPressed, "signed lock: and a click on it reaches no form");
+        check(!sealedFocused, "signed lock: so nothing there took the keyboard");
+
+        // The companion row: the same document's unsealed field still fills, so the
+        // refusal above is the /Lock and not the sample or the whole form.
+        check(locked.fieldAt(0, frame, flatDevice(fields.textField))
+                  == FormFill::Field::TextField,
+              "signed lock: the field beside it is still a text field");
+        check(unsealedPressed, "signed lock: and still takes a press");
+        locked.mouseReleased(0, frame, flatDevice(fields.textField), {});
+        check(locked.hasFocusedField(), "signed lock: with the keyboard following it");
+        locked.releaseFocus();
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -1401,6 +1810,7 @@ int main(int argc, char **argv)
     if (formScratch.isValid()) {
         checkFormFilling(formScratch.path());
         checkChoiceFields(formScratch.path());
+        checkSignatures(formScratch.path());
     }
 
     if (failures == 0) {

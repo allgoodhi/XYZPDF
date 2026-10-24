@@ -155,6 +155,10 @@ void SplitPagesDialog::updateSummary()
         line += tr("\n\n这份文档还带着一份 XFA 表单：拆出来的文件里不会再有它，别的阅读器会改用表单"
                    "字段那一份。");
     }
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
     // Said every time, like the other three dialogs here do, and more needed here than
     // there: a split is the one entry in the list that writes no page differently, so the
     // only thing it changes is how many files come out at the end.
@@ -164,5 +168,6 @@ void SplitPagesDialog::updateSummary()
 
     summaryLabel->setText(line);
     okayButton->setText(tr("拆成 %1 份").arg(pieces.size()));
-    okayButton->setEnabled(!(editor && editor->importedPageCount() > 0));
+    okayButton->setEnabled(!(editor && editor->importedPageCount() > 0)
+                           && !(editor && editor->structuralEditsRefused()));
 }

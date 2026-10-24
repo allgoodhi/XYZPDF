@@ -461,6 +461,24 @@ int main(int argc, char **argv)
             { "SplitPagesDialog",
               "\n\n这份文档还带着一份 XFA 表单：拆出来的文件里不会再有它，别的阅读器会改用表单字段"
               "那一份。" },
+            // handoff-06 H4's five counted rows and the fixed sentences beside them. The
+            // invalidation line is one `%n` string shared by all eight structural boxes,
+            // the status line has a counted form of its own, and the properties row counts
+            // signatures next to the pages. A `%n` row is invisible to every catalogue
+            // shape rule, so each is asked for n=1 and n=40 by name -- and the plain
+            // sentences beside them are probed because the sweep stops at the newest
+            // entries, which is how an English screen ends up with a Chinese sentence.
+            { "MainWindow",
+              "已打开 %1 —— 这份文档带着 %n 个数字签名，本版不验证签名本身。", 1 },
+            { "MainWindow",
+              "\n\n这份文档带着 %n 个数字签名，本版不验证签名本身。", 1 },
+            { "MainWindow", "认证签名不允许任何改动：表单字段只能看，不能填。" },
+            { "MainWindow", "认证签名只允许填写表单：别的修改都会被挡住。" },
+            { "DocumentEditor", "\n\n保存之后这 %n 个数字签名都会失效。", 1 },
+            { "DocumentEditor", "\n\n这份文档的认证签名不允许任何改动，这个对话框不能确定。" },
+            { "DocumentEditor", "\n\n这份文档的认证签名只允许填写表单，页面改动不能确定。" },
+            { "PropertiesDialog", "数字签名" },
+            { "PropertiesDialog", "%n 个", 1 },
         };
 
         for (const Probe &probe : probes) {

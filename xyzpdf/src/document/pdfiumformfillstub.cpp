@@ -48,6 +48,12 @@ bool PdfiumBackend::fillable() const
     return false;
 }
 
+void PdfiumBackend::setLockedFieldNames(const QStringList &names)
+{
+    // Nothing here takes input, so nothing needs the names a signature seals.
+    (void)names;
+}
+
 FormFill::Field PdfiumBackend::fieldAt(int page, const Frame &frame,
                                        const QPointF &devicePoint) const
 {

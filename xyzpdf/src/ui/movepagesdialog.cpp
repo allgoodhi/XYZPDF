@@ -183,12 +183,17 @@ void MovePagesDialog::updateSummary()
         line += tr("\n\n这份文档还带着一份 XFA 表单：重排过页面的文件里不会再有它，别的阅读器会改用"
                    "表单字段那一份。");
     }
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
     // Same sentence the other two edit dialogs end with, for the same reason.
     summaryLabel->setText(tr("%1\n\n原来那份文件不会改动。这一步只是记下修改，"
                              "要它成为一个文件，还得走保存。")
                               .arg(line));
 
-    okayButton->setEnabled(editor && !anchorMissing && !anchorPastEnd && plan.usable());
+    okayButton->setEnabled(editor && !anchorMissing && !anchorPastEnd && plan.usable()
+                           && !editor->structuralEditsRefused());
 }
 
 QString MovePagesDialog::targetName() const

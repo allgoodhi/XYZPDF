@@ -314,10 +314,21 @@ message(STATUS "PDFium ${XYZPDF_PDFIUM_VERSION} from ${XYZPDF_PDFIUM_ROOT}")
 # shell handlers and by every test that opens a document -- that is, by every
 # target that exists in the package and so has to answer with the engine the
 # reader uses.
+# H1 3 made the form layer two files. The document half (page rendering,
+# including FPDF_FFLDraw) is in pdfiumbackend.cpp and is compiled into every
+# consumer; the half that takes input is application-only, and the two shell DLLs
+# link trivial answers instead (pdfiumformfillstub.cpp) so that a preview pane
+# does not carry the code that types into a field. Pass DRAWING for a handler.
 function(xyzpdf_use_document_backend TARGET)
     target_sources(${TARGET} PRIVATE
         src/document/pdfiumbackend.h
+        src/document/pdfiumbackend_p.h
         src/document/pdfiumbackend.cpp)
+    if(ARGC GREATER 1 AND "${ARGV1}" STREQUAL "DRAWING")
+        target_sources(${TARGET} PRIVATE src/document/pdfiumformfillstub.cpp)
+    else()
+        target_sources(${TARGET} PRIVATE src/document/pdfiumformfill.cpp)
+    endif()
     target_link_libraries(${TARGET} PRIVATE xyzpdf_pdfium)
 endfunction()
 
@@ -698,6 +709,7 @@ option(XYZPDF_BUILD_DOCUMENT_SMOKE "Build the document backend smoke test" OFF)
 if(XYZPDF_BUILD_DOCUMENT_SMOKE)
     xyzpdf_add_test(document_smoke
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES xyzpdf_pdfium)
@@ -710,6 +722,7 @@ option(XYZPDF_BUILD_QPDF_SMOKE "Build the QPDF round-trip smoke test" OFF)
 if(XYZPDF_BUILD_QPDF_SMOKE)
     xyzpdf_add_test(qpdf_smoke
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
@@ -725,6 +738,7 @@ if(XYZPDF_BUILD_DOCUMENTEDITOR_SMOKE)
     xyzpdf_add_test(documenteditor_smoke
         SOURCES src/edit/documenteditor.cpp
                 src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
@@ -741,6 +755,7 @@ option(XYZPDF_BUILD_ENCRYPTPROBE "Build the encrypted-document measurement" OFF)
 if(XYZPDF_BUILD_ENCRYPTPROBE)
     xyzpdf_add_test(encryptprobe
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
@@ -755,6 +770,7 @@ option(XYZPDF_BUILD_WATERMARKPROBE "Build the watermark-route measurement" OFF)
 if(XYZPDF_BUILD_WATERMARKPROBE)
     xyzpdf_add_test(watermarkprobe
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
@@ -772,6 +788,7 @@ option(XYZPDF_BUILD_OUTLINEPROBE "Build the outline-editing measurement" OFF)
 if(XYZPDF_BUILD_OUTLINEPROBE)
     xyzpdf_add_test(outlineprobe
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/edit/documenteditor.cpp
@@ -788,6 +805,7 @@ option(XYZPDF_BUILD_PERF_BENCH "Build the performance baseline measurement" OFF)
 if(XYZPDF_BUILD_PERF_BENCH)
     xyzpdf_add_test(perf_bench
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textsearch.cpp
@@ -831,6 +849,7 @@ option(XYZPDF_BUILD_RENDER_SMOKE "Build the page rendering smoke test" OFF)
 if(XYZPDF_BUILD_RENDER_SMOKE)
     xyzpdf_add_test(render_smoke
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/render/pagerenderer.cpp
@@ -887,6 +906,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/document/bookmarkposition.cpp
                 src/document/documentfactory.cpp
                 src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textlayer.cpp
@@ -955,6 +975,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/document/bookmarkposition.cpp
                 src/document/documentfactory.cpp
                 src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/document/textlayer.cpp
@@ -1034,6 +1055,7 @@ if(XYZPDF_BUILD_OCR_PROBE AND WIN32)
     xyzpdf_add_test(ocrprobe
         SOURCES src/document/documentfactory.cpp
                 src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/ocr/ocrengine.cpp
@@ -1055,6 +1077,7 @@ if(XYZPDF_BUILD_WORDEXPORT_SMOKE)
                 src/export/wordexport.cpp
                 src/export/zipwriter.cpp
                 src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES xyzpdf_pdfium)
@@ -1219,6 +1242,7 @@ option(XYZPDF_BUILD_PDFIUMBACKEND_SMOKE "Build the PDFium backend smoke test" OF
 if(XYZPDF_BUILD_PDFIUMBACKEND_SMOKE)
     xyzpdf_add_test(pdfiumbackend_smoke
         SOURCES src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
                 src/services/filechangenotice.cpp
@@ -1268,7 +1292,7 @@ if(WIN32)
     # show the one the window shows. Before F7-D this list named qtpdfbackend.cpp
     # directly, which meant a PDFium-configured package still put Qt PDF in the
     # pane.
-    xyzpdf_use_document_backend(xyzpdfpreview)
+    xyzpdf_use_document_backend(xyzpdfpreview DRAWING)
     target_link_libraries(xyzpdfpreview PRIVATE
         Qt6::Core Qt6::Gui
         ole32 shell32 user32 gdi32 delayimp)
@@ -1313,7 +1337,7 @@ if(WIN32)
         src/document/documentfactory.cpp
         src/document/outline.cpp
         src/document/pagemetrics.cpp)
-    xyzpdf_use_document_backend(xyzpdfthumbnail)
+    xyzpdf_use_document_backend(xyzpdfthumbnail DRAWING)
     target_link_libraries(xyzpdfthumbnail PRIVATE
         Qt6::Core Qt6::Gui
         ole32 gdi32 delayimp)

@@ -3322,6 +3322,175 @@ int main(int argc, char **argv)
                 check(probe.isEncrypted(), "fill: and the copy is still encrypted");
             }
         }
+
+        // ---- the choice fields: a pick, the star, the file, and the picture ----
+        //
+        // H1 1/2 put the dropdown, the editable box and the multi-select list into the
+        // backend, and pdfiumbackend_smoke pins each of them there. This is the seam the
+        // backend cannot see: the view's press routing (a dropdown row is not on the page
+        // as far as its hit test is concerned), the tab's dirty answer, the save, and a
+        // second reader opening the bytes. The multi-select array is asserted here for
+        // the reason the backend test says out loud: the ordinary field read answers only
+        // the first of what was picked, so only qpdf can say the second one survived.
+        {
+            const QString choicePath = formDir.filePath(QStringLiteral("choices.pdf"));
+            QString choiceWhy;
+            check(FormSampleFile::write(choicePath, 0, false, &choiceWhy),
+                  QStringLiteral("choice: the sample is written (%1)").arg(choiceWhy));
+            const QByteArray choiceBefore = readAllBytes(choicePath);
+            const QString choiceKept = formDir.filePath(QStringLiteral("choices-before.pdf"));
+            check(writeAllBytes(choiceKept, choiceBefore),
+                  "choice: setup: the file as it is before any pick is kept");
+
+            const FormSampleFile::Geometry choiceFields;
+            DocumentTab choiceTab;
+            choiceTab.resize(900, 700);
+            choiceTab.show();
+            check(choiceTab.open(choicePath) == Document::Status::Ready,
+                  QStringLiteral("choice: the sample opens in a tab (%1)")
+                      .arg(choiceTab.lastError()));
+            PageView *choiceView = viewOf(choiceTab);
+            check(waitFor([choiceView] { return choiceView->isRendered(0); }),
+                  "choice: and the page with the choice fields is drawn");
+            const auto at = [choiceView](const QPointF &userSpace) {
+                const QRectF page = choiceView->pageRectInViewport(0);
+                return QPointF(page.left() + userSpace.x() / 595.0 * page.width(),
+                               page.top() + (842.0 - userSpace.y()) / 842.0 * page.height());
+            };
+            QWidget *choiceCanvas = choiceView->viewport();
+
+            // The dropdown button, then a row of the list the engine draws under the
+            // field: neither point is one the page's hit test can name, and the backend's
+            // tests are the place that measured the routing. Here the presses go through
+            // the view, which is what a reader actually does.
+            const QPointF button = at(FormSampleFile::comboBoxButton(choiceFields.comboBox));
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, button);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, button);
+            check(waitFor([&choiceTab] { return choiceTab.view()->fieldHasFocus(); }),
+                  "choice: the dropdown button gives the combo box the keyboard");
+            const QPointF firstRow
+                = at(QPointF(choiceFields.comboBox.center().x(),
+                             FormSampleFile::popupRowY(choiceFields.comboBox, 0)));
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, firstRow);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, firstRow);
+            check(waitFor([&choiceTab] { return choiceTab.hasFieldEdits(); }),
+                  "choice: picking a row is an unsaved change");
+            check(choiceTab.title() == QStringLiteral("choices.pdf *"),
+                  QStringLiteral("choice: and the title carries the star (%1)")
+                      .arg(choiceTab.title()));
+
+            check(choiceTab.saveEdits(), "choice: 保存 writes the pick back in place");
+            check(!choiceTab.hasUnsavedEdits(), "choice: after the save nothing is unsaved");
+            check(choiceTab.title() == QStringLiteral("choices.pdf"),
+                  "choice: and the star is off again");
+            {
+                QPDF read;
+                read.processFile(choicePath.toUtf8().constData());
+                QString value;
+                std::vector<QPDFPageObjectHelper> pages =
+                    QPDFPageDocumentHelper(read).getAllPages();
+                for (QPDFPageObjectHelper &page : pages) {
+                    for (const QPDFObjectHandle &annot : page.getAnnotations()) {
+                        if (annot.getKey("/T").getStringValue() == "pick")
+                            value = QString::fromUtf8(annot.getKey("/V").getUTF8Value().c_str());
+                    }
+                }
+                note(QStringLiteral("choice: qpdf reads the combo box as [%1]").arg(value));
+                check(value == QStringLiteral("a"),
+                      "choice: the row the reader picked is the answer the file carries");
+            }
+            check(waitFor([choiceView] { return choiceView->isRendered(0); }),
+                  "choice: the saved page is drawn again before the next pick");
+
+            // The list box: a plain click on the first row, then a Ctrl+click on the row
+            // the file already had -- the shape pdfiumbackend_smoke measured, where the
+            // live text (the label picked last) ends up exactly equal to the file's own
+            // answer while the selection is two rows. The pair's /V is an array, and the
+            // ordinary reads cannot tell that anything changed; the star has to.
+            const QPointF listRowFirst
+                = at(QPointF(choiceFields.multiListBox.center().x(),
+                             FormSampleFile::listRowY(choiceFields.multiListBox, 0)));
+            const QPointF listRowSecond
+                = at(QPointF(choiceFields.multiListBox.center().x(),
+                             FormSampleFile::listRowY(choiceFields.multiListBox, 1)));
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, listRowFirst);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, listRowFirst);
+            sendMouse(choiceCanvas, QEvent::MouseButtonPress, listRowSecond, false,
+                      Qt::ControlModifier);
+            sendMouse(choiceCanvas, QEvent::MouseButtonRelease, listRowSecond, false,
+                      Qt::ControlModifier);
+            check(waitFor([&choiceTab] { return choiceTab.hasFieldEdits(); }),
+                  "choice: a click and a Ctrl+click in the list box are an unsaved change");
+            check(choiceTab.title() == QStringLiteral("choices.pdf *"),
+                  QStringLiteral("choice: and the star is back (%1)").arg(choiceTab.title()));
+            check(choiceTab.saveEdits(), "choice: 保存 writes both selected rows");
+            {
+                QPDF read;
+                read.processFile(choicePath.toUtf8().constData());
+                QStringList answers;
+                std::vector<QPDFPageObjectHelper> pages =
+                    QPDFPageDocumentHelper(read).getAllPages();
+                for (QPDFPageObjectHelper &page : pages) {
+                    for (const QPDFObjectHandle &annot : page.getAnnotations()) {
+                        if (annot.getKey("/T").getStringValue() != "many")
+                            continue;
+                        const QPDFObjectHandle value = annot.getKey("/V");
+                        if (value.isArray()) {
+                            for (int index = 0; index < value.getArrayNItems(); ++index)
+                                answers.append(QString::fromUtf8(
+                                    value.getArrayItem(index).getUTF8Value().c_str()));
+                        } else {
+                            answers.append(
+                                QString::fromUtf8(value.getUTF8Value().c_str()));
+                        }
+                    }
+                }
+                answers.sort();
+                note(QStringLiteral("choice: qpdf reads the multi-select /V as [%1]")
+                         .arg(answers.join(QStringLiteral(", "))));
+                check(answers == QStringList{QStringLiteral("one"), QStringLiteral("two")},
+                      "choice: /V is an array holding both selected rows and nothing else");
+            }
+
+            // The picture, read the way sec.89 reads one: two renders of one rectangle,
+            // the file before the picks and the file after them. "There are pixels in the
+            // box" would still be true with the old answer painted in it.
+            const auto signature = [](const QString &path, const QRectF &box) {
+                PdfiumBackend reader;
+                if (reader.load(path, QString()) != Document::Status::Ready)
+                    return QStringLiteral("(no picture)");
+                RenderOptions options;
+                const QImage image = reader.render(0, QSize(595, 842), options);
+                if (image.isNull())
+                    return QStringLiteral("(no picture)");
+                const int left = int(box.left());
+                const int right = int(box.right());
+                const int top = int(842.0 - box.bottom());
+                const int bottom = int(842.0 - box.top());
+                quint64 hash = 1469598103934665603ULL;
+                int ink = 0;
+                for (int y = top; y < bottom; ++y) {
+                    for (int x = left; x < right; ++x) {
+                        const QRgb pixel = image.pixel(x, y);
+                        if (qGray(pixel) < 250)
+                            ++ink;
+                        hash = (hash ^ quint64(pixel)) * 1099511628211ULL;
+                    }
+                }
+                return QStringLiteral("ink=%1 hash=%2").arg(ink).arg(hash, 0, 16);
+            };
+            const QString comboBefore = signature(choiceKept, choiceFields.comboBox);
+            const QString comboAfter = signature(choicePath, choiceFields.comboBox);
+            const QString listBefore = signature(choiceKept, choiceFields.multiListBox);
+            const QString listAfter = signature(choicePath, choiceFields.multiListBox);
+            note(QStringLiteral("choice render: combo before [%1] after [%2]; "
+                                "list before [%3] after [%4]")
+                     .arg(comboBefore, comboAfter, listBefore, listAfter));
+            check(comboBefore != comboAfter,
+                  "choice: a reopened page draws the answer the reader picked");
+            check(listBefore != listAfter,
+                  "choice: and the list box draws its two selected rows");
+        }
     }
 
     // ---- night reading ----

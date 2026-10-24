@@ -2956,12 +2956,12 @@ The original file is not touched. This step only records the change; a save is s
         <translation>Pages</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="64"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="63"/>
         <source>数字签名</source>
         <translation>Digital signatures</translation>
     </message>
     <message numerus="yes">
-        <location filename="../../src/ui/propertiesdialog.cpp" line="64"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="63"/>
         <source>%n 个</source>
         <translation>
             <numerusform>one signature</numerusform>
@@ -2969,72 +2969,72 @@ The original file is not touched. This step only records the change; a save is s
         </translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="69"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="68"/>
         <source>第 %1 页的大小</source>
         <translation>Size of page %1</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="70"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="69"/>
         <source>%1 × %2 点（%3 × %4 毫米）</source>
         <translation>%1 × %2 pt (%3 × %4 mm)</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="83"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="82"/>
         <source>标题</source>
         <translation>Title</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="84"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="83"/>
         <source>作者</source>
         <translation>Author</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="85"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="84"/>
         <source>主题</source>
         <translation>Subject</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="86"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="85"/>
         <source>关键词</source>
         <translation>Keywords</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="87"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="86"/>
         <source>创建者</source>
         <translation>Creator</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="88"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="87"/>
         <source>生成器</source>
         <translation>Producer</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="93"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="92"/>
         <source>创建日期</source>
         <translation>Created</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="94"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="93"/>
         <source>修改日期</source>
         <translation>Modified</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="99"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="98"/>
         <source>打开时需要口令</source>
         <translation>Needed a password to open</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="99"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="98"/>
         <source>是</source>
         <translation>Yes</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="99"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="98"/>
         <source>否</source>
         <translation>No</translation>
     </message>
     <message>
-        <location filename="../../src/ui/propertiesdialog.cpp" line="105"/>
+        <location filename="../../src/ui/propertiesdialog.cpp" line="104"/>
         <source>这个文件没有填写任何文档信息。</source>
         <translation>This file does not fill in any document information.</translation>
     </message>

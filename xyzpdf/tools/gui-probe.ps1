@@ -178,6 +178,34 @@
                      field's own rectangle, measured off the picture, not assumed from PDFium's row
                      height. -Control's second press is plain, so the file answers the last row only
                      and the mode exits 1 -- which is what makes the Ctrl in the positive a cause.
+      signedsave     the incremental save of a signed document, on a screen: fill the sample's text
+                     field, press Ctrl+S, and require four things about the BYTES of the copy -- the
+                     value read back is what was typed, the file is longer, its first N bytes are the
+                     file that was there before the save (N = that earlier length), and the two spans
+                     the signature's /ByteRange names hash the same on both sides of it. -Control
+                     keeps every verdict and rotates a page first, which is the one edit that cannot
+                     be appended: the whole file is rewritten, so the prefix assertion has to exit 1.
+                     The rotate box's own before-the-press sentence is read on the way (it is the
+                     other half of sec.122's signed-document work and had never been on screen).
+      signedlock     what a certification signature permits, judged where the reader meets it: the
+                     status line at open, a structure box's accept button, and a click on a field.
+                     -ExpectDocMdp says which sample to build and what it must show -- 1 refuses both
+                     the field and the box, 2 fills the field and refuses the box with the sentence
+                     naming form filling, 0 (the unsigned-of-certification half) lets both through and
+                     says nothing about certification. The button is read in the ROTATE box with the
+                     current page named, not in the delete box: an untouched delete box greys its
+                     accept until a range is typed, and on a one-page sample every range that names a
+                     page names the only page and so greys it again for a reason that has nothing to
+                     do with signatures -- measured on the P=0 round, where the button was grey on a
+                     document that refuses nothing. A verdict that cannot tell those two documents
+                     apart is decoration (sec.99), so the delete box keeps the sentences, which need
+                     no range. The focus question is a DELTA of the ink in the field's own rectangle
+                     between the same place without the keyboard and with it:
+                     the sample's field carries a value from the first byte, so formfill's absolute
+                     caret count would answer "the caret is here" for a field nobody touched.
+                     -Control builds the 0 sample and keeps -ExpectDocMdp 2's verdicts, so it exits 1
+                     on the accept button being grey -- the reading that says a grey button is a
+                     cause and not a stuck control.
 
     THE FORM MODES. formfill/formtab/formcheck/formime are handoff-05 H2: form filling had been
     measured only in headless tests (sec.118 says so), so nothing in it had ever been on a screen.
@@ -198,6 +226,17 @@
     end of the run -- and on every Bail in between, because the mode that gives up halfway is the
     mode that might already have written. A tests\fixtures path is read and copied; it is not
     opened. -Installed is refused for these three unless -OpenViaPicker names the copy.
+
+    THE SIGNED MODES. signedsave/signedlock are handoff-07 I2: sec.122 put a signed document's
+    incremental save, its before-the-press sentence and its DocMDP doors into headless tests, and
+    sec.123 read the status line and one delete-box sentence on the packaged copy -- nothing else had
+    ever been on a screen. Both aim at a sample xyzpdf_pdfprobe --write-signed-sample makes beside
+    -Exe: one text field with the value 'before' in it and one /Sig field whose /V names a signature
+    dictionary whose /ByteRange was computed off the bytes as installed (tests/formsample.h's
+    writeSigned, the generator sec.122 pinned). The flag says whether it also certifies the document
+    and with what /P, so the difference between a run that must hold its bytes and one that must not
+    is one number on the command line rather than a second generator. Like the form modes they open
+    the guard's copy, never what -Doc named.
 
     Examples (from the repository root):
       powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1 -Mode inventory
@@ -233,8 +272,15 @@
       ... -Mode formcombo -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
       ... -Mode formlist -Doc xyzpdf/tests/fixtures/text.pdf -Log H:/tmp/formlist-en.txt
       ... -Mode formlist -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      ... -Mode signedsave -Doc xyzpdf/tests/fixtures/text.pdf -Log H:/tmp/signedsave-en.txt
+      ... -Mode signedsave -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      ... -Mode signedlock -ExpectDocMdp 1 -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode signedlock -ExpectDocMdp 2 -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode signedlock -ExpectDocMdp 0 -Doc xyzpdf/tests/fixtures/text.pdf   (the negative half)
+      ... -Mode signedlock -ExpectDocMdp 2 -Control -Doc xyzpdf/tests/fixtures/text.pdf   (exit 1)
       The six form modes replace -Doc with the sample they make, so the path handed in is only what
-      the guard hashes and copies; a fixtures path is fine and is not opened.
+      the guard hashes and copies; a fixtures path is fine and is not opened. The two signed modes do
+      the same, with --write-signed-sample and the /P that -ExpectDocMdp asks for.
       The three above write nothing outside %TEMP%\xyzpdf-gui-probe\save-<random>\: -Doc is copied
       and never opened, so a fixtures path is a perfectly good thing to hand them.
 
@@ -244,7 +290,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist', 'signedsave', 'signedlock')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -295,7 +341,12 @@ param(
   # verdict it is written against, so each has to exit 1 rather than quietly report a save it never
   # made. The six form modes read it the same way: formfill types nothing, formtab skips the Tab,
   # formcheck clicks nothing, formime sends no composition, formcombo never opens the dropdown,
+  # The six form modes read it the same way: formfill types nothing, formtab skips the Tab,
+  # formcheck clicks nothing, formime sends no composition, formcombo never opens the dropdown,
   # formlist's second press drops the Ctrl -- and every one of them keeps its verdict.
+  # The two signed modes keep every verdict too and change the document under them: signedsave
+  # rotates a page before the save, so the bytes that must not move do, and signedlock builds a
+  # document whose signature certifies nothing while still expecting the doors it refuses to be shut.
   [switch]$Control,
   # Run against the installed package instead of the build tree. It cannot be started by exe
   # path (WindowsApps blocks that) and takes no file argument (no AppExecutionAlias is declared),
@@ -315,6 +366,17 @@ param(
   # This is also where the mode's control lives: -ExpectXfa packet on plain.pdf asks for a sentence
   # the file cannot produce, and that round must exit 1.
   [string]$ExpectXfa = 'none',
+  # signedlock: the /P of the certification signature the sample is built with, and therefore what
+  # the screen must show. 1 = nothing may change (the field refuses the click, the box refuses the
+  # press), 2 = form filling only (the field takes it, the box still refuses and says why in the
+  # sentence naming form filling), 0 = signed but not certified, which is the negative half: both
+  # doors open and no certification sentence appears anywhere. The sample is MADE with this number
+  # in it, so the value is a request to the generator as much as an expectation -- a mode that took a
+  # document as given could not be run against all three. -Control overrides it to 0 and keeps the
+  # expectation it is given, which is what makes the grey accept a verdict rather than a reading.
+  # signedsave always builds the 0 sample: its verdict is about which bytes moved, not about which
+  # edits are allowed.
+  [string]$ExpectDocMdp = '',
   [string]$Log = ''
 )
 
@@ -1667,8 +1729,13 @@ function ReplyCount([string]$summary) {
 # presses Ctrl+S, so each of them writes a PDF, and the file they write has to be one this script
 # made. They do not even open the -Doc that was handed in -- see the sample hook below.
 $script:saveModes = @('saveinplace', 'closeprompt', 'saveas', 'saverename',
-                      'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist')
+                      'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist',
+                      'signedsave', 'signedlock')
 $script:formModes = @('formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist')
+# The two signed modes carry their own document the same way the form modes do, and for the same
+# reason: nothing on this machine is a signed PDF, and a mode that has to say which bytes moved has
+# to know what the file looked like before the save.
+$script:signedModes = @('signedsave', 'signedlock')
 $script:guardArmed = $false
 $script:guardBroken = $false
 $script:guardOrig = ''
@@ -1723,6 +1790,19 @@ function Guard-Check([string]$tag) {
   return $false
 }
 
+# The pdfprobe that belongs to the -Exe this run drives, or nothing. Both sample-making families
+# need it -- the six form modes and the two signed ones -- and a second copy of the check is how one
+# of them ends up building beside a different exe than it screenshots (sec.87's rule, read against
+# this harness: parallel branches hand in their own -Exe).
+function Probe-Tool([string]$tag) {
+  $tool = Join-Path (Split-Path -Parent $Exe) 'xyzpdf_pdfprobe.exe'
+  if (-not (Test-Path -LiteralPath $tool)) {
+    Bail ('  no pdfprobe beside [' + $Exe + '] -- -Mode ' + $tag + ' needs it to make and to read ' +
+          'the sample; build the tree first (python tools/build_all_tests.py)')
+  }
+  return $tool
+}
+
 # The four form modes carry their own document, because no PDF with form fields exists on this
 # machine and a mode that aims at a field has to know where the field is. The sample is MADE, by
 # the pdfprobe tool that sits beside -Exe, into this harness's scratch -- never into tests/fixtures
@@ -1732,11 +1812,7 @@ function Guard-Check([string]$tag) {
 # guard below then copies the sample like any other -Doc, so what the app opens and what the modes
 # read back is still a copy with a name made up in this run.
 if ($script:formModes -contains $Mode) {
-  $script:probeTool = Join-Path (Split-Path -Parent $Exe) 'xyzpdf_pdfprobe.exe'
-  if (-not (Test-Path -LiteralPath $script:probeTool)) {
-    Bail ('  no pdfprobe beside [' + $Exe + '] -- -Mode ' + $Mode + ' needs it to make and to read ' +
-          'the sample; build the tree first (python tools/build_all_tests.py)')
-  }
+  $script:probeTool = Probe-Tool $Mode
   if (-not (Test-Path $scratch)) { New-Item -ItemType Directory -Path $scratch | Out-Null }
   $sample = Join-Path $scratch 'form-screen.pdf'
   if (Test-Path -LiteralPath $sample) { Remove-Item -LiteralPath $sample -Force }
@@ -1749,6 +1825,65 @@ if ($script:formModes -contains $Mode) {
     Bail ('  --write-form-sample reported success but [' + $sample + '] is not on disk')
   }
   if ($Doc) { Say ('  -Doc [' + $Doc + '] is replaced by the sample this mode makes') }
+  $Doc = $sample
+}
+
+# ---- the signed modes' sample -------------------------------------------------------------
+# The same discipline one step on: no signed PDF exists on this machine either, and a mode whose
+# verdict is 'these bytes did not move' has to know what the file looked like before the save, so
+# the file is made here rather than hunted for. --write-signed-sample writes the shape sec.122 built
+# in tests/formsample.h -- one text field carrying 'before' and one /Sig field whose /V names a
+# signature dictionary whose /ByteRange was computed off the bytes as installed -- and it refuses a
+# path that already exists, so the previous round's file is deleted here first: that Remove-Item is
+# pointed at one path this script just built, under %TEMP%\xyzpdf-gui-probe, and at nothing else.
+#
+# Which /P the generator is asked for is the mode's expectation, with one deliberate exception:
+# -Control builds the UNCERTIFIED document (P=0, signed but no /Perms /DocMDP) while keeping the
+# verdicts it was given. That is what makes the grey accept a claim about the certification rather
+# than about a button this harness cannot read -- the same screen, the same assertions, a document
+# that has no reason to refuse, and the round has to exit 1.
+#
+# signedsave asks for P=0 on purpose and ignores -ExpectDocMdp: its verdict is about which bytes
+# moved, and a certified document would refuse the rotation its control performs before the save --
+# the control would then be testing the door, not the bytes.
+if ($script:signedModes -contains $Mode) {
+  $script:probeTool = Probe-Tool $Mode
+  if (-not (Test-Path $scratch)) { New-Item -ItemType Directory -Path $scratch | Out-Null }
+  $script:expectP = $ExpectDocMdp
+  if ($Mode -eq 'signedlock') {
+    if ($Control -and -not $script:expectP) {
+      $script:expectP = '2'
+      Say '  signedlock -Control with no -ExpectDocMdp: the P=2 verdicts are the ones kept'
+    }
+    if ($script:expectP -notmatch '^[0-3]$') {
+      Bail ('  -Mode signedlock needs -ExpectDocMdp 0, 1, 2 or 3 (the /P of the certification the ' +
+            'sample is built with); got [' + $ExpectDocMdp + ']')
+    }
+  } else {
+    $script:expectP = '0'
+    if ($ExpectDocMdp) {
+      Say ('  signedsave judges bytes, not doors: -ExpectDocMdp [' + $ExpectDocMdp +
+           '] is ignored and the sample is uncertified')
+    }
+  }
+  $script:builtP = $script:expectP
+  if ($Control) { $script:builtP = '0' }
+  $sample = Join-Path $scratch ('signed-screen-p' + $script:builtP + '.pdf')
+  if (Test-Path -LiteralPath $sample) { Remove-Item -LiteralPath $sample -Force }
+  $made = & $script:probeTool --write-signed-sample $sample --docmdp $script:builtP 2>&1
+  foreach ($l in @($made)) { Say ('  sample: ' + $l) }
+  if ($LASTEXITCODE -ne 0) {
+    Bail ('  --write-signed-sample exited ' + $LASTEXITCODE + ', so there is no sample for -Mode ' + $Mode)
+  }
+  if (-not (Test-Path -LiteralPath $sample)) {
+    Bail ('  --write-signed-sample reported success but [' + $sample + '] is not on disk')
+  }
+  # The number the file carries, as opposed to the one that was asked for. pdfprobe already compares
+  # the two and exits 1 when they disagree, but the modes' own verdicts are written against
+  # $script:builtP, so a run has to be able to say which document it is holding.
+  Say ('  signed sample: built with /P ' + $script:builtP + ', the round judges it as /P ' +
+       $script:expectP + $(if ($Control) { '  (CONTROL)' } else { '' }))
+  if ($Doc) { Say ('  -Doc [' + $Doc + '] is replaced by the signed sample this mode makes') }
   $Doc = $sample
 }
 
@@ -1802,10 +1937,16 @@ function Wait-Star([int]$procId, [bool]$want, [int]$rounds = 25) {
   }
   return $false
 }
-function Rotate-CurrentPage([int]$procId) {
-  # Document / Rotate Pages, the 'Current page' radio, then the accept -- the route strippreview has
-  # used since sec.109, wanted here because an edit that shows up in the saved BYTES is what makes
-  # 'the save happened' a disk reading and not one line of status text.
+function Rotate-Box([int]$procId) {
+  # Document / Rotate Pages opened, the 'Current page' radio picked, and the box left standing: the
+  # caller either presses the accept (Rotate-CurrentPage below) or reads the button and walks away
+  # (signedlock, whose verdict IS the button). One walk for both, because a second copy of an
+  # open-the-box route is how a mode ends up working in only one language (sec.87).
+  #
+  # The radio is picked before the button is handed back because the button's state is only a claim
+  # about the document once a page has actually been named: an untouched box greys its accept for a
+  # reason that has nothing to do with signatures (rotatepagesdialog.cpp wants `present > 0`), which
+  # is the same vacuity sec.72 had to step around in the bookmark box.
   TopMenu $procId @('Document', (CjStr 0x6587, 0x6863)) | Out-Null
   $row = RowAny $procId @('Rotate Pages', (CjStr 0x65CB, 0x8F6C, 0x9875, 0x9762))
   if (-not $row) { Bail '  no Rotate Pages row under Document in either language' }
@@ -1813,17 +1954,37 @@ function Rotate-CurrentPage([int]$procId) {
   ClickAt $row
   $dlg = WaitClass $procId 'RotatePagesDialog' 12
   if (-not $dlg) { Bail '  the rotate dialog did not open' }
+  # The box's own summary, kept for the caller: a structure box on a signed file says before the
+  # press what the save will cost, and that sentence is one of the readings the signed modes judge.
+  $summary = LongestText $dlg
+  Say ('  rotate box (' + @(FindType $dlg $CT::Text).Count + ' Text element(s)): |' +
+       $summary.Replace("`r", ' ').Replace("`n", ' / ') + '|')
   $cur = MatchOne $dlg $CT::RadioButton @('Current page', (CjStr 0x5F53, 0x524D, 0x9875))
   if (-not $cur) { Bail '  no Current page radio in either language' }
   Say ('  picking |' + $cur.Current.Name + '|')
   ClickAt $cur
   Start-Sleep -Milliseconds 600
   $go = MatchOne $dlg $CT::Button @('Rotate these pages', (CjStr 0x65CB, 0x8F6C, 0x8FD9, 0x4E9B, 0x9875))
-  if (-not ($go -and $go.Current.IsEnabled)) { Bail '  the rotate accept is not lit after picking the current page' }
-  Say ('  recording: |' + $go.Current.Name + '|')
-  ClickAt $go
+  if (-not $go) {
+    foreach ($b in @(FindType $dlg $CT::Button)) { Say ('    button |' + $b.Current.Name + '|') }
+    Bail '  no rotate accept among the buttons in either language'
+  }
+  foreach ($b in @(FindType $dlg $CT::Button)) {
+    Say ('    button |' + $b.Current.Name + '| enabled=' + $b.Current.IsEnabled)
+  }
+  return @{ dlg = $dlg; accept = $go; lit = $go.Current.IsEnabled; summary = $summary }
+}
+function Rotate-CurrentPage([int]$procId) {
+  # ... and pressed: the route strippreview has used since sec.109, wanted by the save modes because
+  # an edit that shows up in the saved BYTES is what makes 'the save happened' a disk reading and not
+  # one line of status text.
+  $box = Rotate-Box $procId
+  if (-not $box.lit) { Bail '  the rotate accept is not lit after picking the current page' }
+  Say ('  recording: |' + $box.accept.Current.Name + '|')
+  ClickAt $box.accept
   if (-not (WaitClassGone $procId 'RotatePagesDialog' 20)) { Bail '  the rotate dialog stayed open after the press' }
   Start-Sleep -Milliseconds 600
+  $script:rotateSummary = $box.summary
 }
 function Close-Window([int]$procId) {
   # WM_CLOSE to our own main window. That message is exactly what the caption's X produces, and
@@ -1913,7 +2074,7 @@ function UForm([string]$s) {
   }
   return $out.Trim()
 }
-function Read-FormFields([string]$path, [string]$tag) {
+function Read-FormFields([string]$path, [string]$tag, [int]$minFields = 8) {
   # The file's own answer, straight from the library the reader uses. Every mode reads the copy
   # twice -- once before it touches anything (the target must be empty, or the run is measuring a
   # stale file) and once after the save (the value must be what was typed).
@@ -1955,7 +2116,10 @@ function Read-FormFields([string]$path, [string]$tag) {
   if ($script:ffRotate -ne 0) { Bail ('  ' + $tag + ': the page is rotated ' + $script:ffRotate + '; the mapping is for rotate 0') }
   if ($script:ffFormEnv -ne 'opened') { Bail ('  ' + $tag + ': the form environment answered [' + $script:ffFormEnv + '], so no field can be filled') }
   if ($script:ffFormType -ne 1) { Bail ('  ' + $tag + ': formtype is ' + $script:ffFormType + ', not the AcroForm 1 the sample carries') }
-  if (@($fields).Count -lt 8) { Bail ('  ' + $tag + ': only ' + @($fields).Count + ' fields came back; the sample carries eight') }
+  if (@($fields).Count -lt $minFields) {
+    Bail ('  ' + $tag + ': only ' + @($fields).Count + ' fields came back; this mode wants at least ' +
+          $minFields + ' and the copy answers [' + ((@($fields) | ForEach-Object { $_.name }) -join ', ') + ']')
+  }
   $script:ffFields = $fields
   return $fields
 }
@@ -2529,6 +2693,144 @@ function Form-TitleCheck([string]$tag) {
   if (-not $title.Contains($script:guardCopyLeaf)) {
     Bail ('  ' + $tag + ': the caption does not name the copy this probe made [' + $script:guardCopyLeaf + ']')
   }
+}
+
+# ---- the signed modes' shared routes ------------------------------------------------------
+# Two modes ask the same two questions: which bytes of this file are where, and does this field hold
+# the keyboard. Both belong here once (sec.87), and both are arithmetic this harness has never done
+# before -- the save modes compare a WHOLE-file hash, which says that something moved and nothing
+# about what.
+function File-Bytes([string]$path, [string]$tag) {
+  # The bytes rather than the text: a hash of a decoded string would be a hash of whatever encoding
+  # was picked. Test-Path first, for sec.83's reason -- a read of a path that is not there has to
+  # say so here rather than arrive as an empty array that compares equal to another empty array.
+  if (-not (Test-Path -LiteralPath $path)) { Bail ('  ' + $tag + ': [' + $path + '] is not on disk') }
+  $bytes = [System.IO.File]::ReadAllBytes($path)
+  Say ('  ' + $tag + ': ' + $bytes.Length + ' bytes read from [' + $path + ']')
+  return ,$bytes
+}
+function Sha256-Of($bytes) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  return ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
+}
+function Sha256-Prefix($bytes, [int]$count, [string]$tag) {
+  # The hash of the first $count bytes -- the shape of the question the incremental save answers.
+  if ($count -lt 0 -or $count -gt $bytes.Length) {
+    Bail ('  ' + $tag + ': asked for a prefix of ' + $count + ' bytes from a ' + $bytes.Length +
+          '-byte file')
+  }
+  $head = New-Object 'byte[]' $count
+  [Array]::Copy($bytes, 0, $head, 0, $count)
+  return (Sha256-Of $head)
+}
+function Byte-Ranges($bytes, [string]$tag) {
+  # Every /ByteRange in the file, as four numbers. Read off the bytes with a regex rather than
+  # through PDFium: the question is what the FILE says, and the harness already trusts the library's
+  # answer enough (pdfprobe prints the range it reads back, so a disagreement between the two shows
+  # up in the sample lines rather than being hidden by a second opinion).
+  #
+  # The spans are searched in the whole buffer, including whatever an incremental update appends. A
+  # rewrite that put the signature dictionary into a compressed object stream would therefore be
+  # invisible to this read, which is why the count is printed and the mode insists on exactly one
+  # match before the save: after it, the caller says how many are in front of it.
+  $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+  $out = @()
+  foreach ($m in [regex]::Matches($text, '/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]')) {
+    $out += ,@([long]$m.Groups[1].Value, [long]$m.Groups[2].Value,
+               [long]$m.Groups[3].Value, [long]$m.Groups[4].Value)
+  }
+  $parts = @()
+  foreach ($r in $out) { $parts += ('[' + ($r -join ' ') + ']') }
+  Say ('  ' + $tag + ': ' + $out.Count + ' /ByteRange read(s): ' + ($parts -join ' '))
+  return ,$out
+}
+function Covered-Bytes($bytes, $range, [string]$tag) {
+  # The two spans the range names, concatenated -- PDF 32000-1 sec.12.8.1: everything except the
+  # /Contents hole. Returns $null for a range that points off the end, and the caller says so rather
+  # than hashing an empty array, which is sec.83's fake again.
+  if (-not $range -or $range.Count -ne 4) { return $null }
+  $list = New-Object System.Collections.Generic.List[byte]
+  for ($p = 0; $p -lt 2; $p++) {
+    $off = [int]$range[$p * 2]
+    $len = [int]$range[$p * 2 + 1]
+    if ($off -lt 0 -or $len -lt 0 -or ($off + $len) -gt $bytes.Length) {
+      Say ('  ' + $tag + ': span ' + $off + '+' + $len + ' does not fit in ' + $bytes.Length + ' bytes')
+      return $null
+    }
+    for ($k = 0; $k -lt $len; $k++) { $list.Add($bytes[$off + $k]) }
+  }
+  return ,$list.ToArray()
+}
+function Hex16([string]$h) {
+  # A hash printed short. Two of these land on one line in a log a person reads, and sec.83's rule
+  # still holds at the same time: the line carries the byte count next to it, because a comparison of
+  # two empty strings is not a comparison of two files.
+  if ($h.Length -le 16) { return $h }
+  return ($h.Substring(0, 16) + '...')
+}
+function Says-Any([string]$text, [string[]]$needles) {
+  # Both spellings of one sentence, because every word here comes from the catalogue and a match list
+  # written for one locale has been the death of more than one round (sec.84, sec.87).
+  foreach ($n in $needles) { if ($text -like ('*' + $n + '*')) { return $true } }
+  return $false
+}
+function Signed-Needles() {
+  # The four sentences a signed document puts on screen, each with both spellings, in one place --
+  # the two modes read all four and a second copy of a needle list is a list that only gets run in
+  # one language. The Chinese halves are built from code points because this file has to stay ASCII.
+  #
+  # P=1 and P>=2 are deliberately told apart by the fragment that differs (the reader is told either
+  # that nothing may change or that only form filling may), and each fragment is checked against the
+  # OTHER one's absence as well: the two sentences contradict each other, so a document that shows
+  # both is showing a notice that was not read off /P.
+  #
+  # The English halves are read out of Resources/translations/xyzpdf_en.ts rather than typed from
+  # what a translation would probably say: 'will invalidate' is what the singular and the plural of
+  # sec.122's sentence share, and 'permits form filling' is what the status line and the delete box
+  # each say in their own words.
+  return @{
+    noVerify = @((CjStr 0x672C, 0x7248, 0x4E0D, 0x9A8C, 0x8BC1, 0x7B7E, 0x540D, 0x672C, 0x8EAB),
+                 'does not verify signatures')
+    certP1 = @((CjStr 0x4E0D, 0x5141, 0x8BB8, 0x4EFB, 0x4F55, 0x6539, 0x52A8),
+               'forbids every change')
+    certP2 = @((CjStr 0x53EA, 0x5141, 0x8BB8, 0x586B, 0x5199, 0x8868, 0x5355),
+               'permits form filling')
+    invalidate = @((CjStr 0x6570, 0x5B57, 0x7B7E, 0x540D, 0x90FD, 0x4F1A, 0x5931, 0x6548),
+                   'will invalidate')
+  }
+}
+function Focus-Delta([string]$tag, $f) {
+  # Does this field hold the keyboard -- as a CHANGE inside its own rectangle, not a count of it.
+  #
+  # The form modes can ask "which field's rectangle holds 24 px of caret" because their sample's
+  # fields start EMPTY (Caret-Map's own LIMIT paragraph says the count only answers while they are).
+  # The signed sample cannot be asked that: its field carries /V (before) from the first byte, so its
+  # rectangle already holds glyphs and an absolute count answers "the caret is here" for a field
+  # nobody touched -- a receipt that was impossible to fail before the interaction even started
+  # (sec.97's rule). The reading that survives is the difference between the same rectangle with the
+  # keyboard and without it, so the field is first made to let go (a click on blank paper), shot
+  # twice a blink apart, then clicked and shot twice again. The larger of each pair is compared,
+  # because a caret is allowed to be in its dark phase (sec.120 measured 0 then 24).
+  #
+  # The bar is 10 px for the same reason Caret-Holders uses it: a caret is 24 and a field that did
+  # not take the keyboard changes by 0.
+  Click-Blank ($tag + '-unfocused')
+  $s1 = Page-Shot ($tag + '-out-1')
+  $a = Region-Ink $s1 (Map-Rect $s1 $f.l $f.b $f.r $f.t)
+  Start-Sleep -Milliseconds 700
+  $s2 = Page-Shot ($tag + '-out-2')
+  $b = Region-Ink $s2 (Map-Rect $s2 $f.l $f.b $f.r $f.t)
+  $before = [math]::Max($a, $b)
+  Click-Field $s2 $f $tag
+  $s3 = Page-Shot ($tag + '-in-1')
+  $c = Region-Ink $s3 (Map-Rect $s3 $f.l $f.b $f.r $f.t)
+  Start-Sleep -Milliseconds 700
+  $s4 = Page-Shot ($tag + '-in-2')
+  $d = Region-Ink $s4 (Map-Rect $s4 $f.l $f.b $f.r $f.t)
+  $after = [math]::Max($c, $d)
+  Say ('  ' + $tag + ': ink in [' + $f.name + '] -- without the keyboard ' + $a + '/' + $b + ' (take ' +
+       $before + '), with it ' + $c + '/' + $d + ' (take ' + $after + '), delta ' + ($after - $before))
+  return @{ before = $before; after = $after; delta = ($after - $before) }
 }
 
 if ($Log) { $lines.Clear() }
@@ -4287,6 +4589,322 @@ switch ($Mode) {
     if (-not (Guard-Check 'after formlist')) { Bail '  formlist: the original moved during the run' }
     Say ('  formlist: [' + $options[0] + '] and [' + $options[2] + '] both survive the save')
   }
+  'signedsave' {
+    # handoff-07 I2 1: the incremental save of a signed document, read off the bytes it left behind.
+    # sec.122 pinned it headless -- prefix identical, the /ByteRange spans hashing the same -- and no
+    # Ctrl+S has ever been pressed on a signed file in front of this harness. The four receipts the
+    # save modes already take (the line, the star, the copy moved, the original still there) say only
+    # THAT a file was written. Two more say HOW: the copy's first N bytes are the file that was there
+    # before the save (N = that earlier length), and the two spans its /ByteRange names hash to what
+    # they hashed to before it. 'The copy moved' is deliberately not the interesting reading -- a
+    # whole-file rewrite moves it too, and moving it is exactly what -Control makes happen.
+    $nd = Signed-Needles
+    # The open-time line is read before anything is clicked. It is a timed message and a menu hover
+    # replaces it outright (sec.114); the pointer was parked before the launch for this reason, and
+    # sec.122 had to learn twice that a hover left over from the click that opened the file is enough
+    # to lose it.
+    $line = Wait-Status $app.Id $nd.noVerify
+    if ($line -eq '') {
+      Bail ('  signedsave: the status line never said the document carries a signature this version ' +
+            'does not verify (it reads [' + (StatusName $app.Id) + ']) -- so nothing below can be ' +
+            'about a signed document')
+    }
+    Say ('  signedsave: open line |' + $line.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    if (-not $line.Contains($script:guardCopyLeaf)) {
+      Bail ('  signedsave: the open line does not name the copy this probe made [' +
+            $script:guardCopyLeaf + ']')
+    }
+    Form-TitleCheck 'signedsave'
+    Read-FormFields $script:guardCopy 'signedsave-before' 2 | Out-Null
+    $tgt = Field-At 'name' 'signedsave'
+    $sig = Field-At 'sig1' 'signedsave'
+    # The value the generator put in, asked for before the click. A copy left over from an earlier
+    # round would answer with that round's token, and every byte comparison after it would then be
+    # about a file this run never saw.
+    if ((UForm $tgt.value) -ne 'before') {
+      Bail ('  signedsave: the text field reads [' + (UForm $tgt.value) + '] instead of the [before] ' +
+            'the sample is built with, so this copy is not the file the ranges below describe')
+    }
+    if ($sig.type -ne 'SIGNATURE') {
+      Bail ('  signedsave: the field the sample signs reads as ' + $sig.type + ', not SIGNATURE')
+    }
+    $bytes0 = File-Bytes $script:guardCopy 'signedsave-before'
+    $n0 = $bytes0.Length
+    $hash0 = Sha256-Of $bytes0
+    $ranges0 = Byte-Ranges $bytes0 'signedsave-before'
+    if ($ranges0.Count -ne 1) {
+      Bail ('  signedsave: ' + $ranges0.Count + ' /ByteRange in the copy before the save and the ' +
+            'generator writes exactly one signature, so this is not the file it made')
+    }
+    $covered0 = Covered-Bytes $bytes0 $ranges0[0] 'signedsave-before'
+    if (-not $covered0) { Bail '  signedsave: the sample''s own /ByteRange points outside the file' }
+    $coveredHash0 = Sha256-Of $covered0
+    Say ('  signedsave: before -- length=' + $n0 + ' sha256=' + (Hex16 $hash0) + '; covered ' +
+         $covered0.Length + ' bytes sha256=' + (Hex16 $coveredHash0))
+    $shot = Zoom-WholePage 'signedsave'
+    $m = Map-Rect $shot $tgt.l $tgt.b $tgt.r $tgt.t
+    Say ('  field name ' + $tgt.type + ' user ' + $tgt.l + ',' + $tgt.b + '-' + $tgt.r + ',' + $tgt.t +
+         ' -> bitmap ' + [int]$m.bx0 + ',' + [int]$m.by0 + '-' + [int]$m.bx1 + ',' + [int]$m.by1 +
+         ' screen ' + [int]$m.sx + ',' + [int]$m.sy)
+    $fd = Focus-Delta 'signedsave' $tgt
+    # The channel before the claim: an unchanged rectangle means the field never took the keyboard,
+    # and every byte read after that would be about a file nothing typed into.
+    if ($fd.delta -lt 10) {
+      Bail ('  signedsave: the click left the field''s own rectangle ' + $fd.delta + ' px short of a ' +
+            'change, so it never took the keyboard -- an uncertified signature is refusing the field')
+    }
+    $token = 'S' + [guid]::NewGuid().ToString('N').Substring(0, 6).ToUpper()
+    Say ('  signedsave: typing [' + $token + '] into name')
+    Type-Text $token 'signedsave'
+    Start-Sleep -Milliseconds 700
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  signedsave: the caption never grew the unsaved-edits star after typing; it reads [' +
+            (Window $app.Id).Current.Name + ']')
+    }
+    Click-Blank 'signedsave'
+    if ($Control) {
+      # One extra edit ahead of the save, and it is the one edit that cannot be appended: a page turn
+      # goes through qpdf, which rewrites the whole file, so the bytes the signature covers cannot
+      # stay where they are. Every verdict below is kept, which is what makes this round exit 1.
+      # The box it opens is also where sec.122's before-the-press sentence has never been read: this
+      # is that round.
+      Say '  CONTROL: rotating a page first; the prefix and the covered spans are still expected to hold'
+      Rotate-CurrentPage $app.Id
+      if (-not (Says-Any $script:rotateSummary $nd.invalidate)) {
+        Bail ('  CONTROL: the rotate box on a signed file never said the save invalidates it -- the ' +
+              'sentence is not on screen, so the verdict this mode adds is decoration')
+      }
+      Say '  CONTROL: the rotate box does say the signatures go; the byte verdicts are next'
+    }
+    $sv = Save-AndRead 'signedsave' $true
+    Check-Save $sv 'signedsave'
+    $bytes1 = File-Bytes $script:guardCopy 'signedsave-after'
+    $n1 = $bytes1.Length
+    $grew = ($n1 -ge $n0)
+    $prefixHash = $(if ($grew) { Sha256-Prefix $bytes1 $n0 'signedsave-after' } else { '(shorter)' })
+    $prefixHeld = ($prefixHash -eq $hash0)
+    $ranges1 = Byte-Ranges $bytes1 'signedsave-after'
+    # Every /ByteRange in the file has to be the one that was there before, not just the first. The
+    # save measured here leaves TWO: PDFium appends its update and re-emits the signature dictionary in
+    # it, so the xref the reader follows points at the copy in the appended revision and the one in the
+    # prefix is the stale twin. Comparing only the first would let an update that rewrote the RANGES --
+    # while leaving the old dictionary in front of it -- read as a pass, which is the vacuous half of
+    # the receipt this mode exists to take.
+    $sameRange = ($ranges1.Count -ge 1)
+    $covered1 = @()
+    foreach ($r in $ranges1) {
+      if (($r -join ' ') -ne ($ranges0[0] -join ' ')) { $sameRange = $false }
+      $c = Covered-Bytes $bytes1 $r 'signedsave-after'
+      if ($c) { $covered1 += (Sha256-Of $c) }
+    }
+    # One hash per span pair, all of them required to equal the one taken before the save.
+    $allCovered = $true
+    foreach ($h in $covered1) { if ($h -ne $coveredHash0) { $allCovered = $false } }
+    $coveredHash1 = $(if ($covered1.Count -gt 0) { $covered1[0] } else { '' })
+    Say ('  signedsave: after -- length=' + $n1 + ' (was ' + $n0 + ') prefix sha256=' +
+         (Hex16 $prefixHash) + ' against ' + (Hex16 $hash0) + '; /ByteRange still the same in all ' +
+         $ranges1.Count + ' read(s)=' + $sameRange + '; covered sha256=' + (Hex16 $coveredHash1) +
+         ' held for every span=' + $allCovered + ' (against ' + (Hex16 $coveredHash0) + ')')
+    if ($prefixHeld -and $sameRange -and $allCovered) {
+      if ($Control) {
+        Bail ('  CONTROL: a page rotation left the first ' + $n0 + ' bytes and both covered spans ' +
+              'exactly where they were, so the save appended an edit the file never took (CONTROL exit 1)')
+      }
+      if (-not $grew) {
+        Bail ('  signedsave: the copy is ' + $n1 + ' bytes after a save that must have appended to ' +
+              $n0 + ', so the line said it saved and the bytes did not grow')
+      }
+      Say ('  signedsave: a field-only save appended to the signed file -- the first ' + $n0 +
+           ' bytes and the ' + $covered0.Length + ' bytes the signature covers are unchanged')
+    } else {
+      $why = @()
+      if (-not $grew) { $why += ('the file shrank to ' + $n1 + ' from ' + $n0) }
+      if (-not $prefixHeld) { $why += ('the first ' + $n0 + ' bytes are not the file that was there') }
+      if (-not $sameRange) { $why += 'the /ByteRange numbers themselves moved' }
+      if (-not $allCovered) { $why += 'the covered spans do not hash the same' }
+      Bail ((('  signedsave: the save rewrote what it should have left alone -- ' + ($why -join '; ') +
+             ' [' + $n0 + ' -> ' + $n1 + ' bytes]') + $(if ($Control) { ' (CONTROL exit 1)' } else { '' })))
+    }
+    Read-FormFields $script:guardCopy 'signedsave-readback' 2 | Out-Null
+    $a = Field-At 'name' 'signedsave'
+    Say ('  read back: name=[' + (UForm $a.value) + ']')
+    if ((UForm $a.value) -notlike ('*' + $token + '*')) {
+      Bail ('  signedsave: the copy answers [' + (UForm $a.value) + '] after the save, which does not ' +
+            'carry the [' + $token + '] that was typed into it')
+    }
+    if (-not (Guard-Check 'after signedsave')) { Bail '  signedsave: the original moved during the run' }
+  }
+  'signedlock' {
+    # handoff-07 I2 2: the two doors a certification signature shuts, judged where a reader meets them
+    # -- the line at open, the accept button in a structure box, and a click on a field. sec.122 pinned
+    # all three headless and sec.123 read the status line and one delete-box sentence off the packaged
+    # copy; nothing here ever aimed a click at a P=1 field or asked a grey button whether it was grey.
+    #
+    # The three rounds are the same procedure against a different /P in the sample:
+    #   1  the field refuses the click (no caret, no star, nothing written) and the box refuses the press
+    #   2  the field takes it and the box still refuses, naming form filling as the only thing permitted
+    #   0  signed but not certified: both doors open and no certification sentence appears anywhere
+    # 0 is not the control -- it is the negative half, the reading that makes 'grey' in the other two a
+    # claim about the signature rather than about a button this harness cannot light up. The control is
+    # -Control, which builds the 0 document and keeps the verdicts it was handed: the accept-grey
+    # assertion is the first one it can fail, so a grey button is shown to have a cause.
+    #
+    # The status line is CAPTURED at open and JUDGED at the end. It is a timed message and the delete
+    # box needs a menu press, which replaces it (sec.114) -- so the reading has to be taken while it is
+    # on screen, and the order of the verdicts is then free to put the accept button first.
+    $nd = Signed-Needles
+    $wantP = [int]$script:expectP
+    $grey = ($wantP -ge 1)          # structuralEditsRefused(): any DocMDP at all shuts all eight boxes
+    # fillable() refuses at P=1 and at nothing else: P=0 is an ordinary signed document and P=2/3 are
+    # the ones that say filling a field is permitted. Writing this as P>=2 would make the negative
+    # round ask a fillable field to stay shut, and the round that exists to show the doors open would
+    # read as a product defect.
+    $fillable = ($wantP -ne 1)
+    $line = Wait-Status $app.Id $nd.noVerify
+    if ($line -eq '') {
+      Bail ('  signedlock: the status line never said the document carries a signature this version ' +
+            'does not verify (it reads [' + (StatusName $app.Id) + ']) -- so this run is not holding a ' +
+            'signed document and no verdict below means anything')
+    }
+    Say ('  signedlock: open line |' + $line.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    Form-TitleCheck 'signedlock'
+    Read-FormFields $script:guardCopy 'signedlock-before' 2 | Out-Null
+    $tgt = Field-At 'name' 'signedlock'
+    if ((UForm $tgt.value) -ne 'before') {
+      Bail ('  signedlock: the text field reads [' + (UForm $tgt.value) + '] instead of the [before] ' +
+            'the sample is built with')
+    }
+    # ---- the structure box's button: the door, with a page actually named --------------------------
+    # This is the rotate box rather than the delete box, and the reason is a measurement: the delete
+    # box greys its accept until a range is named (deletepagesdialog.cpp wants `pagesToRemove > 0`),
+    # and on this sample a range that names a page names the only page, which leaves nothing -- so
+    # every range a reader can type greys it for a reason that has nothing to do with the signature.
+    # The P=0 round found that out on screen: the button was grey on a document that refuses nothing.
+    # A judgement that cannot distinguish those two documents is decoration (sec.99), so the button is
+    # read where a page can be named and still leave a document: the rotate box, current page.
+    $box = Rotate-Box $app.Id
+    Say ('  signedlock: rotate accept |' + $box.accept.Current.Name + '| lit=' + $box.lit +
+         ' with page 1 named -- this round expects grey=' + $grey)
+    # First, because it is the verdict -Control is written to fail on.
+    if ($grey -and $box.lit) {
+      Bail ('  signedlock: on a document certified with P=' + $wantP + ' the rotate box lights its ' +
+            'accept anyway' + $(if ($Control) { ' -- the sample it was built with certifies nothing (CONTROL exit 1)' } else { '' }))
+    }
+    if (-not $grey -and -not $box.lit) {
+      Bail ('  signedlock: the rotate box greys its accept on a signed document that certifies ' +
+            'nothing, with a page named and one page left standing -- the reader could not turn a ' +
+            'page of a file that permits it')
+    }
+    if (-not (Says-Any $box.summary $nd.invalidate)) {
+      Bail ('  signedlock: the rotate box on a signed file never said what the save costs the ' +
+            'signature -- sec.122''s sentence has not reached the screen')
+    }
+    ClickCancel $box.dlg 'RotatePagesDialog' $app.Id
+    # ---- the delete box: the sentences, and the button that means nothing here ---------------------
+    $dlg = OpenDocumentDialog $app.Id @('Delete Pages', (CjStr 0x5220, 0x9664, 0x9875, 0x9762)) 'DeletePagesDialog'
+    $summary = LongestText $dlg
+    Say ('  signedlock: delete box (' + @(FindType $dlg $CT::Text).Count + ' Text element(s)): |' +
+         $summary.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    $ok = MatchOne $dlg $CT::Button @('Delete these pages', (CjStr 0x5220, 0x9664, 0x8FD9, 0x4E9B, 0x9875))
+    if (-not $ok) {
+      foreach ($b in @(FindType $dlg $CT::Button)) { Say ('    button |' + $b.Current.Name + '|') }
+      Bail '  signedlock: no accept button among them in either language'
+    }
+    # Printed, never judged -- see the paragraph above: on a one-page document this button is grey
+    # whether or not the file is certified, so its state would describe the arithmetic, not the door.
+    Say ('  signedlock: delete accept |' + $ok.Current.Name + '| enabled=' + $ok.Current.IsEnabled +
+         ' (printed only: nothing has been named, and on a one-page file a named range leaves nothing)')
+    $hasP1 = Says-Any $summary $nd.certP1
+    $hasP2 = Says-Any $summary $nd.certP2
+    Say ('  signedlock: box says P1=' + $hasP1 + ' P2=' + $hasP2 + '  (the round is P=' + $wantP + ')')
+    if ($wantP -eq 1 -and -not $hasP1) {
+      Bail '  signedlock: a P=1 box refuses the press without saying the certification forbids every change'
+    }
+    if ($wantP -ge 2 -and -not $hasP2) {
+      Bail '  signedlock: a P>=2 box refuses the press without naming form filling as the only thing permitted'
+    }
+    if ($wantP -eq 0 -and ($hasP1 -or $hasP2)) {
+      Bail '  signedlock: the box warns about a certification signature on a document that carries none'
+    }
+    if (($wantP -ge 1) -and ($hasP1 -eq ($wantP -eq 2))) {
+      # Both sentences on one box would mean the notice is not read off /P at all, and the two
+      # sentences contradict each other.
+      Bail ('  signedlock: the box carries both certification sentences on a P=' + $wantP + ' document')
+    }
+    if (-not (Says-Any $summary $nd.invalidate)) {
+      Bail ('  signedlock: the delete box on a signed file never said what the save costs the ' +
+            'signature')
+    }
+    ClickCancel $dlg 'DeletePagesDialog' $app.Id
+    # ---- the field: the click, and what a key does after it --------------------------------------
+    Zoom-WholePage 'signedlock' | Out-Null
+    $fd = Focus-Delta 'signedlock' $tgt
+    $hashBefore = Copy-Hash
+    $token = 'L' + [guid]::NewGuid().ToString('N').Substring(0, 6).ToUpper()
+    Say ('  signedlock: typing [' + $token + '] -- the field ' +
+         $(if ($fillable) { 'is allowed to take it' } else { 'is not allowed to take anything at all' }))
+    Type-Text $token 'signedlock'
+    Start-Sleep -Milliseconds 700
+    $star = Wait-Star $app.Id $true 8
+    if ($fillable) {
+      if ($fd.delta -lt 10) {
+        Bail ('  signedlock: on a P=' + $wantP + ' document the click left the field''s rectangle ' +
+              $fd.delta + ' px short of a change, so the field never took the keyboard')
+      }
+      if (-not $star) {
+        Bail ('  signedlock: typing into a field a P=' + $wantP + ' certification permits grew no ' +
+              'unsaved-edits star; it reads [' + (Window $app.Id).Current.Name + ']')
+      }
+      Say '  signedlock: the field took the click and the typing, and the caption grew the star'
+      Click-Blank 'signedlock'
+      $sv = Save-AndRead 'signedlock' $true
+      Check-Save $sv 'signedlock'
+      Read-FormFields $script:guardCopy 'signedlock-readback' 2 | Out-Null
+      $a = Field-At 'name' 'signedlock'
+      Say ('  read back: name=[' + (UForm $a.value) + ']')
+      if ((UForm $a.value) -notlike ('*' + $token + '*')) {
+        Bail ('  signedlock: after a P=' + $wantP + ' save the copy answers [' + (UForm $a.value) +
+              '], which does not carry the [' + $token + '] that was typed')
+      }
+    } else {
+      if ($fd.delta -gt 10) {
+        Bail ('  signedlock: a field a P=1 signature forbids still changed by ' + $fd.delta +
+              ' px inside its own rectangle when clicked -- the click took the keyboard')
+      }
+      Say ('  signedlock: the click changed the field''s rectangle by ' + $fd.delta + ' px, which is ' +
+           'what a field that did not take the keyboard changes by')
+      if ($star) {
+        Bail ('  signedlock: typing into a refused field grew the unsaved-edits star -- the refusal ' +
+              'is only a cursor and not a door')
+      }
+      if ((Copy-Hash) -ne $hashBefore) {
+        Bail '  signedlock: the copy on disk moved while a P=1 document refused every keystroke'
+      }
+      Say '  signedlock: no star and no bytes moved, which is what a refused field leaves behind'
+    }
+    # ---- the open line's second half, judged off the captured reading ------------------------------
+    $lineP1 = Says-Any $line $nd.certP1
+    $lineP2 = Says-Any $line $nd.certP2
+    Say ('  signedlock: open line says P1=' + $lineP1 + ' P2=' + $lineP2 + '  (the round is P=' +
+         $wantP + ')')
+    if ($wantP -eq 1 -and -not $lineP1) {
+      Bail '  signedlock: the line at open does not tell the reader the document refuses every change'
+    }
+    if ($wantP -ge 2 -and -not $lineP2) {
+      Bail '  signedlock: the line at open does not tell the reader only form filling is permitted'
+    }
+    if ($wantP -eq 0 -and ($lineP1 -or $lineP2)) {
+      Bail '  signedlock: the line at open warns about a certification the file does not carry'
+    }
+    if (-not $line.Contains($script:guardCopyLeaf)) {
+      Bail ('  signedlock: the open line does not name the copy this probe made [' +
+            $script:guardCopyLeaf + ']')
+    }
+    if (-not (Guard-Check 'after signedlock')) { Bail '  signedlock: the original moved during the run' }
+    Say ('  signedlock: P=' + $wantP + ' judged where the reader meets it' +
+         $(if ($Control) { ' -- and the accept button proved it is a verdict that can fail' } else { '' }))
+  }
+
   'uacache' {
     # sec.37 recorded that a status-bar message's UIA Name can lag what is on screen and blamed the
     # .NET UIA client's property cache -- without ever testing the attribution. Two rounds also

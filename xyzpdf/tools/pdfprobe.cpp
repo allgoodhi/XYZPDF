@@ -5,6 +5,7 @@
 //     xyzpdf_pdfprobe <file.pdf> [samples] [viewport width] [text page] [needle]
 //     xyzpdf_pdfprobe --fields <file.pdf>
 //     xyzpdf_pdfprobe --write-form-sample <path.pdf>
+//     xyzpdf_pdfprobe --write-signed-sample <path.pdf> [--docmdp 0|1|2|3]
 //
 // Not a test -- it prints numbers rather than passing or failing, which is why
 // tools/build_all_tests.py skips anything with "probe" in its name. It exists
@@ -14,10 +15,10 @@
 // big they are, and what the screen is, and the numbers have to come off the
 // machine where it happens.
 //
-// The two subcommands are the same idea aimed at a form on a screen (handoff-05
-// H2), and neither of them may write a document: --fields opens, reads and
-// closes, and --write-form-sample refuses a path that already exists, because
-// it makes a sample rather than editing a file.
+// The three subcommands are the same idea aimed at a form on a screen (handoff-05
+// H2, and handoff-07 I2 for the signed one), and none of them may write a document:
+// --fields opens, reads and closes, and the two writers refuse a path that already
+// exists, because they make a sample rather than editing a file.
 //
 // Run it with the built program beside it: the Qt runtime is deployed next to
 // xyzpdf.exe, and this needs the same libraries.
@@ -55,6 +56,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QString>
 #include <QStringList>
 
@@ -462,6 +464,113 @@ int writeFormSample(const QString &path)
     return 0;
 }
 
+// --write-signed-sample: the signed document handoff-07 I2 puts on a screen.
+//
+// The bytes come from tests/formsample.h's writeSigned() -- the same generator the headless
+// sec.122 assertions are pinned against -- rather than from a second writer written here. The
+// reason is the specific claim the two screen modes make: a field-only save leaves the bytes a
+// signature covers where they are, and that claim is only testable if the ranges the file was
+// built with are the ones the harness reads back. A second xref-and-hole writer would be a
+// second opinion about the offsets, and the two would drift the way assemblePdf's note at the
+// top of that header says they would.
+//
+// One text field, one /Sig field whose /V names a signature dictionary, one signature, no
+// /Lock. The lock is left out on purpose: what these modes judge is the incremental save and
+// the DocMDP door, and a field sealed by /Lock and a field refused by P=1 are the same nothing
+// on screen -- so a locked sample would make the P=1 verdict about a mechanism this run is not
+// asking about. (sec.122 measured that PDFium does not enforce /Lock at all; DocumentTab hands
+// the names to the form layer itself.)
+//
+// `--docmdp 1|2|3` certifies it: /Perms /DocMDP in the catalog pointing at the signature
+// dictionary, whose /Reference carries the same /P, which is how PDF 32000-1 sec.12.8.2.2
+// states a certification signature. With no flag the file is signed but NOT certified -- field
+// fillable, page changes allowed -- and that is the shape -Mode signedsave's control rotates
+// on, so the same generator with a different flag is the only difference between a run that
+// must hold its bytes and one that must not.
+//
+// Nothing here is a real PKCS#7 blob: /Contents is a hex placeholder, so the "signature" is a
+// shape, not a claim about cryptography. That is all either reader needs -- the count comes from
+// the /V (sec.122's rule about what a signature is), and this version of the program says out
+// loud that it does not verify the crypto.
+int writeSignedSample(const QString &path, int docMdp)
+{
+    if (QFile::exists(path)) {
+        std::cerr << "refusing to write over " << path.toStdString()
+                  << " -- this tool makes samples, it does not write documents\n";
+        return 1;
+    }
+    QString error;
+    if (!FormSampleFile::writeSigned(path, docMdp, 1, false, &error)) {
+        std::cerr << error.toStdString() << '\n';
+        return 1;
+    }
+
+    // The same read-back discipline as --write-form-sample: a writer that reports success is
+    // not evidence that the file opens, and here the numbers printed below are the ones the
+    // screen harness compares against after a save, so they have to come off the bytes on disk
+    // rather than off the strings that built them. FPDF_InitLibrary() first, for the reason
+    // --fields spells out: without it the document appears to load and the page load takes the
+    // process down without a word.
+    FPDF_InitLibrary();
+    FPDF_DOCUMENT document = FPDF_LoadDocument(path.toUtf8().constData(), nullptr);
+    if (!document) {
+        std::cerr << "wrote a sample to " << path.toStdString()
+                  << " but it does not open: last error " << FPDF_GetLastError() << '\n';
+        FPDF_DestroyLibrary();
+        return 1;
+    }
+    const qint64 written = QFileInfo(path).size();
+    std::cout << "wrote " << written << " bytes to " << path.toStdString() << '\n';
+    std::cout << "it opens: pages=" << FPDF_GetPageCount(document)
+              << " formtype=" << FPDF_GetFormType(document)
+              << " signatures=" << FPDF_GetSignatureCount(document) << '\n';
+    // Asked of the library rather than printed from the generator: FPDF_GetSignatureCount counts
+    // signature FIELDS, so this line says "the field carries a /V" only if the count is one and
+    // the range below is four numbers -- a placeholder field with no /V would answer one here and
+    // an empty range, and sec.122 is exactly the measurement that told those two apart.
+    FPDF_CloseDocument(document);
+    const QVector<int> range = FormSampleFile::signatureByteRange(path, 0);
+    if (range.size() != 4) {
+        std::cerr << "PDFium answers " << range.size()
+                  << " numbers for signature 0's /ByteRange, not the four the shape needs\n";
+        FPDF_DestroyLibrary();
+        return 1;
+    }
+    std::cout << "byterange: " << range.at(0) << ' ' << range.at(1) << ' ' << range.at(2) << ' '
+              << range.at(3) << '\n';
+    // The arithmetic the harness will redo in PowerShell, printed so a disagreement about the
+    // spans is caught here rather than inside a screen run: the covered bytes are the two
+    // ranges concatenated, and they have to total the file minus the /Contents hole.
+    const qint64 covered = qint64(range.at(1)) + qint64(range.at(3));
+    std::cout << "covered: " << covered << " of " << written << " bytes (the hole is "
+              << written - covered << ")\n";
+
+    FPDF_DOCUMENT again = FPDF_LoadDocument(path.toUtf8().constData(), nullptr);
+    const int permission
+        = again ? FPDFSignatureObj_GetDocMDPPermission(FPDF_GetSignatureObject(again, 0)) : 0;
+    if (again)
+        FPDF_CloseDocument(again);
+    // The permission the file carries, not the one that was asked for. A --docmdp that reached
+    // the dictionary as something PDFium cannot read would otherwise show up as the screen
+    // round behaving oddly, with no line here to point at.
+    std::cout << "docmdp: " << permission << " (asked for " << docMdp << ")\n";
+    FPDF_DestroyLibrary();
+    if (permission != docMdp) {
+        std::cerr << "asked for /P " << docMdp << " and the library reads " << permission
+                  << " out of the file this wrote\n";
+        return 1;
+    }
+    // The two rectangles the modes aim at, in the page's own user space -- printed from the
+    // geometry header used to build them, and cross-checked against --fields by the harness.
+    const FormSampleFile::SignedGeometry sample;
+    std::cout << "box name=" << sample.textField.x() << ',' << sample.textField.y() << ' '
+              << sample.textField.width() << 'x' << sample.textField.height() << '\n';
+    std::cout << "box sig1=" << sample.signature.x() << ',' << sample.signature.y() << ' '
+              << sample.signature.width() << 'x' << sample.signature.height() << '\n';
+    std::cout << "page=595x842 rotate=0\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -471,7 +580,8 @@ int main(int argc, char **argv)
     if (arguments.size() < 2) {
         std::cerr << "usage: pdfprobe <file.pdf> [samples] [viewport width]\n"
                      "       pdfprobe --fields <file.pdf>\n"
-                     "       pdfprobe --write-form-sample <path.pdf>\n";
+                     "       pdfprobe --write-form-sample <path.pdf>\n"
+                     "       pdfprobe --write-signed-sample <path.pdf> [--docmdp 0|1|2|3]\n";
         return 2;
     }
 
@@ -487,6 +597,27 @@ int main(int argc, char **argv)
             return dumpFields(arguments.at(2));
         if (verb == QLatin1String("--write-form-sample"))
             return writeFormSample(arguments.at(2));
+        if (verb == QLatin1String("--write-signed-sample")) {
+            // The flag is read strictly: an unparseable /P must not arrive as the zero that means
+            // "no certification signature", because a screen round aimed at the DocMDP door would
+            // then be measuring an unsigned file and every one of its verdicts would be about
+            // something else.
+            int docMdp = 0;
+            if (arguments.size() > 3) {
+                if (arguments.at(3) != QLatin1String("--docmdp") || arguments.size() < 5) {
+                    std::cerr << "--write-signed-sample takes --docmdp 0|1|2|3 after the path\n";
+                    return 2;
+                }
+                bool ok = false;
+                docMdp = arguments.at(4).toInt(&ok);
+                if (!ok) {
+                    std::cerr << "--docmdp wants a number, not [" << arguments.at(4).toStdString()
+                              << "]\n";
+                    return 2;
+                }
+            }
+            return writeSignedSample(arguments.at(2), docMdp);
+        }
         std::cerr << "unknown subcommand " << verb.toStdString() << '\n';
         return 2;
     }

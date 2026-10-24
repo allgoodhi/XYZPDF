@@ -22,6 +22,7 @@ be used in a script as well as by hand.
 import struct
 import sys
 import xml.etree.ElementTree as ET
+import zlib
 import zipfile
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -86,12 +87,33 @@ def main(argv):
         if not inside:
             complain('picture %d points at %s, which is not in the archive' % (picture, target))
 
+    # Every other part that has relationships of its own (a header, a footer): each
+    # target has to be in the archive, the same way the document's must.
+    for rels in [n for n in archive.namelist() if n.startswith('word/_rels/') and n.endswith('.rels')]:
+        for found in ET.fromstring(archive.read(rels)).findall('{%s}Relationship' % PKG):
+            if found.get('TargetMode') == 'External':
+                continue
+            if ('word/' + found.get('Target')) not in archive.namelist():
+                complain('%s points at %s, which is not in the archive' % (rels, found.get('Target')))
+
+    # A picture is a JPEG (a photograph carried over as the PDF stored it) or a PNG
+    # (a drawing, rendered): either has to be whole, which for a PNG means every
+    # chunk's CRC checks out and the file ends where IEND says.
     for name in [n for n in archive.namelist() if n.startswith('word/media/')]:
         data = archive.read(name)
-        if data[:2] != b'\xff\xd8' or data[-2:] != b'\xff\xd9':
-            complain('%s is not a complete JPEG' % name)
+        if data[:2] == b'\xff\xd8':
+            if data[-2:] != b'\xff\xd9':
+                complain('%s is not a complete JPEG' % name)
+                continue
+            size = frameSize(data)
+        elif data[:8] == b'\x89PNG\r\n\x1a\n':
+            size, error = pngSize(data)
+            if error:
+                complain('%s is not a complete PNG: %s' % (name, error))
+                continue
+        else:
+            complain('%s is neither a JPEG nor a PNG' % name)
             continue
-        size = frameSize(data)
         print('image: %s, %d bytes, %s'
               % (name, len(data), '%d x %d pixels' % size if size else 'frame not found'))
 
@@ -126,6 +148,29 @@ def main(argv):
         return 1
     print('this is a Word document: a valid archive, and every part of it in place')
     return 0
+
+
+def pngSize(data):
+    """(width, height) out of a PNG's IHDR and None, or None and what is wrong."""
+    at = 8
+    size = None
+    while at + 12 <= len(data):
+        length = struct.unpack('>I', data[at:at + 4])[0]
+        kind = data[at + 4:at + 8]
+        body = data[at + 8:at + 8 + length]
+        if len(body) != length or at + 12 + length > len(data):
+            return None, 'chunk %r runs past the end' % kind
+        crc = struct.unpack('>I', data[at + 8 + length:at + 12 + length])[0]
+        if zlib.crc32(kind + body) & 0xffffffff != crc:
+            return None, 'chunk %r has a bad CRC' % kind
+        if at == 8:
+            if kind != b'IHDR':
+                return None, 'the first chunk is not IHDR'
+            size = struct.unpack('>II', body[:8])
+        at += 12 + length
+        if kind == b'IEND':
+            return (size, None) if at == len(data) else (None, 'bytes after IEND')
+    return None, 'no IEND'
 
 
 def frameSize(data):

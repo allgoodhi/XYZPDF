@@ -376,6 +376,8 @@ set(XYZPDF_SOURCES
     src/document/outline.cpp
     src/document/pagemetrics.h
     src/document/pagemetrics.cpp
+    src/document/signatureverify.h
+    src/document/signatureverify.cpp
     src/document/textlayer.h
     src/document/textlayer.cpp
     src/document/textsearch.h
@@ -548,6 +550,12 @@ if(WIN32)
     # CredWriteW / CredReadW / CredDeleteW: the translation key's storage. See
     # src/translate/keystore_windows.cpp.
     target_link_libraries(xyzpdf PRIVATE advapi32)
+    # The signature verification in src/document/signatureverify.cpp is the Windows
+    # cryptography API itself -- CryptMsg*, CertGetCertificateChain,
+    # CertVerifyCertificateChainPolicy -- which lives in crypt32. Linked for the
+    # program only: the two shell handlers compile neither this file nor anything
+    # that calls it.
+    target_link_libraries(xyzpdf PRIVATE crypt32)
 
     # Deploy the Qt runtime next to the executable, so that it can be run by
     # double-clicking it in the build directory.
@@ -744,6 +752,18 @@ if(XYZPDF_BUILD_DOCUMENTEDITOR_SMOKE)
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
         LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
+endif()
+
+# What Windows' own cryptography says about a signed document: the four verdicts, the two facts
+# beside them, and the two time sources. The samples are signed here, in memory, by a key that
+# never reaches the disk and a certificate that never reaches a store -- see
+# tests/signaturesample.h for why that is the whole design. crypt32 is named because this is the
+# one test that exercises it directly.
+option(XYZPDF_BUILD_SIGNATUREVERIFY_SMOKE "Build the signature verification smoke test" OFF)
+if(XYZPDF_BUILD_SIGNATUREVERIFY_SMOKE)
+    xyzpdf_add_test(signatureverify_smoke
+        SOURCES src/document/signatureverify.cpp
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf crypt32)
 endif()
 
 # What QPDF does with an encrypted file when only the user password is in hand. Built

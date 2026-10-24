@@ -40,49 +40,10 @@
 
 namespace {
 
-int &pdfiumUsers()
-{
-    static int users = 0;
-    return users;
-}
-
-void acquirePdfium()
-{
-    QMutexLocker locker(&pdfiumMutex());
-    if (pdfiumUsers()++ == 0)
-        FPDF_InitLibrary();
-}
-
-void releasePdfium()
-{
-    QMutexLocker locker(&pdfiumMutex());
-    if (--pdfiumUsers() == 0)
-        FPDF_DestroyLibrary();
-}
-
-// The file PDFium reads through, with the one property that makes R7 worth the
-// trouble: the handle does not stop DeleteFileW or ReplaceFileW.
-
-// Returns 1 on success, 0 on any failure -- the shape FPDF_FILEACCESS asks for.
-// PDFium only ever asks for positions and sizes inside m_FileLen.
-int readBlock(void *param, unsigned long position, unsigned char *buffer, unsigned long size)
-{
-    auto *file = static_cast<PdfFileHandle *>(param);
-    LARGE_INTEGER offset;
-    offset.QuadPart = static_cast<LONGLONG>(position);
-    if (!SetFilePointerEx(file->handle, offset, nullptr, FILE_BEGIN))
-        return 0;
-
-    unsigned long done = 0;
-    while (done < size) {
-        DWORD got = 0;
-        if (!ReadFile(file->handle, buffer + done, size - done, &got, nullptr) || got == 0)
-            return 0;
-        done += got;
-    }
-    return 1;
-}
-
+// The library's init/destroy counter and the FPDF_FILEACCESS block reader both live in
+// pdfiumbackend_p.h now: signatureverify.cpp needs the first because it opens a document of its
+// own beside this one, and a second counter that also reaches zero is a FPDF_DestroyLibrary call
+// while a page is still being drawn.
 
 // ---- the space a box is reported in ----
 //
@@ -434,7 +395,7 @@ Document::Status PdfiumBackend::load(const QString &path, const QString &passwor
 
     impl->file.handle = handle;
     impl->file.access.m_FileLen = static_cast<unsigned long>(length.QuadPart);
-    impl->file.access.m_GetBlock = &readBlock;
+    impl->file.access.m_GetBlock = &pdfiumReadBlock;
     impl->file.access.m_Param = &impl->file;
 
     impl->document = FPDF_LoadCustomDocument(&impl->file.access, password.toUtf8().constData());

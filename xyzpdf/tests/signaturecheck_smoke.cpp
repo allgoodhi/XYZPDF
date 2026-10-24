@@ -52,15 +52,30 @@ struct Scratch
 {
     QDir directory;
     bool ok = false;
+    // XYZPDF_SIGNATURE_SAMPLE_DIR keeps the samples for a look on the screen (the sidebar, the
+    // status bar), the way XYZPDF_FORM_SAMPLE_DIR does for the form samples: the folder must not
+    // exist yet, so nothing that is already there is overwritten.
+    bool keep = false;
     Scratch()
     {
-        const QString path = QDir::tempPath() + QStringLiteral("/xyzpdf-signature-smoke-")
-            + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        QString path = qEnvironmentVariable("XYZPDF_SIGNATURE_SAMPLE_DIR");
+        keep = !path.isEmpty();
+        if (keep && QFileInfo::exists(path)) {
+            std::cerr << "SETUP: XYZPDF_SIGNATURE_SAMPLE_DIR already exists, refusing to write into it\n";
+            return;
+        }
+        if (!keep)
+            path = QDir::tempPath() + QStringLiteral("/xyzpdf-signature-smoke-")
+                + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
         QDir().mkpath(path);
         directory.setPath(path);
         ok = directory.exists();
     }
-    ~Scratch() { directory.removeRecursively(); }
+    ~Scratch()
+    {
+        if (ok && !keep)
+            directory.removeRecursively();
+    }
     QString file(const QString &name) const { return directory.filePath(name); }
 };
 

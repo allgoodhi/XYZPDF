@@ -4902,7 +4902,13 @@ switch ($Mode) {
     if ($wantP -eq 0 -and ($lineP1 -or $lineP2)) {
       Bail '  signedlock: the line at open warns about a certification the file does not carry'
     }
-    if (-not $line.Contains($script:guardCopyLeaf)) {
+    # Only the open line names the file; the verdict that replaces it a moment later (sec.126) does
+    # not, and it carries the same certification sentence the checks above just read.
+    $isOpenLine = $false
+    foreach ($n in $nd.checking) { if ($line.Contains($n)) { $isOpenLine = $true } }
+    if (-not $isOpenLine) {
+      Say '  signedlock: the verdict had already replaced the open line, which is the one naming the file'
+    } elseif (-not $line.Contains($script:guardCopyLeaf)) {
       Bail ('  signedlock: the open line does not name the copy this probe made [' +
             $script:guardCopyLeaf + ']')
     }

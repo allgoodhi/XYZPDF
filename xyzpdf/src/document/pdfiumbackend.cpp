@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QStringList>
 #include <QTimeZone>
 #include <QUuid>
 
@@ -447,6 +448,25 @@ FormFill::Pointer pointerOf(int pdfiumCursor)
     }
 }
 
+// PDF 32000-1's field-flag bits, counted from 1 the way the specification counts
+// them, so a bit's value is 1 << (bit - 1). Table 226 (choice fields): bit 22 is
+// MultiSelect. Written as a name rather than a number because this same table was got
+// the wrong way round twice while measuring it -- bit 19 is Edit and bit 20 is Sort,
+// not the other way about -- and a bare 2097152 next to a claim about a flag is a claim
+// nobody can check by reading it.
+constexpr int kFieldFlagMultiSelect = 1 << 21;
+
+// A list box the reader can hold more than one answer in. The field type alone does not
+// say: FPDFAnnot_GetFormFieldType answers LISTBOX for both shapes, and only /Ff bit 22
+// tells them apart -- which is why this is a question asked of the file and not of the
+// name. See selectedOptionSet() for what follows from the answer.
+bool isMultiSelectListBox(FPDF_FORMHANDLE form, FPDF_ANNOTATION annotation)
+{
+    return annotation
+        && fieldOf(FPDFAnnot_GetFormFieldType(form, annotation)) == FormFill::Field::ListBox
+        && (FPDFAnnot_GetFormFieldFlags(form, annotation) & kFieldFlagMultiSelect) != 0;
+}
+
 // Qt's modifiers to FWL_EVENTFLAG_*, which is the numbering FORM_On* asks for.
 int formEventFlags(Qt::KeyboardModifiers modifiers)
 {
@@ -534,6 +554,45 @@ QString fieldValue(FPDF_FORMHANDLE form, FPDF_ANNOTATION annotation)
     const int units = qMin<int>(int(bytes / 2), int(buffer.size())) - 1;
     // FPDF_WCHAR is unsigned short, which is what QString::fromUtf16 wants.
     return QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer.constData()), units);
+}
+
+// What a multi-select list box holds, as one string a comparison can be made on: every
+// option FPDFAnnot_IsOptionSelected answers true for, in the order the file lists them,
+// joined by a separator no label can contain.
+//
+// fieldValue() cannot answer this. Measured on chromium/8111 with a four-option field
+// whose /V starts as {b}: a plain click on row a and a Ctrl+click on row b leave the
+// field holding {a,b}, and then FPDFAnnot_GetFormFieldValue answers "a" -- the first
+// selected value alone -- while FPDFAnnot_GetStringValue("/V") answers nothing at all,
+// because /V is an array now and that read only answers strings. Comparing "a" against a
+// snapshot of "b" would call a real change a difference and a real *second* selection no
+// change at all.
+//
+// The markers are also the one read that is not live: at load and while the field is
+// being clicked they still show the file's own set ({b}), and they only move once the
+// field lets go of the keyboard, at which point they show {a,b}. So this is the truth
+// about a committed field, and the caller treats a focused one as a question it cannot
+// answer (Impl::currentAndOriginalValues).
+QString selectedOptionSet(FPDF_FORMHANDLE form, FPDF_ANNOTATION annotation)
+{
+    if (!annotation)
+        return {};
+    QStringList picked;
+    const int options = FPDFAnnot_GetOptionCount(form, annotation);
+    for (int index = 0; index < options; ++index) {
+        if (!FPDFAnnot_IsOptionSelected(form, annotation, index))
+            continue;
+        QVector<FPDF_WCHAR> buffer(256);
+        const unsigned long bytes = FPDFAnnot_GetOptionLabel(
+            form, annotation, index, buffer.data(),
+            static_cast<unsigned long>(buffer.size() * sizeof(FPDF_WCHAR)));
+        if (bytes <= 2)
+            continue;
+        const int units = qMin<int>(int(bytes / 2), int(buffer.size())) - 1;
+        picked.append(QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer.constData()),
+                                        units));
+    }
+    return picked.join(QLatin1Char('\x1f'));
 }
 
 // A field's own name, which is what a value is remembered against. A widget and
@@ -978,6 +1037,17 @@ struct PdfiumBackend::Impl
     // it. Called *before* dispatching, which is the whole point: after the click the
     // checkbox is already toggled, and the value that has to be compared against is
     // the one the file says.
+    // The string a field's change is judged on: its value, except for a multi-select
+    // list box, whose value no single read answers (selectedOptionSet() has the
+    // measurement). The snapshot and the later read both come through here, so the two
+    // sides of the comparison are always the same shape -- a snapshot taken as a set and
+    // read back as a first value would call every such field changed.
+    QString comparableValue(FPDF_ANNOTATION annotation) const
+    {
+        return isMultiSelectListBox(form, annotation) ? selectedOptionSet(form, annotation)
+                                                      : fieldValue(form, annotation);
+    }
+
     void noteFieldBeforeTouch(int page, FPDF_ANNOTATION annotation)
     {
         if (!annotation)
@@ -988,7 +1058,7 @@ struct PdfiumBackend::Impl
         const QString key = QStringLiteral("%1|%2").arg(page).arg(name);
         if (formState.valueBeforeTouch.contains(key))
             return;
-        formState.valueBeforeTouch.insert(key, fieldValue(form, annotation));
+        formState.valueBeforeTouch.insert(key, comparableValue(annotation));
     }
 
     // The same question for the field that has focus, which is what a keystroke is
@@ -1004,19 +1074,29 @@ struct PdfiumBackend::Impl
     }
 
     // How many fields hold something other than what the file says, and the pairs that
-// answer it. The value a field holds now, and the one it held before this program's first
-    // event aimed at it. The focused widget is asked for its live text, because a
+    // answer it. The value a field holds now, and the one it held before this program's
+    // first event aimed at it. The focused widget is asked for its live text, because a
     // value the reader is still typing has not reached the field yet (FormFill's
-    // header has the measurement). Answers are UTF-16 → QString pairs the caller
-    // compares.
-    void currentAndOriginalValues(QVector<QPair<QString, QString>> &out)
+    // header has the measurement).
+    struct Comparison
+    {
+        QString original;
+        QString now;
+        // True when the two strings above cannot answer the question, so the caller
+        // has to take "different" as the answer. Only one shape sets it; the comment
+        // where it is set says which and why.
+        bool unknowable = false;
+    };
+
+    void currentAndOriginalValues(QVector<Comparison> &out)
     {
         out.reserve(formState.valueBeforeTouch.size());
         for (auto entry = formState.valueBeforeTouch.constBegin();
              entry != formState.valueBeforeTouch.constEnd(); ++entry) {
             const int page = entry.key().section(QLatin1Char('|'), 0, 0).toInt();
             const QString name = entry.key().section(QLatin1Char('|'), 1);
-            QString now;
+            Comparison one;
+            one.original = entry.value();
             int focusedPageIndex = -1;
             FPDF_ANNOTATION focused = focusedAnnot(&focusedPageIndex);
             if (focused && focusedPageIndex == page && fieldName(form, focused) == name) {
@@ -1027,9 +1107,27 @@ struct PdfiumBackend::Impl
                 if (bytes > 2) {
                     const int units
                         = qMin<int>(int(bytes / 2), int(buffer.size())) - 1;
-                    now = QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer.constData()),
-                                             units);
+                    one.now = QString::fromUtf16(
+                        reinterpret_cast<const char16_t *>(buffer.constData()), units);
                 }
+                // A multi-select list box that still has the keyboard is not a
+                // comparison this program can make, and the answer has to be
+                // "different" rather than "the same". Measured, two clicks: /V={b}, a
+                // plain click on row a, then Ctrl+click on row b -- the field holds
+                // {a,b} while its live text is "b", the label picked last, which is
+                // exactly what the snapshot says. The truth is FPDFAnnot_IsOptionSelected
+                // and it is not live: while the field has the keyboard the markers still
+                // read {b}, and they only move to {a,b} once it lets go.
+                //
+                // So the count over-reports while such a field is focused: a reader who
+                // multi-selects and then puts the same set back sees the star until the
+                // field lets go. The other way round is the one that loses data --
+                // DocumentTab::saveEdits() does nothing at all when this count is zero,
+                // so an under-report makes Ctrl+S silently throw the second selection
+                // away and the close prompt not ask. Once focus leaves, the markers are
+                // the truth and comparableValue() reads them, so the over-report ends
+                // there instead of lasting for the rest of the document's life.
+                one.unknowable = isMultiSelectListBox(form, focused);
                 FPDFPage_CloseAnnot(focused);
             } else {
                 if (focused)
@@ -1037,11 +1135,11 @@ struct PdfiumBackend::Impl
                 FPDF_PAGE pageHandle = holdPageRef(page);
                 FPDF_ANNOTATION annotation
                     = pageHandle ? pageField(pageHandle, name) : nullptr;
-                now = fieldValue(form, annotation);
+                one.now = comparableValue(annotation);
                 if (annotation)
                     FPDFPage_CloseAnnot(annotation);
             }
-            out.append({entry.value(), now});
+            out.append(one);
         }
     }
 
@@ -1743,8 +1841,38 @@ bool PdfiumBackend::mousePressed(int page, const Frame &frame, const QPointF &de
         return false;
     const Field field = fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x,
                                                              point.y));
-    if (!FormFill::isInteractive(field))
-        return false;
+    // The move the window system delivers before every button, which this view does not
+    // (it routes moves only while a drag is in flight, pageview.cpp). It is not a
+    // formality: measured on chromium/8111, a press with no move before it is refused.
+    // On a combo box's dropdown button the first such press took the focus and left the
+    // list closed, and only the second one opened it; the same press with a move first
+    // opened it straight away. Every click that moves between two fields is refused the
+    // same way. So the move goes out here, before either branch's press.
+    {
+        const Impl::Dispatch guard(*impl);
+        FORM_OnMouseMove(impl->form, handle, formEventFlags(modifiers), point.x, point.y);
+    }
+    if (!FormFill::isInteractive(field)) {
+        // The hit test answers about the *page*, and a combobox's dropdown is not on
+        // it: measured on a four-option combo, a press on an open popup's third row
+        // gave HasFormFieldAtPoint -1 while FORM_OnLButtonDown answered true, the row
+        // became the field's live text and the popup closed on the release. Refusing
+        // the press here would drop the pick -- and with it the release, because the
+        // view only sends one to a press it was told about.
+        //
+        // So while a field of this page holds the keyboard the press goes out anyway
+        // and PDFium's own answer is the one returned: true over its dropdown, which
+        // makes the view follow with the release that picks; false over paper, which
+        // leaves the click to the view, whose next line lets the field go (and whose
+        // kill-focus closes an open popup -- measured, without touching the value).
+        if (impl->focusedPageLocked() != page)
+            return false;
+        impl->noteFocusedFieldBeforeTouch();
+        const Impl::Dispatch guard(*impl);
+        return FORM_OnLButtonDown(impl->form, handle, formEventFlags(modifiers), point.x,
+                                  point.y)
+            != 0;
+    }
     // Before the press, not after: the click that checks a box is the last moment
     // its old value is still the value the file has.
     FPDF_ANNOTATION annotation = FPDFAnnot_GetFormFieldAtPoint(impl->form, handle, &point);
@@ -1802,6 +1930,39 @@ bool PdfiumBackend::mouseDoubleClicked(int page, const Frame &frame, const QPoin
     return true;
 }
 
+bool PdfiumBackend::mouseWheeled(int page, const Frame &frame, const QPointF &devicePoint,
+                                 int detents, Qt::KeyboardModifiers modifiers)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    if (!impl->form || detents == 0)
+        return false;
+    const FPDF_PAGE handle = impl->holdPage(page, false);
+    FS_POINTF point{};
+    if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
+        return false;
+    // A wheel that moves a list's selection is an edit, so the value it had before the
+    // first one is noted the same way a press notes it.
+    impl->noteFocusedFieldBeforeTouch();
+    const Impl::Dispatch guard(*impl);
+    // One event per detent, of magnitude one. FORM_OnMouseWheel's own comment says the
+    // caller normalises the platform's delta, and measured on a twenty-row list this
+    // build ignores the magnitude it is handed: dy -1 and dy -120 each moved the
+    // selection by exactly one row. Passing a touchpad's accumulated delta would
+    // therefore scroll one row, and passing each of its small deltas separately would
+    // scroll fifteen -- so the counting is done here, where one call is one row.
+    //
+    // The sign is the one the header documents ("negative values mean down"), which is
+    // Qt's angleDelta().y() unchanged: positive walked o05 -> o04 -> o03, negative
+    // o05 -> o06 -> o07.
+    const int step = detents > 0 ? 1 : -1;
+    bool taken = false;
+    for (int remaining = qAbs(detents); remaining > 0; --remaining) {
+        if (FORM_OnMouseWheel(impl->form, handle, formEventFlags(modifiers), &point, 0, step))
+            taken = true;
+    }
+    return taken;
+}
+
 bool PdfiumBackend::keyPressed(int qtKey, Qt::KeyboardModifiers modifiers)
 {
     QMutexLocker locker(&pdfiumMutex());
@@ -1811,12 +1972,35 @@ bool PdfiumBackend::keyPressed(int qtKey, Qt::KeyboardModifiers modifiers)
     FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
     if (!focused)
         return false;
+    const Field kind = fieldOf(FPDFAnnot_GetFormFieldType(impl->form, focused));
+    const QRectF rect = fieldRect(focused);
     FPDFPage_CloseAnnot(focused);
     impl->noteFocusedFieldBeforeTouch();
 
     const FPDF_PAGE handle = impl->holdPage(page, false);
     if (!handle)
         return false;
+
+    // Alt+Down opens the list, and it opens it by being a click on the dropdown
+    // button rather than a key. Measured on a four-option combo that had focus:
+    // FORM_OnKeyDown(FWL_VKEY_Down, FWL_EVENTFLAG_AltKey) answered false and painted
+    // nothing new, while a hover-less Down+Up two points inside the field's right edge
+    // opened the popup (the band under the field went from 122 to 700 inked pixels),
+    // closed it on the next round and opened it again on the one after. Plain Down is
+    // left to PDFium: it walks the field's live text and commits nothing, which is
+    // what makes the popup worth opening -- a row picked from it is the commit.
+    if (qtKey == Qt::Key_Down && modifiers.testFlag(Qt::AltModifier)
+        && kind == Field::ComboBox && !rect.isEmpty()) {
+        const Impl::Dispatch guard(*impl);
+        // The button is the field's right-hand ten points or so: right-2 opened it on
+        // all three rounds, right-15 opened nothing.
+        const float atX = float(rect.right() - 2);
+        const float atY = float(rect.center().y());
+        FORM_OnLButtonDown(impl->form, handle, 0, atX, atY);
+        FORM_OnLButtonUp(impl->form, handle, 0, atX, atY);
+        return true;
+    }
+
     const int virtualKey = formVirtualKey(qtKey);
     if (virtualKey == 0)
         return false;
@@ -1997,11 +2181,11 @@ FormFill::Pointer PdfiumBackend::takeRequestedPointer()
 int PdfiumBackend::differingFieldCount() const
 {
     QMutexLocker locker(&pdfiumMutex());
-    QVector<QPair<QString, QString>> pairs;
+    QVector<Impl::Comparison> pairs;
     impl->currentAndOriginalValues(pairs);
     int differing = 0;
-    for (const auto &pair : std::as_const(pairs)) {
-        if (pair.first != pair.second)
+    for (const Impl::Comparison &one : std::as_const(pairs)) {
+        if (one.unknowable || one.original != one.now)
             ++differing;
     }
     return differing;

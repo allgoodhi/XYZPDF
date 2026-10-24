@@ -965,6 +965,396 @@ void checkFormFilling(const QString &scratch)
           "form: after a load the file is what the values are compared against");
 }
 
+// ---- the two choice fields, and the wheel ----
+//
+// handoff-05 H1 1 and H1 2. Every number these assertions rest on was read off
+// chromium/8111 with a scratch probe before it was written down here, and the reading is
+// named beside the assertion it carries: which of the engine's own answers a routing
+// decision is taken from, what it paints, and what it refuses.
+void checkChoiceFields(const QString &scratch)
+{
+    const Geometry geometry = FormSampleFile::geometry();
+    const QString path = scratch + QStringLiteral("/choice-sample.pdf");
+    QString why;
+    check(write(path, 0, false, &why),
+          QStringLiteral("setup: the choice sample is written: %1").arg(why));
+    const FormFill::Frame frame = flatFrame();
+    const QSize pageSize(595, 842);
+
+    // The value one field holds in the file a save wrote, which is the only place a test
+    // can read one: a live document answers nothing about a field's value except through
+    // the count of the fields that changed.
+    auto savedValue = [&scratch](PdfiumBackend &document, const QString &name) {
+        QString staged;
+        QString error;
+        if (!document.stageFieldValues(scratch, &staged, &error)) {
+            note(QStringLiteral("choicesave: %1 wrote nothing out (%2)").arg(name, error));
+            return QString();
+        }
+        QString why;
+        const QString value = fieldValue(staged, name, &why);
+        note(QStringLiteral("choicesave %1 = [%2] %3").arg(name, value, why));
+        QFile::remove(staged);
+        return value;
+    };
+
+    // ---- the two shapes H1 4 added to the sample ----
+    //
+    // The companion every later zero needs: a press that is refused somewhere else on the
+    // page is only evidence if the same press is accepted where the file put the field.
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              QStringLiteral("choice: the sample opens (%1)").arg(document.lastError()));
+        struct Expected
+        {
+            const char *name;
+            QRectF rect;
+            FormFill::Field field;
+        };
+        const Expected expected[] = {
+            {"editable combo box", geometry.editableComboBox, FormFill::Field::ComboBox},
+            {"multi-select list box", geometry.multiListBox, FormFill::Field::ListBox},
+        };
+        for (const Expected &one : expected) {
+            const FormFill::Field found
+                = document.fieldAt(0, frame, flatDevice(one.rect));
+            note(QStringLiteral("choicehit %1: field=%2").arg(one.name).arg(int(found)));
+            check(found == one.field,
+                  QStringLiteral("choice: the %1 is hit as its own kind (got %2)")
+                      .arg(one.name)
+                      .arg(int(found)));
+        }
+    }
+
+    // ---- the dropdown is the engine's own, and a row of it is a click the page cannot see
+    //
+    // The question H1 1 asks first: does PDFium draw the list, or does a Qt popup have to?
+    // It draws it. The evidence is in two parts -- the pixels under the field, which are
+    // blank paper before the press and the list's first row after it, and the rectangle
+    // the engine asks to have drawn again, which reaches below the field's own box
+    // because that is where it put the list. (Measured on a four-option combo: the band
+    // under the field went from 122 to 700 inked pixels and the invalidate grew from
+    // (47,675)-(201,721) to (47,652)-(201,721) for a field whose /Rect is y 700..720.)
+    const QRectF combo = geometry.comboBox;
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the dropdown");
+
+        // The strip of paper under the combo box, in the device grid of a render at one
+        // pixel per point with no reader turn: from two points under the field's lower
+        // edge to two points above the list box's upper one, which is the only blank
+        // paper there is. Device y grows downwards, so the flip is the page's height.
+        const QRect underCombo(QPoint(int(combo.left()) + 2, int(842 - combo.top()) + 2),
+                               QPoint(int(combo.right()) - 2,
+                                      int(842 - geometry.listBox.bottom()) - 2));
+        const auto inkUnder = [&document, &underCombo, pageSize] {
+            const QImage page = document.render(0, pageSize, RenderOptions{});
+            return inkBox(page.copy(underCombo));
+        };
+        const QRect before = inkUnder();
+        note(QStringLiteral("choicedrop: strip %1,%2 - %3,%4 ink before=[%5]")
+                 .arg(underCombo.x()).arg(underCombo.y()).arg(underCombo.right())
+                 .arg(underCombo.bottom()).arg(before.isValid() ? "some" : "none"));
+        check(!before.isValid(),
+              "choice: the paper under a combo box that has not been opened is blank, so "
+              "there is something for the dropdown to be");
+
+        const QPointF button = flatDevicePoint(comboBoxButton(combo));
+        check(document.mousePressed(0, frame, button, {}),
+              "choice: a press on the dropdown button goes to the form");
+        document.mouseReleased(0, frame, button, {});
+        check(document.focusedFieldType() == FormFill::Field::ComboBox,
+              "choice: and the combo box has the keyboard");
+        const QVector<FormFill::Repaint> opened = document.takeRepaints();
+        double lowest = 1e9;
+        for (const FormFill::Repaint &one : opened)
+            lowest = qMin(lowest, one.userSpace.top());
+        note(QStringLiteral("choicedrop: %1 repaint(s), lowest user y asked for %2 "
+                            "(the field's own lower edge is %3)")
+                 .arg(opened.size()).arg(lowest).arg(combo.top()));
+        check(!opened.isEmpty() && lowest < combo.top() - 20,
+              "choice: the engine asks for a repaint under the field, which is where it "
+              "drew the list itself");
+        check(inkUnder().isValid(), "choice: and the list is in the pixels");
+
+        // A row of that list is not on the page as far as the hit test is concerned, and
+        // the press has to be taken anyway. Measured: at the very point where
+        // FPDFPage_HasFormFieldAtPoint answered -1, FORM_OnLButtonDown answered true, the
+        // row became the field's live text and the release committed it. A gate that
+        // trusted the hit test dropped the pick -- and with it the release, which a view
+        // only sends after a press it was told about.
+        const QPointF rowZero = flatDevicePoint(QPointF(combo.center().x(),
+                                                        popupRowY(combo, 0)));
+        check(document.fieldAt(0, frame, rowZero) == FormFill::Field::None,
+              "choice: the page's own hit test does not see the dropdown's rows");
+        check(document.mousePressed(0, frame, rowZero, {}),
+              "choice: a press on a dropdown row still goes to the form");
+        document.mouseReleased(0, frame, rowZero, {});
+        check(savedValue(document, QStringLiteral("pick")) == QStringLiteral("a"),
+              "choice: the row the reader let go on is the answer the file carries");
+    }
+
+    // The same press with the list closed is the control for the one above: it is a point
+    // on blank paper, the hit test says so, and the engine says no -- measured, a press on
+    // paper answers FORM_OnLButtonDown 0 whichever kind of field has the keyboard, which
+    // is what leaves the click to the view (and the view lets the field go).
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the closed-dropdown control");
+        const QPointF centre = flatDevice(combo);
+        check(document.mousePressed(0, frame, centre, {}),
+              "choice: a press in the middle of the box takes its focus");
+        document.mouseReleased(0, frame, centre, {});
+        document.takeRepaints();
+        const QPointF rowZero
+            = flatDevicePoint(QPointF(combo.center().x(), popupRowY(combo, 0)));
+        check(!document.mousePressed(0, frame, rowZero, {}),
+              "choice: with no list open, the same point is paper and the press is not "
+              "the form's");
+        check(savedValue(document, QStringLiteral("pick")) == QStringLiteral("b"),
+              "choice: and the value is still the one the file was written with");
+    }
+
+    // ---- Alt+Down opens the same list, by being a click rather than a key ----
+    //
+    // Measured: FORM_OnKeyDown(FWL_VKEY_Down, FWL_EVENTFLAG_AltKey) answered false and
+    // painted nothing new, while a hover-less Down+Up two points inside the field's right
+    // edge opened the list, closed it on the next round and opened it again on the one
+    // after. Plain Down is left to the engine, which walks the field's live text and
+    // commits nothing -- measured, and the reason the keyboard route synthesises a click
+    // is that the list it opens is the one whose rows a pointer can then pick.
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for Alt+Down");
+        const QPointF centre = flatDevice(combo);
+        check(document.mousePressed(0, frame, centre, {}), "choice: the box takes focus");
+        document.mouseReleased(0, frame, centre, {});
+        document.takeRepaints();
+        // The key that is not a shortcut for the button first, while the list is still
+        // closed: a plain Down walks the choice without opening anything, so it must not
+        // be answered by this program pretending to be a mouse.
+        check(document.keyPressed(Qt::Key_Down, {}),
+              "choice: a plain Down still goes to the engine as a key");
+        document.takeRepaints();
+        check(document.keyPressed(Qt::Key_Down, Qt::AltModifier),
+              "choice: Alt+Down is the form's while a combo box has the keyboard");
+        const QVector<FormFill::Repaint> opened = document.takeRepaints();
+        double lowest = 1e9;
+        for (const FormFill::Repaint &one : opened)
+            lowest = qMin(lowest, one.userSpace.top());
+        note(QStringLiteral("choicealt: %1 repaint(s), lowest user y %2 (field edge %3)")
+                 .arg(opened.size()).arg(lowest).arg(combo.top()));
+        check(!opened.isEmpty() && lowest < combo.top() - 20,
+              "choice: Alt+Down asked for the band under the field, which is the list");
+    }
+
+    // ---- a click that moves between two fields ----
+    //
+    // The same missing move, from its other side: measured, a press on a field that is
+    // not the one holding the keyboard is refused when no FORM_OnMouseMove came first
+    // (down=0, the keyboard stays where it was), and the same press after a move is
+    // accepted. The view dispatches moves only during a drag, so before the press sent
+    // its own move the reader's second click -- on anything -- did nothing but take the
+    // dropdown's first click with it.
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for a click that moves between fields");
+        check(document.mousePressed(0, frame, flatDevice(combo), {}),
+              "choice: a press in the combo box takes the keyboard");
+        document.mouseReleased(0, frame, flatDevice(combo), {});
+        check(document.focusedFieldType() == FormFill::Field::ComboBox,
+              "choice: and it has it");
+        check(document.mousePressed(0, frame, flatDevice(geometry.textField), {}),
+              "choice: a press on a field that is not the focused one goes to the form");
+        document.mouseReleased(0, frame, flatDevice(geometry.textField), {});
+        check(document.focusedFieldType() == FormFill::Field::TextField,
+              "choice: and the keyboard moves to it");
+    }
+
+    // ---- an editable combo box is also a text field ----
+    //
+    // /Ff carries the Edit bit (19, so 262144) beside the Combo bit, and the engine takes
+    // characters for it: measured, FORM_OnChar answered 1 and each character appended to
+    // the live text, which is what a reader typing an answer that is in none of the
+    // options needs. The same call on a combo box without the bit answered 0.
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the editable box");
+        const QPointF centre = flatDevice(geometry.editableComboBox);
+        check(document.mousePressed(0, frame, centre, {}),
+              "choice: an editable combo box takes focus in its middle, not its button");
+        document.mouseReleased(0, frame, centre, {});
+        check(document.characterTyped(QLatin1Char('x'), {}),
+              "choice: and it takes a character");
+        check(document.characterTyped(QLatin1Char('y'), {}), "choice: and another");
+        check(savedValue(document, QStringLiteral("typeable")).contains(
+                  QStringLiteral("xy")),
+              "choice: what was typed into an editable combo box is in the file");
+        // The box beside it, which offers the same list without the Edit bit, is the
+        // control: it takes the focus and refuses the character.
+        PdfiumBackend plain;
+        check(plain.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the plain combo box");
+        const QPointF other = flatDevice(combo);
+        check(plain.mousePressed(0, frame, other, {}), "choice: a plain combo box takes focus");
+        plain.mouseReleased(0, frame, other, {});
+        check(!plain.characterTyped(QLatin1Char('x'), {}),
+              "choice: a combo box without the Edit bit takes no character");
+    }
+
+    // ---- a list box that holds more than one answer ----
+    //
+    // Ctrl+click adds to the selection (measured: FWL_EVENTFLAG_ControlKey left the rows
+    // already picked alone, Shift picked a range) and /V becomes an array, which is the
+    // shape that breaks every read this program had. All three were read off
+    // chromium/8111 on a four-option field whose /V starts as {two}: a plain click on the
+    // first row and a Ctrl+click on the second leave it holding {one,two} while its live
+    // text reads "two" -- the label picked last, which is exactly what the file said --
+    // FPDFAnnot_GetFormFieldValue answers "one", the first selected value alone, and
+    // FPDFAnnot_GetStringValue("/V") answers nothing at all. The truth is
+    // FPDFAnnot_IsOptionSelected, and it does not move until the field lets go of the
+    // keyboard.
+    //
+    // Under-reporting here is the one that loses data: DocumentTab::saveEdits() does
+    // nothing at all when the count of changed fields is zero, so Ctrl+S would quietly
+    // throw the second selection away and the close prompt would not ask. The count
+    // therefore answers "changed" whenever it cannot compare -- which is while such a
+    // field has the keyboard -- and once focus leaves the markers are readable and the
+    // comparison is exact again. The three blocks below are the hole, the exactness, and
+    // the star going back out.
+    const QRectF many = geometry.multiListBox;
+    const auto manyRow = [&many](int row) {
+        return flatDevicePoint(QPointF(many.center().x(), listRowY(many, row)));
+    };
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the multi-select list");
+        check(document.mousePressed(0, frame, manyRow(0), {}),
+              "choice: a press on a list box row goes to the form");
+        document.mouseReleased(0, frame, manyRow(0), {});
+        check(document.differingFieldCount() == 1, "choice: picking a row is a change");
+        check(document.mousePressed(0, frame, manyRow(1), Qt::ControlModifier),
+              "choice: and so is a Ctrl+press on another one");
+        document.mouseReleased(0, frame, manyRow(1), Qt::ControlModifier);
+        note(QStringLiteral("choicemulti: after a plain click on the first row and a "
+                            "Ctrl+click on the one the file already had, the count is %1")
+                 .arg(document.differingFieldCount()));
+        check(document.differingFieldCount() == 1,
+              "choice: a multi-select list box whose live text happens to read like the "
+              "file still counts as changed");
+        // What a save wrote is read here the only way this target can -- the same
+        // GetFormFieldValue the backend uses, which for an array answers the first of
+        // what was picked. The array itself (two elements, both of them) is asserted in
+        // documenttab_smoke, which links qpdf and can read /V as an array.
+        const QString first = savedValue(document, QStringLiteral("many"));
+        check(first == QStringLiteral("one") || first == QStringLiteral("two"),
+              QStringLiteral("choice: the save wrote a multi-select value at all, of "
+                             "which the ordinary read answers [%1]")
+                  .arg(first));
+    }
+    {
+        // The one shape that tells the two reads apart: a Ctrl+click that *adds* to the
+        // file's own set leaves the first selected value reading exactly what the
+        // snapshot says, so a count taken from that read answers "nothing changed".
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the file's own set plus one");
+        check(document.mousePressed(0, frame, manyRow(2), Qt::ControlModifier),
+              "choice: a Ctrl+press on a third row goes to the form");
+        document.mouseReleased(0, frame, manyRow(2), Qt::ControlModifier);
+        check(document.differingFieldCount() == 1,
+              "choice: adding to a multi-select list box is a change while it has the "
+              "keyboard");
+        document.releaseFocus();
+        check(document.differingFieldCount() == 1,
+              "choice: and still one once the field lets go, where the markers can be "
+              "read -- the first selected value alone would have said nothing changed");
+    }
+    {
+        // An over-report that never ends is a star that never goes out. Putting the
+        // file's own answer back has to read as no change the moment the markers can be
+        // read again.
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for a click that changes nothing");
+        check(document.mousePressed(0, frame, manyRow(1), {}),
+              "choice: a press on the row the file already had goes to the form");
+        document.mouseReleased(0, frame, manyRow(1), {});
+        check(document.differingFieldCount() == 1,
+              "choice: while the field has the keyboard the count cannot compare, so it "
+              "answers changed");
+        document.releaseFocus();
+        check(document.differingFieldCount() == 0,
+              "choice: and picking the file's own answer again is no change once the "
+              "markers can be read");
+    }
+
+    // ---- the wheel belongs to a list box that has the keyboard ----
+    //
+    // FORM_OnMouseWheel answers 1 only when the point is inside the widget that has focus
+    // and that widget is a list: measured 1 for a twenty-row list and for a three-row one
+    // with every row already visible, and 0 over blank paper, over a list that had just
+    // let go of the keyboard, and over a combo box -- with its own dropdown open, where
+    // the point is inside the dropdown. That answer is the whole of the routing rule, so
+    // the view asks and scrolls the page only on a no.
+    //
+    // One call is one row however large the number handed to it is (measured: a dy of -1
+    // and a dy of -120 each moved the selection by exactly one row), which is why the
+    // interface counts detents and the backend sends one event per detent. The sign is
+    // the header's own -- "negative values mean down" -- and Qt's angleDelta().y()
+    // unchanged: positive walked o05 -> o04 -> o03 and negative o05 -> o06 -> o07.
+    {
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the wheel");
+        const QRectF list = geometry.listBox; // three options, /V (b) = the second
+        const QPointF onList
+            = flatDevicePoint(QPointF(list.center().x(), listRowY(list, 1)));
+        check(!document.mouseWheeled(0, frame, onList, -1, {}),
+              "choice: the wheel over a list box nobody has focused is the page's");
+        check(document.mousePressed(0, frame, onList, {}),
+              "choice: a press on the list box takes its focus");
+        document.mouseReleased(0, frame, onList, {});
+        document.takeRepaints();
+        check(document.mouseWheeled(0, frame, onList, -2, {}),
+              "choice: a focused list box takes the wheel");
+        // Asked before the save below, which commits the field and so takes the keyboard
+        // away from it: a refusal read after that would be the same refusal as the first
+        // line of this block, and would say nothing about the routing rule.
+        check(!document.mouseWheeled(0, frame, QPointF(400, 700), -1, {}),
+              "choice: the wheel over blank paper is the page's even while a field has "
+              "the keyboard");
+        check(savedValue(document, QStringLiteral("list")) == QStringLiteral("c"),
+              "choice: two detents down walked the selection two rows, to the last one");
+    }
+    {
+        // The other direction, on a document of its own so the walk starts where the file
+        // put it.
+        PdfiumBackend document;
+        check(document.load(path, QString()) == Document::Status::Ready,
+              "choice: the sample opens for the wheel upwards");
+        const QRectF list = geometry.listBox;
+        const QPointF onList
+            = flatDevicePoint(QPointF(list.center().x(), listRowY(list, 1)));
+        check(document.mousePressed(0, frame, onList, {}), "choice: the list box takes focus");
+        document.mouseReleased(0, frame, onList, {});
+        check(document.mouseWheeled(0, frame, onList, 1, {}),
+              "choice: and takes the wheel the other way too");
+        check(savedValue(document, QStringLiteral("list")) == QStringLiteral("a"),
+              "choice: one detent up walked the selection to the first row");
+        document.releaseFocus();
+        check(!document.mouseWheeled(0, frame, onList, -1, {}),
+              "choice: a list box that has let go of the keyboard gives the wheel back");
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -1008,8 +1398,10 @@ int main(int argc, char **argv)
     // directory naming `fixtures`).
     QTemporaryDir formScratch;
     check(formScratch.isValid(), "a scratch directory for the form samples");
-    if (formScratch.isValid())
+    if (formScratch.isValid()) {
         checkFormFilling(formScratch.path());
+        checkChoiceFields(formScratch.path());
+    }
 
     if (failures == 0) {
         std::cout << "pdfium backend: all checks passed\n";

@@ -97,6 +97,8 @@ public:
     bool mouseReleased(int page, const Frame &frame, const QPointF &devicePoint,
                        Qt::KeyboardModifiers modifiers) override;
     bool mouseDoubleClicked(int page, const Frame &frame, const QPointF &devicePoint) override;
+    bool mouseWheeled(int page, const Frame &frame, const QPointF &devicePoint, int detents,
+                      Qt::KeyboardModifiers modifiers) override;
     bool keyPressed(int qtKey, Qt::KeyboardModifiers modifiers) override;
     bool characterTyped(QChar character, Qt::KeyboardModifiers modifiers) override;
     void commitText(const QString &text) override;

@@ -57,6 +57,20 @@
 
 namespace {
 
+// What a certification signature (/DocMDP /P, PDF 32000-1 sec.12.8.2.2) lets the reader do, said
+// after the signature sentence on the status bar -- empty when the document has none. The English
+// forms start with a space, because the sentence before ends with a full stop and Chinese needs no
+// gap after its own: appended bare, the English bar read "...signatures.Its certification..."
+// (found on screen, handoff-07 I2).
+QString certificationSentence(int permission)
+{
+    if (permission == 1)
+        return QCoreApplication::translate("MainWindow", "认证签名不允许任何改动：表单字段只能看，不能填。");
+    if (permission >= 2)
+        return QCoreApplication::translate("MainWindow", "认证签名只允许填写表单：别的修改都会被挡住。");
+    return {};
+}
+
 // Zoom presets in the toolbar's box. Percentages rather than multipliers
 // because that is what every reader shows, and what a person says out loud.
 const int kZoomPresets[] = {50, 75, 100, 125, 150, 200, 400};
@@ -1539,7 +1553,10 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         const QString summary = tab->signatureSummary();
         if (summary.isEmpty())
             return;
-        setStatusMessage(summary, 15000);
+        // What the certification signature permits stays with the verdict: replaced along with the
+        // "正在检查" line, it was gone a second after opening, and a P=1 reader whose clicks on a
+        // field do nothing was left with no reason (the two branches met at the merge, sec.126).
+        setStatusMessage(summary + certificationSentence(tab->docMdpPermission()), 15000);
     });
 
     const auto applyTitle = [this, tab](const QString &title) {
@@ -1662,21 +1679,18 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
             // Saying it is being checked rather than staying quiet, because the checking is on a
             // worker and the answer lands a second later: a reader who opens a signed document and
             // sees nothing about it will conclude the program did not look.
+            // The file name goes into the one sentence that has a place for it: the XFA and script
+            // sentences above were already given theirs, and a second arg() on them would put the
+            // name into whatever "%1" a file name of their own happens to contain.
             openedMessage =
-                (plainOpen ? tr("已打开 %1 —— 这份文档带着 %n 个数字签名，正在检查。",
-                                nullptr, signatures)
-                           : openedMessage
-                                 + tr("\n\n这份文档带着 %n 个数字签名，正在检查。", nullptr,
-                                      signatures))
-                    .arg(info.fileName());
+                plainOpen ? tr("已打开 %1 —— 这份文档带着 %n 个数字签名，正在检查。",
+                               nullptr, signatures)
+                                .arg(info.fileName())
+                          : openedMessage
+                                + tr("\n\n这份文档带着 %n 个数字签名，正在检查。", nullptr,
+                                     signatures);
             openedTimeout = qMax(openedTimeout, 12000);
-            const int permission = tab->docMdpPermission();
-            if (permission == 1) {
-                openedMessage +=
-                    tr("认证签名不允许任何改动：表单字段只能看，不能填。");
-            } else if (permission >= 2) {
-                openedMessage += tr("认证签名只允许填写表单：别的修改都会被挡住。");
-            }
+            openedMessage += certificationSentence(tab->docMdpPermission());
         }
         setStatusMessage(openedMessage, openedTimeout);
         updateForCurrentTab();

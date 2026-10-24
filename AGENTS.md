@@ -99,7 +99,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime|formcombo|formlist`（三十一种模式；`saverename` 仍收，是 `saveas` 的别名
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime|formcombo|formlist|signedsave|signedlock`（三十三种模式；`saverename` 仍收，是 `saveas` 的别名
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -198,6 +198,17 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   启动时 `StagingCleanup::sweepStaleRecords()` 只删**记过、仍隐藏、创建时间对得上、记它的进程已不在**的那一颗；
   没记过的同名文件连看都不看；删不动就留着下次再试。**这是本程序唯一会删读者文件夹里文件的地方**。
   另存为与拆分的暂存不隐藏、不记（失败话里把文件名念给了读者），被杀在拆分中间会留一颗看得见的文件。
+- **验证数字签名**（§126，handoff-07 I1）：`src/document/signatureverify.*` 只编进应用，Windows 密码学接口（摘要按 `/ByteRange` 自己算，
+  签名块用 `CryptVerifyDetachedMessageSignature` —— `CMSG_CTRL_VERIFY_SIGNATURE_EX` 对 `CryptSignMessage` 的产物答 `CRYPT_E_HASH_VALUE`），
+  证书链 `CertGetCertificateChain` + BASE 策略，吊销默认 `CACHE_ONLY` 不联网；四种结论 有效 / 内容被改过 / 证书不受信任或已过期 / 无法验证，
+  另报"签名之后几次增量更新""覆盖有缺口"。工作线程 `SignatureSession`，被 `drainRenders()` 与析构等到。**测试不碰证书存储，也不碰密钥目录**：
+  样本用**无名的 CNG 密钥**（只活在进程里）经 `CERT_KEY_CONTEXT_PROP_ID` + `CERT_NCRYPT_KEY_SPEC` 交给签名器（另外三种挂法量过都不行，
+  写在 `tests/signaturesample.h`），"受信任"靠注入 `hExclusiveRoot` 内存存储。
+- **测试目标的名字别带 `install` / `bench` / `verify` / `probe`**（§126）：`tools/build_all_tests.py` 的 `NOT_A_TEST` 按**子串**过滤，
+  叫 `signatureverify_smoke` 的测试一次都不会被跑（门禁只少数一个目标、照样报全绿），所以它叫 `signaturecheck_smoke`。
+- **状态栏上接在一句话后面的句子，英文形自己带开头的空格**（§126）：中文句号后不用空格，英文要；`openedMessage += tr(...)` 直接接，
+  英文界面就是 `...signatures.Its certification...`（I2 在屏幕上读到）。标点本身也走翻译（`，`→`, `、`。`→`.`），别写死全角。
+  `mainwindow_smoke` 装英文目录读一遍状态栏，`[.:][A-Z]` 与全角标点都算红。
 - **已签名的文档**（§122，handoff-06 H4）：签名按 PDF 32000-1 §12.8.1 数**签名字典**（字段的 `/V`），不数签名字段 ——
   `FPDF_GetSignatureCount` 会把空白模板里没有 `/V` 的 `/Sig` 字段也算一颗（它的 `/ByteRange` 0 个数、`/Contents` 0 字节）。
   状态栏明说"本版不验证签名本身"。**有签名且只改了字段 → `FPDF_INCREMENTAL`**：判据是字节，写出文件的前缀与原文件逐字节相同、

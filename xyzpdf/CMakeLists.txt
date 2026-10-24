@@ -775,7 +775,7 @@ option(XYZPDF_BUILD_SIGNATURECHECK_SMOKE "Build the signature verification smoke
 if(XYZPDF_BUILD_SIGNATURECHECK_SMOKE)
     xyzpdf_add_test(signaturecheck_smoke
         SOURCES src/document/signatureverify.cpp
-        LIBRARIES xyzpdf_pdfium qpdf::libqpdf crypt32)
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf crypt32 ncrypt)
 endif()
 
 # What QPDF does with an encrypted file when only the user password is in hand. Built
@@ -928,7 +928,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     # performs below.
     # crypt32 because the signed samples this target opens are made during the run, in memory --
     # see tests/signaturesample.h for why a committed signed PDF would be worse.
-    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf crypt32)
+    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf crypt32 ncrypt)
     if(WIN32)
         list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp advapi32)
     endif()
@@ -1000,7 +1000,7 @@ endif()
 # call to setAcceptDrops(), and neither is visible in the handlers.
 option(XYZPDF_BUILD_MAINWINDOW_SMOKE "Build the window drag-and-drop smoke test" OFF)
 if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
-    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf crypt32)
+    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf crypt32 ncrypt)
     if(WIN32)
         list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp advapi32)
     endif()

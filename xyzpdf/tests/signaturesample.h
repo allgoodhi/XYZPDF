@@ -4,14 +4,12 @@
 //
 // A real signature needs a real certificate, and a certificate a test can rely on has two
 // properties nobody wants on this machine: its private key sits somewhere on disk, and its root
-// sits in somebody's store. Neither is true of these samples. The key lives in an ephemeral CAPI
-// container (`CRYPT_VERIFYCONTEXT`, which wincrypt.h describes as never persisted and never
-// reopenable by name), the certificate exists only as the context
-// `CertCreateSelfSignCertificate` hands back, and nothing in this file names a store or calls
-// `CertAddCertificateContextToStore` on anything but a `CERT_STORE_PROV_MEMORY` handle that dies
-// with the test. The private key reaches the certificate through `CERT_KEY_CONTEXT_PROP_ID`
-// rather than `CERT_KEY_PROV_INFO_PROP_ID` for the same reason: an ephemeral container has no
-// name to reopen, and the header says the key context property is consulted first.
+// sits in somebody's store. Neither is true of these samples. The key is a CNG key created with
+// no name, which CNG keeps in the process and never writes to the user's key directory; the
+// certificate exists only as the context `CertCreateSelfSignCertificate` hands back, and nothing
+// in this file names a store or calls `CertAddCertificateContextToStore` on anything but a
+// `CERT_STORE_PROV_MEMORY` handle that dies with the test. See createIdentity() for how the key
+// reaches the signer.
 //
 // That is also why tests/signaturecheck_smoke.cpp verifies the same sample twice, with and
 // without the injected root store: the difference between those two runs is the evidence that the
@@ -60,7 +58,6 @@
 #include <QDateTime>
 #include <QFile>
 #include <QString>
-#include <QUuid>
 #include <QVector>
 
 #ifndef NOMINMAX
@@ -68,35 +65,29 @@
 #endif
 #include <windows.h>
 #include <wincrypt.h>
+#include <ncrypt.h>
 #undef small
 
 namespace SignedSample {
 
-// An ephemeral key and the self-signed certificate on it. The certificate never reaches a store;
-// the key lives in its own key container, created for this run and deleted by releaseIdentity().
+// An ephemeral key and the self-signed certificate on it. Neither ever reaches the disk.
 //
-// ---- why the container is named, when a nameless one exists ----
+// ---- how the key reaches the signer, measured ----
 //
-// The first version of this function used `CRYPT_VERIFYCONTEXT`, which is the documented way to
-// get a container that is never persisted, and attached the live provider to the certificate as
-// `CERT_KEY_CONTEXT_PROP_ID`. Measured, `CryptSignMessage` then answered `0x8009200B`,
-// CRYPT_E_NO_KEY_PROPERTY: the signing path resolves the private key through the certificate's
-// key *property*, and a key context property is not what it asks for there.
-//
-// So the container gets a name, and `CRYPT_NEWKEYSET` creates it. That is a file under the user's
-// key directory -- not a certificate store, which is the thing this program's tests must never
-// write to, and not something that outlives the run: `releaseIdentity()` issues
-// `CRYPT_DELETEKEYSET` for the same name. The certificate itself is still only ever the in-memory
-// context `CertCreateSelfSignCertificate` returns, and the trust the "有效" verdict needs is
-// still injected per call rather than installed.
+// CAPI's never-persisted container (`CRYPT_VERIFYCONTEXT`) attached as `CERT_KEY_CONTEXT_PROP_ID`:
+// `CryptSignMessage` answered `0x8009200B`, CRYPT_E_NO_KEY_PROPERTY. A *named* CAPI container
+// signs, but it is a file under the user's key directory for the length of the run, and a test
+// that crashes leaves it there (the first version of this file did that, deleting it at the end).
+// A nameless CNG key attached as `CERT_NCRYPT_KEY_HANDLE_PROP_ID`: `0x80090027`, NTE_INVALID_PARAMETER.
+// A nameless CNG key attached as `CERT_KEY_CONTEXT_PROP_ID` with `dwKeySpec = CERT_NCRYPT_KEY_SPEC`
+// signs -- that is the one used. The trust the "有效" verdict needs is still injected per call
+// rather than installed.
 struct Identity
 {
-    HCRYPTPROV provider = 0;
-    HCRYPTKEY key = 0;
+    NCRYPT_PROV_HANDLE provider = 0;
+    NCRYPT_KEY_HANDLE key = 0;
     PCCERT_CONTEXT context = nullptr;
     QString commonName;
-    QString containerName;
-    bool ownsContainer = false;
 };
 
 inline QString windowsError(const char *call)
@@ -113,17 +104,21 @@ inline bool createIdentity(Identity *out, const QString &commonName, const QDate
                            const QDateTime &notAfter, QString *why)
 {
     out->commonName = commonName;
-    out->containerName = QStringLiteral("xyzpdf-signature-test-")
-        + QUuid::createUuid().toString(QUuid::WithoutBraces).left(18);
-    if (!CryptAcquireContextW(&out->provider, reinterpret_cast<LPCWSTR>(out->containerName.utf16()),
-                              MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_NEWKEYSET)) {
-        *why = windowsError("CryptAcquireContextW(CRYPT_NEWKEYSET)");
+    // A CNG key created with no name is ephemeral: it lives in this process and nowhere on disk.
+    if (NCryptOpenStorageProvider(&out->provider, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS) {
+        *why = QStringLiteral("NCryptOpenStorageProvider failed");
         return false;
     }
-    out->ownsContainer = true;
-    // CryptGenKey wants the length in the high word of the flags.
-    if (!CryptGenKey(out->provider, AT_SIGNATURE, (2048 << 16) | CRYPT_EXPORTABLE, &out->key)) {
-        *why = windowsError("CryptGenKey");
+    if (NCryptCreatePersistedKey(out->provider, &out->key, BCRYPT_RSA_ALGORITHM, nullptr, 0, 0)
+        != ERROR_SUCCESS) {
+        *why = QStringLiteral("NCryptCreatePersistedKey failed");
+        return false;
+    }
+    DWORD bits = 2048;
+    if (NCryptSetProperty(out->key, NCRYPT_LENGTH_PROPERTY, reinterpret_cast<PBYTE>(&bits), sizeof bits, 0)
+            != ERROR_SUCCESS
+        || NCryptFinalizeKey(out->key, 0) != ERROR_SUCCESS) {
+        *why = QStringLiteral("NCryptFinalizeKey failed");
         return false;
     }
 
@@ -184,25 +179,24 @@ inline bool createIdentity(Identity *out, const QString &commonName, const QDate
     toSystemTime(notBefore, &start);
     toSystemTime(notAfter, &end);
 
-    // The key travels with the certificate as a CRYPT_KEY_PROV_INFO naming this container, which
-    // is the property the signing path reads.
-    QVector<wchar_t> containerChars(out->containerName.size() + 1, 0);
-    const int written = out->containerName.toWCharArray(containerChars.data());
-    containerChars[written] = 0;
-    CRYPT_KEY_PROV_INFO keyProvInfo{};
-    keyProvInfo.pwszContainerName = containerChars.data();
-    keyProvInfo.pwszProvName = const_cast<LPWSTR>(MS_ENH_RSA_AES_PROV_W);
-    keyProvInfo.dwProvType = PROV_RSA_AES;
-    keyProvInfo.dwFlags = 0;
-    keyProvInfo.cProvParam = 0;
-    keyProvInfo.rgProvParam = nullptr;
-    keyProvInfo.dwKeySpec = AT_SIGNATURE;
-
+    // No key-provider info: the key has no name to be found by. It travels with the certificate
+    // as the live handle instead, which is what the signing path asks the certificate for first.
     out->context = CertCreateSelfSignCertificate(
-        out->provider, &subjectBlob, 0, &keyProvInfo, nullptr, &start, &end,
+        out->key, &subjectBlob, CERT_CREATE_SELFSIGN_NO_KEY_INFO, nullptr, nullptr, &start, &end,
         constraintDer.isEmpty() ? nullptr : &extensions);
     if (!out->context) {
         *why = windowsError("CertCreateSelfSignCertificate");
+        return false;
+    }
+    CERT_KEY_CONTEXT keyContext{};
+    keyContext.cbSize = sizeof keyContext;
+    keyContext.hNCryptKey = out->key;
+    keyContext.dwKeySpec = CERT_NCRYPT_KEY_SPEC;
+    // CERT_SET_PROPERTY_INHIBIT_PERSIST_FLAG: the certificate does not take ownership of the handle,
+    // which releaseIdentity() frees itself.
+    if (!CertSetCertificateContextProperty(out->context, CERT_KEY_CONTEXT_PROP_ID,
+                                           CERT_SET_PROPERTY_INHIBIT_PERSIST_FLAG, &keyContext)) {
+        *why = windowsError("CertSetCertificateContextProperty(CERT_KEY_CONTEXT_PROP_ID)");
         return false;
     }
     return true;
@@ -210,22 +204,13 @@ inline bool createIdentity(Identity *out, const QString &commonName, const QDate
 
 inline void releaseIdentity(Identity *identity)
 {
+    // The certificate holds the key handle as a property without owning it, so it goes first.
     if (identity->context)
         CertFreeCertificateContext(identity->context);
     if (identity->key)
-        CryptDestroyKey(identity->key);
+        NCryptFreeObject(identity->key);
     if (identity->provider)
-        CryptReleaseContext(identity->provider, 0);
-    if (identity->ownsContainer) {
-        // The container is gone once the handle above is released, so this is the last chance to
-        // take the name back off the disk. A failure here is not reported: there is no channel for
-        // it, and a leftover key container is a mess, not a wrong verdict -- the certificate never
-        // entered a store either way.
-        HCRYPTPROV dropper = 0;
-        CryptAcquireContextW(&dropper,
-                            reinterpret_cast<LPCWSTR>(identity->containerName.utf16()),
-                            MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_DELETEKEYSET);
-    }
+        NCryptFreeObject(identity->provider);
     *identity = Identity();
 }
 

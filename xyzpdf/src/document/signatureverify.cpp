@@ -1165,11 +1165,13 @@ QString summary(const QVector<Signature> &signatures)
     // the entry's <comment>, and Qt then treats it as a disambiguation -- so a lookup for n=1
     // answers the plural form and the row reads "1 has". Two forms still come out for the
     // translator to fill, and in English they do differ ("1 is valid" against "%n are valid").
+    // The comma between fragments and the full stop after them are the language's too: written as
+    // "，" and "。" they put full-width punctuation, unspaced, into the English sentence.
     return QCoreApplication::translate("SignatureVerify",
                                        "这份文档带着 %n 个数字签名：", nullptr,
                                        signatures.size())
-        + parts.join(QStringLiteral("，"))
-        + QStringLiteral("。");
+        + parts.join(QCoreApplication::translate("SignatureVerify", "，", "between two verdict counts"))
+        + QCoreApplication::translate("SignatureVerify", "。", "after the last verdict count");
 }
 
 QVector<Signature> verifyDocument(const QString &path, const QString &password,

@@ -1,6 +1,6 @@
 // What the signature checker answers about files whose signatures were made for this test.
 //
-// Every sample here is signed during the run, by a key that lives in an ephemeral container and
+// Every sample here is signed during the run, by a nameless CNG key that never reaches the disk and
 // a certificate that never reaches a store -- see the header of tests/signaturesample.h. The
 // point of that construction is that the four verdicts below cannot be produced by this
 // machine's own trust list: the "有效" row is only reachable through a chain engine whose root

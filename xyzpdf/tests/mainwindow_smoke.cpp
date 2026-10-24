@@ -53,6 +53,7 @@
 #include <QMap>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QStatusBar>
 #include <QStatusTipEvent>
@@ -1060,6 +1061,35 @@ int main(int argc, char **argv)
               QStringLiteral("and what the certification signature permits: %1").arg(p1Said));
         check(p1Said.contains(QStringLiteral("只能看")),
               QStringLiteral("in the reader's terms, not the format's: %1").arg(p1Said));
+        // The verdict replaces the open line a moment later; what the certification permits has
+        // to come with it (the two halves were written on two branches, and merged, the reason a
+        // field takes no click was gone a second after opening).
+        const QString p1Verdict = saidFor(p1Path, QStringLiteral("个数字签名："));
+        std::cout << "MEASURE status signed p1 verdict: [" << p1Verdict.toStdString() << "]\n";
+        check(p1Verdict.contains(QStringLiteral("个数字签名：")) && p1Verdict.contains(QStringLiteral("不允许任何改动")),
+              QStringLiteral("the verdict keeps what the certification signature permits: %1").arg(p1Verdict));
+
+        // And in English, where two sentences need a space between them that Chinese does not:
+        // the bar read "...signatures.Its certification signature..." on screen (handoff-07 I2),
+        // and the verdict's counts were joined with a full-width comma and closed with "。".
+        {
+            QTranslator english;
+            check(english.load(Languages::catalogueResource(QStringLiteral("en")))
+                      && QCoreApplication::installTranslator(&english),
+                  "setup: the English catalogue for the signature sentences");
+            const QString openEnglish = saidFor(p1Path, QStringLiteral("Its certification"));
+            const QString verdictEnglish = saidFor(p1Path, QStringLiteral("digital signature: "));
+            QCoreApplication::removeTranslator(&english);
+            std::cout << "MEASURE status signed p1 en: [" << openEnglish.toStdString() << "] ["
+                      << verdictEnglish.toStdString() << "]\n";
+            static const QRegularExpression welded(QStringLiteral("[.:][A-Z]"));
+            for (const QString &said : {openEnglish, verdictEnglish}) {
+                check(said.contains(QStringLiteral(" Its certification")) && !said.contains(welded),
+                      QStringLiteral("English sentences on the bar are spaced apart: %1").arg(said));
+                check(!said.contains(QChar(0xFF0C)) && !said.contains(QChar(0x3002)),
+                      QStringLiteral("and carry no Chinese punctuation: %1").arg(said));
+            }
+        }
 
         // A copy under a name the window does not already have open: dropping the fixture
         // itself would switch to the tab that is already there and never set a new sentence,

@@ -240,4 +240,23 @@ public:
     virtual QVector<Link> links(int page) const = 0;
 
     virtual DocMetadata metadata() const = 0;
+
+    // How many digital signatures the file carries, and what the certification
+    // signature allows (PDF 32000-1 sec.12.8): 0 when the document has no DocMDP
+    // signature, otherwise the /P of its /TransformParams -- 1 no changes, 2 form
+    // filling and signing, 3 that plus annotations. Read once at load from
+    // fpdf_signature.h, because both answers are about the bytes that were opened and
+    // an incremental save leaves them standing.
+    //
+    // Read, not checked: nothing in this program validates a signature's
+    // cryptography, and the sentence the reader is shown says so rather than letting
+    // the count imply more than it is.
+    //
+    // Signature dictionaries are counted, not signature fields: an empty /Sig field --
+    // what a blank template hands a reader -- answers no /ByteRange and no /Contents, and
+    // signing nothing it is not a signature (sec.12.8.1). DocumentEditor's qpdf pass
+    // applies the same rule, and the two numbers are the one the status line says, the
+    // one the eight boxes count against, and the one that picks the save flag.
+    virtual int signatureCount() const = 0;
+    virtual int docMdpPermission() const = 0;
 };

@@ -88,8 +88,11 @@ public:
     Outline outline() const override;
     QVector<Link> links(int page) const override;
     DocMetadata metadata() const override;
+    int signatureCount() const override;
+    int docMdpPermission() const override;
 
     bool fillable() const override;
+    void setLockedFieldNames(const QStringList &names) override;
     Field fieldAt(int page, const Frame &frame, const QPointF &devicePoint) const override;
     bool mouseMoved(int page, const Frame &frame, const QPointF &devicePoint) override;
     bool mousePressed(int page, const Frame &frame, const QPointF &devicePoint,

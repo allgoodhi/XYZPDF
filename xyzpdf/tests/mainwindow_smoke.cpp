@@ -26,6 +26,7 @@
 #include "../src/ui/findbar.h"
 #include "../src/ui/wrappingtoolbararea.h"
 #include "../src/view/pageview.h"
+#include "formsample.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -911,6 +912,88 @@ int main(int argc, char **argv)
                       .arg(moved)
                       .arg(pairs));
         }
+    }
+
+    // ---- what the status bar says about a signed document ----
+    //
+    // handoff-06 H4: the sentence carries both halves, because either alone is a lie of
+    // omission -- a count reads as "and they are good", and "we do not verify" without a
+    // count says nothing about what is in the file. The /P half is the other sentence:
+    // on a file whose certification signature permits nothing, the reader is told before
+    // they click a field that does nothing. The unsigned file is the control -- 已打开
+    // with no notice is what makes these two notices mean anything.
+    //
+    // Each reading opens its own tab and closes it again, the same three steps the XFA
+    // block uses (a tab is a deleteLater(), which processEvents() alone does not flush),
+    // so the tab count the blocks below depend on is the one this block found.
+    {
+        QTemporaryDir signedSamples;
+        check(signedSamples.isValid(), "setup: a scratch folder for the signed samples");
+        const QString signedPath = signedSamples.filePath(QStringLiteral("signed.pdf"));
+        const QString p1Path = signedSamples.filePath(QStringLiteral("signed-p1.pdf"));
+        QString why;
+        check(FormSampleFile::writeSigned(signedPath, 0, 1, false, &why),
+              QStringLiteral("setup: a signed sample is written (%1)").arg(why));
+        check(FormSampleFile::writeSigned(p1Path, 1, 1, false, &why),
+              QStringLiteral("setup: a /P 1 sample is written (%1)").arg(why));
+
+        const int tabsBefore = openTabs(window);
+        // `expected` is what the bar has to say before this reading counts: without it a
+        // tab that failed to open would leave the previous reading's sentence in place and
+        // the assertion would pass on somebody else's words.
+        const auto saidFor = [&window](const QString &file, const QString &expected) {
+            const int before = openTabs(window);
+            dropFiles(window, {QUrl::fromLocalFile(file).toString()}, Qt::CopyAction);
+            if (!waitFor([&window, before] { return openTabs(window) == before + 1; }, 20000))
+                return QStringLiteral("<no tab opened>");
+            waitFor([&window, &expected] {
+                return window.statusBar()->currentMessage().contains(expected);
+            }, 10000);
+            const QString said = window.statusBar()->currentMessage();
+            auto *closer = window.findChild<QAction *>(QStringLiteral("closeTabAction"));
+            if (closer) {
+                closer->trigger();
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            }
+            return said;
+        };
+
+        const QString signedSaid = saidFor(signedPath, QStringLiteral("数字签名"));
+        std::cout << "MEASURE status signed: [" << signedSaid.toStdString() << "]\n";
+        check(signedSaid.contains(QStringLiteral("1 个数字签名")),
+              QStringLiteral("the bar counts the signature: %1").arg(signedSaid));
+        check(signedSaid.contains(QStringLiteral("不验证")),
+              QStringLiteral("and says the signature itself is not checked: %1").arg(signedSaid));
+
+        const QString p1Said = saidFor(p1Path, QStringLiteral("不允许任何改动"));
+        std::cout << "MEASURE status signed p1: [" << p1Said.toStdString() << "]\n";
+        check(p1Said.contains(QStringLiteral("数字签名")),
+              QStringLiteral("the /P 1 file gets the count too: %1").arg(p1Said));
+        check(p1Said.contains(QStringLiteral("不允许任何改动")),
+              QStringLiteral("and what the certification signature permits: %1").arg(p1Said));
+        check(p1Said.contains(QStringLiteral("只能看")),
+              QStringLiteral("in the reader's terms, not the format's: %1").arg(p1Said));
+
+        // A copy under a name the window does not already have open: dropping the fixture
+        // itself would switch to the tab that is already there and never set a new sentence,
+        // which would make the control a reading about nothing.
+        const QString plainPath = signedSamples.filePath(QStringLiteral("unsigned.pdf"));
+        check(QFile::copy(directory + QStringLiteral("/text.pdf"), plainPath),
+              "setup: an unsigned copy for the control");
+        const QString plainSaid = saidFor(plainPath, QStringLiteral("已打开"));
+        std::cout << "MEASURE status unsigned: [" << plainSaid.toStdString() << "]\n";
+        check(plainSaid.startsWith(QStringLiteral("已打开")),
+              QStringLiteral("control: the unsigned copy opens with the ordinary sentence: %1")
+                  .arg(plainSaid));
+        check(!plainSaid.contains(QStringLiteral("数字签名")),
+              QStringLiteral("control: an unsigned file gets no signature notice: %1")
+                  .arg(plainSaid));
+
+        check(waitFor([&window, tabsBefore] { return openTabs(window) == tabsBefore; }, 8000),
+              QStringLiteral("and the window is left with the tabs it had (%1 now)")
+                  .arg(openTabs(window)));
     }
 
     // ---- a second document joins the first ----

@@ -484,6 +484,10 @@ void MergePagesDialog::updateSummary()
                        "改用表单字段那一份。");
         }
     }
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
     // Same sentence the other three edit dialogs end with, for the same reason.
     summaryLabel->setText(tr("%1\n\n原来那份文件不会改动。这一步只是记下修改，"
                              "要它成为一个文件，还得走保存。")
@@ -506,7 +510,8 @@ void MergePagesDialog::updateSummary()
         resize(width(), needed);
 
     okayButton->setEnabled(editor && listRows > 0 && splitting == 0 && unheard.isEmpty()
-                           && !anchorMissing && !anchorPastEnd && added > 0);
+                           && !anchorMissing && !anchorPastEnd && added > 0
+                           && !editor->structuralEditsRefused());
 }
 
 QString MergePagesDialog::targetName() const

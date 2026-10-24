@@ -67,6 +67,7 @@
 #include <QRectF>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 class FormFill
@@ -133,6 +134,16 @@ public:
     // at all, so it has to be cheap: it is answered from FPDF_GetFormType and one
     // pass over the field types, not from a render.
     virtual bool fillable() const = 0;
+
+    // The fields a digital signature's /Lock seals, by their fully qualified names
+    // (PDF 32000-1 sec.12.8.4, table 233). PDFium exposes no API for /Lock, and on
+    // chromium/8111 it does not enforce one either -- measured, a field named by a
+    // signature's /Lock took the keyboard exactly like an unsealed one. So the names
+    // are read from the file by DocumentEditor at open (its qpdf pass) and handed here
+    // before the reader's first gesture; every one of them is display-only, the same
+    // way a push button and a signature field already are. An empty list says no
+    // signature seals anything.
+    virtual void setLockedFieldNames(const QStringList &names) = 0;
 
     // Whether a reader fills this kind of field by hand, or only sees it.
     //

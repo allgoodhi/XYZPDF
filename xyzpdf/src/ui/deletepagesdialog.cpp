@@ -135,6 +135,12 @@ void DeletePagesDialog::updateSummary()
         line += tr("\n\n这份文档还带着一份 XFA 表单：删过页面的文件里不会再有它，别的阅读器会改用"
                    "表单字段那一份。");
     }
+    // The signature sentences, before the press: a save rewrites the file, and a
+    // certification signature may forbid the request outright (PDF 32000-1 sec.12.8.2.2).
+    if (editor) {
+        line += editor->certificationNotice();
+        line += editor->signatureInvalidationNotice();
+    }
     // Said every time, because this is the first command in the program that can
     // make a document smaller, and what a reader needs to know before pressing the
     // button is that the file they opened is not the file that changes -- and that
@@ -143,7 +149,8 @@ void DeletePagesDialog::updateSummary()
                              "要它成为一个文件，还得走保存。")
                               .arg(line));
 
-    okayButton->setEnabled(plan.pagesToRemove > 0 && !plan.leavesNothing);
+    okayButton->setEnabled(plan.pagesToRemove > 0 && !plan.leavesNothing
+                           && !(editor && editor->structuralEditsRefused()));
 }
 
 QVector<int> DeletePagesDialog::pagesToDelete() const

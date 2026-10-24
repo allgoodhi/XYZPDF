@@ -304,6 +304,14 @@ bool PdfiumBackend::fillable() const
     QMutexLocker locker(&pdfiumMutex());
     if (!impl->document || !impl->form)
         return false;
+    // A certification signature with P=1 permits no change at all, and filling a field
+    // is a change: PDF 32000-1 sec.12.8.2.2 says a DocMDP transform with /P 1 lets no
+    // later update stand. Answering false here keeps the view from routing a single
+    // gesture into the form -- the fields stay drawn, and a click that lands on one is
+    // the page's, which is what "只显示不交互" already meant for push buttons and
+    // signature fields (FormFill::isInteractive).
+    if (impl->docMdpPermission == 1)
+        return false;
     // A form this build cannot read is not a form this build should take input for:
     // FORMTYPE_XFA_FULL and FORMTYPE_XFA_FOREGROUND both mean the packet is the
     // other copy of the form, and this build has no XFA module to load it with
@@ -313,11 +321,26 @@ bool PdfiumBackend::fillable() const
     return FPDF_GetFormType(impl->document) == FORMTYPE_ACRO_FORM;
 }
 
+void PdfiumBackend::setLockedFieldNames(const QStringList &names)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    impl->lockedFieldNames.clear();
+    for (const QString &name : names) {
+        if (!name.isEmpty())
+            impl->lockedFieldNames.insert(name);
+    }
+}
+
 FormFill::Field PdfiumBackend::fieldAt(int page, const Frame &frame,
                                        const QPointF &devicePoint) const
 {
     QMutexLocker locker(&pdfiumMutex());
     if (!impl->form)
+        return Field::None;
+    // The pointer is the first half of "the fields are read-only": with P=1 there is
+    // nothing here a click can do, and an I-beam over a text field would promise
+    // otherwise.
+    if (impl->docMdpPermission == 1)
         return Field::None;
     const FPDF_PAGE handle = impl->holdPage(page, false);
     FS_POINTF point{};
@@ -326,8 +349,18 @@ FormFill::Field PdfiumBackend::fieldAt(int page, const Frame &frame,
     // The hit test PDFium does itself, in the same space its widgets are drawn in:
     // measured on field-flat.pdf, this answers 6 (a text field) at the field's raw
     // /Rect centre and -1 everywhere else. FPDFAnnot_GetFormFieldAtPoint is the same
-    // question with an answer that has to be closed, and a cursor does not need it.
-    return fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x, point.y));
+    // question with an answer that has to be closed, and a cursor does not need it --
+    // except for a field a signature seals, where the name is the whole question. That
+    // second read only happens when the file has such a field.
+    const Field field = fieldOf(FPDFPage_HasFormFieldAtPoint(impl->form, handle, point.x,
+                                                             point.y));
+    if (!FormFill::isInteractive(field) || impl->lockedFieldNames.isEmpty())
+        return field;
+    FPDF_ANNOTATION annotation = FPDFAnnot_GetFormFieldAtPoint(impl->form, handle, &point);
+    const bool locked = annotation && impl->fieldLocked(annotation);
+    if (annotation)
+        FPDFPage_CloseAnnot(annotation);
+    return locked ? Field::None : field;
 }
 
 bool PdfiumBackend::mouseMoved(int page, const Frame &frame, const QPointF &devicePoint)
@@ -352,6 +385,11 @@ bool PdfiumBackend::mousePressed(int page, const Frame &frame, const QPointF &de
 {
     QMutexLocker locker(&pdfiumMutex());
     if (!impl->form)
+        return false;
+    // The view asks fillable() before it routes anything, so this is the second door
+    // rather than the first -- and it stays because a test (or a future caller) can
+    // come straight here. P=1 means a click must not take focus or move the caret.
+    if (impl->docMdpPermission == 1)
         return false;
     const FPDF_PAGE handle = impl->holdPage(page, false);
     FS_POINTF point{};
@@ -394,6 +432,15 @@ bool PdfiumBackend::mousePressed(int page, const Frame &frame, const QPointF &de
     // Before the press, not after: the click that checks a box is the last moment
     // its old value is still the value the file has.
     FPDF_ANNOTATION annotation = FPDFAnnot_GetFormFieldAtPoint(impl->form, handle, &point);
+    // A sealed field is display-only. The reader found it through the same hit test
+    // that answered fieldAt(), which already turns it into no field at all -- this is
+    // the second door, for a caller that came straight here. Nothing is dispatched, so
+    // no focus and no caret: PDFium would happily take both (measured on chromium/8111
+    // with a /Lock naming this very field).
+    if (annotation && impl->fieldLocked(annotation)) {
+        FPDFPage_CloseAnnot(annotation);
+        return false;
+    }
     impl->noteFieldBeforeTouch(page, annotation);
     if (annotation)
         FPDFPage_CloseAnnot(annotation);
@@ -440,6 +487,15 @@ bool PdfiumBackend::mouseDoubleClicked(int page, const Frame &frame, const QPoin
                                                              point.y));
     if (!FormFill::isInteractive(field))
         return false;
+    // Same seam as the press: a sealed field takes no gesture at all.
+    if (!impl->lockedFieldNames.isEmpty()) {
+        FPDF_ANNOTATION annotation = FPDFAnnot_GetFormFieldAtPoint(impl->form, handle, &point);
+        const bool locked = annotation && impl->fieldLocked(annotation);
+        if (annotation)
+            FPDFPage_CloseAnnot(annotation);
+        if (locked)
+            return false;
+    }
     const Impl::Dispatch guard(*impl);
     // A double-click in a text field selects a word, which is the ordinary way to
     // replace one answer with another. Same reasoning as the press: the hit test says
@@ -457,6 +513,11 @@ bool PdfiumBackend::mouseWheeled(int page, const Frame &frame, const QPointF &de
     const FPDF_PAGE handle = impl->holdPage(page, false);
     FS_POINTF point{};
     if (!handle || !formUserSpace(handle, frame, devicePoint, &point))
+        return false;
+    // A sealed field can still be reached with Tab. A wheel over it is not an edit this
+    // program may make, so it is left to the page -- which scrolls, the ordinary answer
+    // for a wheel that is not a list's.
+    if (impl->focusedFieldLocked())
         return false;
     // A wheel that moves a list's selection is an edit, so the value it had before the
     // first one is noted the same way a press notes it.
@@ -492,7 +553,13 @@ bool PdfiumBackend::keyPressed(int qtKey, Qt::KeyboardModifiers modifiers)
         return false;
     const Field kind = fieldOf(FPDFAnnot_GetFormFieldType(impl->form, focused));
     const QRectF rect = fieldRect(focused);
+    // A sealed field cannot be clicked into, but Tab can land on it. Every key except
+    // the two that walk out of it is swallowed: PDFium's own answer would otherwise
+    // change what the signature covers through the keyboard door.
+    const bool locked = impl->fieldLocked(focused);
     FPDFPage_CloseAnnot(focused);
+    if (locked && qtKey != Qt::Key_Tab && qtKey != Qt::Key_Backtab)
+        return true;
     impl->noteFocusedFieldBeforeTouch();
 
     const FPDF_PAGE handle = impl->holdPage(page, false);
@@ -535,7 +602,12 @@ bool PdfiumBackend::characterTyped(QChar character, Qt::KeyboardModifiers modifi
     FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
     if (!focused)
         return false;
+    const bool locked = impl->fieldLocked(focused);
     FPDFPage_CloseAnnot(focused);
+    // Swallowed, but reported as taken: the form owns the keyboard here, and the
+    // character must not fall through to a page shortcut either.
+    if (locked)
+        return true;
     impl->noteFocusedFieldBeforeTouch();
 
     const FPDF_PAGE handle = impl->holdPage(page, false);
@@ -554,7 +626,10 @@ void PdfiumBackend::commitText(const QString &text)
     FPDF_ANNOTATION focused = impl->focusedAnnot(&page);
     if (!focused)
         return;
+    const bool locked = impl->fieldLocked(focused);
     FPDFPage_CloseAnnot(focused);
+    if (locked)
+        return;
     impl->noteFocusedFieldBeforeTouch();
     const FPDF_PAGE handle = impl->holdPage(page, false);
     if (!handle)
@@ -639,6 +714,8 @@ void PdfiumBackend::releaseFocus()
 bool PdfiumBackend::canUndoFocused() const
 {
     QMutexLocker locker(&pdfiumMutex());
+    if (impl->focusedFieldLocked())
+        return false;
     const int page = impl->focusedPageLocked();
     if (page < 0)
         return false;
@@ -649,6 +726,8 @@ bool PdfiumBackend::canUndoFocused() const
 bool PdfiumBackend::canRedoFocused() const
 {
     QMutexLocker locker(&pdfiumMutex());
+    if (impl->focusedFieldLocked())
+        return false;
     const int page = impl->focusedPageLocked();
     if (page < 0)
         return false;
@@ -659,6 +738,8 @@ bool PdfiumBackend::canRedoFocused() const
 void PdfiumBackend::undoFocused()
 {
     QMutexLocker locker(&pdfiumMutex());
+    if (impl->focusedFieldLocked())
+        return;
     const int page = impl->focusedPageLocked();
     if (page < 0)
         return;
@@ -672,6 +753,8 @@ void PdfiumBackend::undoFocused()
 void PdfiumBackend::redoFocused()
 {
     QMutexLocker locker(&pdfiumMutex());
+    if (impl->focusedFieldLocked())
+        return;
     const int page = impl->focusedPageLocked();
     if (page < 0)
         return;
@@ -754,7 +837,21 @@ bool PdfiumBackend::stageFieldValues(const QString &directory, QString *staged, 
     }
     FormFileWriter writer;
     writer.file = &file;
-    const int saved = FPDF_SaveAsCopy(impl->document, &writer.base, FPDF_NO_INCREMENTAL);
+    // A signed document is written as an incremental update, and an unsigned one is
+    // written whole. The two flags are not interchangeable for a signature: the bytes a
+    // signature covers are the file as it stood when it was signed, and only an
+    // incremental update leaves every one of them where it was -- the new field values
+    // are appended, and the ByteRange's digest still names the same two spans
+    // (PDF 32000-1 sec.12.8.1; measured on the sample generator's signed files, the
+    // staged file's first N bytes are the source's and both SHA-256s match). An unsigned
+    // document has nothing to preserve, and a full rewrite is what keeps a file that is
+    // saved twenty times from growing by twenty revisions.
+    //
+    // Encrypted documents: measured with qpdf-encrypted field samples -- the incremental
+    // write keeps the original prefix and encryption dictionary, and reopens with the
+    // same user password. The report for handoff-06 H4 carries the numbers.
+    const int flags = impl->signatureCount > 0 ? FPDF_INCREMENTAL : FPDF_NO_INCREMENTAL;
+    const int saved = FPDF_SaveAsCopy(impl->document, &writer.base, flags);
     const bool flushed = file.flush();
     file.close();
 

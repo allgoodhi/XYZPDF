@@ -29,6 +29,7 @@
 #include <QHash>
 #include <QMutex>
 #include <QRectF>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -499,6 +500,18 @@ struct PdfiumBackend::Impl
     QString error;
     bool encrypted = false;
 
+    // What the file says about its digital signatures, read once in load() while the
+    // document is open (PDF 32000-1 sec.12.8). Both are zero for a file with none,
+    // and docMdpPermission() is zero for a file whose signatures are ordinary ones
+    // rather than a certification signature with /TransformMethod /DocMDP.
+    int signatureCount = 0;
+    int docMdpPermission = 0;
+    // The fields a signature's /Lock seals, by fully qualified name (PDF 32000-1
+    // sec.12.8.4, table 233). PDFium neither exposes nor enforces /Lock, so these names
+    // are read by DocumentEditor's qpdf pass and handed over before the first gesture
+    // (setLockedFieldNames). Empty means nothing is sealed.
+    QSet<QString> lockedFieldNames;
+
     // ---- what the form layer asked for while the last event was in flight ----
     //
     // The callbacks may only touch this, and they reach it through the FormFillInfo
@@ -771,6 +784,33 @@ struct PdfiumBackend::Impl
             document = nullptr;
         }
         file.close();
+        // Both answers were read off that document handle; with no document there is
+        // nothing to have counted -- and the lock names belong to that document too.
+        signatureCount = 0;
+        docMdpPermission = 0;
+        lockedFieldNames.clear();
+    }
+
+    // Whether this field is one a signature's /Lock seals. The name is the one
+    // FPDFAnnot_GetFormFieldName answers, which is the field tree's fully qualified
+    // name -- the same spelling the qpdf walk collected.
+    bool fieldLocked(FPDF_ANNOTATION annotation) const
+    {
+        const QString name = fieldName(form, annotation);
+        return !name.isEmpty() && lockedFieldNames.contains(name);
+    }
+
+    // The focused field, if it is sealed. Caller holds the mutex; the annotation is
+    // closed before the answer comes back.
+    bool focusedFieldLocked() const
+    {
+        int page = -1;
+        FPDF_ANNOTATION focused = focusedAnnot(&page);
+        if (!focused)
+            return false;
+        const bool locked = fieldLocked(focused);
+        FPDFPage_CloseAnnot(focused);
+        return locked;
     }
 };
 

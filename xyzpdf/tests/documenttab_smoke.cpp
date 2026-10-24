@@ -5120,6 +5120,532 @@ int main(int argc, char **argv)
               "the fixture is back for the rest of the run");
     }
 
+    // ---- 已签名的文档：能填的一半，不能动的一半 ----
+    //
+    // handoff-06 H4 from the tab's side. Three seams, and each is a place the layers on
+    // either side of it pass their own tests: a fields-only save has to reach disk through
+    // PDFium's incremental writer (so the spans a signature names still hold their bytes),
+    // a structural save has to go through the qpdf rewrite (so they do not), and the
+    // certification signature's /P plus a signature's /Lock decide which gestures arrive at
+    // the form layer at all. The per-layer readings are in pdfiumbackend_smoke, the writer's
+    // own copy of the two answers in documenteditor_smoke.
+    //
+    // Every file here is written into a scratch folder. The one save in this block that goes
+    // "in place" is on a copy, because 永不写用户的 PDF -- a test that wrote a fixture would
+    // be the rule's first counterexample.
+    {
+        QTemporaryDir signedDir;
+        check(signedDir.isValid(), "signed: a scratch folder for the signed samples");
+        const QString signedFolder = signedDir.path();
+        const auto signedPathOf = [&signedFolder](const char *name) {
+            return signedFolder + QLatin1Char('/') + QLatin1String(name);
+        };
+        QString signedWhy;
+        check(FormSampleFile::writeSigned(signedPathOf("signed-one.pdf"), 0, 1, false, &signedWhy),
+              QStringLiteral("signed: the one-signature sample is written (%1)").arg(signedWhy));
+        check(FormSampleFile::writeSigned(signedPathOf("signed-p1.pdf"), 1, 1, false, &signedWhy),
+              QStringLiteral("signed: the /P 1 sample is written (%1)").arg(signedWhy));
+        check(FormSampleFile::writeSigned(signedPathOf("signed-p2.pdf"), 2, 1, false, &signedWhy),
+              QStringLiteral("signed: the /P 2 sample is written (%1)").arg(signedWhy));
+        check(FormSampleFile::writeSigned(signedPathOf("signed-locked.pdf"), 0, 1, true,
+                                          &signedWhy),
+              QStringLiteral("signed: the /Lock sample is written (%1)").arg(signedWhy));
+
+        const FormSampleFile::SignedGeometry signedFields;
+        const auto bytesOf = [](const QString &path) {
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly))
+                return QByteArray();
+            return file.readAll();
+        };
+        const auto digestOf = [](const QByteArray &bytes) {
+            return QString::fromLatin1(
+                QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        };
+        // A field's centre as the view draws it, the same arithmetic the fill block uses.
+        const auto fieldPointOn = [&signedFields](PageView *view, const QRectF &rect) {
+            const QPointF centre = FormSampleFile::userCentre(rect);
+            const QRectF page = view->pageRectInViewport(0);
+            return QPointF(page.left() + centre.x() / 595.0 * page.width(),
+                           page.top() + (842.0 - centre.y()) / 842.0 * page.height());
+        };
+
+        // ---- a fields-only save is an append, and the signature's bytes stay put ----
+        {
+            const QString opened = signedPathOf("signed-one.pdf");
+            const QString live = signedFolder + QStringLiteral("/signed-fill.pdf");
+            check(QFile::copy(opened, live), "signed: the fill test works on its own copy");
+            const QByteArray before = bytesOf(live);
+            QVector<int> range;
+            {
+                PdfiumBackend holder;
+                check(holder.load(live, QString()) == Document::Status::Ready,
+                      "signed: the copy opens in the reader before it is touched");
+                range = FormSampleFile::signatureByteRange(live, 0);
+            }
+            check(range.size() == 4, "signed: and states a two-span /ByteRange");
+
+            DocumentTab signedTab;
+            signedTab.resize(900, 700);
+            signedTab.show();
+            check(signedTab.open(live) == Document::Status::Ready,
+                  QStringLiteral("signed: the copy opens in a tab (%1)")
+                      .arg(signedTab.lastError()));
+            PageView *signedView = viewOf(signedTab);
+            check(waitFor([signedView] { return signedView->isRendered(0); }),
+                  "signed: and its page is drawn");
+            QWidget *canvas = signedView->viewport();
+            const QPointF fieldPoint = fieldPointOn(signedView, signedFields.textField);
+            sendMouse(canvas, QEvent::MouseButtonPress, fieldPoint);
+            sendMouse(canvas, QEvent::MouseButtonRelease, fieldPoint);
+            check(waitFor([&signedTab] { return signedTab.view()->fieldHasFocus(); }),
+                  "signed: the text field takes the keyboard");
+            signedView->setFocus();
+            for (const QChar character : QStringLiteral("XYZ")) {
+                QKeyEvent press(QEvent::KeyPress,
+                                int(Qt::Key_A) + character.toLatin1() - 'A', Qt::NoModifier,
+                                QString(character));
+                QApplication::sendEvent(signedView, &press);
+            }
+            check(waitFor([&signedTab] { return signedTab.hasFieldEdits(); }),
+                  "signed: three characters are a pending field change");
+            check(signedTab.saveEdits(), "signed: 保存 writes the answers back into the copy");
+
+            const QByteArray after = bytesOf(live);
+            const QByteArray coveredBefore = FormSampleFile::signatureCoveredBytes(before, range);
+            const QByteArray coveredAfter = FormSampleFile::signatureCoveredBytes(after, range);
+            note(QStringLiteral("signed fill: %1 bytes before, %2 after; covered %3 bytes, "
+                                "sha256 before=%4 after=%5")
+                     .arg(before.size())
+                     .arg(after.size())
+                     .arg(coveredBefore.size())
+                     .arg(digestOf(coveredBefore), digestOf(coveredAfter)));
+            check(after.size() > before.size(),
+                  "signed: the save appended a revision instead of rewriting the file");
+            check(!before.isEmpty() && after.left(before.size()) == before,
+                  "signed: its first N bytes are the file that was opened, byte for byte");
+            check(!coveredBefore.isEmpty() && coveredBefore == coveredAfter,
+                  QStringLiteral("signed: so the two spans the signature names still hold the "
+                                 "same bytes (%1)")
+                      .arg(range.at(1) + range.at(3)));
+            {
+                PdfiumBackend reader;
+                check(reader.load(live, QString()) == Document::Status::Ready,
+                      "signed: the saved copy still opens");
+                QString valueWhy;
+                const QString nameValue
+                    = FormSampleFile::fieldValue(live, QStringLiteral("name"), &valueWhy);
+                note(QStringLiteral("signed fill: the saved file reads name=[%1]").arg(nameValue));
+                check(nameValue.contains(QStringLiteral("XYZ")),
+                      QStringLiteral("signed: and the answer is in the appended revision (%1)")
+                          .arg(valueWhy));
+            }
+        }
+
+        // ---- an encrypted signed document: the append keeps the prefix, and the key ----
+        //
+        // H4's measurement: what FPDF_INCREMENTAL does on a file that is both signed and
+        // encrypted. The source is qpdf-encrypted (R3/RC4-128, a real user password),
+        // because that is the case where 保存 has two things to keep at once. The bytes are
+        // compared with the encrypted file the tab opened -- qpdf re-serialised the signed
+        // sample on the way in, so the sample it came from is not the file under test.
+        {
+            const QString sealed = signedFolder + QStringLiteral("/signed-encrypted.pdf");
+            {
+                QPDF qpdf;
+                qpdf.processFile(signedPathOf("signed-one.pdf").toUtf8().constData());
+                QPDFWriter out(qpdf, sealed.toUtf8().constData());
+                out.setR3EncryptionParametersInsecure("let-me-in", "owner-key", true, true,
+                                                      true, true, true, true, qpdf_r3p_full);
+                out.write();
+            }
+            check(QFileInfo::exists(sealed),
+                  "signed encrypt: setup: an encrypted signed copy was written");
+            const QByteArray before = bytesOf(sealed);
+            QVector<int> range;
+            {
+                PdfiumBackend holder;
+                check(holder.load(sealed, QStringLiteral("let-me-in"))
+                          == Document::Status::Ready,
+                      "signed encrypt: the encrypted copy opens with its key");
+                check(holder.signatureCount() == 1,
+                      "signed encrypt: and still carries the signature");
+                range = FormSampleFile::signatureByteRange(sealed, 0,
+                                                           QStringLiteral("let-me-in"));
+                // qpdf re-serialised the sample on the way in, so these offsets are the
+                // numbers its signature dictionary carries, not a claim that the encrypted
+                // copy verifies. What the rows below measure is that the append moves none
+                // of those bytes.
+                note(QStringLiteral("signed encrypt: /ByteRange [%1,%2,%3,%4]")
+                         .arg(range.value(0))
+                         .arg(range.value(1))
+                         .arg(range.value(2))
+                         .arg(range.value(3)));
+            }
+
+            DocumentTab sealedTab;
+            sealedTab.resize(900, 700);
+            sealedTab.show();
+            check(sealedTab.open(sealed, QStringLiteral("let-me-in"))
+                      == Document::Status::Ready,
+                  QStringLiteral("signed encrypt: a tab opens it (%1)")
+                      .arg(sealedTab.lastError()));
+            PageView *sealedView = viewOf(sealedTab);
+            check(waitFor([sealedView] { return sealedView->isRendered(0); }),
+                  "signed encrypt: and its page is drawn");
+            const QPointF fieldPoint = fieldPointOn(sealedView, signedFields.textField);
+            sendMouse(sealedView->viewport(), QEvent::MouseButtonPress, fieldPoint);
+            sendMouse(sealedView->viewport(), QEvent::MouseButtonRelease, fieldPoint);
+            check(waitFor([&sealedTab] { return sealedTab.view()->fieldHasFocus(); }),
+                  "signed encrypt: the field takes the keyboard through the encryption");
+            sealedView->setFocus();
+            for (const QChar character : QStringLiteral("KEY")) {
+                QKeyEvent press(QEvent::KeyPress,
+                                int(Qt::Key_A) + character.toLatin1() - 'A', Qt::NoModifier,
+                                QString(character));
+                QApplication::sendEvent(sealedView, &press);
+            }
+            check(waitFor([&sealedTab] { return sealedTab.hasFieldEdits(); }),
+                  "signed encrypt: and the answer is a pending change");
+            check(sealedTab.saveEdits(), "signed encrypt: 保存 writes it back");
+
+            const QByteArray after = bytesOf(sealed);
+            const QByteArray coveredBefore = FormSampleFile::signatureCoveredBytes(before, range);
+            const QByteArray coveredAfter = FormSampleFile::signatureCoveredBytes(after, range);
+            note(QStringLiteral("signed encrypt: %1 bytes before, %2 after; covered %3 bytes; "
+                                "sha256 before=%4 after=%5")
+                     .arg(before.size())
+                     .arg(after.size())
+                     .arg(coveredBefore.size())
+                     .arg(digestOf(coveredBefore), digestOf(coveredAfter)));
+            check(after.size() > before.size(),
+                  "signed encrypt: the save appended a revision");
+            check(!before.isEmpty() && after.left(before.size()) == before,
+                  "signed encrypt: its first N bytes are the encrypted file that was opened, "
+                  "byte for byte");
+            check(coveredBefore.isEmpty() || coveredBefore == coveredAfter,
+                  "signed encrypt: and every byte the signature names is still there");
+            {
+                PdfiumBackend reread;
+                check(reread.load(sealed, QStringLiteral("let-me-in"))
+                          == Document::Status::Ready,
+                      "signed encrypt: the saved file still opens with the same key");
+                check(reread.signatureCount() == 1,
+                      "signed encrypt: with its signature object intact");
+                PdfiumBackend noKey;
+                check(noKey.load(sealed, QString()) == Document::Status::NeedsPassword,
+                      "signed encrypt: and still asks for the key from a reader who has none");
+            }
+        }
+
+        // ---- a structural save is a rewrite, and the spans do not survive it ----
+        {
+            const QString opened = signedPathOf("signed-one.pdf");
+            const QString turned = signedFolder + QStringLiteral("/signed-turned.pdf");
+            DocumentTab signedTab;
+            signedTab.resize(900, 700);
+            signedTab.show();
+            check(signedTab.open(opened) == Document::Status::Ready,
+                  QStringLiteral("signed: the sample opens for the structural save (%1)")
+                      .arg(signedTab.lastError()));
+            // Through the tab's own door, which is the box a reader meets: page 1 is named
+            // and 旋转这些页 is pressed by the timer helper above.
+            answerNextDialog<RotatePagesDialog>(QStringLiteral("1"));
+            signedTab.rotatePages();
+            check(signedTab.hasUnsavedEdits(), "signed: the turn is a pending structural edit");
+            check(signedTab.saveEditsTo(turned, &signedWhy),
+                  QStringLiteral("signed: 另存为 writes the turned copy (%1)").arg(signedWhy));
+            check(QFileInfo::exists(turned), "signed: and the new file is there");
+
+            QVector<int> range;
+            {
+                PdfiumBackend holder;
+                check(holder.load(opened, QString()) == Document::Status::Ready,
+                      "signed: the untouched source still opens for its /ByteRange");
+                range = FormSampleFile::signatureByteRange(opened, 0);
+            }
+            check(range.size() == 4, "signed: which is still a two-span /ByteRange");
+            const QByteArray before = bytesOf(opened);
+            const QByteArray after = bytesOf(turned);
+            const QByteArray coveredBefore
+                = FormSampleFile::signatureCoveredBytes(before, range);
+            const qint64 coveredEnd = range.size() == 4 ? qint64(range.at(2)) + range.at(3) : 0;
+            const bool spansStillThere = range.size() == 4 && after.size() >= coveredEnd;
+            const QByteArray coveredAfter = spansStillThere
+                ? FormSampleFile::signatureCoveredBytes(after, range)
+                : QByteArray();
+            note(QStringLiteral("signed turn: source %1 bytes, rewritten %2 bytes, covered "
+                                "ends at %3; sha256 before=%4 after=%5")
+                     .arg(before.size())
+                     .arg(after.size())
+                     .arg(coveredEnd)
+                     .arg(digestOf(coveredBefore),
+                          spansStillThere ? digestOf(coveredAfter)
+                                          : QStringLiteral("(span past the end)")));
+            check(!coveredBefore.isEmpty(), "signed: the source's spans name real bytes");
+            // Either the rewrite kept the spans and put different bytes in them, or it
+            // made the file shorter than the second span. Both are the signature's claim
+            // failing, and pinning which one would be pinning qpdf's serialization.
+            check(!(spansStillThere && coveredAfter == coveredBefore),
+                  "signed: the rewritten file no longer holds the bytes the signature covered");
+
+            PdfiumBackend reader;
+            check(reader.load(turned, QString()) == Document::Status::Ready,
+                  "signed: the turned file opens in the reader");
+            const QSizeF size = reader.pageSize(0);
+            note(QStringLiteral("signed turn: page size %1x%2").arg(size.width()).arg(size.height()));
+            check(size.width() > size.height(),
+                  "signed: and its page is turned the way the dialog asked");
+        }
+
+        // ---- all eight boxes say what a save costs, before anything is pressed ----
+        //
+        // Constructed, not shown: every one of them builds its sentence in the constructor,
+        // which is also when the reader first sees it. The unsigned-document control for the
+        // "this sentence is not always there" half is the XFA block above -- the same phrase
+        // appears in no box there.
+        {
+            DocumentTab signedTab;
+            signedTab.resize(900, 700);
+            signedTab.show();
+            check(signedTab.open(signedPathOf("signed-one.pdf")) == Document::Status::Ready,
+                  "signed: a signed document opens for the eight boxes");
+            // A writer opened beside the tab, the way the XFA block does it: the boxes take
+            // the writer's copy of the file's facts, and this is the same file and the same
+            // class the tab itself hands them.
+            DocumentEditor signedEditor;
+            check(signedEditor.open(signedPathOf("signed-one.pdf"), QString(), &signedWhy),
+                  QStringLiteral("signed: with a writer opened on it (%1)").arg(signedWhy));
+            {
+                const auto sentenceOf = [](QDialog &box) {
+                    for (QLabel *label : box.findChildren<QLabel *>()) {
+                        if (label->text().contains(QStringLiteral("原来那份文件")))
+                            return label->text();
+                    }
+                    return QString();
+                };
+                const auto saysTheCost = [&sentenceOf](QDialog &box, const char *name) {
+                    const QString sentence = sentenceOf(box);
+                    check(sentence.contains(QStringLiteral("保存之后这 1 个数字签名都会失效")),
+                          QStringLiteral("signed: %1 gives the cost before the press: %2")
+                              .arg(QLatin1String(name), sentence));
+                };
+                DeletePagesDialog del(&signedTab, 0, &signedEditor);
+                saysTheCost(del, "删除页面");
+                MovePagesDialog mov(&signedTab, 0, &signedEditor);
+                saysTheCost(mov, "移动页面");
+                MergePagesDialog mer(&signedTab, &signedEditor);
+                saysTheCost(mer, "合并文件进来");
+                SplitPagesDialog spl(&signedTab, &signedEditor);
+                saysTheCost(spl, "拆分文件");
+                RotatePagesDialog rot(&signedTab, 0, &signedEditor);
+                saysTheCost(rot, "旋转页面");
+                ProtectPagesDialog pro(&signedTab, &signedEditor);
+                saysTheCost(pro, "加密 / 去掉口令");
+                WatermarkDialog wat(&signedTab, &signedEditor);
+                saysTheCost(wat, "水印");
+                BookmarkDialog book(&signedTab, &signedEditor, Outline{});
+                saysTheCost(book, "编辑书签");
+            }
+        }
+
+        // ---- /P: which half a reader gets ----
+        //
+        // The one-page sample makes the rotation box a clean carrier for the question: turning
+        // page 1 is a request the same document accepts without a certification signature, so
+        // the only variable between these three rows is /P. That unsigned row is the control,
+        // in the same run and with the same request.
+        {
+            const auto rotateOnePage = [](QDialog &box) {
+                for (QLineEdit *edit : box.findChildren<QLineEdit *>()) {
+                    if (edit->placeholderText().contains(QStringLiteral("1-3")))
+                        edit->setText(QStringLiteral("1"));
+                }
+                auto *buttons = box.findChild<QDialogButtonBox *>();
+                return buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+            };
+
+            DocumentTab signedTab;
+            signedTab.resize(900, 700);
+            signedTab.show();
+            check(signedTab.open(signedPathOf("signed-one.pdf")) == Document::Status::Ready,
+                  "signed: the signed sample opens for the /P readings");
+            DocumentEditor signedEditor;
+            check(signedEditor.open(signedPathOf("signed-one.pdf"), QString(), &signedWhy),
+                  QStringLiteral("signed: with a writer opened on it (%1)").arg(signedWhy));
+            {
+                RotatePagesDialog signedBox(&signedTab, 0, &signedEditor);
+                QPushButton *signedOkay = rotateOnePage(signedBox);
+                check(signedOkay && signedOkay->isEnabled(),
+                      "signed: a signature with no certification still allows the turn");
+            }
+            DocumentEditor plain;
+            check(plain.open(QStringLiteral("tests/fixtures/text.pdf"), QString(), &signedWhy),
+                  QStringLiteral("signed: setup: an unsigned document (%1)").arg(signedWhy));
+            RotatePagesDialog plainBox(&signedTab, 0, &plain);
+            QPushButton *plainOkay = rotateOnePage(plainBox);
+            check(plainOkay && plainOkay->isEnabled(),
+                  "signed: control: the same request on an unsigned file can confirm");
+            signedTab.deleteLater();
+        }
+
+        // ---- /P 1: fields read-only, structural boxes grey ----
+        {
+            DocumentTab p1Tab;
+            p1Tab.resize(900, 700);
+            p1Tab.show();
+            check(p1Tab.open(signedPathOf("signed-p1.pdf")) == Document::Status::Ready,
+                  QStringLiteral("signed: the /P 1 sample opens in a tab (%1)").arg(p1Tab.lastError()));
+            PageView *p1View = viewOf(p1Tab);
+            check(waitFor([p1View] { return p1View->isRendered(0); }),
+                  "signed: and its page is drawn");
+            QWidget *canvas = p1View->viewport();
+            const QPointF fieldPoint = fieldPointOn(p1View, signedFields.textField);
+            sendMouse(canvas, QEvent::MouseButtonPress, fieldPoint);
+            sendMouse(canvas, QEvent::MouseButtonRelease, fieldPoint);
+            // Anything PDFium would do with the click has happened by here; the wait is only
+            // so that "no focus" is not "not yet".
+            waitFor([] { return false; }, 300);
+            check(!p1Tab.view()->fieldHasFocus(),
+                  "signed: on a /P 1 file the field does not take the keyboard");
+            check(!p1Tab.hasFieldEdits(), "signed: and the click did not become an edit");
+
+            // The properties row is fed by the same count, and it is the only place the
+            // number is shown without a sentence around it.
+            const PropertiesDialog::Info p1Info = p1Tab.propertiesInfo();
+            check(p1Info.signatureCount == 1,
+                  "signed: the properties gather the signature count");
+            {
+                PropertiesDialog box(nullptr, p1Info);
+                QStringList texts;
+                for (QLabel *label : box.findChildren<QLabel *>())
+                    texts.append(label->text());
+                check(texts.contains(QStringLiteral("数字签名"))
+                        && texts.contains(QStringLiteral("1 个")),
+                      QStringLiteral("signed: and the dialog shows one (%1)")
+                          .arg(texts.join(QStringLiteral(" | "))));
+            }
+
+            DocumentEditor p1Editor;
+            check(p1Editor.open(signedPathOf("signed-p1.pdf"), QString(), &signedWhy)
+                    && p1Editor.docMdpPermission() == 1,
+                  QStringLiteral("signed: a writer opened beside it reads the same /P 1 (%1)")
+                      .arg(signedWhy));
+            {
+                const auto sentenceOf = [](QDialog &box) {
+                    for (QLabel *label : box.findChildren<QLabel *>()) {
+                        if (label->text().contains(QStringLiteral("原来那份文件")))
+                            return label->text();
+                    }
+                    return QString();
+                };
+                const auto rotateOnePage = [](QDialog &box) {
+                    for (QLineEdit *edit : box.findChildren<QLineEdit *>()) {
+                        if (edit->placeholderText().contains(QStringLiteral("1-3")))
+                            edit->setText(QStringLiteral("1"));
+                    }
+                    auto *buttons = box.findChild<QDialogButtonBox *>();
+                    return buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+                };
+                RotatePagesDialog rot(&p1Tab, 0, &p1Editor);
+                QPushButton *okay = rotateOnePage(rot);
+                check(okay && !okay->isEnabled(),
+                      "signed: 旋转页面 cannot confirm under /P 1, with one page named");
+                const QString sentence = sentenceOf(rot);
+                note(QStringLiteral("signed p1: the box says [%1]")
+                         .arg(QString(sentence).replace(QLatin1Char('\n'), QLatin1Char(' '))));
+                check(sentence.contains(QStringLiteral("不允许任何改动")),
+                      "signed: and says the certification signature forbids every change");
+                check(sentence.contains(QStringLiteral("保存之后这 1 个数字签名都会失效")),
+                      "signed: with the cost beside the reason");
+            }
+        }
+
+        // ---- /P 2: fields fillable, structural boxes still grey ----
+        {
+            DocumentTab p2Tab;
+            p2Tab.resize(900, 700);
+            p2Tab.show();
+            check(p2Tab.open(signedPathOf("signed-p2.pdf")) == Document::Status::Ready,
+                  QStringLiteral("signed: the /P 2 sample opens in a tab (%1)").arg(p2Tab.lastError()));
+            PageView *p2View = viewOf(p2Tab);
+            check(waitFor([p2View] { return p2View->isRendered(0); }),
+                  "signed: and its page is drawn");
+            QWidget *canvas = p2View->viewport();
+            const QPointF fieldPoint = fieldPointOn(p2View, signedFields.textField);
+            sendMouse(canvas, QEvent::MouseButtonPress, fieldPoint);
+            sendMouse(canvas, QEvent::MouseButtonRelease, fieldPoint);
+            check(waitFor([&p2Tab] { return p2Tab.view()->fieldHasFocus(); }),
+                  "signed: /P 2 lets the field take the keyboard");
+            p2View->setFocus();
+            for (const QChar character : QStringLiteral("AB")) {
+                QKeyEvent press(QEvent::KeyPress,
+                                int(Qt::Key_A) + character.toLatin1() - 'A', Qt::NoModifier,
+                                QString(character));
+                QApplication::sendEvent(p2View, &press);
+            }
+            check(waitFor([&p2Tab] { return p2Tab.hasFieldEdits(); }),
+                  "signed: and what was typed is a pending change");
+
+            DocumentEditor p2Editor;
+            check(p2Editor.open(signedPathOf("signed-p2.pdf"), QString(), &signedWhy)
+                    && p2Editor.docMdpPermission() == 2,
+                  QStringLiteral("signed: a writer opened beside it reads the same /P 2 (%1)")
+                      .arg(signedWhy));
+            {
+                RotatePagesDialog rot(&p2Tab, 0, &p2Editor);
+                for (QLineEdit *edit : rot.findChildren<QLineEdit *>()) {
+                    if (edit->placeholderText().contains(QStringLiteral("1-3")))
+                        edit->setText(QStringLiteral("1"));
+                }
+                auto *buttons = rot.findChild<QDialogButtonBox *>();
+                QPushButton *okay = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+                check(okay && !okay->isEnabled(),
+                      "signed: /P 2 permits filling and nothing else, so the turn is grey");
+                QString sentence;
+                for (QLabel *label : rot.findChildren<QLabel *>()) {
+                    if (label->text().contains(QStringLiteral("原来那份文件")))
+                        sentence = label->text();
+                }
+                check(sentence.contains(QStringLiteral("只允许填写表单")),
+                      QStringLiteral("signed: and the reason says form filling is all it "
+                                     "permits: %1")
+                          .arg(sentence));
+            }
+        }
+
+        // ---- a /Lock seals one field and leaves the one beside it free ----
+        //
+        // PDFium has no API for /Lock and does not enforce one (measured on chromium/8111
+        // for the guard, see pdfiumformfill.cpp), so this is our guard arriving through the
+        // tab: the list is read by qpdf at open and handed to the form layer before the first
+        // gesture. The unsealed field is the companion that keeps a blanket "no clicks" bug
+        // from reading as a pass.
+        {
+            DocumentTab lockedTab;
+            lockedTab.resize(900, 700);
+            lockedTab.show();
+            check(lockedTab.open(signedPathOf("signed-locked.pdf")) == Document::Status::Ready,
+                  QStringLiteral("signed: the /Lock sample opens in a tab (%1)")
+                      .arg(lockedTab.lastError()));
+            PageView *lockedView = viewOf(lockedTab);
+            check(waitFor([lockedView] { return lockedView->isRendered(0); }),
+                  "signed: and its page is drawn");
+            QWidget *canvas = lockedView->viewport();
+            const QPointF sealedPoint = fieldPointOn(lockedView, signedFields.lockedField);
+            sendMouse(canvas, QEvent::MouseButtonPress, sealedPoint);
+            sendMouse(canvas, QEvent::MouseButtonRelease, sealedPoint);
+            waitFor([] { return false; }, 300);
+            check(!lockedTab.view()->fieldHasFocus(),
+                  "signed: the field the signature seals does not take the keyboard");
+            const QPointF openPoint = fieldPointOn(lockedView, signedFields.textField);
+            sendMouse(canvas, QEvent::MouseButtonPress, openPoint);
+            sendMouse(canvas, QEvent::MouseButtonRelease, openPoint);
+            check(waitFor([&lockedTab] { return lockedTab.view()->fieldHasFocus(); }),
+                  "signed: while the field beside it does");
+        }
+    }
+
     // ---- 加密 / 去掉口令: the box and the editor refuse the same requests ----
     //
     // The dialog greys 确定 for exactly the requests DocumentEditor::protectWith() and

@@ -680,6 +680,193 @@ bool formCarriesScript(const QPDFObjectHandle &root)
     return false;
 }
 
+// ---- the file's signatures ----
+
+// One field tree, counted for signatures. PDF 32000-1 sec.12.8.1: a signature is a
+// signature dictionary reached from a form field whose /FT is /Sig -- the field is the
+// terminal one, and the /V it names is the signature itself. /FT may be inherited from
+// a parent (sec.12.7.4.1), which is why the type travels down the walk rather than
+// being read at each node. The depth and budget are the same guard the /AA walk above
+// uses, for the same reason: a /Kids list from a file can be a loop.
+int signaturesInField(const QPDFObjectHandle &field, const QPDFObjectHandle &inheritedType,
+                      int depth, int &remaining)
+{
+    if (depth > 32 || remaining <= 0 || !field.isDictionary())
+        return 0;
+    --remaining;
+    QPDFObjectHandle type = field.getKey("/FT");
+    if (!type.isName())
+        type = inheritedType;
+    const QPDFObjectHandle kids = field.getKey("/Kids");
+    if (kids.isArray()) {
+        int total = 0;
+        for (int index = 0; index < kids.getArrayNItems(); ++index)
+            total += signaturesInField(kids.getArrayItem(index), type, depth + 1, remaining);
+        return total;
+    }
+    if (type.isName() && type.getName() == "/Sig" && field.getKey("/V").isDictionary())
+        return 1;
+    return 0;
+}
+
+int signatureCountOf(const QPDFObjectHandle &root)
+{
+    const QPDFObjectHandle form = root.getKey("/AcroForm");
+    if (!form.isDictionary())
+        return 0;
+    const QPDFObjectHandle fields = form.getKey("/Fields");
+    if (!fields.isArray())
+        return 0;
+    int remaining = 20000;
+    int total = 0;
+    for (int index = 0; index < fields.getArrayNItems(); ++index)
+        total += signaturesInField(fields.getArrayItem(index), QPDFObjectHandle::newNull(), 0,
+                                   remaining);
+    return total;
+}
+
+// The /P of the certification signature, or 0. PDF 32000-1 sec.12.8.2.2: the catalog's
+// /Perms /DocMDP names the signature dictionary, whose /Reference array carries a
+// /TransformMethod /DocMDP entry; its /TransformParams /P is 1 (no changes), 2 (form
+// filling and signing) or 3 (that plus annotations). Anything else -- no /Perms, an
+// ordinary approval signature, a malformed transform -- is "this file certifies nothing
+// about what a save may do", which is 0.
+int docMdpPermissionOf(const QPDFObjectHandle &root)
+{
+    const QPDFObjectHandle perms = root.getKey("/Perms");
+    if (!perms.isDictionary())
+        return 0;
+    const QPDFObjectHandle signature = perms.getKey("/DocMDP");
+    if (!signature.isDictionary())
+        return 0;
+    const QPDFObjectHandle references = signature.getKey("/Reference");
+    if (!references.isArray())
+        return 0;
+    for (int index = 0; index < references.getArrayNItems(); ++index) {
+        const QPDFObjectHandle reference = references.getArrayItem(index);
+        if (!reference.isDictionary())
+            continue;
+        const QPDFObjectHandle method = reference.getKey("/TransformMethod");
+        if (!method.isName() || method.getName() != "/DocMDP")
+            continue;
+        const QPDFObjectHandle params = reference.getKey("/TransformParams");
+        if (!params.isDictionary())
+            continue;
+        const QPDFObjectHandle permission = params.getKey("/P");
+        if (permission.isInteger()) {
+            const int value = permission.getIntValue();
+            if (value >= 1 && value <= 3)
+                return value;
+        }
+    }
+    return 0;
+}
+
+// ---- the fields a signature's /Lock seals ----
+
+// Every terminal field's fully qualified name, spelled the way the field tree is:
+// a parent's /T and its child's joined by '.', which is what a /Lock's /Fields array
+// names (PDF 32000-1 sec.12.7.4.1 and table 233). A field may hold widget
+// annotations under /Kids; those are not fields of their own and their name is the
+// one the field already has. The depth and budget are the same guards as the walks
+// above, for the same reason: a /Kids list from a file can be a loop.
+void collectFieldNames(const QPDFObjectHandle &field, const QString &parent, int depth,
+                       int &remaining, QStringList *names)
+{
+    if (depth > 32 || remaining <= 0 || !field.isDictionary())
+        return;
+    --remaining;
+    QString name = parent;
+    const QPDFObjectHandle part = field.getKey("/T");
+    if (part.isString()) {
+        const QString text = QString::fromUtf8(part.getUTF8Value());
+        if (!text.isEmpty())
+            name = parent.isEmpty() ? text : parent + QLatin1Char('.') + text;
+    }
+    const QPDFObjectHandle subtype = field.getKey("/Subtype");
+    const bool widget = subtype.isName() && subtype.getName() == "/Widget";
+    const QPDFObjectHandle kids = field.getKey("/Kids");
+    if (kids.isArray() && !widget) {
+        for (int index = 0; index < kids.getArrayNItems(); ++index)
+            collectFieldNames(kids.getArrayItem(index), name, depth + 1, remaining, names);
+        return;
+    }
+    if (!name.isEmpty())
+        names->append(name);
+}
+
+// The fields every signed signature field's /Lock seals, resolved to the names the
+// form actually has. Table 233: /Action is All (the default), Include (only the
+// /Fields listed) or Exclude (all but them); /Fields is a text-string array. A /Lock
+// only takes effect once the field has been signed, which is why /V has to be a
+// signature dictionary here. /P is the permission the signature grants afterwards,
+// not a second list: a field the /Lock names is sealed whatever /P says.
+void collectSealedFields(const QPDFObjectHandle &field, const QPDFObjectHandle &inheritedType,
+                         const QStringList &allNames, int depth, int &remaining,
+                         QStringList *sealed)
+{
+    if (depth > 32 || remaining <= 0 || !field.isDictionary())
+        return;
+    --remaining;
+    QPDFObjectHandle type = field.getKey("/FT");
+    if (!type.isName())
+        type = inheritedType;
+    const QPDFObjectHandle kids = field.getKey("/Kids");
+    if (kids.isArray()) {
+        for (int index = 0; index < kids.getArrayNItems(); ++index)
+            collectSealedFields(kids.getArrayItem(index), type, allNames, depth + 1, remaining,
+                                sealed);
+        return;
+    }
+    if (!(type.isName() && type.getName() == "/Sig" && field.getKey("/V").isDictionary()))
+        return;
+    const QPDFObjectHandle lock = field.getKey("/Lock");
+    if (!lock.isDictionary())
+        return;
+    QStringList listed;
+    const QPDFObjectHandle fields = lock.getKey("/Fields");
+    if (fields.isArray()) {
+        for (int index = 0; index < fields.getArrayNItems(); ++index) {
+            const QPDFObjectHandle item = fields.getArrayItem(index);
+            if (item.isString())
+                listed.append(QString::fromUtf8(item.getUTF8Value()));
+        }
+    }
+    const QPDFObjectHandle action = lock.getKey("/Action");
+    if (action.isName() && action.getName() == "/Include") {
+        sealed->append(listed);
+    } else if (action.isName() && action.getName() == "/Exclude") {
+        for (const QString &name : allNames) {
+            if (!listed.contains(name))
+                sealed->append(name);
+        }
+    } else {
+        sealed->append(allNames);
+    }
+}
+
+QStringList sealedFieldNamesOf(const QPDFObjectHandle &root)
+{
+    const QPDFObjectHandle form = root.getKey("/AcroForm");
+    if (!form.isDictionary())
+        return {};
+    const QPDFObjectHandle fields = form.getKey("/Fields");
+    if (!fields.isArray())
+        return {};
+    QStringList allNames;
+    QStringList sealed;
+    int remaining = 20000;
+    for (int index = 0; index < fields.getArrayNItems(); ++index)
+        collectFieldNames(fields.getArrayItem(index), QString(), 0, remaining, &allNames);
+    allNames.removeDuplicates();
+    remaining = 20000;
+    for (int index = 0; index < fields.getArrayNItems(); ++index)
+        collectSealedFields(fields.getArrayItem(index), QPDFObjectHandle::newNull(), allNames, 0,
+                            remaining, &sealed);
+    sealed.removeDuplicates();
+    return sealed;
+}
+
 } // namespace
 
 // The words a reader asked for, because these show up in a menu and a menu that
@@ -1766,6 +1953,9 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     sourceHasXfa = false;
     sourceDynamicXfa = false;
     sourceHasScript = false;
+    sourceSignatureCount = 0;
+    sourceDocMdp = 0;
+    sourceLockedFieldNames.clear();
     sourceReplyLinks.clear();
     sourcePositionalBookmarkCount = 0;
 
@@ -1857,6 +2047,19 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
         // none of it either way, so the only thing this can honestly report is the claim
         // the file itself makes.
         sourceHasScript = formCarriesScript(document->getRoot());
+        // The signatures, from the same parsed catalogue. Two separate questions: how
+        // many are in the file, and whether one of them is the certification signature
+        // that limits what this class may write (sec.12.8.2.2). A signed document
+        // without DocMDP is a file whose approvals a save invalidates but does not
+        // disobey, which is why the two notices are different sentences.
+        sourceSignatureCount = signatureCountOf(document->getRoot());
+        sourceDocMdp = docMdpPermissionOf(document->getRoot());
+        // And which fields the signatures seal (table 233). PDFium has no API for
+        // /Lock and, measured on chromium/8111, does not enforce it either: a field
+        // named by /Lock took the keyboard exactly like an unsealed one. So the names
+        // are read here, where the parser already is, and handed to the form layer
+        // before it takes any input (DocumentTab::loadDocument).
+        sourceLockedFieldNames = sealedFieldNamesOf(document->getRoot());
     }
     // And the threads between annotations, while the parser still has them: 删除页面 and 拆分文件
     // ask what a request would cost them on every keystroke (§47), and this class keeps no QPDF
@@ -1869,6 +2072,24 @@ bool DocumentEditor::open(const QString &path, const QString &password, QString 
     sourceOutline = outlineFromSource(*document);
     sourcePositionalBookmarkCount = countPositionalBookmarks(sourceOutline);
     return true;
+}
+
+QString DocumentEditor::signatureInvalidationNotice() const
+{
+    if (sourceSignatureCount <= 0)
+        return {};
+    // The count is of this source's signatures, not of what a request touches: a save
+    // rewrites the file, and a rewritten file has none of them covered any more.
+    return tr("\n\n保存之后这 %n 个数字签名都会失效。", nullptr, sourceSignatureCount);
+}
+
+QString DocumentEditor::certificationNotice() const
+{
+    if (sourceDocMdp <= 0)
+        return {};
+    if (sourceDocMdp == 1)
+        return tr("\n\n这份文档的认证签名不允许任何改动，这个对话框不能确定。");
+    return tr("\n\n这份文档的认证签名只允许填写表单，页面改动不能确定。");
 }
 
 bool DocumentEditor::inspectImport(const QString &path, int *pageCount, QString *error,

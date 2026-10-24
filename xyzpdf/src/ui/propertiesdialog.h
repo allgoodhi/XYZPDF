@@ -48,6 +48,12 @@ public:
         int sizedPage = 0;
         QSizeF pagePoints;
         DocMetadata metadata;
+        // How many digital signatures the file carries, read once at open
+        // (Document::signatureCount). Zero is the ordinary file, and the row is left
+        // out for it rather than reading （无）: "no signatures" is the unremarkable
+        // answer and does not deserve a line that makes the empty metadata fields
+        // beside it ambiguous.
+        int signatureCount = 0;
     };
 
     PropertiesDialog(QWidget *parent, const Info &info);

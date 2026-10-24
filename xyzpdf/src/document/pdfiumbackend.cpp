@@ -25,6 +25,7 @@
 #include <fpdf_formfill.h>
 #include <fpdf_fwlevent.h>
 #include <fpdf_save.h>
+#include <fpdf_signature.h>
 #include <fpdf_text.h>
 #include <fpdfview.h>
 
@@ -493,6 +494,45 @@ Document::Status PdfiumBackend::load(const QString &path, const QString &passwor
     // A non-empty password that opened the document means it was encrypted. There
     // is no cheaper way to ask a PDF that did not need one.
     impl->encrypted = !password.isEmpty();
+    // The signatures, read while the document is open: how many the file carries and
+    // what its certification signature permits. FPDF_GetSignatureCount answers -1 on
+    // error, which is a file with no readable signature list rather than a negative
+    // number of signatures. FPDFSignatureObj_GetDocMDPPermission answers the /P of the
+    // DocMDP transform (PDF 32000-1 table 254) or 0 for a signature that is not a
+    // certification one; the two are separate questions because a file can hold signed
+    // approvals without restricting what a later save may do.
+    //
+    // The count is of signature dictionaries, not of signature fields, and that is a
+    // difference the library does not make for itself: measured on chromium/8111, a form
+    // whose /Sig field has no /V -- a blank template, the commonest shape a signature
+    // field reaches a reader in -- is answered by FPDF_GetSignatureCount as one
+    // signature, while the object it hands back has no /ByteRange (0 numbers) and no
+    // /Contents (0 bytes). PDF 32000-1 sec.12.8.1 defines a signature as the dictionary
+    // the field names, so an empty field is counted here as nothing. The same question is
+    // answered off qpdf in DocumentEditor, which requires /V to be a dictionary, and the
+    // two answers have to be one number: it is what the status line says out loud and what
+    // decides whether 保存 appends (see pdfiumformfill.cpp).
+    impl->signatureCount = 0;
+    impl->docMdpPermission = 0;
+    const int signatureFields = qMax(0, FPDF_GetSignatureCount(impl->document));
+    for (int index = 0; index < signatureFields; ++index) {
+        FPDF_SIGNATURE signature = FPDF_GetSignatureObject(impl->document, index);
+        if (!signature)
+            continue;
+        int range[4] = {0};
+        const unsigned long rangeNumbers = FPDFSignatureObj_GetByteRange(signature, range, 4);
+        const unsigned long contentsBytes = FPDFSignatureObj_GetContents(signature, nullptr, 0);
+        if (rangeNumbers == 0 && contentsBytes == 0)
+            continue; // an empty signature field, which signs nothing
+        ++impl->signatureCount;
+        const unsigned int permission = FPDFSignatureObj_GetDocMDPPermission(signature);
+        if (permission >= 1 && permission <= 3 && impl->docMdpPermission == 0) {
+            // At most one certification signature exists per document, so a second
+            // answer would be a malformed file; the first one still describes the
+            // strictest thing the file asked a writer to honour.
+            impl->docMdpPermission = int(permission);
+        }
+    }
     return Status::Ready;
 }
 
@@ -518,6 +558,18 @@ void PdfiumBackend::close()
     impl->close();
     impl->error.clear();
     impl->encrypted = false;
+}
+
+int PdfiumBackend::signatureCount() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    return impl->document ? impl->signatureCount : 0;
+}
+
+int PdfiumBackend::docMdpPermission() const
+{
+    QMutexLocker locker(&pdfiumMutex());
+    return impl->document ? impl->docMdpPermission : 0;
 }
 
 int PdfiumBackend::pageCount() const

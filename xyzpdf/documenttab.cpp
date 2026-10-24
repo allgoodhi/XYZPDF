@@ -604,6 +604,7 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
     dynamicXfaInSource = false;
     sourceHasScript = false;
     sourceOutlineRows.clear();
+    QStringList lockedFieldNames;
     {
         DocumentEditor probe;
         QString ignored;
@@ -613,8 +614,17 @@ Document::Status DocumentTab::loadDocument(const QString &path, const QString &p
             dynamicXfaInSource = probe.hasDynamicXfa();
             sourceHasScript = probe.hasFormScript();
             sourceOutlineRows = probe.sourceOutlineRows();
+            // The fields a signature's /Lock seals, from the same parse. PDFium has no
+            // API for /Lock and on chromium/8111 does not enforce one either (measured:
+            // a sealed field took the keyboard like any other), so the form layer is
+            // told here, before the first gesture can reach it. An unsigned file (or one
+            // whose signatures seal nothing) hands it an empty list, which also clears
+            // whatever the previous document had.
+            lockedFieldNames = probe.lockedFieldNames();
         }
     }
+    if (form)
+        form->setLockedFieldNames(lockedFieldNames);
     // Qt is the right source for the titles and pages the panel draws and the wrong one for the
     // place inside the page (§75 measured 0,0 for every /FitH), so its tree is joined with qpdf's
     // by title and page. A file qpdf could not read keeps its tree with default destinations, and
@@ -1098,6 +1108,7 @@ PropertiesDialog::Info DocumentTab::propertiesInfo() const
     info.sizedPage = pageView->currentPage();
     info.pagePoints = backend->pageSize(info.sizedPage);
     info.metadata = backend->metadata();
+    info.signatureCount = backend->signatureCount();
     return info;
 }
 

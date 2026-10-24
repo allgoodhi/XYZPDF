@@ -1604,33 +1604,65 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         // dynamic case says more than "the contents are not shown" -- a dynamic document has no
         // static page contents anywhere, so what another reader opens is one "please wait" page
         // (§55's reading of exactly that shape) -- and so it is the sentence a reader of one gets.
+        // The sentences a signed file gets. Read off the backend at open
+        // (Document::signatureCount / docMdpPermission, fpdf_signature.h, PDF 32000-1
+        // sec.12.8): how many signatures the bytes carry, what the certification one
+        // permits, and -- said out loud, because a count otherwise reads as "we checked
+        // them" -- that this version does not validate the cryptography at all. The
+        // permission half is the reason a click on a field does nothing on a P=1 file,
+        // so it is said here rather than left to be discovered.
+        QString openedMessage;
+        int openedTimeout = 4000;
+        bool plainOpen = true;
         if (tab->hasDynamicXfa()) {
-            setStatusMessage(
+            plainOpen = false;
+            openedMessage =
                 tr("已打开 %1 —— 这是一份动态 XFA 文档：正文要由支持 XFA 的阅读器现画，本版既不显示"
                    "也不编辑它的内容；不含 XFA 的阅读器打开它，一般只看到一页「请稍候」之类的话。")
-                    .arg(info.fileName()),
-                12000);
+                    .arg(info.fileName());
+            openedTimeout = 12000;
         } else if (tab->hasXfa()) {
-            setStatusMessage(
+            plainOpen = false;
+            openedMessage =
                 tr("已打开 %1 —— 这份文档的表单还有一份 XFA 写法，本版既不显示也不编辑它的内容"
                    "（屏幕上看的是字段那份）。")
-                    .arg(info.fileName()),
-                12000);
+                    .arg(info.fileName());
+            openedTimeout = 12000;
         } else if (tab->hasFormFields() && tab->hasFormScript()) {
+            plainOpen = false;
             // Handoff-04 G1 5's short sentence. The build has no V8 (docs/pdfium-plan.md
             // sec.2 reads args.gn's `pdf_enable_v8=false`), so a field's calculation,
             // validation and formatting actions never run here -- and a reader whose
             // total did not move would otherwise have no way to find out that the form
             // was asking for arithmetic. Timed, and through setStatusMessage, because a
             // notice that a toolbar hover can wipe is a notice nobody gets.
-            setStatusMessage(
+            openedMessage =
                 tr("已打开 %1 —— 这份表单带着脚本，本版不运行它们：字段的计算、校验和格式化"
                    "都不会发生。")
-                    .arg(info.fileName()),
-                8000);
+                    .arg(info.fileName());
+            openedTimeout = 8000;
         } else {
-            setStatusMessage(tr("已打开 %1").arg(info.fileName()), 4000);
+            openedMessage = tr("已打开 %1").arg(info.fileName());
         }
+        const int signatures = tab->signatureCount();
+        if (signatures > 0) {
+            openedMessage =
+                (plainOpen ? tr("已打开 %1 —— 这份文档带着 %n 个数字签名，本版不验证签名本身。",
+                                nullptr, signatures)
+                           : openedMessage
+                                 + tr("\n\n这份文档带着 %n 个数字签名，本版不验证签名本身。", nullptr,
+                                      signatures))
+                    .arg(info.fileName());
+            openedTimeout = qMax(openedTimeout, 12000);
+            const int permission = tab->docMdpPermission();
+            if (permission == 1) {
+                openedMessage +=
+                    tr("认证签名不允许任何改动：表单字段只能看，不能填。");
+            } else if (permission >= 2) {
+                openedMessage += tr("认证签名只允许填写表单：别的修改都会被挡住。");
+            }
+        }
+        setStatusMessage(openedMessage, openedTimeout);
         updateForCurrentTab();
         // A page number on the command line is a jump, so it happens here
         // rather than in a queue: the document is loaded and measured by now.

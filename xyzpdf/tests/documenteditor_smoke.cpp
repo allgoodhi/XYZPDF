@@ -43,6 +43,7 @@
 
 #include "../src/document/pdfiumbackend.h"
 #include "../src/edit/documenteditor.h"
+#include "formsample.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -2915,6 +2916,285 @@ int main(int argc, char **argv)
               QStringLiteral("behind page 1 means behind it, with the earlier merge's page "
                              "pushed along: %1")
                   .arg(describeOrder(asNumbers(secondMerge.order))));
+    }
+
+    // ---- 已签名的文档：写者读到的东西，以及一次保存要它们付多少 ----
+    //
+    // handoff-06 H4. The samples are tests/formsample.h's, written from PDF 32000-1
+    // sec.12.8 rather than from anything this class does -- a fixture shaped by the code
+    // under test would agree with the same mistake (AGENTS.md, the sec.112 rule). What is
+    // checked here is the writer's copy of the two answers the backend also reads through
+    // fpdf_signature.h, the sentences the eight edit boxes append, and the one question
+    // PDFium has no API for: which fields a signature's /Lock seals (sec.12.8.4, table 233).
+    {
+        QTemporaryDir signedScratch;
+        check(signedScratch.isValid(), "the signed samples get a scratch folder of their own");
+        const QString folder = signedScratch.path();
+        const auto pathOf = [&folder](const char *file) {
+            return folder + QLatin1Char('/') + QLatin1String(file);
+        };
+        QString error;
+
+        struct Sample
+        {
+            const char *file;
+            int docMdp;
+            int signatures;
+            bool lockField;
+        };
+        const Sample samples[] = {
+            {"signed-one.pdf", 0, 1, false},
+            {"signed-two.pdf", 0, 2, false},
+            {"signed-p1.pdf", 1, 1, false},
+            {"signed-p2.pdf", 2, 1, false},
+            {"signed-p3.pdf", 3, 1, false},
+            {"signed-locked.pdf", 0, 1, true},
+        };
+        for (const Sample &sample : samples) {
+            check(FormSampleFile::writeSigned(pathOf(sample.file), sample.docMdp,
+                                              sample.signatures, sample.lockField, &error),
+                  QStringLiteral("%1 is written from the specification's shape (%2)")
+                      .arg(QLatin1String(sample.file), error));
+        }
+
+        {
+            DocumentEditor one;
+            check(one.open(pathOf("signed-one.pdf"), QString(), &error),
+                  QStringLiteral("a signed document opens in the editor (%1)").arg(error));
+            note(QStringLiteral("signed: count=%1 docMdp=%2 notice=[%3]")
+                     .arg(one.signatureCount())
+                     .arg(one.docMdpPermission())
+                     .arg(QString(one.signatureInvalidationNotice()).replace(QLatin1Char('\n'),
+                                                                             QLatin1Char(' '))));
+            check(one.signatureCount() == 1, "the editor counts one signature");
+            check(one.docMdpPermission() == 0, "and reads no certification signature");
+            check(!one.structuralEditsRefused(),
+                  "so the eight edit boxes are not refused on its account");
+            check(one.certificationNotice().isEmpty(),
+                  "and none of them has a reason to be grey");
+            check(one.signatureInvalidationNotice().contains(
+                      QStringLiteral("保存之后这 1 个数字签名都会失效")),
+                  "the cost sentence says one signature stops covering the file");
+            check(one.lockedFieldNames().isEmpty(),
+                  "and a signature with no /Lock seals no field");
+        }
+        {
+            DocumentEditor two;
+            check(two.open(pathOf("signed-two.pdf"), QString(), &error),
+                  QStringLiteral("the two-signature sample opens (%1)").arg(error));
+            check(two.signatureCount() == 2, "both signatures are counted");
+            check(two.signatureInvalidationNotice().contains(QStringLiteral("2 个数字签名")),
+                  "and the cost sentence says two");
+        }
+        {
+            DocumentEditor p1;
+            check(p1.open(pathOf("signed-p1.pdf"), QString(), &error),
+                  QStringLiteral("the /P 1 sample opens (%1)").arg(error));
+            check(p1.signatureCount() == 1 && p1.docMdpPermission() == 1,
+                  "its certification signature is read as permitting nothing");
+            check(p1.structuralEditsRefused(),
+                  "so every structural edit box has to refuse the request");
+            check(p1.certificationNotice().contains(QStringLiteral("不允许任何改动")),
+                  "and the reason says the certification signature allows no change");
+            check(p1.signatureInvalidationNotice().contains(QStringLiteral("1 个数字签名")),
+                  "the cost sentence is still there beside the reason");
+        }
+        {
+            DocumentEditor p2;
+            check(p2.open(pathOf("signed-p2.pdf"), QString(), &error),
+                  QStringLiteral("the /P 2 sample opens (%1)").arg(error));
+            check(p2.docMdpPermission() == 2, "/P 2 is read as form filling only");
+            check(p2.structuralEditsRefused(),
+                  "which still leaves every structural box unable to confirm");
+            check(p2.certificationNotice().contains(QStringLiteral("只允许填写表单")),
+                  "and the reason says form filling is all it permits");
+        }
+        {
+            // P=3 adds annotations to what is allowed, and this version writes none, so
+            // the writer's answer has to be the same pair P=2 gives: refuse the structure,
+            // say the filling-only reason. Asserted as its own sample because a reader
+            // that only ever tested P=2 would not notice a `== 2` where the rule is `>= 2`.
+            DocumentEditor p3;
+            check(p3.open(pathOf("signed-p3.pdf"), QString(), &error),
+                  QStringLiteral("the /P 3 sample opens (%1)").arg(error));
+            check(p3.docMdpPermission() == 3, "/P 3 is read as filling and annotations");
+            check(p3.structuralEditsRefused(),
+                  "and it still leaves every structural box unable to confirm");
+            check(p3.certificationNotice().contains(QStringLiteral("只允许填写表单")),
+                  "with the same sentence P=2 shows, since nothing here writes annotations");
+            check(p3.signatureInvalidationNotice().contains(QStringLiteral("1 个数字签名")),
+                  "and the cost sentence beside it");
+        }
+        {
+            DocumentEditor sealed;
+            check(sealed.open(pathOf("signed-locked.pdf"), QString(), &error),
+                  QStringLiteral("the /Lock sample opens (%1)").arg(error));
+            note(QStringLiteral("signed lock: the writer reads [%1]")
+                     .arg(sealed.lockedFieldNames().join(QStringLiteral(", "))));
+            // One name, and it is the one the signature names -- not the field beside it.
+            // A reader that returned both names would still call the sealed field sealed,
+            // which is why the negative half is asserted separately.
+            check(sealed.lockedFieldNames() == QStringList{QStringLiteral("locked")},
+                  "the /Lock list names the sealed field and only it");
+            check(!sealed.lockedFieldNames().contains(QStringLiteral("name")),
+                  "the text field the signature does not name stays free");
+        }
+        {
+            DocumentEditor plain;
+            check(plain.open(QStringLiteral("tests/fixtures/many-pages.pdf"), QString(), &error),
+                  QStringLiteral("an unsigned document opens (%1)").arg(error));
+            check(plain.signatureCount() == 0 && plain.docMdpPermission() == 0,
+                  "and counts no signatures and no certification");
+            check(plain.signatureInvalidationNotice().isEmpty(),
+                  "so it has no cost sentence to show");
+            check(plain.certificationNotice().isEmpty(), "nor a reason for a grey button");
+            check(plain.lockedFieldNames().isEmpty(), "nor any sealed field");
+        }
+
+        // The reader's copy of the same two answers. The two engines are asked the same
+        // question about the same files, so the sentences the writer shows and the count
+        // the reader shows cannot drift apart without one of these turning red.
+        {
+            struct Agreement
+            {
+                const char *file;
+                int count;
+                int docMdp;
+            };
+            const Agreement rows[] = {
+                {"signed-one.pdf", 1, 0},
+                {"signed-two.pdf", 2, 0},
+                {"signed-p1.pdf", 1, 1},
+                {"signed-p2.pdf", 1, 2},
+                {"signed-p3.pdf", 1, 3},
+            };
+            for (const Agreement &row : rows) {
+                PdfiumBackend reader;
+                const bool opened = reader.load(pathOf(row.file), QString())
+                    == Document::Status::Ready;
+                check(opened, QStringLiteral("%1 opens in the reader as well")
+                                  .arg(QLatin1String(row.file)));
+                note(QStringLiteral("signed: %1 read by PDFium count=%2 docMdp=%3")
+                         .arg(QLatin1String(row.file))
+                         .arg(reader.signatureCount())
+                         .arg(reader.docMdpPermission()));
+                check(reader.signatureCount() == row.count
+                        && reader.docMdpPermission() == row.docMdp,
+                      QStringLiteral("%1: PDFium and the writer agree on %2 signature(s), P=%3")
+                          .arg(QLatin1String(row.file))
+                          .arg(row.count)
+                          .arg(row.docMdp));
+            }
+        }
+
+        // The one shape the two counters were measured disagreeing on: a signature field
+        // with no /V, which is what a blank template holds. PDFium's
+        // FPDF_GetSignatureCount counts the field (1); the specification's signature is
+        // the dictionary the field names, so both counters here answer 0 -- the writer's
+        // because /V is not a dictionary, the reader's because the object has no
+        // /ByteRange and no /Contents. Pinned as its own row because the number decides
+        // two visible things at once: what 文档 says about the file, and whether a field
+        // save appends to it or rewrites it.
+        {
+            const QString blankTemplate = pathOf("blank-signature-field.pdf");
+            check(FormSampleFile::write(blankTemplate, 0, false, &error),
+                  QStringLiteral("setup: the whole-form sample is written (%1)").arg(error));
+            DocumentEditor writer;
+            check(writer.open(blankTemplate, QString(), &error),
+                  QStringLiteral("the whole-form sample opens in the editor (%1)").arg(error));
+            PdfiumBackend reader;
+            check(reader.load(blankTemplate, QString()) == Document::Status::Ready,
+                  "and in the reader");
+            note(QStringLiteral("signed blank field: writer counts %1, reader counts %2")
+                     .arg(writer.signatureCount())
+                     .arg(reader.signatureCount()));
+            check(writer.signatureCount() == 0 && reader.signatureCount() == 0,
+                  "an empty signature field is counted as no signature by both");
+            check(writer.signatureInvalidationNotice().isEmpty(),
+                  "so a save of a blank template is not sold to the reader as costing signatures");
+        }
+
+        // What a structural save actually does to the bytes a signature claimed. QPDF
+        // rewrites the file, so the spans the source's /ByteRange names are no longer the
+        // bytes that were signed -- the assertion is on the bytes, not on qpdf's page
+        // objects, because the promise made to the reader is about the former.
+        {
+            const QString source = pathOf("signed-one.pdf");
+            const QString turned = folder + QStringLiteral("/signed-one-turned.pdf");
+            DocumentEditor editor;
+            check(editor.open(source, QString(), &error),
+                  QStringLiteral("the signed sample opens for the structural edit (%1)")
+                      .arg(error));
+            check(editor.rotatePages({0}, 1, &error),
+                  QStringLiteral("its only page turns (%1)").arg(error));
+            check(editor.saveAs(turned, &error),
+                  QStringLiteral("and the turn is written out (%1)").arg(error));
+
+            // The helper loads the file with FPDF_LoadDocument itself; the backend is kept
+            // alive across the call because PDFium is reference-counted here.
+            PdfiumBackend holder;
+            check(holder.load(source, QString()) == Document::Status::Ready,
+                  "the source opens, so its own /ByteRange can be read");
+            const QVector<int> range = FormSampleFile::signatureByteRange(source, 0);
+            note(QStringLiteral("signed save: source /ByteRange=[%1]")
+                     .arg([&range] {
+                         QStringList numbers;
+                         for (int number : range)
+                             numbers.append(QString::number(number));
+                         return numbers.join(QStringLiteral(","));
+                     }()));
+            check(range.size() == 4, "it states a two-span /ByteRange");
+
+            const auto bytesOf = [](const QString &path) {
+                QFile file(path);
+                if (!file.open(QIODevice::ReadOnly))
+                    return QByteArray();
+                return file.readAll();
+            };
+            const QByteArray before = bytesOf(source);
+            const QByteArray after = bytesOf(turned);
+            const QByteArray coveredBefore = FormSampleFile::signatureCoveredBytes(before, range);
+            const auto digestOf = [](const QByteArray &bytes) {
+                return QString::fromLatin1(
+                    QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+            };
+            const QString digestBefore = digestOf(coveredBefore);
+            check(!coveredBefore.isEmpty(), "the source's spans name real bytes");
+
+            // A rewrite by qpdf is not obliged to keep the file as long as it was, and on
+            // this sample it does not: the second span ends past the rewritten file. That
+            // is one way for the signature to stop covering anything; the other is a span
+            // that is still there and holds different bytes. Both are failures of the
+            // signature's claim, and the assertion accepts either rather than pinning
+            // qpdf's serialization.
+            const qint64 coveredEnd = qint64(range.at(2)) + range.at(3);
+            const bool spansStillThere = after.size() >= coveredEnd;
+            const QString digestAfter = spansStillThere
+                ? digestOf(FormSampleFile::signatureCoveredBytes(after, range))
+                : QStringLiteral("(span past the end)");
+            note(QStringLiteral("signed save: source %1 bytes, rewritten %2 bytes, covered "
+                                "ends at %3; sha256 before=%4 after=%5")
+                     .arg(before.size())
+                     .arg(after.size())
+                     .arg(coveredEnd)
+                     .arg(digestBefore, digestAfter));
+            check(!(spansStillThere && digestAfter == digestBefore),
+                  "the rewritten file no longer holds the bytes the signature covered");
+            check(pagesAsReadByTheReader(turned) == 1
+                    && rotationsInFile(turned) == QVector<int>{90},
+                  "and the file that came out is the one page, turned the way it was asked");
+
+            // Not asserted: what qpdf leaves of the signature dictionary in the rewritten
+            // file is qpdf's decision, and the promise is only that the covered bytes moved.
+            // The reading is here so the report can say what that decision was.
+            PdfiumBackend written;
+            const bool writtenOpens
+                = written.load(turned, QString()) == Document::Status::Ready;
+            check(writtenOpens, "the rewritten file opens in the reader");
+            note(QStringLiteral("signed save: the rewritten file counts %1 signature(s), P=%2")
+                     .arg(written.signatureCount())
+                     .arg(written.docMdpPermission()));
+        }
     }
 
     // ---- whether two paths name one file ----

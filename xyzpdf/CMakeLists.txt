@@ -416,6 +416,8 @@ set(XYZPDF_SOURCES
     src/services/ocrsession.cpp
     src/services/searchsession.h
     src/services/searchsession.cpp
+    src/services/signaturesession.h
+    src/services/signaturesession.cpp
     src/services/translatesession.h
     src/services/translatesession.cpp
     src/services/wordexportsession.h
@@ -464,6 +466,8 @@ set(XYZPDF_SOURCES
     src/ui/rotatepagesdialog.cpp
     src/ui/searchpanel.h
     src/ui/searchpanel.cpp
+    src/ui/signaturepanel.h
+    src/ui/signaturepanel.cpp
     src/ui/splitpagesdialog.h
     src/ui/splitpagesdialog.cpp
     src/ui/thirdpartydialog.h
@@ -758,10 +762,13 @@ endif()
 # beside them, and the two time sources. The samples are signed here, in memory, by a key that
 # never reaches the disk and a certificate that never reaches a store -- see
 # tests/signaturesample.h for why that is the whole design. crypt32 is named because this is the
-# one test that exercises it directly.
-option(XYZPDF_BUILD_SIGNATUREVERIFY_SMOKE "Build the signature verification smoke test" OFF)
-if(XYZPDF_BUILD_SIGNATUREVERIFY_SMOKE)
-    xyzpdf_add_test(signatureverify_smoke
+# one test that exercises it directly. The name is signaturecheck rather than
+# signatureverify because tools/build_all_tests.py skips any target whose name contains
+# "verify" -- it is in NOT_A_TEST for probes that print numbers instead of passing -- and a
+# smoke test with that word in it is never run.
+option(XYZPDF_BUILD_SIGNATURECHECK_SMOKE "Build the signature verification smoke test" OFF)
+if(XYZPDF_BUILD_SIGNATURECHECK_SMOKE)
+    xyzpdf_add_test(signaturecheck_smoke
         SOURCES src/document/signatureverify.cpp
         LIBRARIES xyzpdf_pdfium qpdf::libqpdf crypt32)
 endif()
@@ -914,7 +921,9 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
     # The tab owns the recognition flow, so the engine comes with it -- which
     # also means this test runs real Windows OCR once, on the region drag it
     # performs below.
-    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
+    # crypt32 because the signed samples this target opens are made during the run, in memory --
+    # see tests/signaturesample.h for why a committed signed PDF would be worse.
+    set(XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf crypt32)
     if(WIN32)
         list(APPEND XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES windowsapp advapi32)
     endif()
@@ -932,6 +941,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
+                src/document/signatureverify.cpp
                 src/document/textlayer.cpp
                 src/document/textsearch.cpp
                 src/export/docxwriter.cpp
@@ -956,6 +966,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/protectpagesdialog.cpp
                 src/ui/rotatepagesdialog.cpp
                 src/ui/searchpanel.cpp
+                src/ui/signaturepanel.cpp
                 src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp
@@ -966,6 +977,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/services/filechangenotice.cpp
                 src/services/ocrsession.cpp
                 src/services/searchsession.cpp
+                src/services/signaturesession.cpp
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
                 src/theme/thememanager.cpp
@@ -981,7 +993,7 @@ endif()
 # call to setAcceptDrops(), and neither is visible in the handlers.
 option(XYZPDF_BUILD_MAINWINDOW_SMOKE "Build the window drag-and-drop smoke test" OFF)
 if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
-    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf)
+    set(XYZPDF_MAINWINDOW_SMOKE_LIBRARIES Qt6::Widgets xyzpdf_pdfium Qt6::Concurrent Qt6::Network Qt6::PrintSupport qpdf::libqpdf crypt32)
     if(WIN32)
         list(APPEND XYZPDF_MAINWINDOW_SMOKE_LIBRARIES windowsapp advapi32)
     endif()
@@ -1001,6 +1013,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/document/pdfiumformfill.cpp
                 src/document/outline.cpp
                 src/document/pagemetrics.cpp
+                src/document/signatureverify.cpp
                 src/document/textlayer.cpp
                 src/document/textsearch.cpp
                 src/edit/documenteditor.cpp
@@ -1019,6 +1032,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/services/filechangenotice.cpp
                 src/services/ocrsession.cpp
                 src/services/searchsession.cpp
+                src/services/signaturesession.cpp
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
                 src/settings/settingsdialog.cpp
@@ -1038,6 +1052,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/protectpagesdialog.cpp
                 src/ui/rotatepagesdialog.cpp
                 src/ui/searchpanel.cpp
+                src/ui/signaturepanel.cpp
                 src/ui/splitpagesdialog.cpp
                 src/ui/thumbnailpanel.cpp
                 src/ui/translatedialog.cpp

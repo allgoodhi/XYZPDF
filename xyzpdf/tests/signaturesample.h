@@ -13,7 +13,7 @@
 // rather than `CERT_KEY_PROV_INFO_PROP_ID` for the same reason: an ephemeral container has no
 // name to reopen, and the header says the key context property is consulted first.
 //
-// That is also why tests/signatureverify_smoke.cpp verifies the same sample twice, with and
+// That is also why tests/signaturecheck_smoke.cpp verifies the same sample twice, with and
 // without the injected root store: the difference between those two runs is the evidence that the
 // trusted verdict came from the test and not from something already installed here.
 //
@@ -404,8 +404,12 @@ struct Built
 
 // One pass: assemble a file whose /Contents hole is `holeBytes` wide, then state the /ByteRange
 // the hole actually implies.
+//
+// `signSecondPage` puts the widget on a second page rather than on the first. It exists for the
+// sidebar's jump: a row that goes to page 1 of a one-page document cannot be told apart from a row
+// that never moved the page at all, and the point of the row is the move.
 inline Built assemble(int holeBytes, const QString &subFilterName, const QString &reason,
-                      const QString &location, int docMdp, bool gapAtFront)
+                      const QString &location, int docMdp, bool gapAtFront, bool signSecondPage)
 {
     // `holeBytes` is the width of `<...>` including both brackets, so the hex digits inside are
     // two fewer than that. Getting this backwards by two is what made the first version of this
@@ -413,23 +417,36 @@ inline Built assemble(int holeBytes, const QString &subFilterName, const QString
     const QByteArray marker = QByteArray("AB").repeated((holeBytes - 2) / 2);
     const QByteArray rangePlaceholder = "[0000000000 0000000000 0000000000 0000000000]";
     const FormSampleFile::SignedGeometry sample;
-    QVector<QByteArray> objects(12);
+    // Object 12 is the second page when there is one, and the incremental update appendRevision()
+    // adds uses 13 so that the two shapes number the same way.
+    QVector<QByteArray> objects(signSecondPage ? 14 : 12);
+    for (int unused = 7; unused < objects.size(); ++unused)
+        objects[unused] = "null";
     QByteArray catalog = "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R";
     if (docMdp > 0)
         catalog += " /Perms << /DocMDP 10 0 R >>";
     objects[1] = catalog + " >>";
-    objects[2] = "<< /Type /Pages /Kids [4 0 R] /Count 1 >>";
+    objects[2] = signSecondPage
+        ? "<< /Type /Pages /Kids [4 0 R 12 0 R] /Count 2 >>"
+        : "<< /Type /Pages /Kids [4 0 R] /Count 1 >>";
     objects[3] = "<< /Type /AcroForm /Fields [5 0 R 6 0 R] /DA (/Helv 9 Tf 0 g ) /DR << /Font "
                  "<< /Helv 8 0 R >> >> >>";
     objects[4] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << "
-                 "/Helv 8 0 R >> >> /Annots [5 0 R 6 0 R] >>";
+                 "/Helv 8 0 R >> >> /Annots "
+        + (signSecondPage ? QByteArray("[5 0 R]") : QByteArray("[5 0 R 6 0 R]")) + " >>";
     objects[5] = FormSampleFile::widgetBody(QStringLiteral("name"), "/Tx", sample.textField,
                                             " /V (before) /DA (/Helv 10 Tf 0 g )");
+    // A widget's /P names the page it belongs to (PDF 32000-1 table 189), so the second-page shape
+    // has to say so -- the qpdf half walks /Annots to find the page, and the form layer resolves
+    // /P. Both are set here so the two cannot disagree about where the signature is.
+    const QByteArray widgetExtra
+        = signSecondPage ? " /V 10 0 R /P 12 0 R" : " /V 10 0 R /P 4 0 R";
     objects[6] = FormSampleFile::widgetBody(QStringLiteral("sig1"), "/Sig", sample.signature,
-                                            " /V 10 0 R");
-    objects[7] = "null";
+                                            widgetExtra);
     objects[8] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
-    objects[9] = "null";
+    if (signSecondPage)
+        objects[12] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font "
+                      "<< /Helv 8 0 R >> >> /Annots [6 0 R] >>";
 
     const auto escape = [](QString text) {
         text.replace(QLatin1Char('('), QStringLiteral("\\("));
@@ -503,13 +520,13 @@ inline QByteArray appendRevision(const QByteArray &file)
 
     QByteArray added = file;
     const int objectAt = added.size();
-    // Object 12 is the next number the base file does not use; /Size below has to stay one
-    // greater than the highest number in the file.
-    added += "12 0 obj\n<< /Note (an incremental update after the signature) >>\nendobj\n";
+    // Object 13 is the next number neither shape of the base file uses; /Size below has to stay
+    // one greater than the highest number in the file.
+    added += "13 0 obj\n<< /Note (an incremental update after the signature) >>\nendobj\n";
     const int xrefAt = added.size();
-    added += "xref\n12 1\n" + QByteArray::number(objectAt).rightJustified(10, '0')
+    added += "xref\n13 1\n" + QByteArray::number(objectAt).rightJustified(10, '0')
         + " 00000 n \n";
-    added += "trailer\n<< /Size 13 /Root 1 0 R /Prev " + QByteArray::number(previousStartXref)
+    added += "trailer\n<< /Size 14 /Root 1 0 R /Prev " + QByteArray::number(previousStartXref)
         + " >>\nstartxref\n" + QByteArray::number(xrefAt) + "\n%%EOF\n";
     return added;
 }
@@ -526,6 +543,7 @@ struct Shape
     // Append N incremental updates after signing, so the signed ranges stop short of the end.
     int revisionsAfter = 0;
     bool bogusTimestampToken = false;
+    bool signSecondPage = false;
 };
 
 inline bool write(const QString &path, const Identity &identity, const Shape &shape,
@@ -536,7 +554,7 @@ inline bool write(const QString &path, const Identity &identity, const Shape &sh
     Built built;
     for (int attempt = 0; attempt < 4; ++attempt) {
         built = assemble(holeBytes, shape.subFilter, shape.reason, shape.location, shape.docMdp,
-                         shape.gapAtFront);
+                         shape.gapAtFront, shape.signSecondPage);
         if (built.holeStart < 0 || built.byteRange.size() != 4) {
             *why = QStringLiteral("the sample could not be assembled");
             return false;

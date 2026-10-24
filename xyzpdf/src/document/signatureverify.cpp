@@ -28,7 +28,7 @@
 //
 // The same rule reaches `adbe.pkcs7.sha1`, whose blob encapsulates its content: neither check
 // looks at the encapsulated bytes, so one path serves both -- stated as reasoning, and the row
-// in tests/signatureverify_smoke.cpp says which accepted names have actually been put in front
+// in tests/signaturecheck_smoke.cpp says which accepted names have actually been put in front
 // of this code.
 //
 // ---- which read answers which field ----
@@ -1138,32 +1138,33 @@ QString summary(const QVector<Signature> &signatures)
 {
     if (signatures.isEmpty())
         return {};
+    // Each fragment is spelled out as a literal rather than pulled from a table, because lupdate
+    // matches on literals: a `const char *` field in a struct is invisible to it, and the sentence
+    // is then in the binary, in the right runtime context, and not in the catalogue -- which on an
+    // English interface reads as Chinese. AGENTS.md, sec.112, and tests/i18n_smoke.cpp's probe is
+    // what caught it here.
+    QStringList parts;
     // The order the fragments are appended in is the order a reader has to see them in: the one
     // that means the document itself changed comes first, whatever the file's own order is
     // (handoff-07 I1 4: 有"内容被改过"的，那一句排在最前面).
-    struct Fragment {
-        Verdict verdict;
-        const char *one;
-        const char *many;
-    };
-    static const Fragment fragments[] = {
-        { Verdict::ContentModified, "%n 个内容被改过", "%n 个内容被改过" },
-        { Verdict::Unverifiable, "%n 个无法验证", "%n 个无法验证" },
-        { Verdict::CertificateProblem, "%n 个证书不受信任或已过期",
-          "%n 个证书不受信任或已过期" },
-        { Verdict::Valid, "%n 个有效", "%n 个有效" },
-    };
-    QStringList parts;
-    for (const Fragment &fragment : fragments) {
-        const int count = countWithVerdict(signatures, fragment.verdict);
-        if (count <= 0)
-            continue;
-        parts << QCoreApplication::translate("SignatureVerify", fragment.one, fragment.many,
-                                             count);
-    }
-    // Chinese has one form for every count, so each pair above is the same string; that is what a
-    // numerus entry needs, and check_translations.py's 两形相同 rule only bites in the English
-    // catalogue, where the two differ.
+    int count = countWithVerdict(signatures, Verdict::ContentModified);
+    if (count > 0)
+        parts << QCoreApplication::translate("SignatureVerify", "%n 个内容被改过", nullptr, count);
+    count = countWithVerdict(signatures, Verdict::Unverifiable);
+    if (count > 0)
+        parts << QCoreApplication::translate("SignatureVerify", "%n 个无法验证", nullptr, count);
+    count = countWithVerdict(signatures, Verdict::CertificateProblem);
+    if (count > 0)
+        parts << QCoreApplication::translate("SignatureVerify", "%n 个证书不受信任或已过期",
+                                             nullptr, count);
+    count = countWithVerdict(signatures, Verdict::Valid);
+    if (count > 0)
+        parts << QCoreApplication::translate("SignatureVerify", "%n 个有效", nullptr, count);
+    // One literal per fragment rather than a singular and a plural, which is what the rest of the
+    // program's counted sentences do: handing lupdate two identical literals puts the second one in
+    // the entry's <comment>, and Qt then treats it as a disambiguation -- so a lookup for n=1
+    // answers the plural form and the row reads "1 has". Two forms still come out for the
+    // translator to fill, and in English they do differ ("1 is valid" against "%n are valid").
     return QCoreApplication::translate("SignatureVerify",
                                        "这份文档带着 %n 个数字签名：", nullptr,
                                        signatures.size())

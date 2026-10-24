@@ -1529,6 +1529,19 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
             updateForCurrentTab();
     });
 
+    // The signature answer, which arrives on its own schedule because the checking is on a
+    // worker. It replaces the "正在检查" line the open wrote, and only for the tab in front: an
+    // answer about a document the reader has moved away from is not something to put in their
+    // status bar.
+    connect(tab, &DocumentTab::signaturesVerified, this, [this, tab] {
+        if (tab != currentTab())
+            return;
+        const QString summary = tab->signatureSummary();
+        if (summary.isEmpty())
+            return;
+        setStatusMessage(summary, 15000);
+    });
+
     const auto applyTitle = [this, tab](const QString &title) {
         const int at = tabs->indexOf(tab);
         if (at >= 0 && !title.isEmpty())
@@ -1646,11 +1659,14 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         }
         const int signatures = tab->signatureCount();
         if (signatures > 0) {
+            // Saying it is being checked rather than staying quiet, because the checking is on a
+            // worker and the answer lands a second later: a reader who opens a signed document and
+            // sees nothing about it will conclude the program did not look.
             openedMessage =
-                (plainOpen ? tr("已打开 %1 —— 这份文档带着 %n 个数字签名，本版不验证签名本身。",
+                (plainOpen ? tr("已打开 %1 —— 这份文档带着 %n 个数字签名，正在检查。",
                                 nullptr, signatures)
                            : openedMessage
-                                 + tr("\n\n这份文档带着 %n 个数字签名，本版不验证签名本身。", nullptr,
+                                 + tr("\n\n这份文档带着 %n 个数字签名，正在检查。", nullptr,
                                       signatures))
                     .arg(info.fileName());
             openedTimeout = qMax(openedTimeout, 12000);

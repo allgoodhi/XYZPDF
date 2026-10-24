@@ -228,6 +228,54 @@ inline void setTranslateConsent(const QString &provider, bool given)
     valueStore.sync();
 }
 
+// Whether the reader wants a certificate's revocation status asked of the network.
+//
+// Off by default and the default is the whole design: the chain question is asked with
+// CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY, which never leaves the machine, and the answer says
+// "未联网检查吊销状态" rather than letting a clean verdict imply more than it was asked. Turning
+// this on means XYZPDF opens the CRL and OCSP addresses that are written inside the certificate
+// of whatever document the reader happens to have open -- which says to somebody else that this
+// machine is reading that document. So the switch is not enough on its own: the first time a
+// verification would actually go out, the reader is asked (see signatureRevocationConsentGiven).
+inline QString signatureRevocationCheckKey()
+{
+    return QStringLiteral("signatures/checkRevocationOnline");
+}
+
+inline bool signatureRevocationCheckEnabled()
+{
+    QSettings valueStore = settings();
+    return valueStore.value(signatureRevocationCheckKey(), false).toBool();
+}
+
+inline void setSignatureRevocationCheckEnabled(bool enabled)
+{
+    QSettings valueStore = settings();
+    valueStore.setValue(signatureRevocationCheckKey(), enabled);
+    valueStore.sync();
+}
+
+// Whether the reader has agreed, once, to that first connection. Stored apart from the switch
+// because they are two different wishes: turning a setting on in a dialog is not the same act as
+// agreeing, in front of a document, to have its certificates queried. Revocable, and saying no
+// stores nothing -- the question comes again next time rather than being answered by a refusal.
+inline QString signatureRevocationConsentKey()
+{
+    return QStringLiteral("signatures/revocationConsent");
+}
+
+inline bool signatureRevocationConsentGiven()
+{
+    return settings().value(signatureRevocationConsentKey(), false).toBool();
+}
+
+inline void setSignatureRevocationConsent(bool given)
+{
+    QSettings valueStore = settings();
+    valueStore.setValue(signatureRevocationConsentKey(), given);
+    valueStore.sync();
+}
+
 // How a translation is asked for.
 //
 // "menu" (the default) only translates when the reader chooses it -- the

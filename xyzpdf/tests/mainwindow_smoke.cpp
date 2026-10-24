@@ -18,6 +18,8 @@
 //
 // It runs on the offscreen platform: the point is the plumbing.
 
+#include "signaturesample.h"
+
 #include "../documenttab.h"
 #include "../mainwindow.h"
 #include "../src/core/languages.h"
@@ -964,8 +966,91 @@ int main(int argc, char **argv)
         std::cout << "MEASURE status signed: [" << signedSaid.toStdString() << "]\n";
         check(signedSaid.contains(QStringLiteral("1 个数字签名")),
               QStringLiteral("the bar counts the signature: %1").arg(signedSaid));
-        check(signedSaid.contains(QStringLiteral("不验证")),
-              QStringLiteral("and says the signature itself is not checked: %1").arg(signedSaid));
+        // handoff-07 I1 replaced 本版不验证签名本身 with a checking promise and, a moment later,
+        // the verdict. Both halves are asserted: that the open line says the check started, and
+        // that it no longer claims the checking is not done -- a sentence that still said so would
+        // sit under the verdict row and contradict it.
+        check(signedSaid.contains(QStringLiteral("正在检查")),
+              QStringLiteral("and says the check has started: %1").arg(signedSaid));
+        check(!signedSaid.contains(QStringLiteral("不验证")),
+              QStringLiteral("and no longer says the signature is not checked: %1")
+                  .arg(signedSaid));
+
+        // The verdict itself, which arrives on the worker's schedule and replaces that line.
+        // `signedPath` is the shape §122 built: a real /ByteRange over a /Contents of placeholder
+        // bytes, which is not a decodable PKCS#7 -- so the honest answer about it is 无法验证, and
+        // the reading that matters is that a verdict reached the bar at all rather than the
+        // promise staying up.
+        const QString checkedSaid = saidFor(signedPath, QStringLiteral("无法验证"));
+        std::cout << "MEASURE status checked: [" << checkedSaid.toStdString() << "]\n";
+        check(checkedSaid.contains(QStringLiteral("无法验证")),
+              QStringLiteral("the finished check reaches the bar with its verdict: %1")
+                  .arg(checkedSaid));
+        check(checkedSaid.contains(QStringLiteral("1 个数字签名")),
+              QStringLiteral("and the summary still says how many there were: %1")
+                  .arg(checkedSaid));
+        check(!checkedSaid.contains(QStringLiteral("正在检查")),
+              QStringLiteral("an answered document is not still being checked: %1")
+                  .arg(checkedSaid));
+
+        // ---- a signature made here, and the same one after a byte moved ----
+        //
+        // The two verdicts the status line has to be able to lead with. The certificates are
+        // created in memory for this run (tests/signaturesample.h), so on this machine the trusted
+        // answer is unreachable and both files come back as the certificate row or the content row
+        // -- which is what is being asked about here: that the heaviest of the four reaches the
+        // bar ahead of the quiet ones.
+        {
+            SignedSample::Identity signer;
+            QString signerWhy;
+            const QDateTime now = QDateTime::currentDateTime();
+            const bool built
+                = SignedSample::createIdentity(&signer, QStringLiteral("XYZPDF window signer"),
+                                               now.addDays(-2), now.addDays(200), &signerWhy);
+            check(built, QStringLiteral("setup: an in-memory certificate for the window's "
+                                        "signature readings (%1)")
+                             .arg(signerWhy));
+            if (built) {
+                const QString verifiedPath = signedSamples.filePath(QStringLiteral("verified.pdf"));
+                SignedSample::Shape goodShape;
+                QByteArray goodBytes;
+                check(SignedSample::write(verifiedPath, signer, goodShape, &goodBytes, &signerWhy),
+                      QStringLiteral("setup: a genuinely signed sample (%1)").arg(signerWhy));
+
+                const QString untrustedSaid
+                    = saidFor(verifiedPath, QStringLiteral("证书不受信任"));
+                std::cout << "MEASURE status trusted: [" << untrustedSaid.toStdString() << "]\n";
+                check(untrustedSaid.contains(QStringLiteral("证书不受信任或已过期")),
+                      QStringLiteral("a signature by a root this machine does not trust says so: %1")
+                          .arg(untrustedSaid));
+
+                // The same file with one covered byte moved: 内容被改过, and it is the row the
+                // summary puts first. The byte is inside the first span and the file keeps its
+                // length, so the signature's own claim is unchanged and only the bytes disagree.
+                const QString tamperedPath = signedSamples.filePath(QStringLiteral("tampered.pdf"));
+                QByteArray moved = goodBytes;
+                const int at = moved.indexOf("(before)");
+                check(at > 0, "setup: the signed sample carries the field value to change");
+                if (at > 0) {
+                    moved.replace(at + 1, 1, "x");
+                    QFile movedFile(tamperedPath);
+                    movedFile.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                    movedFile.write(moved);
+                    movedFile.close();
+                    const QString changedSaid
+                        = saidFor(tamperedPath, QStringLiteral("内容被改过"));
+                    std::cout << "MEASURE status tampered: [" << changedSaid.toStdString() << '\n';
+                    check(changedSaid.contains(QStringLiteral("内容被改过")),
+                          QStringLiteral("one moved byte is 内容被改过 on the bar: %1")
+                              .arg(changedSaid));
+                    // The order the fragments are put in is signaturecheck_smoke's assertion --
+                    // it takes a mixed set of four verdicts and can see which comes first. What
+                    // this reading adds is that the sentence reached the bar at all, on the
+                    // window's thread, from a worker.
+                }
+            }
+            SignedSample::releaseIdentity(&signer);
+        }
 
         const QString p1Said = saidFor(p1Path, QStringLiteral("不允许任何改动"));
         std::cout << "MEASURE status signed p1: [" << p1Said.toStdString() << "]\n";

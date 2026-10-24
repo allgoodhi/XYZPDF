@@ -54,13 +54,22 @@ PropertiesDialog::PropertiesDialog(QWidget *parent, const Info &info)
     // machine uses in the reader's language rather than a number of bytes.
     addRow(tr("大小"), QLocale().formattedDataSize(info.fileBytes));
     addRow(tr("页数"), QLocale().toString(info.pageCount));
-    // A count, not "signed": the file says how many signature dictionaries it carries,
-    // and nothing in this program checks the cryptography behind them -- 文档 says that
-    // half at open, and this row is the number. Left out entirely for the ordinary file
-    // with none: every other row of this box names a thing the document has, so a row
-    // that always reads （无） would make the empty ones ambiguous instead of informative.
-    if (info.signatureCount > 0)
-        addRow(tr("数字签名"), tr("%n 个", nullptr, info.signatureCount));
+    // A count, and -- once the checker has answered -- how many of them came out 有效. The second
+    // number is the one that carries the %n, because it is the one whose plural form depends on a
+    // count ("1 valid" against "%n valid"); the total goes in through %1, and the row is one
+    // sentence rather than two so that a reader is not left adding them up.
+    //
+    // A negative valid count means the check has not answered yet, and the row says only the
+    // total: "2 个，其中 0 个有效" would report two failures on a document whose verification is
+    // still running.
+    if (info.signatureCount > 0) {
+        if (info.validSignatureCount >= 0)
+            addRow(tr("数字签名"),
+                   tr("%1 个，其中 %n 个有效", nullptr, info.validSignatureCount)
+                       .arg(info.signatureCount));
+        else
+            addRow(tr("数字签名"), tr("%n 个", nullptr, info.signatureCount));
+    }
 
     if (info.pagePoints.width() > 0 && info.pagePoints.height() > 0) {
         // Both units: points are what the file is written in and what every

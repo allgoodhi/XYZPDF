@@ -44,6 +44,7 @@
 #include "../src/view/pageview.h"
 #include "../src/view/zoomcontroller.h"
 
+#include "signaturesample.h"
 #include "formsample.h"
 
 #include <QAccessible>
@@ -2257,8 +2258,13 @@ int main(int argc, char **argv)
             check(panel != nullptr && sidebar != nullptr, "the tab has a search list and a sidebar");
             if (!panel || !sidebar)
                 return 1;
-            check(sidebar->count() == 3 && sidebar->tabText(2) == QStringLiteral("搜索"),
-                  QStringLiteral("the sidebar's third tab is 搜索 (%1 tabs)").arg(sidebar->count()));
+            // Four tabs since handoff-07 I1, and the count is of the tab widget rather than of the
+            // visible ones: 签名 is *hidden* for an unsigned document by QTabWidget::setTabVisible,
+            // which leaves the index the search panel has always been at.
+            check(sidebar->count() == 4 && sidebar->tabText(2) == QStringLiteral("搜索")
+                      && sidebar->tabText(3) == QStringLiteral("签名"),
+                  QStringLiteral("the sidebar's third tab is 搜索 and its fourth is 签名 (%1 tabs)")
+                      .arg(sidebar->count()));
             check(!tab.sidebarVisible(), "the sidebar is shut before any of this");
             check(panel->count() == 0, "and the list is empty");
 
@@ -5512,6 +5518,11 @@ int main(int argc, char **argv)
 
             // The properties row is fed by the same count, and it is the only place the
             // number is shown without a sentence around it.
+            // The row the properties box gets depends on whether the check has answered, so the
+            // reading waits for the answer rather than racing it: before it, the row says only the
+            // count, after it the count and how many came out valid -- and for this sample, whose
+            // /Contents is a placeholder rather than a PKCS#7, that is none of them.
+            waitFor([&p1Tab] { return p1Tab.signatureRowCount() == 1; });
             const PropertiesDialog::Info p1Info = p1Tab.propertiesInfo();
             check(p1Info.signatureCount == 1,
                   "signed: the properties gather the signature count");
@@ -5521,7 +5532,7 @@ int main(int argc, char **argv)
                 for (QLabel *label : box.findChildren<QLabel *>())
                     texts.append(label->text());
                 check(texts.contains(QStringLiteral("数字签名"))
-                        && texts.contains(QStringLiteral("1 个")),
+                        && texts.contains(QStringLiteral("1 个，其中 0 个有效")),
                       QStringLiteral("signed: and the dialog shows one (%1)")
                           .arg(texts.join(QStringLiteral(" | "))));
             }
@@ -5644,6 +5655,123 @@ int main(int argc, char **argv)
             check(waitFor([&lockedTab] { return lockedTab.view()->fieldHasFocus(); }),
                   "signed: while the field beside it does");
         }
+    }
+
+    // ---- 签名的答案上侧栏 ----
+    //
+    // handoff-07 I1 from the tab's side: the fourth sidebar page appears for a document that
+    // carries signatures and not for one that does not, a row names the verdict and the page the
+    // field is on, pressing it moves the page, and the verification is waited for before the
+    // document it read is replaced.
+    //
+    // The signature is made during this run by a key in a temporary container and a certificate
+    // that never reaches a store (tests/signaturesample.h). No root is injected here, so the
+    // honest verdict on this machine is 证书不受信任或已过期 -- and that is the reading worth
+    // having in the tab test: it can only come from a check that ran.
+    {
+        QTemporaryDir verifyDir;
+        check(verifyDir.isValid(), "verify: a scratch folder for the checked samples");
+        const QString verifyFolder = verifyDir.path();
+        SignedSample::Identity signer;
+        QString signerWhy;
+        const QDateTime verifyNow = QDateTime::currentDateTime();
+        const bool verifyBuilt
+            = SignedSample::createIdentity(&signer, QStringLiteral("XYZPDF tab signer"),
+                                           verifyNow.addDays(-2), verifyNow.addDays(200),
+                                           &signerWhy);
+        check(verifyBuilt, QStringLiteral("verify: an in-memory certificate (%1)")
+                               .arg(signerWhy));
+        if (verifyBuilt) {
+            const QString pageTwoPath = verifyFolder + QStringLiteral("/sig-page2.pdf");
+            SignedSample::Shape onSecond;
+            onSecond.signSecondPage = true;
+            QByteArray secondBytes;
+            check(SignedSample::write(pageTwoPath, signer, onSecond, &secondBytes, &signerWhy),
+                  QStringLiteral("verify: a sample signed on its second page (%1)")
+                      .arg(signerWhy));
+
+            DocumentTab verifyTab;
+            verifyTab.resize(900, 700);
+            verifyTab.show();
+            verifyTab.setSidebarVisible(true);
+            check(verifyTab.open(pageTwoPath) == Document::Status::Ready,
+                  QStringLiteral("verify: the tab opens it (%1)").arg(verifyTab.lastError()));
+            // The check runs on a worker, so the row arrives. Waiting for it is the test: a panel
+            // that is filled synchronously would pass the same assertions with no thread at all,
+            // and the drainRenders() wait underneath is what makes the answer safe.
+            check(waitFor([&verifyTab] { return verifyTab.signatureRowCount() == 1; }),
+                  QStringLiteral("verify: one signature row arrives from the worker (%1 rows)")
+                      .arg(verifyTab.signatureRowCount()));
+            check(verifyTab.signaturePanelVisible(),
+                  "verify: and the 签名 page is showing for a document that carries one");
+            const QString row = verifyTab.signatureRowText(0);
+            std::cout << "MEASURE verify row: [" << row.toStdString() << "]\n";
+            check(row.contains(QStringLiteral("证书不受信任或已过期")),
+                  QStringLiteral("the row says which of the four it is: %1").arg(row));
+            check(row.contains(QStringLiteral("XYZPDF tab signer")),
+                  QStringLiteral("and names the signer the certificate names: %1").arg(row));
+            // The join that handoff-07 asked for by value rather than by order: the page the row
+            // carries is the page the *field* is on, which only the qpdf half can answer.
+            check(verifyTab.signatureRowPage(0) == 1,
+                  QStringLiteral("and the row points at the second page, where the widget is (%1)")
+                      .arg(verifyTab.signatureRowPage(0)));
+
+            // Pressing it moves the page. Started from the first page so that the move is the
+            // reading, not the absence of one.
+            verifyTab.setCurrentPage(0);
+            check(verifyTab.currentPage() == 0, "verify: the tab starts on the first page");
+            verifyTab.selectSignatureRow(0);
+            check(waitFor([&verifyTab] { return verifyTab.currentPage() == 1; }),
+                  QStringLiteral("verify: pressing the row goes to the signature's page (%1)")
+                      .arg(verifyTab.currentPage()));
+
+            // A second document replaces the first: the panel must not still be showing the
+            // answer about a file the tab no longer reads. This is drainRenders() and the
+            // identity guard working together -- a stale list is the shape that would otherwise
+            // say "1 signature" about an unsigned document.
+            const QString plainCopy = verifyFolder + QStringLiteral("/plain.pdf");
+            check(QFile::copy(directory + QStringLiteral("/text.pdf"), plainCopy),
+                  "verify: an unsigned copy for the replacement reading");
+            check(verifyTab.open(plainCopy) == Document::Status::Ready,
+                  QStringLiteral("verify: the same tab opens the unsigned copy (%1)")
+                      .arg(verifyTab.lastError()));
+            check(!verifyTab.signaturePanelVisible(),
+                  "verify: and the 签名 page is taken away for a document with none");
+            check(waitFor([&verifyTab] { return verifyTab.signatureRowCount() == 0; }, 5000),
+                  QStringLiteral("verify: no row from the previous document is left (%1)")
+                      .arg(verifyTab.signatureRowCount()));
+            check(verifyTab.signatureSummary().isEmpty(),
+                  "verify: and the unsigned document gets no summary sentence");
+
+            // The properties row: the count, and the second number only once the check has
+            // answered. Re-opened so the answer has arrived before the box is read.
+            check(verifyTab.open(pageTwoPath) == Document::Status::Ready,
+                  "verify: back to the signed file for the properties row");
+            check(waitFor([&verifyTab] { return verifyTab.signatureRowCount() == 1; }),
+                  "verify: its answer arrives again");
+            const PropertiesDialog::Info verifyInfo = verifyTab.propertiesInfo();
+            check(verifyInfo.signatureCount == 1,
+                  "verify: the properties count is the file's own");
+            check(verifyInfo.validSignatureCount == 0,
+                  "verify: and zero of them came back valid on this machine");
+
+            // The appended-revision fact, on the tab's own answer: one update after the signing
+            // is a line in the detail, and the covered bytes still match.
+            const QString appendedPath = verifyFolder + QStringLiteral("/sig-appended.pdf");
+            SignedSample::Shape appendedShape;
+            appendedShape.revisionsAfter = 1;
+            check(SignedSample::write(appendedPath, signer, appendedShape, nullptr, &signerWhy),
+                  QStringLiteral("verify: a sample with one update appended (%1)")
+                      .arg(signerWhy));
+            DocumentTab appendedTab;
+            appendedTab.resize(900, 700);
+            appendedTab.show();
+            check(appendedTab.open(appendedPath) == Document::Status::Ready,
+                  "verify: the appended sample opens");
+            check(waitFor([&appendedTab] { return appendedTab.signatureRowCount() == 1; }),
+                  "verify: and is answered");
+        }
+        SignedSample::releaseIdentity(&signer);
     }
 
     // ---- 加密 / 去掉口令: the box and the editor refuse the same requests ----

@@ -1069,6 +1069,40 @@ int main(int argc, char **argv)
         check(p1Verdict.contains(QStringLiteral("个数字签名：")) && p1Verdict.contains(QStringLiteral("不允许任何改动")),
               QStringLiteral("the verdict keeps what the certification signature permits: %1").arg(p1Verdict));
 
+        // A reopen -- a save, a reload -- checks the signatures again, and that verdict must not wipe
+        // the line the reopen itself wrote (seen on screen at the merge: Ctrl+S's "saved" receipt
+        // gone a second later). The verdict comes back through the event loop, so it lands after
+        // the reload handler has set its notice, every time.
+        {
+            dropFiles(window, {QUrl::fromLocalFile(p1Path).toString()}, Qt::CopyAction);
+            DocumentTab *reopened = nullptr;
+            waitFor([&] {
+                for (DocumentTab *tab : window.findChildren<DocumentTab *>()) {
+                    if (QFileInfo(tab->documentPath()).fileName() == QFileInfo(p1Path).fileName())
+                        reopened = tab;
+                }
+                return reopened && !reopened->signatureSummary().isEmpty();
+            }, 20000);
+            auto *reload = window.findChild<QAction *>(QStringLiteral("reloadAction"));
+            check(reopened && reload, "setup: the signed sample is open and answered, and reload exists");
+            if (reopened && reload) {
+                reload->trigger();
+                const bool answeredAgain = waitFor([reopened] { return !reopened->signatureSummary().isEmpty(); }, 20000);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+                const QString afterReload = window.statusBar()->currentMessage();
+                std::cout << "MEASURE status after reload: [" << afterReload.toStdString() << "]\n";
+                check(answeredAgain, "setup: the reload checked the signatures again");
+                check(afterReload.contains(QStringLiteral("已重新加载")),
+                      QStringLiteral("and its verdict left the reload's own line on the bar: %1").arg(afterReload));
+            }
+            if (auto *closer = window.findChild<QAction *>(QStringLiteral("closeTabAction"))) {
+                closer->trigger();
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            }
+        }
+
         // And in English, where two sentences need a space between them that Chinese does not:
         // the bar read "...signatures.Its certification signature..." on screen (handoff-07 I2),
         // and the verdict's counts were joined with a full-width comma and closed with "。".

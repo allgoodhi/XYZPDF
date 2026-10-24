@@ -62,6 +62,10 @@ namespace {
 // forms start with a space, because the sentence before ends with a full stop and Chinese needs no
 // gap after its own: appended bare, the English bar read "...signatures.Its certification..."
 // (found on screen, handoff-07 I2).
+// The open line that said a tab's signatures are being checked, kept on the tab so the verdict
+// knows which status line is its own to replace.
+const char *const kSignaturePromise = "xyzpdfSignaturePromise";
+
 QString certificationSentence(int permission)
 {
     if (permission == 1)
@@ -1553,6 +1557,12 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         const QString summary = tab->signatureSummary();
         if (summary.isEmpty())
             return;
+        // The answer replaces the line that promised it, and nothing newer: a save reopens the
+        // document, the check runs again, and its verdict used to wipe the "saved" receipt a second
+        // after Ctrl+S (seen on screen at the merge, sec.126). A notice that has run out is no notice.
+        const bool liveNotice = !notice.isEmpty() && (noticeLeft > 0 || !noticeDeadline.hasExpired());
+        if (liveNotice && notice != tab->property(kSignaturePromise).toString())
+            return;
         // What the certification signature permits stays with the verdict: replaced along with the
         // "正在检查" line, it was gone a second after opening, and a P=1 reader whose clicks on a
         // field do nothing was left with no reason (the two branches met at the merge, sec.126).
@@ -1691,6 +1701,7 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                                      signatures);
             openedTimeout = qMax(openedTimeout, 12000);
             openedMessage += certificationSentence(tab->docMdpPermission());
+            tab->setProperty(kSignaturePromise, openedMessage);
         }
         setStatusMessage(openedMessage, openedTimeout);
         updateForCurrentTab();

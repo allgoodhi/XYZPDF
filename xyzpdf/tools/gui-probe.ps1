@@ -2789,8 +2789,11 @@ function Signed-Needles() {
   # sec.122's sentence share, and 'permits form filling' is what the status line and the delete box
   # each say in their own words.
   return @{
-    noVerify = @((CjStr 0x672C, 0x7248, 0x4E0D, 0x9A8C, 0x8BC1, 0x7B7E, 0x540D, 0x672C, 0x8EAB),
-                 'does not verify signatures')
+    # sec.126 (handoff-07 I1): the open line says the signatures are being checked, and a moment
+    # later the verdict replaces it. Both carry the count, so 'signed' matches either; 'checking' is
+    # only in the open line, which is the one that names the file.
+    signed = @((CjStr 0x4E2A, 0x6570, 0x5B57, 0x7B7E, 0x540D), 'digital signature')
+    checking = @((CjStr 0x6B63, 0x5728, 0x68C0, 0x67E5), 'being checked')
     certP1 = @((CjStr 0x4E0D, 0x5141, 0x8BB8, 0x4EFB, 0x4F55, 0x6539, 0x52A8),
                'forbids every change')
     certP2 = @((CjStr 0x53EA, 0x5141, 0x8BB8, 0x586B, 0x5199, 0x8868, 0x5355),
@@ -4603,14 +4606,17 @@ switch ($Mode) {
     # replaces it outright (sec.114); the pointer was parked before the launch for this reason, and
     # sec.122 had to learn twice that a hover left over from the click that opened the file is enough
     # to lose it.
-    $line = Wait-Status $app.Id $nd.noVerify
+    $line = Wait-Status $app.Id $nd.signed
     if ($line -eq '') {
-      Bail ('  signedsave: the status line never said the document carries a signature this version ' +
-            'does not verify (it reads [' + (StatusName $app.Id) + ']) -- so nothing below can be ' +
-            'about a signed document')
+      Bail ('  signedsave: the status line never said the document carries a signature (it reads [' +
+            (StatusName $app.Id) + ']) -- so nothing below can be about a signed document')
     }
     Say ('  signedsave: open line |' + $line.Replace("`r", ' ').Replace("`n", ' / ') + '|')
-    if (-not $line.Contains($script:guardCopyLeaf)) {
+    $isOpenLine = $false
+    foreach ($n in $nd.checking) { if ($line.Contains($n)) { $isOpenLine = $true } }
+    if (-not $isOpenLine) {
+      Say '  signedsave: the verdict had already replaced the open line, which is the one naming the file'
+    } elseif (-not $line.Contains($script:guardCopyLeaf)) {
       Bail ('  signedsave: the open line does not name the copy this probe made [' +
             $script:guardCopyLeaf + ']')
     }
@@ -4760,11 +4766,11 @@ switch ($Mode) {
     # round ask a fillable field to stay shut, and the round that exists to show the doors open would
     # read as a product defect.
     $fillable = ($wantP -ne 1)
-    $line = Wait-Status $app.Id $nd.noVerify
+    $line = Wait-Status $app.Id $nd.signed
     if ($line -eq '') {
-      Bail ('  signedlock: the status line never said the document carries a signature this version ' +
-            'does not verify (it reads [' + (StatusName $app.Id) + ']) -- so this run is not holding a ' +
-            'signed document and no verdict below means anything')
+      Bail ('  signedlock: the status line never said the document carries a signature (it reads [' +
+            (StatusName $app.Id) + ']) -- so this run is not holding a signed document and no verdict ' +
+            'below means anything')
     }
     Say ('  signedlock: open line |' + $line.Replace("`r", ' ').Replace("`n", ' / ') + '|')
     Form-TitleCheck 'signedlock'

@@ -127,6 +127,50 @@
                      the split box names one at 1 page per piece and nothing at 2 (pages 1 and 2 then
                      land in the same file). -Control keeps every step and expects the sentence at
                      range 3, where it cannot be.
+      formfill       fill one text field ON SCREEN and read the answer back out of the file: click
+                     inside the field's own rectangle (aimed from the rectangle pdfprobe reads out of
+                     the copy that is open, plus the white page found in a PrintWindow picture), type
+                     a token made up for this run, require the caption's star, require the ink inside
+                     that rectangle to have grown while a rectangle 200 px away from it did not move,
+                     press Ctrl+S, and require the field's value in the saved copy to be that token
+                     with its three neighbours still empty. -Control types nothing and keeps every
+                     verdict, so it exits 1.
+      formtab        the same sample, two fields and one Tab: click alpha, press Tab, type -- the
+                     token has to come back out of BETA; then Shift+Tab and a second token, which has
+                     to come back out of ALPHA. Which field holds which token is read out of the saved
+                     file, so "Tab moved the focus" is a reading about two values rather than an
+                     inference from one. -Control skips the Tab and still expects beta to hold it.
+      formcheck      the checkbox: click it, require the ink inside its 16x16 rectangle to go from 0
+                     to a filled square (the sample's /Yes appearance really paints, because the
+                     headless generator's two states are both empty streams and toggling those moves
+                     no pixel at all), require the star, save, and require /V to read Yes; then click
+                     it again and require the same four things in reverse. -Control clicks nothing and
+                     still expects Yes.
+      formime        the composition-string route, measured rather than assumed: ImmGetContext on our
+                     own window, ImmSetCompositionString with two Chinese characters as GCS_COMPSTR,
+                     ImmNotifyIME(NI_COMPOSITIONSTR, CPS_COMPLETE), and then the field's value read
+                     back out of the saved file. Every step's own answer is printed -- including the
+                     last error, the layouts that exist, the app thread's active layout and a control
+                     window in this shell -- because "the commit string never arrived" has to be
+                     distinguishable from "there was no input context" and from "the call was refused".
+                     Beside it, as labelled comparisons and never as substitutes, a DIFFERENT pair of
+                     characters sent one KEYEVENTF_UNICODE pair at a time (a per-character WM_CHAR,
+                     which is NOT the route G1 sends a composition string down) and pinyin letters as
+                     real virtual keys plus a space. The three routes write into three different
+                     fields so the saved file says which route's text reached which field. The verdict
+                     is on the composition string: if it does not land, this mode exits 1 with all
+                     three readings printed. -Control requests no context on the app window and sends
+                     no composition, still expects the two characters in gamma, and exits 1.
+
+    THE FORM MODES. The four above are handoff-05 H2: form filling had been measured only in
+    headless tests (sec.118 says so), so nothing in it had ever been on a screen. They aim at a
+    sample this harness makes itself -- %TEMP%\xyzpdf-gui-probe\form-screen.pdf, written by
+    xyzpdf_pdfprobe --write-form-sample beside the -Exe that was handed in: four text fields and a
+    checkbox on one unrotated page, each with a label in the page's own content stream. Field
+    rectangles are read back out of the copy the app opened (--fields), never typed into this file,
+    so the arithmetic that turns one into a screen point is checked against the same bytes the
+    reader is looking at. All four press Ctrl+S, so all four are save modes and all four open the
+    guard's copy rather than whatever -Doc named.
 
     THE SAVE GUARD. The three modes above press Ctrl+S, Ctrl+Shift+S or the Save answer of a
     question box, and every one of those writes a PDF. None of them is allowed to write a file
@@ -161,6 +205,13 @@
       ... -Mode closeprompt -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
       ... -Mode saveas -Doc xyzpdf/tests/fixtures/text.pdf
       ... -Mode saveas -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      ... -Mode formfill -Doc xyzpdf/tests/fixtures/text.pdf -Log H:/tmp/formfill-en.txt
+      ... -Mode formfill -Control -Doc xyzpdf/tests/fixtures/text.pdf   (also exit 1)
+      ... -Mode formtab -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode formcheck -Doc xyzpdf/tests/fixtures/text.pdf
+      ... -Mode formime -Doc xyzpdf/tests/fixtures/text.pdf
+      The four form modes replace -Doc with the sample they make, so the path handed in is only what
+      the guard hashes and copies; a fixtures path is fine and is not opened.
       The three above write nothing outside %TEMP%\xyzpdf-gui-probe\save-<random>\: -Doc is copied
       and never opened, so a fixtures path is a perfectly good thing to hand them.
 
@@ -170,7 +221,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -259,6 +310,9 @@ public static class W32 {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint d, int e, int extra, IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public static IntPtr Hit(int x, int y) { POINT p = new POINT(); p.x = x; p.y = y; return WindowFromPoint(p); }
   [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr h, bool alternate);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hParent, EnumProc cb, IntPtr l);
@@ -300,6 +354,153 @@ public static class W32 {
     }
     System.Threading.Thread.Sleep(150);
     mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
+  }
+
+  // ---- the input the form modes send ----
+  //
+  // SendInput rather than SendKeys for the characters: SendKeys spells half the
+  // alphabet as a shortcut (+, ^, %, ~, (, ), [, ], {, } all mean something else to
+  // it), so a made-up token to type into a field would have to be escaped by a rule
+  // the harness would then be trusting. One KEYEVENTF_UNICODE pair per character has
+  // no such table, and it is what Windows itself hands a window for a character with
+  // no virtual key -- which arrives as WM_CHAR, the route a text field's FORM_OnChar
+  // reads. That is also why formime prints this route BESIDE the IMM32 one instead of
+  // instead of it: a committed string and a per-character WM_CHAR are two different
+  // measurements (handoff-05 H2 says so, and G1 is the reason -- the composition
+  // string goes through FORM_ReplaceSelection, one character at a time would break it
+  // into pieces).
+  //
+  // INPUT is 40 bytes on x64 (a DWORD type, then a union aligned to 8 whose largest
+  // member, MOUSEINPUT, is 32). SendInput compares cbSize against its own sizeof and
+  // answers 0 with ERROR_INVALID_PARAMETER when they differ, so the size is spelled
+  // out rather than left to Marshal.SizeOf of a keyboard-only struct.
+  [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT {
+    public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo;
+  }
+  [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT {
+    public int dx; public int dy; public int mouseData; public uint dwFlags; public uint time;
+    public IntPtr dwExtraInfo;
+  }
+  [StructLayout(LayoutKind.Explicit, Size = 40)] public struct INPUT {
+    [FieldOffset(0)] public uint type;
+    [FieldOffset(8)] public KEYBDINPUT ki;
+    [FieldOffset(8)] public MOUSEINPUT mi;
+  }
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
+  public const uint INPUT_KEYBOARD = 1;
+  public const uint KEYEVENTF_KEYUP = 0x0002;
+  public const uint KEYEVENTF_UNICODE = 0x0004;
+  public const ushort VK_SHIFT = 0x10;
+  public static uint LastError() { return (uint)Marshal.GetLastWin32Error(); }
+
+  // One character, down and up. Returns what SendInput says it INSERTED, so a
+  // caller can tell "sent" from "accepted" -- the difference this suite keeps
+  // having to learn (sec.88: a posted BM_CLICK is not an accepted dialog).
+  public static uint TypeChar(char c) {
+    INPUT[] inp = new INPUT[2];
+    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wScan = c; inp[0].ki.dwFlags = KEYEVENTF_UNICODE;
+    inp[1].type = INPUT_KEYBOARD; inp[1].ki.wScan = c;
+    inp[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    return SendInput(2, inp, 40);
+  }
+  // One virtual key, optionally held between a Shift down and up: Tab, Shift+Tab, and the Esc that
+  // lets go of a form field. wScan carries the scan code MapVirtualKeyW gives that key, because the
+  // character route says nothing about the virtual-key route: measured with wScan left 0 and
+  // KEYEVENTF_SCANCODE unset, two Backspaces typed into a focused form field deleted nothing while
+  // KEYEVENTF_UNICODE characters inserted fine. With the scan code filled in, Esc does arrive
+  // (formtab's key control: caret 24 px -> 0). KEYEVENTF_SCANCODE stays unset -- Qt reads the
+  // virtual key.
+  public static uint PressVk(ushort vk, bool withShift) {
+    int n = withShift ? 4 : 2;
+    INPUT[] inp = new INPUT[n];
+    int i = 0;
+    if (withShift) {
+      inp[i].type = INPUT_KEYBOARD; inp[i].ki.wVk = VK_SHIFT;
+      inp[i].ki.wScan = (ushort)MapVirtualKeyW(VK_SHIFT, 0); i++;
+    }
+    inp[i].type = INPUT_KEYBOARD; inp[i].ki.wVk = vk;
+    inp[i].ki.wScan = (ushort)MapVirtualKeyW(vk, 0); i++;
+    inp[i].type = INPUT_KEYBOARD; inp[i].ki.wVk = vk; inp[i].ki.dwFlags = KEYEVENTF_KEYUP;
+    inp[i].ki.wScan = (ushort)MapVirtualKeyW(vk, 0); i++;
+    if (withShift) {
+      inp[i].type = INPUT_KEYBOARD; inp[i].ki.wVk = VK_SHIFT;
+      inp[i].ki.dwFlags = KEYEVENTF_KEYUP;
+      inp[i].ki.wScan = (ushort)MapVirtualKeyW(VK_SHIFT, 0); i++;
+    }
+    return SendInput((uint)n, inp, 40);
+  }
+  public const uint INPUT_MOUSE = 0;
+  public const uint MOUSEEVENTF_WHEEL = 0x0800;
+  public const ushort VK_CONTROL = 0x11;
+  // Ctrl+wheel, because that is the ONLY zoom route this product has (pageview.cpp's wheelEvent
+  // takes Ctrl+wheel and nothing else; there is no zoom menu and no Ctrl+/- shortcut). The form
+  // modes need the whole page in one picture, and a page opened at fit-width is twice as tall as
+  // the viewport. mouseData is the wheel delta, negative for out.
+  public static uint Wheel(int x, int y, int delta, bool ctrl) {
+    SetCursorPos(x, y);
+    int n = ctrl ? 3 : 1;
+    INPUT[] inp = new INPUT[n];
+    int i = 0;
+    if (ctrl) { inp[i].type = INPUT_KEYBOARD; inp[i].ki.wVk = VK_CONTROL; i++; }
+    inp[i].type = INPUT_MOUSE; inp[i].mi.mouseData = delta; inp[i].mi.dwFlags = MOUSEEVENTF_WHEEL; i++;
+    if (ctrl) {
+      inp[i].type = INPUT_KEYBOARD; inp[i].ki.wVk = VK_CONTROL; inp[i].ki.dwFlags = KEYEVENTF_KEYUP; i++;
+    }
+    return SendInput((uint)n, inp, 40);
+  }
+
+  // ---- IMM32, for the one mode that has to go through an input method ----
+  // Every call is declared with SetLastError where the platform sets one, because
+  // the reading H2 asks for is each step's own answer: a composition string that
+  // never arrives has to be distinguishable from one that was refused, and from a
+  // window that has no input context at all.
+  [DllImport("imm32.dll", SetLastError = true)] public static extern IntPtr ImmGetContext(IntPtr h);
+  [DllImport("imm32.dll")] public static extern bool ImmReleaseContext(IntPtr h, IntPtr himc);
+  [DllImport("imm32.dll", SetLastError = true)] public static extern bool ImmGetOpenStatus(IntPtr himc);
+  [DllImport("imm32.dll", SetLastError = true)] public static extern bool ImmSetOpenStatus(IntPtr himc, bool fOpen);
+  [DllImport("imm32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern bool ImmSetCompositionString(IntPtr himc, uint dwIndex, string lpComp, uint dwCompLen,
+                                                    IntPtr lpRead, uint dwReadLen);
+  [DllImport("imm32.dll", SetLastError = true)]
+  public static extern bool ImmNotifyIME(IntPtr himc, uint dwCommand, uint dwParam, IntPtr dwExtraInfo);
+  [DllImport("imm32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "ImmGetCompositionStringW")]
+  public static extern int ImmGetCompositionString(IntPtr himc, uint dwIndex, StringBuilder lpBuf, uint dwBufLen);
+  [DllImport("imm32.dll", SetLastError = true)] public static extern IntPtr ImmGetDefaultIMEWnd(IntPtr h);
+  [DllImport("imm32.dll", SetLastError = true)]
+  public static extern bool ImmAssociateContextEx(IntPtr h, IntPtr himc, uint dwFlags);
+  public const uint GCS_COMPSTR = 0x0008;
+  public const uint GCS_RESULTSTR = 0x0800;
+  public const uint NI_COMPOSITIONSTR = 0x3;
+  public const uint CPS_COMPLETE = 0x1;
+  public const uint IACE_DEFAULT = 0x0010;
+
+  // ---- which input locale the window's thread is in, and how to ask about it ----
+  // Printed beside the context readings, because "ImmGetContext answered zero" is about a window and
+  // not about the machine: the layouts that exist and the one the app's own thread is using are what
+  // turn a zero into a diagnosis. ImmIsIME is left out on purpose -- it answered True for the plain US
+  // layout here, so it does not mean what its name says on this machine and nothing below uses it.
+  [DllImport("user32.dll")] public static extern IntPtr GetFocus();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+  [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint idThread);
+  [DllImport("user32.dll")] public static extern int GetKeyboardLayoutList(int nBuff, IntPtr[] lpList);
+  [DllImport("imm32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "ImmGetDescriptionW")]
+  public static extern uint ImmGetDescription(IntPtr hkl, StringBuilder lpszDescription, uint uBufLen);
+  public const uint WM_INPUTLANGCHANGEREQUEST = 0x0050;
+  public static IntPtr[] KeyboardLayouts() {
+    int n = GetKeyboardLayoutList(0, null);
+    if (n <= 0) return new IntPtr[0];
+    IntPtr[] a = new IntPtr[n];
+    int got = GetKeyboardLayoutList(n, a);
+    if (got < 0) got = 0;
+    if (got < n) Array.Resize(ref a, got);
+    return a;
+  }
+  public static string LayoutDesc(IntPtr hkl) {
+    var b = new StringBuilder(256);
+    uint n = ImmGetDescription(hkl, b, 256);
+    return n > 0 ? b.ToString() : "";
   }
 }
 "@
@@ -1403,7 +1604,12 @@ function ReplyCount([string]$summary) {
 #     it wrote' and 'the save did not happen' two different readings on disk instead of one line of
 #     status text.
 # A path under tests\fixtures may be read and copied -- it still is not opened.
-$script:saveModes = @('saveinplace', 'closeprompt', 'saveas', 'saverename')
+# The four form modes (handoff-05 H2) are on this list too: each of them changes a field and then
+# presses Ctrl+S, so each of them writes a PDF, and the file they write has to be one this script
+# made. They do not even open the -Doc that was handed in -- see the sample hook below.
+$script:saveModes = @('saveinplace', 'closeprompt', 'saveas', 'saverename',
+                      'formfill', 'formtab', 'formcheck', 'formime')
+$script:formModes = @('formfill', 'formtab', 'formcheck', 'formime')
 $script:guardArmed = $false
 $script:guardBroken = $false
 $script:guardOrig = ''
@@ -1456,6 +1662,35 @@ function Guard-Check([string]$tag) {
   Say ('  GUARD ' + $tag + ': THE ORIGINAL MOVED  before=' + $script:guardOrigHash + '  after=' + $now)
   Say ('           [' + $script:guardOrig + ']')
   return $false
+}
+
+# The four form modes carry their own document, because no PDF with form fields exists on this
+# machine and a mode that aims at a field has to know where the field is. The sample is MADE, by
+# the pdfprobe tool that sits beside -Exe, into this harness's scratch -- never into tests/fixtures
+# (a directory whose name contains 'fixtures' is refused by the sample writers), and never over a
+# file that is already there: --write-form-sample refuses to overwrite, because a tool whose job is
+# making samples must not be able to write a document somebody handed it. -Doc is replaced, and the
+# guard below then copies the sample like any other -Doc, so what the app opens and what the modes
+# read back is still a copy with a name made up in this run.
+if ($script:formModes -contains $Mode) {
+  $script:probeTool = Join-Path (Split-Path -Parent $Exe) 'xyzpdf_pdfprobe.exe'
+  if (-not (Test-Path -LiteralPath $script:probeTool)) {
+    Bail ('  no pdfprobe beside [' + $Exe + '] -- -Mode ' + $Mode + ' needs it to make and to read ' +
+          'the sample; build the tree first (python tools/build_all_tests.py)')
+  }
+  if (-not (Test-Path $scratch)) { New-Item -ItemType Directory -Path $scratch | Out-Null }
+  $sample = Join-Path $scratch 'form-screen.pdf'
+  if (Test-Path -LiteralPath $sample) { Remove-Item -LiteralPath $sample -Force }
+  $made = & $script:probeTool --write-form-sample $sample 2>&1
+  foreach ($l in @($made)) { Say ('  sample: ' + $l) }
+  if ($LASTEXITCODE -ne 0) {
+    Bail ('  --write-form-sample exited ' + $LASTEXITCODE + ', so there is no sample for -Mode ' + $Mode)
+  }
+  if (-not (Test-Path -LiteralPath $sample)) {
+    Bail ('  --write-form-sample reported success but [' + $sample + '] is not on disk')
+  }
+  if ($Doc) { Say ('  -Doc [' + $Doc + '] is replaced by the sample this mode makes') }
+  $Doc = $sample
 }
 
 # 'saverename' stays an accepted -Mode name because rounds since sec.44 are quoted by it in the
@@ -1596,6 +1831,496 @@ function Wait-Status([int]$procId, [string[]]$needles, [int]$rounds = 40) {
     Start-Sleep -Milliseconds 200
   }
   return ''
+}
+
+# ---- the form modes' shared routes ------------------------------------------------------
+# Four modes, one page, five fields, and every one of them does the same three things: aim at a
+# field on the screen, change it, and read the file back. The routes live here once because
+# sec.87's lesson is about harnesses as much as products -- a second copy of a route is how one of
+# the four ends up working in only one language.
+function UForm([string]$s) {
+  # The PowerShell twin of pdfprobe's asciiSafe(): printable ASCII stays as it is, everything else
+  # becomes U+XXXX, space separated. A field value has to be compared exactly and this file must
+  # stay pure ASCII, so both sides of a comparison are escaped and the log line survives a GBK
+  # console. The two implementations are one rule written twice; the IME mode's verdict is the
+  # first thing that goes wrong if they ever disagree.
+  $out = ''
+  foreach ($ch in $s.ToCharArray()) {
+    $cp = [int]$ch
+    if ($cp -ge 0x20 -and $cp -lt 0x7F) { $out += $ch; continue }
+    if ($out.Length -gt 0 -and -not $out.EndsWith(' ')) { $out += ' ' }
+    $out += ('U+{0:X4} ' -f $cp)
+  }
+  return $out.Trim()
+}
+function Read-FormFields([string]$path, [string]$tag) {
+  # The file's own answer, straight from the library the reader uses. Every mode reads the copy
+  # twice -- once before it touches anything (the target must be empty, or the run is measuring a
+  # stale file) and once after the save (the value must be what was typed).
+  $raw = & $script:probeTool --fields $path 2>&1
+  foreach ($l in @($raw)) { Say ('  ' + $tag + ' |' + $l + '|') }
+  if ($LASTEXITCODE -ne 0) { Bail ('  ' + $tag + ': --fields exited ' + $LASTEXITCODE + ' on [' + $path + ']') }
+  $fields = @()
+  foreach ($l in @($raw)) {
+    $t = "$l"
+    if ($t -match '^pages:\s*(\d+)\s*$') { $script:ffPages = [int]$Matches[1] }
+    elseif ($t -match '^formtype:\s*(\d+)\s*$') { $script:ffFormType = [int]$Matches[1] }
+    elseif ($t -match '^formenv:\s*(\S+)\s*$') { $script:ffFormEnv = $Matches[1] }
+    elseif ($t -match '^PAGE\s+(\d+)\s+mediabox=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\s+rotate=(-?\d+)\s+width=([-\d.]+)\s+height=([-\d.]+)\s+annots=(\d+)\s*$') {
+      $script:ffMediaL = [double]$Matches[2]; $script:ffMediaB = [double]$Matches[3]
+      $script:ffMediaR = [double]$Matches[4]; $script:ffMediaT = [double]$Matches[5]
+      $script:ffRotate = [int]$Matches[6]
+    }
+    elseif ($t -match '^FIELD\s+(\d+)\s+page=(\d+)\s+name=\[(.*?)\]\s+type=(\S+)\s+flags=(-?\d+)\s+rect\(l,b,r,t\)=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\s+value=\[(.*)\]\s*$') {
+      $fields += [pscustomobject]@{
+        idx = [int]$Matches[1]; page = [int]$Matches[2]; name = $Matches[3]; type = $Matches[4];
+        flags = [int]$Matches[5]; l = [double]$Matches[6]; b = [double]$Matches[7];
+        r = [double]$Matches[8]; t = [double]$Matches[9]; value = $Matches[10]
+      }
+    }
+  }
+  if ($script:ffPages -ne 1) { Bail ('  ' + $tag + ': the copy has ' + $script:ffPages + ' pages; the screen arithmetic below is for one') }
+  if ($script:ffRotate -ne 0) { Bail ('  ' + $tag + ': the page is rotated ' + $script:ffRotate + '; the mapping is for rotate 0') }
+  if ($script:ffFormEnv -ne 'opened') { Bail ('  ' + $tag + ': the form environment answered [' + $script:ffFormEnv + '], so no field can be filled') }
+  if ($script:ffFormType -ne 1) { Bail ('  ' + $tag + ': formtype is ' + $script:ffFormType + ', not the AcroForm 1 the sample carries') }
+  if (@($fields).Count -lt 5) { Bail ('  ' + $tag + ': only ' + @($fields).Count + ' fields came back; the sample carries five') }
+  $script:ffFields = $fields
+  return $fields
+}
+function Field-At([string]$name, [string]$tag) {
+  foreach ($f in @($script:ffFields)) { if ($f.name -eq $name) { return $f } }
+  Bail ('  ' + $tag + ': no field named [' + $name + ']; the copy carries ' +
+        ((@($script:ffFields) | ForEach-Object { $_.name }) -join ', '))
+}
+function Page-Shot([string]$tag) {
+  # One picture of the page area, plus the rectangle the paper occupies inside it. Everything a
+  # form mode clicks or counts is computed from those two, so both are printed and both are
+  # guarded. The framing is the OUTER window rect and the crop origin is the frame's top-left
+  # (sec.89: the picture is anchored to the frame, so a crop computed from the client rectangle
+  # lands on the border and the tab strip), and formpage's two geometric guards are kept -- a
+  # colour rule for "that is the window frame" refused a legitimately dark sidebar (sec.91).
+  $win = Window $app.Id
+  if (-not $win) { Bail ('  ' + $tag + ': no window to shoot') }
+  if (-not (ForegroundIs $win)) {
+    # Only when it is not ours already. TakeForeground opens a menu and Escapes it, and a field
+    # holding the keyboard would lose it to that Esc -- so a shot taken after typing must find the
+    # window already in front, which it does, because the click that aimed the field put it there.
+    if (-not (TakeForeground $app.Id)) { Bail ('  ' + $tag + ': could not take the foreground') }
+    $win = Window $app.Id
+    # The title bar, and by its FRAME rectangle: the UIA rectangle of a Qt top level is the client
+    # area (sec.74), so "client row 12" is the toolbar, and a click there is a tool button -- which
+    # would change what the very next press on the page means.
+    $h0 = [IntPtr]$win.Current.NativeWindowHandle
+    $g0 = [W32]::Rect($h0)
+    [W32]::Click([int](($g0.left + $g0.right) / 2), [int]($g0.top + 12))
+    Start-Sleep -Milliseconds 700
+    $win = Window $app.Id
+  }
+  $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+  $gr = [W32]::Rect($hwnd)
+  $co = [W32]::ClientOrigin($hwnd)
+  $wr = $win.Current.BoundingRectangle
+  if ([math]::Abs([int]$wr.X - $co.x) -gt 2 -or [math]::Abs([int]$wr.Y - $co.y) -gt 2) {
+    Bail ('  ' + $tag + ': the top-level UIA rectangle disagrees with the Win32 client origin by ' +
+          ([int]$wr.X - $co.x) + ',' + ([int]$wr.Y - $co.y) + ' -- the crop and the picture would not be in the same units')
+  }
+  $best = $null; $bestTop = -1; $maxArea = 0
+  $cands = New-Object System.Collections.Generic.List[object]
+  foreach ($type in @($CT::Document, $CT::Pane, $CT::Image)) {
+    foreach ($e in @(FindType $win $type)) {
+      $r = $e.Current.BoundingRectangle
+      $area = [int]($r.Width * $r.Height)
+      if ($area -gt 40000) {
+        Say ('  ' + $tag + ' candidate ' + $type.ProgrammaticName + ' ' + [int]$r.X + ',' + [int]$r.Y +
+             ' ' + [int]$r.Width + 'x' + [int]$r.Height)
+        $cands.Add($e) | Out-Null
+        if ($area -gt $maxArea) { $maxArea = $area }
+      }
+    }
+  }
+  foreach ($e in $cands) {
+    $r = $e.Current.BoundingRectangle
+    if (($r.Width * $r.Height) -lt (0.6 * $maxArea)) { continue }
+    if ([int]$r.Y -gt $bestTop) { $bestTop = [int]$r.Y; $best = $e }
+  }
+  if (-not $best) { Bail ('  ' + $tag + ': no element big enough to be the page') }
+  $r = $best.Current.BoundingRectangle
+  $fw = [int]($gr.right - $gr.left)
+  $fh = [int]($gr.bottom - $gr.top)
+  $winBmp = New-Object System.Drawing.Bitmap($fw, $fh)
+  $wg = [System.Drawing.Graphics]::FromImage($winBmp)
+  $hdc = $wg.GetHdc()
+  $painted = [W32]::PrintWindow($hwnd, $hdc, 2)
+  $wg.ReleaseHdc($hdc)
+  $left = [int][math]::Floor($r.X - $gr.left)
+  $top = [int][math]::Floor($r.Y - $gr.top)
+  $width = [int][math]::Ceiling($r.Width)
+  $height = [int][math]::Ceiling($r.Height)
+  if ($left -lt 0) { $width += $left; $left = 0 }
+  if ($top -lt 0) { $height += $top; $top = 0 }
+  if ($left + $width -gt $fw) { $width = $fw - $left }
+  if ($top + $height -gt $fh) { $height = $fh - $top }
+  if ($width -lt 100 -or $height -lt 100) {
+    $winBmp.Dispose()
+    Bail ('  ' + $tag + ': the page crop is ' + $width + 'x' + $height + ' inside a ' + $fw + 'x' + $fh +
+          ' window picture -- the geometry disagrees, so no number from it means anything')
+  }
+  $bmp = $winBmp.Clone((New-Object System.Drawing.Rectangle($left, $top, $width, $height)), $winBmp.PixelFormat)
+  $winBmp.Dispose()
+  $wg.Dispose()
+  if ($left -lt ($co.x - $gr.left) -or $top -lt ($co.y - $gr.top)) {
+    $bmp.Dispose()
+    Bail ('  ' + $tag + ': the crop starts at bitmap ' + $left + ',' + $top + ' but the client area only ' +
+          'begins at ' + ($co.x - $gr.left) + ',' + ($co.y - $gr.top) + ' -- the picture is anchored to the ' +
+          'window frame, so these pixels are not the page')
+  }
+  $tabBottom = -1
+  foreach ($t in @(FindType $win $CT::TabItem)) {
+    $tr = $t.Current.BoundingRectangle
+    if ([int]$tr.Bottom -gt $tabBottom) { $tabBottom = [int]$tr.Bottom }
+  }
+  if ($tabBottom -ge 0 -and $top -lt ($tabBottom - $gr.top)) {
+    $bmp.Dispose()
+    Bail ('  ' + $tag + ': the crop starts at window row ' + $top + ', above the bottom of the tab strip (' +
+          ($tabBottom - $gr.top) + ') -- a difference there is file names, not the page')
+  }
+  $rectAll = New-Object System.Drawing.Rectangle(0, 0, $width, $height)
+  $lock = $bmp.LockBits($rectAll, [System.Drawing.Imaging.ImageLockMode]::ReadOnly,
+                        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+  $bytes = New-Object 'byte[]' ($lock.Stride * $height)
+  [System.Runtime.InteropServices.Marshal]::Copy($lock.Scan0, $bytes, 0, $bytes.Length)
+  $stride = $lock.Stride
+  $bmp.UnlockBits($lock)
+  $shot = Join-Path $scratch ('formshot-' + $tag + '.png')
+  $bmp.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+  $bmp.Dispose()
+  # Where the paper is, read off the picture rather than assumed. The view's background is
+  # (214,218,222) and the paper (255,255,255), so near-white -- every channel >= 245 -- separates
+  # them. The OUTERMOST near-white pixel in a row is the wrong reading and was measured wrong once
+  # already: the scrollbar's track throws a white sliver near the right edge, so the paper is the
+  # LONGEST contiguous run of near-white columns, and the same for rows.
+  $colPaper = New-Object 'bool[]' $width
+  $colRatio = New-Object 'double[]' $width
+  $maxCol = 0.0
+  for ($x = 0; $x -lt $width; $x++) {
+    $w = 0; $n = 0
+    for ($y = 0; $y -lt $height; $y += 6) {
+      $o = $y * $stride + $x * 4; $n++
+      if ($bytes[$o] -ge 245 -and $bytes[$o + 1] -ge 245 -and $bytes[$o + 2] -ge 245) { $w++ }
+    }
+    $colRatio[$x] = $w / $n
+    if ($colRatio[$x] -gt $maxCol) { $maxCol = $colRatio[$x] }
+  }
+  $rowPaper = New-Object 'bool[]' $height
+  $rowRatio = New-Object 'double[]' $height
+  $maxRow = 0.0
+  for ($y = 0; $y -lt $height; $y++) {
+    $w = 0; $n = 0
+    for ($x = 0; $x -lt $width; $x += 6) {
+      $o = $y * $stride + $x * 4; $n++
+      if ($bytes[$o] -ge 245 -and $bytes[$o + 1] -ge 245 -and $bytes[$o + 2] -ge 245) { $w++ }
+    }
+    $rowRatio[$y] = $w / $n
+    if ($rowRatio[$y] -gt $maxRow) { $maxRow = $rowRatio[$y] }
+  }
+  # Paper is whatever is within 60% of the BEST column (and row), not whatever clears a fixed
+  # bar: a page zoomed out to fit is narrower than the crop, so a fixed 80% bar would be dragged
+  # under by the grey background on both sides and report zero rows of paper. The longest run is
+  # still what separates the page from the scrollbar's white sliver.
+  for ($x = 0; $x -lt $width; $x++) { $colPaper[$x] = ($maxCol -gt 0 -and $colRatio[$x] -ge (0.6 * $maxCol)) }
+  for ($y = 0; $y -lt $height; $y++) { $rowPaper[$y] = ($maxRow -gt 0 -and $rowRatio[$y] -ge (0.6 * $maxRow)) }
+  $bestS = 0; $bestL = 0; $runS = 0; $runL = 0
+  for ($x = 0; $x -lt $width; $x++) {
+    if ($colPaper[$x]) { if ($runL -eq 0) { $runS = $x }; $runL++ }
+    else { if ($runL -gt $bestL) { $bestL = $runL; $bestS = $runS }; $runL = 0 }
+  }
+  if ($runL -gt $bestL) { $bestL = $runL; $bestS = $runS }
+  $pageX = $bestS; $pageW = $bestL
+  $bestS = 0; $bestL = 0; $runS = 0; $runL = 0
+  for ($y = 0; $y -lt $height; $y++) {
+    if ($rowPaper[$y]) { if ($runL -eq 0) { $runS = $y }; $runL++ }
+    else { if ($runL -gt $bestL) { $bestL = $runL; $bestS = $runS }; $runL = 0 }
+  }
+  if ($runL -gt $bestL) { $bestL = $runL; $bestS = $runS }
+  $pageY = $bestS; $pageH = $bestL
+  Say ('  ' + $tag + ': PrintWindow ' + $painted + ', crop ' + $width + 'x' + $height + ' at window ' +
+       $left + ',' + $top + '; paper ' + $pageW + 'x' + $pageH + ' at crop ' + $pageX + ',' + $pageY +
+       ' (best column ' + [math]::Round($maxCol, 2) + ', best row ' + [math]::Round($maxRow, 2) +
+       '); kept at ' + $shot)
+  if ($pageW -lt 150 -or $pageH -lt 150) {
+    Bail ('  ' + $tag + ': the longest near-white run is ' + $pageW + 'x' + $pageH + ' -- that is not a page ' +
+          'in a ' + $width + 'x' + $height + ' crop, so nothing can be aimed at')
+  }
+  if ($script:formPageRect) {
+    $p = $script:formPageRect
+    if ([math]::Abs($p.px - $pageX) -gt 3 -or [math]::Abs($p.py - $pageY) -gt 3 -or
+        [math]::Abs($p.pw - $pageW) -gt 3 -or [math]::Abs($p.ph - $pageH) -gt 3) {
+      Bail ('  ' + $tag + ': the paper moved between shots (' + $p.px + ',' + $p.py + ' ' + $p.pw + 'x' +
+            $p.ph + ' -> ' + $pageX + ',' + $pageY + ' ' + $pageW + 'x' + $pageH + ') -- a click aimed with ' +
+            'the first picture lands somewhere else in the second')
+    }
+  } else {
+    $script:formPageRect = @{ px = $pageX; py = $pageY; pw = $pageW; ph = $pageH }
+  }
+  return @{ tag = $tag; width = $width; height = $height; bytes = $bytes; stride = $stride;
+            pageX = $pageX; pageY = $pageY; pageW = $pageW; pageH = $pageH;
+            frameLeft = $gr.left; frameTop = $gr.top; cropLeft = $left; cropTop = $top; shot = $shot }
+}
+function Map-Rect($shot, [double]$ux0, [double]$uy0, [double]$ux1, [double]$uy1) {
+  # User space -- origin at the mediabox's bottom-left, the space FS_RECTF and the field rectangles
+  # both speak -- to bitmap columns and rows. zoom is the paper's own width over the mediabox's, so
+  # a wrong zoom shows up as a value landing in the wrong field, not as a silent number.
+  #
+  # The bitmap columns and rows are CROP-relative, and the crop does not start at the window's
+  # top-left (measured here: 8,151 -- a frame and a tab strip above it). So a screen point is the
+  # frame origin PLUS the crop origin plus the bitmap position. Dropping the middle term was
+  # measured once and it is the quietest failure in this file: the click lands in the toolbar, the
+  # field never takes the keyboard, the typing goes to nothing, and every count in the picture --
+  # which is in crop units and therefore correct -- still reads as if the aim were true.
+  $zoom = $shot.pageW / ($script:ffMediaR - $script:ffMediaL)
+  $bx0 = $shot.pageX + ($ux0 - $script:ffMediaL) * $zoom
+  $bx1 = $shot.pageX + ($ux1 - $script:ffMediaL) * $zoom
+  $by0 = $shot.pageY + ($script:ffMediaT - $uy1) * $zoom
+  $by1 = $shot.pageY + ($script:ffMediaT - $uy0) * $zoom
+  return @{ zoom = $zoom; bx0 = $bx0; bx1 = $bx1; by0 = $by0; by1 = $by1;
+            sx = $shot.frameLeft + $shot.cropLeft + ($bx0 + $bx1) / 2;
+            sy = $shot.frameTop + $shot.cropTop + ($by0 + $by1) / 2 }
+}
+function Assert-InCrop($shot, $m, [string]$what) {
+  if ($m.by1 -lt 0 -or $m.by0 -gt ($shot.height - 1) -or $m.bx1 -lt 0 -or $m.bx0 -gt ($shot.width - 1)) {
+    Bail ('  ' + $what + ' maps to bitmap rows ' + [int]$m.by0 + '-' + [int]$m.by1 + ' of a ' +
+          $shot.height + '-row crop -- it is not on screen, so a click there hits paper')
+  }
+  # The same claim in the units a click is actually sent in: the point must fall inside the crop's
+  # own rectangle on screen, not merely inside the picture. This is the half that would have caught
+  # the missing crop origin above -- the bitmap test passes either way, because the picture and the
+  # bitmap agree with each other and both are wrong about the window.
+  $l = $shot.frameLeft + $shot.cropLeft
+  $t = $shot.frameTop + $shot.cropTop
+  if ([int]$m.sx -lt $l -or [int]$m.sx -ge ($l + $shot.width) -or
+      [int]$m.sy -lt $t -or [int]$m.sy -ge ($t + $shot.height)) {
+    Bail ('  ' + $what + ' maps to screen ' + [int]$m.sx + ',' + [int]$m.sy + ' but the page crop is ' +
+          $shot.width + 'x' + $shot.height + ' at screen ' + $l + ',' + $t + ' -- the click would land ' +
+          'outside the page, so the aim is wrong and nothing after it is evidence')
+  }
+}
+function Region-Ink($shot, $m) {
+  # Non-white sample points inside a mapped rectangle. Step 1: at the zoom these modes settle at,
+  # the checkbox is a dozen pixels across and a step of 2 would count half of it.
+  $n = 0
+  $x0 = [int][math]::Max(0, [math]::Floor($m.bx0))
+  $x1 = [int][math]::Min($shot.width - 1, [math]::Ceiling($m.bx1))
+  $y0 = [int][math]::Max(0, [math]::Floor($m.by0))
+  $y1 = [int][math]::Min($shot.height - 1, [math]::Ceiling($m.by1))
+  for ($y = $y0; $y -le $y1; $y++) {
+    for ($x = $x0; $x -le $x1; $x++) {
+      $o = $y * $shot.stride + $x * 4
+      if ($shot.bytes[$o] -lt 245 -or $shot.bytes[$o + 1] -lt 245 -or $shot.bytes[$o + 2] -lt 245) { $n++ }
+    }
+  }
+  return $n
+}
+function Caret-Map([string]$tag) {
+  # Which field holds the keyboard, read off the picture -- ALL of them, because "the caret is not in
+  # beta" and "the caret is nowhere" are different findings and only the second one means the keyboard
+  # was dropped. This sample's text fields paint no border and no background of their own (no /AP, no
+  # /MK, no /BS -- sec.118 measured that a widget with nothing to draw contributes nothing to FFLDraw),
+  # so the ONE thing that separates a focused field from its neighbour on screen is the caret PDFium
+  # draws inside it: 24 px of ink in the field's own rectangle, and 0 in the same rectangle before the
+  # click. The labels are drawn at x >= 270 and every field ends at x = 260, so nothing else lands in
+  # these rectangles. Two shots a blink apart and the larger of the two, because a caret is allowed to
+  # blink and one shot could catch it dark.
+  #
+  # LIMIT, measured the hard way: this counts INK, so a field holding typed text looks like a field
+  # holding a caret for as long as the text is there (both shots see it). It therefore only answers
+  # while the fields it is asked about are empty; after the first token is typed, which field has what
+  # is read out of the saved file (distinct tokens), not from here.
+  $s1 = Page-Shot ($tag + '-1')
+  $first = @{}
+  foreach ($f in $script:ffFields) {
+    $first[$f.name] = Region-Ink $s1 (Map-Rect $s1 $f.l $f.b $f.r $f.t)
+  }
+  Start-Sleep -Milliseconds 700
+  $s2 = Page-Shot ($tag + '-2')
+  $m = [ordered]@{}
+  foreach ($f in $script:ffFields) {
+    $second = Region-Ink $s2 (Map-Rect $s2 $f.l $f.b $f.r $f.t)
+    $m[$f.name] = [math]::Max($first[$f.name], $second)
+  }
+  $parts = @()
+  foreach ($k in $m.Keys) { $parts += ($k + '=' + $m[$k]) }
+  Say ('  ' + $tag + ': ink in every field rectangle -- ' + ($parts -join ' '))
+  return $m
+}
+function Caret-Holders($m) {
+  # 10 px is not a judgement call: a caret is 24 and an empty field's rectangle is 0.
+  $h = @()
+  foreach ($k in $m.Keys) { if ($m[$k] -gt 10) { $h += $k } }
+  return $h
+}
+function Caret-Expect($m, [string[]]$want, [string]$what) {
+  $got = @(Caret-Holders $m)
+  $same = ($got.Count -eq $want.Count)
+  if ($same) {
+    foreach ($w in $want) { if (-not ($got -contains $w)) { $same = $false } }
+  }
+  if (-not $same) {
+    $was = if ($got.Count -eq 0) { 'no field at all' } else { $got -join ', ' }
+    $should = if ($want.Count -eq 0) { 'no field' } else { $want -join ', ' }
+    Bail ('  ' + $what + ': the caret is in ' + $was + ', and it should be in ' + $should)
+  }
+}
+function Focus-Now {
+  # Who UIA says has the keyboard, as a second opinion on the caret. The caret says which FORM field
+  # PDFium thinks is focused; this says which widget Windows thinks is focused, and Tab's two
+  # candidate mechanisms part company exactly there -- if Qt's focus chain took the key the page is
+  # no longer the focus widget (and its focusOutEvent releases the field), while if PDFium took the
+  # key the page keeps the keyboard and only the field is gone. A reading, not a verdict: Qt's
+  # QAccessible may answer with the window for everything, in which case it says so and nothing here
+  # depends on it.
+  try {
+    $e = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if (-not $e) { return '(none)' }
+    return ($e.Current.ControlType.ProgrammaticName + ' [' + $e.Current.Name + ']')
+  } catch {
+    return '(unreadable: ' + $_.Exception.Message + ')'
+  }
+}
+function Field-Ink([string]$tag, $f) {
+  $s = Page-Shot $tag
+  return Region-Ink $s (Map-Rect $s $f.l $f.b $f.r $f.t)
+}
+function Layout-Label($hkl) {
+  # One keyboard layout as value + description. The value is the whole reading -- HKLs are opaque and
+  # the description is empty for every layout on this machine -- so both are printed and neither is
+  # interpreted.
+  if ($null -eq $hkl -or $hkl -eq [IntPtr]::Zero) { return '0x00000000 (none)' }
+  $v = [uint32]($hkl.ToInt64() -band [int64]0xFFFFFFFF)
+  return ('0x{0:X8} desc=[{1}]' -f $v, [W32]::LayoutDesc($hkl))
+}
+function Zoom-WholePage([string]$tag) {
+  # A document opens at fit-width, and at fit-width an A4 page is ~1700 px tall in a ~720 px
+  # viewport: the bottom half of the page, and with it the checkbox, is simply not on screen. The
+  # product's only zoom route is Ctrl+wheel (pageview.cpp's wheelEvent takes Ctrl+wheel and nothing
+  # else -- there is no zoom menu and no Ctrl+/- shortcut), so that is what this uses, one notch at
+  # a time, and it stops when the PICTURE says the whole page is in: the paper's height over its
+  # width is then the mediabox's own ratio, which a page cut off at the crop's bottom edge can
+  # never show. A notch is 1/1.25 of the factor (ZoomController::Step), so five of them carry
+  # fit-width down to a third.
+  $script:formPageRect = $null
+  $want = ($script:ffMediaT - $script:ffMediaB) / ($script:ffMediaR - $script:ffMediaL)
+  for ($k = 1; $k -le 10; $k++) {
+    # The paper is SUPPOSED to move between these shots, so the "the paper moved" guard is disarmed
+    # for each one and armed again by the shot that ends the loop.
+    $script:formPageRect = $null
+    $shot = Page-Shot ($tag + '-zoom' + $k)
+    $ratio = $shot.pageH / $shot.pageW
+    Say ('  ' + $tag + ' zoom pass ' + $k + ': paper ' + $shot.pageW + 'x' + $shot.pageH + ', ratio ' +
+         [math]::Round($ratio, 3) + ' against the page''s ' + [math]::Round($want, 3))
+    if ([math]::Abs($ratio - $want) -lt 0.03 -and $shot.pageY -gt 2 -and
+        ($shot.pageY + $shot.pageH) -lt ($shot.height - 2)) {
+      return $shot
+    }
+    [W32]::Wheel([int]($shot.frameLeft + $shot.cropLeft + $shot.width / 2),
+                 [int]($shot.frameTop + $shot.cropTop + $shot.height / 2), -120, $true) | Out-Null
+    Start-Sleep -Milliseconds 700
+  }
+  Bail ('  ' + $tag + ': ten notches of Ctrl+wheel never put the whole page inside the crop')
+}
+function Click-Field($shot, $f, [string]$tag) {
+  $m = Map-Rect $shot $f.l $f.b $f.r $f.t
+  Assert-InCrop $shot $m ($tag + ' field ' + $f.name)
+  # Who is at that screen point, and who owns the keyboard. A click is aimed at a place, not at a
+  # window, so the picture being ours says nothing about the click arriving -- an overlapping window
+  # (a third-party topmost one, a candidate window) would swallow it and every later reading would
+  # describe something else. Same reason saveinplace checks the foreground before Ctrl+S.
+  $hit = [W32]::Hit([int]$m.sx, [int]$m.sy)
+  $hitPid = [uint32]0
+  [W32]::GetWindowThreadProcessId($hit, [ref]$hitPid) | Out-Null
+  Say ('  ' + $tag + ': at screen ' + [int]$m.sx + ',' + [int]$m.sy + ' the window is class=[' +
+       [W32]::Cls($hit) + '] pid=' + $hitPid + ' text=[' + [W32]::Text($hit) + ']')
+  if ($hitPid -ne [uint32]$app.Id) {
+    Bail ('  ' + $tag + ': the point maps to pid ' + $hitPid + ' (' + [W32]::Cls($hit) +
+          '), not to this app ' + $app.Id + ' -- the click would land on somebody else''s window')
+  }
+  Say ('  ' + $tag + ': clicking ' + $f.name + ' at screen ' + [int]$m.sx + ',' + [int]$m.sy +
+       ' (bitmap ' + [int]$m.bx0 + '-' + [int]$m.bx1 + ' x ' + [int]$m.by0 + '-' + [int]$m.by1 + ')')
+  [W32]::Click([int]$m.sx, [int]$m.sy)
+  Start-Sleep -Milliseconds 600
+}
+function Click-Blank([string]$tag) {
+  # A click on paper that carries nothing, so a field loses the keyboard the way it does under a
+  # reader's hand before they save. G1 measured that text still in a focused field stays out of the
+  # saved bytes unless the focus is killed first; the product kills it on save, and this is the
+  # belt to that brace.
+  $shot = Page-Shot ($tag + '-blank')
+  $m = Map-Rect $shot 450 780 460 790
+  Assert-InCrop $shot $m ($tag + ' blank paper')
+  [W32]::Click([int]$m.sx, [int]$m.sy)
+  Start-Sleep -Milliseconds 500
+}
+function Type-Text([string]$text, [string]$tag) {
+  foreach ($ch in $text.ToCharArray()) {
+    $ins = [W32]::TypeChar($ch)
+    if ($ins -ne 2) {
+      Bail ('  ' + $tag + ': SendInput inserted ' + $ins + ' of 2 events for [' + (UForm ([string]$ch)) +
+            '], last error ' + ([W32]::LastError()) + ' -- the key went nowhere, so nothing after it is evidence')
+    }
+    Start-Sleep -Milliseconds 60
+  }
+}
+function Press-Key([int]$vk, [bool]$shift, [string]$tag) {
+  $want = if ($shift) { 4 } else { 2 }
+  # [uint16], not [ushort]: PowerShell has no accelerator by that name and the cast throws
+  # TypeNotFound, which reads as "SendInput inserted  of 2 events" -- a key that never went out
+  # looking like one that went out badly.
+  $ins = [W32]::PressVk([uint16]$vk, $shift)
+  if ($ins -ne $want) {
+    Bail ('  ' + $tag + ': SendInput inserted ' + $ins + ' of ' + $want + ' events for vk ' + $vk +
+          ', last error ' + ([W32]::LastError()) + ' -- the key never went out, so nothing after it is evidence')
+  }
+  Start-Sleep -Milliseconds 200
+}
+function Save-AndRead([string]$tag, [bool]$press) {
+  # Ctrl+S and the four receipts saveinplace already established: the line names the copy, the
+  # caption's star is gone, the copy's bytes moved, the original's did not. The line is timed at
+  # 5 s, so it is polled, never slept-once-and-read.
+  if (-not (ForegroundIs (Window $app.Id))) {
+    if (-not (TakeForeground $app.Id)) { Bail ('  ' + $tag + ': could not get the foreground back before Ctrl+S') }
+  }
+  $before = Copy-Hash
+  if ($press) { [System.Windows.Forms.SendKeys]::SendWait('^s') }
+  $savedCj = CjStr 0x5DF2, 0x4FDD, 0x5B58, 0x5230
+  $msg = Wait-Status $app.Id @($savedCj, 'Saved to')
+  $sawMsg = ($msg -ne '')
+  $namesCopy = $msg.Contains($script:guardCopyLeaf)
+  $starGone = Wait-Star $app.Id $false
+  $after = Copy-Hash
+  Say ('  ' + $tag + ': status [' + $msg.Replace("`r", ' ').Replace("`n", ' / ') + ']')
+  Say ('  ' + $tag + ': save line=' + $sawMsg + ' names the copy=' + $namesCopy + ' star gone=' + $starGone +
+       ' copy moved=' + ($after -ne $before))
+  Say ('  ' + $tag + ': copy sha256 before [' + $before + ']')
+  Say ('  ' + $tag + ': copy sha256 after  [' + $after + ']')
+  # F8's in-place save reopens the document, so the view is rebuilt and the zoom is fit-width
+  # again: anything aimed with the picture taken before the save would land somewhere else.
+  $script:formPageRect = $null
+  return @{ msg = $msg; sawMsg = $sawMsg; namesCopy = $namesCopy; starGone = $starGone;
+            before = $before; after = $after; moved = ($after -ne $before) }
+}
+function Check-Save($sv, [string]$tag) {
+  if (-not $sv.sawMsg) { Bail ('  ' + $tag + ': Ctrl+S left no save line in the status bar') }
+  if (-not $sv.namesCopy) { Bail ('  ' + $tag + ': the save line does not name the copy [' + $script:guardCopyLeaf + ']') }
+  if (-not $sv.starGone) { Bail ('  ' + $tag + ': the caption still carries the star after the save') }
+  if (-not $sv.moved) { Bail ('  ' + $tag + ': the copy on disk is what it was, despite the line saying it saved') }
+}
+function Form-TitleCheck([string]$tag) {
+  $win = TakeForeground $app.Id
+  if (-not $win) { Bail ('  ' + $tag + ': could not take the foreground; refusing to type into another window') }
+  $title = (Window $app.Id).Current.Name
+  Say ('  ' + $tag + ': window [' + $title + ']')
+  if (-not $title.Contains($script:guardCopyLeaf)) {
+    Bail ('  ' + $tag + ': the caption does not name the copy this probe made [' + $script:guardCopyLeaf + ']')
+  }
 }
 
 if ($Log) { $lines.Clear() }
@@ -2594,6 +3319,516 @@ switch ($Mode) {
     }
     $bmp.Dispose()
     Say ('  shot kept at ' + $shot)
+  }
+  'formfill' {
+    # Type into a field with a real click and real keys, then prove it landed three ways: the ink
+    # inside the field's own rectangle grew while a blank rectangle beside it did not move, the
+    # caption's star came and went around Ctrl+S, and the copy on disk answers with exactly the
+    # token that was typed -- in the aimed field and in none of its neighbours. -Control clicks the
+    # same field and types nothing: no star, no ink, no save line, and it still expects all of that,
+    # so it exits 1.
+    Form-TitleCheck 'formfill'
+    Read-FormFields $script:guardCopy 'formfill-before' | Out-Null
+    $tgt = Field-At 'alpha' 'formfill'
+    if ($tgt.value -ne '') {
+      Bail ('  formfill: alpha is not empty before anything was typed: [' + (UForm $tgt.value) + ']')
+    }
+    $shot = Zoom-WholePage 'formfill'
+    foreach ($f in @($script:ffFields)) {
+      $m = Map-Rect $shot $f.l $f.b $f.r $f.t
+      Say ('  field ' + $f.name + ' ' + $f.type + ' user ' + $f.l + ',' + $f.b + '-' + $f.r + ',' + $f.t +
+           ' -> bitmap ' + [int]$m.bx0 + ',' + [int]$m.by0 + '-' + [int]$m.bx1 + ',' + [int]$m.by1 +
+           ' screen ' + [int]$m.sx + ',' + [int]$m.sy)
+    }
+    Click-Field $shot $tgt 'formfill'
+    # A focused text field paints its own caret, and the caret BLINKS -- so "the ink inside the
+    # field before anything was typed" is not one number. Measured in the same rectangle one blink
+    # apart with the keys never touched: 0, then 24. The baseline is therefore the larger of two
+    # shots taken a blink apart, and the reading the verdict is written on is a THIRD shot, taken
+    # after a click on blank paper has made the field let go of the keyboard: no caret is left in
+    # it to be mistaken for a glyph, in either direction.
+    $shotA1 = Page-Shot 'formfill-focused-1'
+    $inkA1 = Region-Ink $shotA1 (Map-Rect $shotA1 $tgt.l $tgt.b $tgt.r $tgt.t)
+    Start-Sleep -Milliseconds 700
+    $shotA2 = Page-Shot 'formfill-focused-2'
+    $inkA2 = Region-Ink $shotA2 (Map-Rect $shotA2 $tgt.l $tgt.b $tgt.r $tgt.t)
+    $inkBefore = [math]::Max($inkA1, $inkA2)
+    $blankBefore = Region-Ink $shotA2 (Map-Rect $shotA2 300 700 500 730)
+    Say ('  ink in alpha while it holds the keyboard with nothing typed: ' + $inkA1 + ' then ' + $inkA2 +
+         ' -- a caret, and it blinks, so the baseline is the larger: ' + $inkBefore)
+    if ($Control) {
+      Say '  CONTROL: nothing is typed; the star, the ink and the save line are still expected to stay put'
+      $token = ''
+    } else {
+      $token = 'P' + [guid]::NewGuid().ToString('N').Substring(0, 6).ToUpper()
+      Say ('  formfill: typing [' + $token + '] into alpha')
+      Type-Text $token 'formfill'
+    }
+    Start-Sleep -Milliseconds 700
+    if ($Control) {
+      if (Wait-Star $app.Id $true 8) {
+        Bail '  CONTROL: the caption grew the unsaved-edits star with nothing typed -- a focus change is being counted as an edit'
+      }
+      Say '  CONTROL: no star with nothing typed, as it should be'
+    } elseif (-not (Wait-Star $app.Id $true)) {
+      Bail ('  formfill: the caption never grew the unsaved-edits star after typing; it reads [' +
+            (Window $app.Id).Current.Name + ']')
+    }
+    $shotB = Page-Shot 'formfill-after-typing'
+    $inkAfter = Region-Ink $shotB (Map-Rect $shotB $tgt.l $tgt.b $tgt.r $tgt.t)
+    $blankMid = Region-Ink $shotB (Map-Rect $shotB 300 700 500 730)
+    Say ('  ink in alpha with the keyboard still held: before=' + $inkBefore + ' after=' + $inkAfter +
+         '; blank rectangle beside it before=' + $blankBefore + ' after=' + $blankMid)
+    if ($blankBefore -ne $blankMid) {
+      Bail ('  formfill: the blank rectangle beside the field changed ink (' + $blankBefore + ' -> ' +
+            $blankMid + '), so the picture moved between the two shots and no ink number compares')
+    }
+    Click-Blank 'formfill'
+    $shotC = Page-Shot 'formfill-committed'
+    $inkCommitted = Region-Ink $shotC (Map-Rect $shotC $tgt.l $tgt.b $tgt.r $tgt.t)
+    $blankAfter = Region-Ink $shotC (Map-Rect $shotC 300 700 500 730)
+    Say ('  ink in alpha once it has let the keyboard go: ' + $inkCommitted +
+         ' against the baseline ' + $inkBefore + '; blank rectangle ' + $blankAfter)
+    if ($blankAfter -ne $blankBefore) {
+      Bail ('  formfill: the blank rectangle beside the field changed ink (' + $blankBefore + ' -> ' +
+            $blankAfter + ') across the click on paper, so the page moved and no ink number compares')
+    }
+    # Tripling, plus a floor: a caret caught in its ON phase is a couple of dozen pixels and seven
+    # glyphs are hundreds, so the bar has to be one a caret cannot clear even when the baseline
+    # itself was measured with the caret off.
+    $need = ($inkBefore * 3) + 50
+    if ($Control) {
+      if ($inkCommitted -gt $inkBefore) {
+        Bail ('  CONTROL: ink stayed inside the field after the keyboard was let go (' + $inkBefore +
+              ' -> ' + $inkCommitted + ') with nothing typed into it')
+      }
+    } elseif ($inkCommitted -lt $need) {
+      Bail ('  formfill: typing [' + $token + '] left ' + $inkCommitted + ' px of ink in the field it ' +
+            'was aimed at, and a bare focused field already paints ' + $inkBefore + ' -- the glyphs ' +
+            'are not on screen, so the screen half of this mode proves nothing')
+    }
+    $sv = Save-AndRead 'formfill' (-not $Control)
+    Read-FormFields $script:guardCopy 'formfill-after' | Out-Null
+    $a = Field-At 'alpha' 'formfill'; $b = Field-At 'beta' 'formfill'
+    $g = Field-At 'gamma' 'formfill'; $d = Field-At 'delta' 'formfill'; $c = Field-At 'agree' 'formfill'
+    Say ('  read back: alpha=[' + (UForm $a.value) + '] beta=[' + (UForm $b.value) + '] gamma=[' +
+         (UForm $g.value) + '] delta=[' + (UForm $d.value) + '] agree=[' + (UForm $c.value) + ']')
+    if ($Control) {
+      if ($sv.sawMsg) { Bail '  CONTROL: a save line appeared with Ctrl+S unpressed -- the status verdict is not live' }
+      if ($sv.moved) { Bail '  CONTROL: the copy moved although nothing was saved' }
+      if ($a.value -ne '') { Bail ('  CONTROL: alpha came back [' + (UForm $a.value) + '] with nothing typed into it') }
+      Bail '  CONTROL: formfill with the keys unpressed produced no star, no ink, no save line and no moved bytes (CONTROL exit 1)'
+    }
+    Check-Save $sv 'formfill'
+    if ((UForm $a.value) -ne $token) {
+      Bail ('  formfill: alpha came back [' + (UForm $a.value) + '], not the typed [' + $token + ']')
+    }
+    foreach ($f in @($b, $g, $d)) {
+      if ($f.value -ne '') {
+        Bail ('  formfill: ' + $f.name + ' came back [' + (UForm $f.value) + '] though nothing was typed into it')
+      }
+    }
+    if ((UForm $c.value) -ne 'Off') { Bail ('  formfill: agree came back [' + (UForm $c.value) + '], not Off') }
+    if (-not (Guard-Check 'after formfill')) { Bail '  formfill: the original moved during the run' }
+    Say ('  formfill: [' + $token + '] was typed into alpha on screen, saved, and the copy answers with it')
+  }
+  'formtab' {
+    # Tab order: click the first field, press Tab, type -- the letters have to land in the SECOND
+    # field, because that is what Tab is for. Shift+Tab carries the keyboard back and the second
+    # token lands in the first. The CARET is read while both fields are empty (click on alpha, after
+    # Tab) because it is the only on-screen mark of which field holds the keyboard; once a token has
+    # been typed the receipt is the read-back, since Caret-Map counts ink and glyphs look like a
+    # caret. The read-back has to answer beta with token one and alpha with token two. -Control skips
+    # both Tab presses, so the caret never moves and both tokens pile up in alpha while beta stays
+    # empty -- the same expectation, therefore exit 1.
+    Form-TitleCheck 'formtab'
+    Read-FormFields $script:guardCopy 'formtab-before' | Out-Null
+    $alpha = Field-At 'alpha' 'formtab'; $beta = Field-At 'beta' 'formtab'
+    if ($alpha.value -ne '' -or $beta.value -ne '') {
+      Bail ('  formtab: alpha or beta is not empty before anything was typed: [' + (UForm $alpha.value) +
+            '] / [' + (UForm $beta.value) + ']')
+    }
+    $shot = Zoom-WholePage 'formtab'
+    Click-Field $shot $alpha 'formtab'
+    $p0 = Caret-Map 'formtab-caret-on-click'
+    Caret-Expect $p0 @('alpha') 'formtab after the click on alpha'
+    # ---- the key channel, proven before it is used ----
+    #
+    # Everything after this is one Tab press sent as a virtual-key code, and if that channel does not
+    # reach the page then "the caret did not move" is a statement about SendInput, not about Tab. Two
+    # things were measured on the way here and they are not the same thing: KEYEVENTF_UNICODE
+    # characters DO reach the field (the caret's 24 px goes to 92 for two glyphs), while two
+    # Backspaces by virtual-key code left the field reading exactly 92 -- so the character route
+    # working says nothing about the virtual-key route, and Tab uses the virtual-key one.
+    #
+    # Esc is the one virtual key whose arrival is unambiguous here, because PageView answers it
+    # itself before PDFium is asked (releaseFocus at pageview.cpp's keyPressEvent, then the caret is
+    # painted away). It also leaves nothing behind, which is why it is the control rather than a
+    # Backspace: a key that turns out not to arrive must not leave text in the field the rest of this
+    # mode is about to read back. 24 px -> 0 is the receipt; 24 px -> 24 px is the harness.
+    Press-Key 0x1B $false 'formtab-keycontrol'
+    Start-Sleep -Milliseconds 500
+    $inkEscaped = Field-Ink 'formtab-keycontrol-escaped' $alpha
+    Say ('  key control: the caret was ' + $p0['alpha'] + ' px, and Esc by virtual-key code left ' +
+         $inkEscaped + ' px in alpha')
+    if ($inkEscaped -gt 10) {
+      Bail ('  formtab: Esc by virtual-key code left the field exactly as it was (' + $p0['alpha'] + ' -> ' +
+            $inkEscaped + ' px) -- the caret only goes out when releaseFocus runs, so the virtual key ' +
+            'never reached the page and a Tab press after this would prove nothing about Tab')
+    }
+    Say '  key control: the virtual key reached the page and the field let go of the keyboard'
+    Click-Field $shot $alpha 'formtab'
+    $p0b = Caret-Map 'formtab-caret-again'
+    Caret-Expect $p0b @('alpha') 'formtab after clicking alpha again'
+    $starBefore = Has-Star $app.Id
+    Say ('  formtab: caption after the key control [' + (Window $app.Id).Current.Name + '], star=' + $starBefore)
+    if ($Control) {
+      Say '  CONTROL: Tab and Shift+Tab are not pressed; both tokens are still expected where Tab would have put them'
+    } else {
+      Say ('  formtab: keyboard focus before Tab is ' + (Focus-Now))
+      Say '  formtab: pressing Tab; the keyboard should move to beta'
+      Press-Key 0x09 $false 'formtab'
+      Say ('  formtab: keyboard focus after Tab is ' + (Focus-Now))
+    }
+    $p1 = Caret-Map 'formtab-caret-after-tab'
+    if ($Control) {
+      Caret-Expect $p1 @('alpha') 'CONTROL with Tab unpressed'
+      Say '  CONTROL: the caret stayed in alpha, as it must with Tab unpressed'
+    } else {
+      # This is the verdict that matters, and it is written to say which of the two failures it saw:
+      # "the caret is nowhere" (the keyboard was dropped) is a different product defect from "the
+      # caret is in gamma" (Tab walked the fields in an order this sample does not set).
+      Caret-Expect $p1 @('beta') 'formtab after Tab'
+      Say '  formtab: the caret is in beta and gone from alpha -- Tab moved the keyboard'
+    }
+    $t1 = 'T1' + [guid]::NewGuid().ToString('N').Substring(0, 4).ToUpper()
+    Type-Text $t1 'formtab-1'
+    if (-not $Control) {
+      Say '  formtab: pressing Shift+Tab; the keyboard should move back to alpha'
+      Press-Key 0x09 $true 'formtab'
+    }
+    # No caret reading here. Caret-Map counts ink, and beta now holds $t1 -- glyphs sitting still look
+    # exactly like a caret to a count, so the caret cannot say which field has the keyboard once either
+    # one has text in it. The receipt for "the keyboard came back" is the second token itself: $t1 and
+    # $t2 differ by construction, so the file says which field got which, and a mismatch says whether
+    # Shift+Tab did nothing (both tokens in beta) or went somewhere else (alpha still empty).
+    $t2 = 'T2' + [guid]::NewGuid().ToString('N').Substring(0, 4).ToUpper()
+    Type-Text $t2 'formtab-2'
+    Start-Sleep -Milliseconds 700
+    if ($starBefore) {
+      # The key control only pressed Esc, but if a focus change already counted as an edit the caption
+      # carries the star before either token exists. A verdict that cannot fail is decoration, so it
+      # is printed instead of asserted, and said out loud.
+      Say ('  formtab: the caption already carried the star before the tokens were typed, so the star ' +
+           'is not evidence in this run; the read-back is')
+    } elseif (-not (Wait-Star $app.Id $true)) {
+      Bail ('  formtab: the caption never grew the star after typing; it reads [' + (Window $app.Id).Current.Name + ']')
+    } else {
+      Say '  formtab: the caption grew the unsaved-edits star'
+    }
+    Click-Blank 'formtab'
+    $sv = Save-AndRead 'formtab' $true
+    Check-Save $sv 'formtab'
+    Read-FormFields $script:guardCopy 'formtab-after' | Out-Null
+    $a = Field-At 'alpha' 'formtab'; $b = Field-At 'beta' 'formtab'
+    $g = Field-At 'gamma' 'formtab'; $d = Field-At 'delta' 'formtab'
+    Say ('  read back: alpha=[' + (UForm $a.value) + '] beta=[' + (UForm $b.value) + '] gamma=[' +
+         (UForm $g.value) + '] delta=[' + (UForm $d.value) + ']')
+    if ((UForm $b.value) -ne $t1) {
+      if ($Control) {
+        Bail ('  CONTROL: beta came back [' + (UForm $b.value) + '], not [' + $t1 + '] -- with Tab unpressed the ' +
+              'letters stayed where they were typed (CONTROL exit 1)')
+      }
+      Bail ('  formtab: beta came back [' + (UForm $b.value) + '], not [' + $t1 + '] -- the letters did not follow Tab')
+    }
+    if ((UForm $a.value) -ne $t2) {
+      Bail ('  formtab: alpha came back [' + (UForm $a.value) + '], not [' + $t2 + '] -- Shift+Tab did not carry the ' +
+            'keyboard back; beta holds [' + (UForm $b.value) + ']')
+    }
+    foreach ($f in @($g, $d)) {
+      if ($f.value -ne '') {
+        Bail ('  formtab: ' + $f.name + ' came back [' + (UForm $f.value) + '] though nothing was typed into it')
+      }
+    }
+    if (-not (Guard-Check 'after formtab')) { Bail '  formtab: the original moved during the run' }
+    Say ('  formtab: Tab put [' + $t1 + '] in beta and Shift+Tab put [' + $t2 + '] back in alpha')
+  }
+  'formcheck' {
+    # The checkbox: one click paints its /Yes appearance (a filled square in the sample, which is the
+    # pixel difference this mode reads), the caption grows the star, the save writes /V /Yes, and a
+    # second click takes all of it back to /Off. -Control clicks nothing and still expects /Yes, so
+    # it exits 1.
+    Form-TitleCheck 'formcheck'
+    Read-FormFields $script:guardCopy 'formcheck-before' | Out-Null
+    $box = Field-At 'agree' 'formcheck'
+    if ((UForm $box.value) -ne 'Off') {
+      Bail ('  formcheck: agree starts at [' + (UForm $box.value) + '], not Off')
+    }
+    $shot = Zoom-WholePage 'formcheck'
+    $mA = Map-Rect $shot $box.l $box.b $box.r $box.t
+    Assert-InCrop $shot $mA 'formcheck agree'
+    $inkBefore = Region-Ink $shot $mA
+    if ($Control) {
+      Say '  CONTROL: the checkbox is not clicked; /V is still expected to become Yes'
+    } else {
+      Click-Field $shot $box 'formcheck'
+      if (-not (Wait-Star $app.Id $true)) {
+        Bail ('  formcheck: the caption never grew the star after the click; it reads [' + (Window $app.Id).Current.Name + ']')
+      }
+    }
+    $shotB = Page-Shot 'formcheck-after-click'
+    $mB = Map-Rect $shotB $box.l $box.b $box.r $box.t
+    $inkAfter = Region-Ink $shotB $mB
+    Say ('  ink in the checkbox box: before=' + $inkBefore + ' after=' + $inkAfter)
+    if ($Control) {
+      if ($inkAfter -ne $inkBefore) {
+        Bail ('  CONTROL: ink moved inside the checkbox with no click (' + $inkBefore + ' -> ' + $inkAfter + ')')
+      }
+    } elseif ($inkAfter -le $inkBefore) {
+      Bail ('  formcheck: the click painted nothing in the checkbox''s own box (' + $inkBefore + ' -> ' + $inkAfter + ')')
+    }
+    Click-Blank 'formcheck'
+    $sv = Save-AndRead 'formcheck' (-not $Control)
+    Read-FormFields $script:guardCopy 'formcheck-after' | Out-Null
+    $c = Field-At 'agree' 'formcheck'
+    Say ('  read back: agree=[' + (UForm $c.value) + ']')
+    if ($Control) {
+      if ($sv.sawMsg) { Bail '  CONTROL: a save line appeared with Ctrl+S unpressed -- the status verdict is not live' }
+      if ((UForm $c.value) -ne 'Off') { Bail ('  CONTROL: agree came back [' + (UForm $c.value) + '] with no click') }
+      Bail '  CONTROL: formcheck with the click unpressed produced no star, no ink and no /Yes (CONTROL exit 1)'
+    }
+    Check-Save $sv 'formcheck'
+    if ((UForm $c.value) -ne 'Yes') {
+      Bail ('  formcheck: agree came back [' + (UForm $c.value) + '], not Yes')
+    }
+    # Second half: the same click has to undo itself. The save reopened the document, so the zoom is
+    # fit-width again and the page has to be found in the picture once more.
+    $shotC = Zoom-WholePage 'formcheck-2'
+    $mC = Map-Rect $shotC $box.l $box.b $box.r $box.t
+    Assert-InCrop $shotC $mC 'formcheck agree, second half'
+    $inkChecked = Region-Ink $shotC $mC
+    Click-Field $shotC $box 'formcheck-2'
+    if (-not (Wait-Star $app.Id $true)) {
+      Bail ('  formcheck: the caption never grew the star after the second click; it reads [' + (Window $app.Id).Current.Name + ']')
+    }
+    $shotD = Page-Shot 'formcheck-after-second-click'
+    $mD = Map-Rect $shotD $box.l $box.b $box.r $box.t
+    $inkBack = Region-Ink $shotD $mD
+    Say ('  ink checked=' + $inkChecked + ' after the second click=' + $inkBack)
+    if ($inkBack -ge $inkChecked) {
+      Bail ('  formcheck: the second click did not take the fill away (' + $inkChecked + ' -> ' + $inkBack + ')')
+    }
+    Click-Blank 'formcheck-2'
+    $sv2 = Save-AndRead 'formcheck-2' $true
+    Check-Save $sv2 'formcheck-2'
+    Read-FormFields $script:guardCopy 'formcheck-after-2' | Out-Null
+    $c2 = Field-At 'agree' 'formcheck-2'
+    Say ('  read back: agree=[' + (UForm $c2.value) + ']')
+    if ((UForm $c2.value) -ne 'Off') {
+      Bail ('  formcheck: the second click left agree at [' + (UForm $c2.value) + '], not Off')
+    }
+    if (-not (Guard-Check 'after formcheck')) { Bail '  formcheck: the original moved during the run' }
+    Say '  formcheck: the click painted the box and wrote /Yes, the second click took both back'
+  }
+  'formime' {
+    # The one route that asks an input method to hand over a composed string, and the two comparisons
+    # H2 asks to see beside it. Each route writes a DIFFERENT string into a DIFFERENT field, so the
+    # saved file says which route's text reached which field and this file never has to infer "who owns
+    # the keyboard" from a caret once text exists (Caret-Map counts ink, so typed glyphs look exactly
+    # like a caret). Measured reason for that rule: an earlier round typed route B's characters after
+    # clicking delta, they landed in gamma, and the mode's own message blamed the composition -- the
+    # click was fine and the composition had never even been attempted; the second click had not moved
+    # the form's focus, and a log that checks only one field cannot tell those two apart.
+    #
+    #   A  gamma -- ImmGetContext on the app's window, ImmSetCompositionString(GCS_COMPSTR) with the
+    #              two characters, ImmNotifyIME(NI_COMPOSITIONSTR, CPS_COMPLETE). This is the route H2
+    #              is about. Every call's own answer and last error is printed.
+    #   B  delta -- a different pair of characters as KEYEVENTF_UNICODE, one WM_CHAR at a time. A
+    #              comparison, never a substitute: that is the per-character path, not FORM_ReplaceSelection.
+    #   C  alpha -- real virtual-key presses ('zhongwen' then space), so whatever input method the app
+    #              thread has gets the keys a keyboard would send. Also a comparison.
+    #
+    # If A cannot be driven (no context in the first place), every step is printed and the mode exits
+    # 1 with B's and C's readings beside it -- exactly the answer H2 allows, and no pretending.
+    Form-TitleCheck 'formime'
+    Read-FormFields $script:guardCopy 'formime-before' | Out-Null
+    $gamma = Field-At 'gamma' 'formime'; $delta = Field-At 'delta' 'formime'; $alpha = Field-At 'alpha' 'formime'
+    if ($gamma.value -ne '' -or $delta.value -ne '' -or $alpha.value -ne '') {
+      Bail '  formime: gamma, delta or alpha is not empty before anything was typed'
+    }
+    $wantCj = CjStr 0x4E2D, 0x6587
+    $cmpCj = CjStr 0x6C49, 0x5B57
+    $wantU = UForm $wantCj
+    $cmpU = UForm $cmpCj
+    Say ('  formime: route A commits [' + $wantU + ']; route B types [' + $cmpU + '] into another field, so the two cannot be confused')
+    $shot = Zoom-WholePage 'formime'
+    # ---- what the platform offers before anything is composed ----
+    $hwnd = [IntPtr](Window $app.Id).Current.NativeWindowHandle
+    $tid = [W32]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
+    Say ('  IMM32: main hwnd ' + $hwnd + '; its thread ' + $tid + ' is in layout ' + (Layout-Label ([W32]::GetKeyboardLayout($tid))))
+    Say ('  IMM32: this shell thread is in layout ' + (Layout-Label ([W32]::GetKeyboardLayout(0))))
+    $hkls = @([W32]::KeyboardLayouts())
+    if ($hkls.Count -eq 0) { Say '  IMM32: GetKeyboardLayoutList returned no layouts' }
+    foreach ($hkl in $hkls) { Say ('  IMM32: installed layout ' + (Layout-Label $hkl)) }
+    try {
+      foreach ($lang in @(Get-WinUserLanguageList)) {
+        foreach ($tip in @($lang.InputMethodTips)) { Say ('  input method: ' + $lang.LanguageTag + ' ' + $tip) }
+      }
+    } catch {
+      Say ('  input method: the list could not be read (' + $_.Exception.Message + ')')
+    }
+    # The channel's own control: a window in THIS shell, created and never shown. If the app's window
+    # answers zero while this one answers a handle, the zero is about the app's window; if this one also
+    # answers zero, nothing this session can reach has a context and the app's zero proves nothing.
+    $ctlForm = New-Object System.Windows.Forms.Form
+    $ctlForm.CreateControl()
+    $ctlH = $ctlForm.Handle
+    $ctlHimc = [W32]::ImmGetContext($ctlH)
+    Say ('  IMM32 control: a never-shown window in this shell (hwnd ' + $ctlH + ') -> ImmGetContext ' + $ctlHimc)
+    if ($ctlHimc -ne [IntPtr]::Zero) { [W32]::ImmReleaseContext($ctlH, $ctlHimc) | Out-Null }
+    $ctlAssoc = [W32]::ImmAssociateContextEx($ctlH, [IntPtr]::Zero, [W32]::IACE_DEFAULT)
+    $ctlErr = [W32]::LastError()
+    $ctlHimc2 = [W32]::ImmGetContext($ctlH)
+    Say ('  IMM32 control: ImmAssociateContextEx(IACE_DEFAULT) -> ' + $ctlAssoc + ' (last error ' + $ctlErr +
+         '), ImmGetContext then -> ' + $ctlHimc2)
+    if ($ctlHimc2 -ne [IntPtr]::Zero) { [W32]::ImmReleaseContext($ctlH, $ctlHimc2) | Out-Null }
+    $ctlForm.Dispose()
+    # ---- route A: a real composition, committed through IMM32 ----
+    Click-Field $shot $gamma 'formime-A'
+    $ca = Caret-Map 'formime-A-caret'
+    Caret-Expect $ca @('gamma') 'formime route A before the composition (the click on gamma)'
+    $aHimc = [IntPtr]::Zero
+    $aDriven = $false
+    if ($Control) {
+      Say '  route A: -Control makes no context request on the app window and no composition; gamma stays empty on purpose'
+    } else {
+      $aHimc = [W32]::ImmGetContext($hwnd)
+      Say ('  route A: ImmGetContext(main hwnd) -> ' + $aHimc + ' (zero = no input context associated with that window)')
+      Say ('  route A: ImmGetDefaultIMEWnd(main hwnd) -> ' + [W32]::ImmGetDefaultIMEWnd($hwnd))
+      if ($aHimc -eq [IntPtr]::Zero) {
+        # The thread's layout is the one thing a caller outside the window can ask it to change, and
+        # an input method answers only for a layout that is active there.
+        $zh = [IntPtr]::Zero
+        foreach ($hkl in $hkls) {
+          if (([uint32]($hkl.ToInt64() -band [int64]0xFFFF)) -eq 0x0804) { $zh = $hkl }
+        }
+        if ($zh -eq [IntPtr]::Zero) {
+          Say '  route A: no zh-CN layout is installed, so there is none to ask the thread for'
+        } else {
+          $posted = [W32]::PostMessageW($hwnd, [W32]::WM_INPUTLANGCHANGEREQUEST, [IntPtr]::Zero, $zh)
+          Start-Sleep -Milliseconds 700
+          $tid2 = [W32]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
+          Say ('  route A: WM_INPUTLANGCHANGEREQUEST to ' + (Layout-Label $zh) + ' posted=' + $posted +
+               '; the thread is now in ' + (Layout-Label ([W32]::GetKeyboardLayout($tid2))))
+          $aHimc = [W32]::ImmGetContext($hwnd)
+          Say ('  route A: ImmGetContext after the layout request -> ' + $aHimc)
+        }
+      }
+      if ($aHimc -eq [IntPtr]::Zero) {
+        $assoc = [W32]::ImmAssociateContextEx($hwnd, [IntPtr]::Zero, [W32]::IACE_DEFAULT)
+        $errAssoc = [W32]::LastError()
+        $aHimc = [W32]::ImmGetContext($hwnd)
+        Say ('  route A: ImmAssociateContextEx(IACE_DEFAULT) -> ' + $assoc + ' (last error ' + $errAssoc +
+             '), ImmGetContext then -> ' + $aHimc)
+      }
+      if ($aHimc -eq [IntPtr]::Zero) {
+        Say '  route A: no context was obtained, so no composition is sent -- there is nothing to send it to'
+      } else {
+        $aOpen = [W32]::ImmGetOpenStatus($aHimc)
+        Say ('  route A: ImmGetOpenStatus -> ' + $aOpen)
+        if (-not $aOpen) {
+          $opened = [W32]::ImmSetOpenStatus($aHimc, $true)
+          Say ('  route A: ImmSetOpenStatus(true) -> ' + $opened + ' (last error ' + ([W32]::LastError()) + ')')
+        }
+        $set = [W32]::ImmSetCompositionString($aHimc, [W32]::GCS_COMPSTR, $wantCj, [uint32]($wantCj.Length * 2), [IntPtr]::Zero, 0)
+        $errSet = [W32]::LastError()
+        Say ('  route A: ImmSetCompositionString(GCS_COMPSTR, [' + $wantU + ']) -> ' + $set + ' (last error ' + $errSet + ')')
+        $compBuf = New-Object System.Text.StringBuilder 64
+        $compLen = [W32]::ImmGetCompositionString($aHimc, [W32]::GCS_COMPSTR, $compBuf, [uint32](64 * 2))
+        Say ('  route A: ImmGetCompositionString(GCS_COMPSTR) -> ' + $compLen + ' bytes [' + (UForm $compBuf.ToString()) + ']')
+        $notify = [W32]::ImmNotifyIME($aHimc, [W32]::NI_COMPOSITIONSTR, [W32]::CPS_COMPLETE, [IntPtr]::Zero)
+        $errNotify = [W32]::LastError()
+        Say ('  route A: ImmNotifyIME(NI_COMPOSITIONSTR, CPS_COMPLETE) -> ' + $notify + ' (last error ' + $errNotify + ')')
+        $resBuf = New-Object System.Text.StringBuilder 64
+        $resLen = [W32]::ImmGetCompositionString($aHimc, [W32]::GCS_RESULTSTR, $resBuf, [uint32](64 * 2))
+        Say ('  route A: ImmGetCompositionString(GCS_RESULTSTR) -> ' + $resLen + ' bytes [' + (UForm $resBuf.ToString()) + ']')
+        [W32]::ImmReleaseContext($hwnd, $aHimc) | Out-Null
+        $aDriven = $true
+        Start-Sleep -Milliseconds 900
+      }
+    }
+    # ---- route B: KEYEVENTF_UNICODE, into delta, with its own string ----
+    #
+    # One field can take the keyboard; a click on a DIFFERENT field does not move it. Measured twice
+    # in this mode (with and without a mouse-move before the press): after the click on gamma, the
+    # click on delta left gamma focused -- the caret map then showed no caret anywhere, and B's two
+    # characters came back in gamma with delta empty. So each route lets go first. Esc is the
+    # product's own "let go" (pageview.cpp answers it with releaseFocus before PDFium sees a key),
+    # and with no field focused the next click takes the field it aims at, which is the state every
+    # first click was measured in. The click itself is formtab's subject; this mode is about the
+    # three input channels.
+    Press-Key 0x1B $false 'formime-letgo-A'
+    Start-Sleep -Milliseconds 400
+    Click-Field $shot $delta 'formime-B'
+    # Instrument, not a verdict: every field is still empty here in a run where route A did not land,
+    # so the caret map is valid and it answers "did the click on delta move the keyboard at all".
+    # Printed rather than asserted because in a run where A DID land, gamma holds its text and the
+    # map cannot tell that text from a caret (see Caret-Map's limit).
+    $cb = Caret-Map 'formime-B-caret'
+    Say ('  formime-B: after the click on delta the caret is in ' + ((Caret-Holders $cb) -join ', ') +
+         ' -- the aim was delta')
+    Type-Text $cmpCj 'formime-B'
+    # ---- route C: real virtual keys into alpha, then Esc to close any candidate window ----
+    Press-Key 0x1B $false 'formime-letgo-B'
+    Start-Sleep -Milliseconds 400
+    Click-Field $shot $alpha 'formime-C'
+    $tidC = [W32]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
+    Say ('  route C: the app thread is in ' + (Layout-Label ([W32]::GetKeyboardLayout($tidC))) +
+         '; sending z h o n g w e n as virtual keys, then space')
+    foreach ($ch in 'zhongwen'.ToCharArray()) {
+      Press-Key ([int][char](([string]$ch).ToUpper())) $false 'formime-C'
+    }
+    Press-Key 0x20 $false 'formime-C'
+    Start-Sleep -Milliseconds 900
+    Press-Key 0x1B $false 'formime-C-escape'
+    Start-Sleep -Milliseconds 400
+    Click-Blank 'formime'
+    $sv = Save-AndRead 'formime' $true
+    Check-Save $sv 'formime'
+    Read-FormFields $script:guardCopy 'formime-after' | Out-Null
+    $g = Field-At 'gamma' 'formime'; $d = Field-At 'delta' 'formime'; $a = Field-At 'alpha' 'formime'
+    $gv = UForm $g.value; $dv = UForm $d.value; $av = UForm $a.value
+    Say ('  route readings: A(gamma)=[' + $gv + '] B(delta)=[' + $dv + '] C(alpha)=[' + $av + ']')
+    if (-not (Guard-Check 'after formime')) { Bail '  formime: the original moved during the run' }
+    if ($Control) {
+      if ($gv -ne '') {
+        Bail ('  CONTROL: no context was requested on the app window and no composition was attempted, yet gamma ' +
+              'carries [' + $gv + '] -- the positive''s gamma reading would not be the composition (B(delta)=[' +
+              $dv + '] C(alpha)=[' + $av + ']) (CONTROL exit 1)')
+      }
+      Bail ('  CONTROL: gamma is empty with the composition left out, so the positive''s gamma reading can only be ' +
+            'the composition; B(delta)=[' + $dv + '] C(alpha)=[' + $av + '] (CONTROL exit 1)')
+    }
+    if (-not $gv.StartsWith($wantU)) {
+      # Two different findings behind one red, and the message has to say which one it is: either the
+      # ladder got no context (nothing was ever composed -- the IMM32 answers above are the reading),
+      # or a context existed and the committed string did not reach the field.
+      $why = if ($aDriven) {
+        'a context was obtained and the composition was sent, and gamma=['
+      } else {
+        'no input context was obtained on the app window, so no composition was ever sent (the ladder ' +
+        'above is the reading) -- gamma=['
+      }
+      Bail ('  formime: the composition route did not land -- ' + $why + $gv + '], and it had to begin ' +
+            'with [' + $wantU + ']; B(delta)=[' + $dv + '] C(alpha)=[' + $av + ']')
+    }
+    if ($gv -ne $wantU) {
+      Bail ('  formime: the composition landed, but gamma also carries [' + $gv.Substring($wantU.Length) +
+            '] -- another route''s characters reached gamma as well, so the three readings are not ' +
+            'separated (B(delta)=[' + $dv + '] C(alpha)=[' + $av + '])')
+    }
+    Say ('  formime: the composition commit put [' + $wantU + '] into gamma and the save wrote it; beside it B(delta)=[' +
+         $dv + '] C(alpha)=[' + $av + ']')
   }
   'uacache' {
     # sec.37 recorded that a status-bar message's UIA Name can lag what is on screen and blamed the

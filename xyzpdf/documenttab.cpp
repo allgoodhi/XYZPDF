@@ -39,6 +39,7 @@
 #include <QMessageBox>
 #include <QPrintDialog>
 #include <QSplitter>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -115,6 +116,16 @@ DocumentTab::DocumentTab(QWidget *parent)
     sidebar->addTab(thumbnailPanel, tr("缩略图"));
     sidebar->addTab(searchPanel, tr("搜索"));
     sidebar->addTab(signaturePanel, tr("签名"));
+    // In English the four labels are wider than the sidebar opened at (Outline, Thumbnails,
+    // Search, Signatures ~ 330 px in a 262 px panel), and Qt's answer was two scroll arrows
+    // with the first tab scrolled out of sight -- seen on the screen in §130, never in a
+    // count. Without scroll buttons the tab bar's whole width is the sidebar's minimum, and
+    // the splitter honours it: the sidebar is as wide as its four labels, never narrower.
+    // (Eliding was tried first: Qt will not shrink a tab below ~84 px here, so the first tab
+    // still scrolled away.)
+    sidebar->tabBar()->setUsesScrollButtons(false);
+    for (int index = 0; index < sidebar->count(); ++index)
+        sidebar->setTabToolTip(index, sidebar->tabText(index));
     sidebar->hide();
 
     auto *readingSplit = new QSplitter(Qt::Horizontal, this);

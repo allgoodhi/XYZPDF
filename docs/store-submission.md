@@ -7939,3 +7939,48 @@ gui-probe 的签名模式按 I1 的新说法匹配（"正在检查"那句只活�
 
 **还要作者做的**：注册 Partner Center 个人账户、保留应用名、把"产品标识"页上的 Package/Identity/Name、Publisher、PublisherDisplayName 三个值给我；
 定隐私政策放在哪个公开网址；在系统设置里把 .pdf 默认程序选成 XYZPDF 后双击看一次。微软 Word 本身仍没验（这台机器只有 WPS）。
+
+## 130. 第八批（签名的剩余两层）与第九批（转 Excel / PowerPoint / 可搜索的 PDF）一起合进 main（2026-10-25）
+
+他说"另一个 ai 已跑完"。五个 worktree：J2、K1、K2、K3 都已提交并带完整报告；**J1 没提交、没报告**（工作树里 `gui-probe.ps1` +902 行，
+最后改动 13:16，那个会话停在那里）。J1 由我原样提交到它的分支，再合。合并顺序 J2 → J1 → K1 → K2 → K3。
+
+- **J2 时间戳与联网吊销**（本机现造）：真 RFC 3161 令牌（`CryptMsgOpenToEncode`，内层 id-ct-TSTInfo，TSA 证书带关键的 timeStamping 用途），
+  CRL 由测试进程里只听 127.0.0.1 的 `QTcpServer` 发。抓到两处产品错：**令牌的 messageImprint 原来拿文档字节去比**（RFC 3161 比的是签名值的摘要，
+  所以以前任何真令牌都不会被采纳）；**联网吊销关着时，带 CDP 的证书被说成"不受信任"**（BASE 策略答 REVOCATION_OFFLINE —— 真 CA 签的文件个个带 CDP）。
+  新增「证书已被吊销。」一句。四条控制。OCSP 没测（样本没有 AIA）；真 CA 签的 PDF 仍需要作者提供。
+- **J1 侧栏签名页上屏幕**：`-Mode signaturepanel -Sample <十种之一|none>`，读每一行、展开读细节、点一行、截图；`signedsave` / `signedlock`
+  加了英文界面下"两句之间有空格、没有全角标点"的判据。它在屏幕上量到一处产品缺陷：**签名行点了不画选中**（见下）。
+- **K1 转 Excel**：每张表一张工作表，合并格、列宽行高、边框底纹、数值/日期识别（前导零与超过 15 位的保持文本），`check_xlsx.py`。十条控制。
+- **K2 转 PowerPoint**：每页一张幻灯片、按原位置摆，表格按格拆成文本框（`a:tbl` 的行会随字长高，格线位置保不住），`check_pptx.py`。三十条控制；
+  WPS 打印回 PDF 逐页比过，172 页的书 172 张。
+- **K3 扫描件转可搜索的 PDF**：识别带位置的词，字形全空的 Type0 整份文件共用一个，文字层 `3 Tr` 接在页内容流之后（原有流用 q/Q 罩住，
+  因为 Qt 写的页会留一条不回弹的 `cm`）；新文件逐像素与原文件相同。五条控制。
+
+**合并时改的**（三个 K 分支各自加了一个"哪种导出"的 `bool` 和一个"是不是在跑"的查询）：
+
+1. 收成一个 `MainWindow::ExportKind`（Word/Excel/PowerPoint/Searchable），`DocumentTab::isExporting()` 答四种里任何一个，一次只许一个；
+   `isExportingExcel()` / `isMakingSearchablePdf()` 去掉。菜单顺序：Word、Excel、PowerPoint、可搜索的 PDF、打印、图片。
+2. K1 完成框 `已导出 %1 个表格（共读 %2 页）` 是 `%1` 计数（英文 "Exported 1 tables"）→ `tr("已导出 %n 个表格到：\n%1", …, n)` 加探针。
+3. K3 拒写原文件只按路径文字比 → 再比文件身份（卷序列号 + 文件索引）。`searchablepdf_smoke` 用 `mklink /J` 做一个目录联接，从联接里指回原文件。
+   量出来的两件：`canonicalFilePath` 看不穿联接（第一版用它，测试红）；而测试第一版只判"失败"，去掉护栏照样绿 —— 文档开着，最后一步换文件被锁挡住，
+   识别全做完、还在临时目录留下一份成品。现在判的是"与同名那条是同一句拒话"，控制（改回只比文字）红。
+4. **侧栏签名行可选**（J1 报的）：`setFlags(Qt::ItemIsEnabled)` 只让点击设当前项（跳页照样成立）而不画选中。改成 `| ItemIsSelectable`；
+   `documenttab_smoke` 往视口送真鼠标事件，判"选中了"与"跳到第 2 页"。控制：改回只 Enabled → 只红"选中了"那一条，跳页仍绿（与读代码的判断一致）。
+   控制跑本身踩了两个坑，记进了 AGENTS：`[IO.File]` 的相对路径按进程目录解析（第一趟什么都没换、一片绿，哈希前后相同露了馅）；
+   `Copy-Item` 还原保留旧修改时间，Ninja 不重编，下一趟"绿"跑的还是控制的二进制。
+5. 目录：三方按 (context, source) 合并再 `update_translations`，829 条、numerus 81，lupdate 没有 same-text 填词。
+
+6. **英文界面的侧栏只有图看得出的两处**（J1 截图上看到的）：四个英文标签比 262 px 的侧栏宽，切到「签名」时标签条滚动，Outline 整个看不见、
+   Thumbnails 被切；细节行比栏宽，靠横向滚动条才读得到（`resizeColumnToContents` 把那一列撑成最长那行，`setWordWrap` 从来没有宽度可折）。
+   改：标签条不用滚动箭头，侧栏的最小宽度因此就是四个标签的宽度（英文约 330 px，中文不变）；先试过省略标签，Qt 不肯把一个标签缩到约 84 px
+   以下，第一个照样滚走。细节行按栏宽排、超出的用省略号，整句放进提示（折行试过：子行按不含缩进的列宽算高，折出来少一行照样被截）。
+   三条测试各配控制：英文标签经分割条要 262 px 时四个标签都在侧栏里（控制：滚动箭头放回 → 前三个落在 x<0）；列宽不超过视口（控制：828 对 98）；
+   每行都有整句提示（控制：去掉子行提示）。
+
+**屏幕上**（`gui-probe.ps1`）：`wordexport` 改成一个函数 `Export-Round`，加 `excelexport`、`pptexport`、`searchablepdf` 三个模式（Excel 先按选项框的「导出」；
+可搜索的 PDF 用新加的 `pdfprobe --text` 读回 PDFium 的 text page，要求有不可见字，并在跑前跑后哈希 `-Doc`）。开发版四个都 exit 0，三条 `-Control` 都 exit 1、
+不留进程。`signaturepanel` 在英文界面里还撞到一处 harness 的假设：四个英文标签比侧栏宽，切到「签名」时标签条滚动，前两个标签落在窗口外，
+截图那条几何判据因此 Bail —— 改成只框看得见的标签、把滚出去的印出来。
+
+**门禁 31 passed / 0 failed**（38 个目标），目录 829 条，numerus 81。

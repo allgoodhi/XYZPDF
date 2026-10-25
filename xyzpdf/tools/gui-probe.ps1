@@ -309,6 +309,13 @@
       ... -Mode wordexport -Control -Doc xyzpdf/tests/fixtures/text.pdf   (exit 1: nothing pressed)
       wordexport writes its .docx into %TEMP%\xyzpdf-gui-probe\wordexport-<random>\ and checks it with
       tools/check_docx.py; -Target names words the export must carry. Installed: -Installed -OpenViaPicker.
+      ... -Mode excelexport -Doc xyzpdf/tests/fixtures/table.pdf
+      ... -Mode pptexport -Doc xyzpdf/tests/fixtures/mixed.pdf
+      ... -Mode searchablepdf -Doc xyzpdf/tests/fixtures/scan.pdf
+      The three handoff-09 conversions take the same route as wordexport (one function, Export-Round):
+      excelexport presses Export in the options box first and checks with check_xlsx.py, pptexport
+      checks with check_pptx.py, and searchablepdf reads the new PDF back with pdfprobe --text (it
+      must carry invisible characters) and hashes -Doc before and after. Each takes -Control (exit 1).
       ... -Mode signaturepanel -Sample valid -Language zh_CN -ExpectLanguage zh -Log H:/tmp/j1-valid-zh.txt
       ... -Mode signaturepanel -Sample none -Doc xyzpdf/tests/fixtures/text.pdf -Language zh_CN
       ... -Mode signaturepanel -Sample tampered -Control   (the handoff's control; exit 1)
@@ -328,7 +335,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist', 'signedsave', 'signedlock', 'wordexport', 'signaturepanel')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist', 'signedsave', 'signedlock', 'wordexport', 'signaturepanel', 'excelexport', 'pptexport', 'searchablepdf')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -3241,6 +3248,165 @@ if ($Installed -and $OpenViaPicker) {
   ParkCursorAway
 }
 
+function Export-Round([string]$kind) {
+  # File > Export to Word / Excel / PowerPoint, and Make Scanned Pages Searchable, on the screen:
+  # the menu row, the Excel options box (Excel only), the native save box, the background job, the
+  # box that says it is done -- and the file itself, checked by a reader that is not this program's
+  # own (check_docx/check_xlsx/check_pptx.py: zipfile and ElementTree; the searchable PDF by
+  # pdfprobe --text, i.e. PDFium's text page) and for the page's words. sec.124 rebuilt the Word
+  # conversion and sec.125 left it as the one link never pressed on the installed copy; handoff-09
+  # added the other three and said the main session gives each a round the same shape. The output
+  # goes into the probe's own directory; nothing here writes beside the document, and the searchable
+  # round hashes -Doc before and after because that job READS a PDF to write a PDF. (Not $target:
+  # PowerShell names are case-blind, and that one is the -Target parameter this mode reads.)
+  # -Control presses nothing and keeps every verdict: no box, no file, exit 1.
+  $spec = switch ($kind) {
+    'word'       { @{ ext = 'docx'; row = @('Export to Word', ((CjStr 0x5BFC, 0x51FA, 0x4E3A) + ' Word'));
+                      checker = 'check_docx.py'; part = 'word/document.xml'; run = '<w:t[ >]' } }
+    'excel'      { @{ ext = 'xlsx'; row = @('Export to Excel', ((CjStr 0x5BFC, 0x51FA, 0x4E3A) + ' Excel'));
+                      checker = 'check_xlsx.py'; part = 'xl/sharedStrings.xml'; run = '<t[ >]' } }
+    'ppt'        { @{ ext = 'pptx'; row = @('Export to PowerPoint', ((CjStr 0x5BFC, 0x51FA, 0x4E3A) + ' PowerPoint'));
+                      checker = 'check_pptx.py'; part = 'ppt/slides/slide1.xml'; run = '<a:t[ >]' } }
+    'searchable' { @{ ext = 'pdf'; row = @('Make Scanned Pages Searchable',
+                                            ((CjStr 0x626B, 0x63CF, 0x4EF6, 0x8F6C, 0x6210, 0x53EF, 0x641C, 0x7D22, 0x7684) + ' PDF'));
+                      checker = ''; part = ''; run = '' } }
+  }
+  $label = $spec.row[0]
+  $docHash = ''
+  if ($kind -eq 'searchable' -and (Test-Path -LiteralPath $Doc)) {
+    $docHash = (Get-FileHash -LiteralPath $Doc -Algorithm SHA256).Hash
+    Say ('  -Doc sha256 before ' + $docHash.Substring(0, 16) + '... [' + $Doc + ']')
+  }
+  $outDir = Join-Path $scratch ($Mode + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+  New-Item -ItemType Directory -Path $outDir | Out-Null
+  $outFile = Join-Path $outDir ('exported.' + $spec.ext)
+  Say ('  the output will be written to [' + $outFile + ']')
+  if (-not (TakeForeground $app.Id)) { Bail '  could not take the foreground' }
+  $sv = $null
+  if ($Control) {
+    Say ('  CONTROL: the ' + $label + ' row is not pressed; every verdict stays')
+  } else {
+    for ($try = 1; $try -le 3 -and -not $sv; $try++) {
+      TopMenu $app.Id @('File', (CjStr 0x6587, 0x4EF6)) | Out-Null
+      $row = RowAny $app.Id $spec.row
+      if (-not $row) { Say ('  try ' + $try + ': no ' + $label + ' row under File'); Start-Sleep -Milliseconds 600; continue }
+      Say ('  try ' + $try + ': menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled)
+      ClickAt $row
+      if ($kind -eq 'excel') {
+        # The one choice the Excel export asks before the save box (src/ui/excelexportdialog.cpp),
+        # found by class because its title is translated; its accept button is Export.
+        $opt = $null
+        for ($k = 1; $k -le 10 -and -not $opt; $k++) {
+          Start-Sleep -Milliseconds 400
+          $opt = FindClass $app.Id 'ExcelExportDialog'
+        }
+        if (-not $opt) { Say ('  try ' + $try + ': no ExcelExportDialog after the row'); continue }
+        Say ('  options box |' + $opt.Current.Name + '|')
+        foreach ($c in @(FindType $opt $CT::CheckBox)) {
+          $tg = Pat $c 'Toggle'
+          Say ('    check |' + $c.Current.Name + '| state=' + $(if ($tg) { $tg.Current.ToggleState } else { '?' }))
+        }
+        $accept = MatchOne $opt $CT::Button @('Export', (CjStr 0x5BFC, 0x51FA))
+        if (-not $accept) { Bail '  the Excel options box has no Export button' }
+        ClickAt $accept
+      }
+      for ($k = 1; $k -le 10 -and -not $sv; $k++) {
+        Start-Sleep -Milliseconds 500
+        $sv = FindPicker $app.Id
+      }
+    }
+    if (-not $sv) { Bail ('  no native save box after three tries at the ' + $label + ' row') }
+    Say ('  save box [' + $sv.Current.Name + '] class=' + $sv.Current.ClassName)
+    $kids = PickerChildren $sv
+    $go = $null
+    foreach ($h in $kids) {
+      if ([W32]::Cls($h) -eq 'Button' -and [W32]::GetDlgCtrlID($h) -eq 1) { $go = $h }
+    }
+    $nameBox = NameField $kids
+    if (-not ($nameBox -and $go)) { Bail '  no file-name field / no Button id=1 in the save box' }
+    [W32]::SendMessageW($nameBox, 0x000C, [IntPtr]0, $outFile) | Out-Null
+    Start-Sleep -Milliseconds 700
+    # A real click on the drawn button: the save box does not answer BM_CLICK (sec.44).
+    $gr = [W32]::Rect([IntPtr]$go)
+    [W32]::Click([int](($gr.left + $gr.right) / 2), [int](($gr.top + $gr.bottom) / 2))
+  }
+
+  # ---- the verdicts, the same in both runs ----
+  # Done is the box that says so (a QMessageBox, found by class: its title is translated). Recognition
+  # renders every scanned page at 300 dpi, so the searchable round waits longer.
+  $exists = $false
+  $box = $null
+  $rounds = $(if ($kind -eq 'searchable') { 360 } else { 120 })
+  for ($k = 1; $k -le $rounds -and -not $box; $k++) {
+    Start-Sleep -Milliseconds 500
+    $exists = Test-Path -LiteralPath $outFile
+    if ($exists) { $box = FindClass $app.Id 'QMessageBox' }
+    if (-not $exists -and $k -ge 24 -and $Control) { break }
+  }
+  $size = 0
+  if ($exists) { $size = (Get-Item -LiteralPath $outFile).Length }
+  Say ('  target exists=' + $exists + '  size=' + $size + '  done box=' + ($null -ne $box))
+  if ($docHash) {
+    $after = (Get-FileHash -LiteralPath $Doc -Algorithm SHA256).Hash
+    Say ('  -Doc sha256 after  ' + $after.Substring(0, 16) + '...')
+    if ($after -ne $docHash) { Bail '  THE DOCUMENT THAT WAS READ CHANGED -- the job wrote the user''s PDF' }
+  }
+  if (-not $exists) {
+    if ($Control) { Bail '  CONTROL: with nothing pressed no file came out -- the verdict is live (CONTROL exit 1)' }
+    $any = FindClass $app.Id 'QMessageBox'
+    if ($any) { foreach ($t in @(FindType $any $CT::Text)) { Say ('    box text |' + $t.Current.Name.Replace("`n", ' / ') + '|') } }
+    Bail ('  the save box was accepted but no file came out at [' + $outFile + ']')
+  }
+  if ($box) {
+    Say ('  done box |' + $box.Current.Name + '|')
+    foreach ($t in @(FindType $box $CT::Text)) { Say ('    text |' + $t.Current.Name.Replace("`n", ' / ') + '|') }
+    $ok = MatchOne $box $CT::Button @('OK', (CjStr 0x786E, 0x5B9A))
+    if ($ok) { ClickAt $ok; Start-Sleep -Milliseconds 600 }
+  } else {
+    Bail '  the file came out but the box that says the job is done never did'
+  }
+
+  if ($kind -eq 'searchable') {
+    # PDFium's own text page, through the pdfprobe beside -Exe: characters it can read, and how many
+    # of them are drawn invisibly -- a text layer that is visible, or one PDFium does not take in,
+    # both fail here.
+    $tool = Probe-Tool $Mode
+    $read = @(& $tool --text $outFile 2>&1)
+    $readExit = $LASTEXITCODE
+    foreach ($l in $read) { Say ('  pdfprobe: ' + $l) }
+    if ($readExit -ne 0) { Bail ('  pdfprobe --text exited ' + $readExit + ' on the output') }
+    $tot = @($read | Where-Object { $_ -like 'chars:*' } | Select-Object -First 1)
+    $invisible = 0
+    if ($tot.Count -gt 0 -and $tot[0] -match 'invisible: (\d+)') { $invisible = [int]$Matches[1] }
+    if ($invisible -le 0) { Bail '  the output carries no invisible text -- the layer is not there' }
+    if ($Target -and -not (@($read) -join ' ').Contains($Target)) { Bail ('  the output does not carry [' + $Target + ']') }
+    Say ('  the searchable PDF came out through the screen with ' + $invisible + ' invisible character(s), and -Doc is unchanged')
+    return
+  }
+
+  $checker = Join-Path $PSScriptRoot $spec.checker
+  $checked = & python $checker $outFile 2>&1
+  $checkExit = $LASTEXITCODE
+  foreach ($l in @($checked | Select-Object -Last 3)) { Say ('  ' + $spec.checker + ': ' + $l) }
+  if ($checkExit -ne 0) { Bail ('  ' + $spec.checker + ' exited ' + $checkExit + ' on the export') }
+  # Words that came off the page: the part named in the spec has text runs in it, and the page's own
+  # first characters among them when the caller says what they are (-Target).
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $zip = [System.IO.Compression.ZipFile]::OpenRead($outFile)
+  try {
+    $entry = $zip.GetEntry($spec.part)
+    if (-not $entry) { Bail ('  the export has no ' + $spec.part) }
+    $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
+    $xml = $reader.ReadToEnd()
+    $reader.Close()
+  } finally { $zip.Dispose() }
+  $runs = ([regex]::Matches($xml, $spec.run)).Count
+  Say ('  ' + $spec.part + ': ' + $xml.Length + ' characters, ' + $runs + ' text runs')
+  if ($runs -eq 0) { Bail '  the export has no text in it' }
+  if ($Target -and -not $xml.Contains($Target)) { Bail ('  the export does not carry [' + $Target + ']') }
+  Say '  exported through the screen, the file checks out, and the words are in it'
+}
+
 switch ($Mode) {
   'inventory' {
     # Every non-empty Name, tagged with its control type. Read the whole list rather than
@@ -3891,99 +4057,10 @@ switch ($Mode) {
     if (-not (Guard-Check 'after Save As')) { Bail '  Save As wrote the original file this probe was handed' }
     Say '  Save As wrote its own new file, left the copy and the original alone, and the tab moved to it'
   }
-  'wordexport' {
-    # File > Export to Word on the screen: the menu row, the native save box, the background
-    # conversion, the box that says it is done -- and the .docx itself, checked by
-    # tools/check_docx.py (zipfile and ElementTree, not this program's own reader) and for the
-    # page's words. sec.124 rebuilt the conversion and sec.125 left this as the one link never
-    # pressed on the installed copy. The .docx goes into the probe's own directory; nothing here
-    # writes beside the document. (Not $target: PowerShell names are case-blind, and that one is the
-    # -Target parameter this mode reads.) -Control presses nothing and keeps every verdict: no box, no
-    # file, exit 1.
-    $outDir = Join-Path $scratch ('wordexport-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-    New-Item -ItemType Directory -Path $outDir | Out-Null
-    $outFile = Join-Path $outDir 'exported.docx'
-    Say ('  the export will be written to [' + $outFile + ']')
-    if (-not (TakeForeground $app.Id)) { Bail '  could not take the foreground' }
-    $sv = $null
-    if ($Control) {
-      Say '  CONTROL: the Export to Word row is not pressed; every verdict stays'
-    } else {
-      $rowNeedles = @('Export to Word', ((CjStr 0x5BFC, 0x51FA, 0x4E3A) + ' Word'))
-      for ($try = 1; $try -le 3 -and -not $sv; $try++) {
-        TopMenu $app.Id @('File', (CjStr 0x6587, 0x4EF6)) | Out-Null
-        $row = RowAny $app.Id $rowNeedles
-        if (-not $row) { Say ('  try ' + $try + ': no Export to Word row under File'); Start-Sleep -Milliseconds 600; continue }
-        Say ('  try ' + $try + ': menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled)
-        ClickAt $row
-        for ($k = 1; $k -le 10 -and -not $sv; $k++) {
-          Start-Sleep -Milliseconds 500
-          $sv = FindPicker $app.Id
-        }
-      }
-      if (-not $sv) { Bail '  no native save box after three tries at the Export to Word row' }
-      Say ('  save box [' + $sv.Current.Name + '] class=' + $sv.Current.ClassName)
-      $kids = PickerChildren $sv
-      $go = $null
-      foreach ($h in $kids) {
-        if ([W32]::Cls($h) -eq 'Button' -and [W32]::GetDlgCtrlID($h) -eq 1) { $go = $h }
-      }
-      $nameBox = NameField $kids
-      if (-not ($nameBox -and $go)) { Bail '  no file-name field / no Button id=1 in the save box' }
-      [W32]::SendMessageW($nameBox, 0x000C, [IntPtr]0, $outFile) | Out-Null
-      Start-Sleep -Milliseconds 700
-      # A real click on the drawn button: the save box does not answer BM_CLICK (sec.44).
-      $gr = [W32]::Rect([IntPtr]$go)
-      [W32]::Click([int](($gr.left + $gr.right) / 2), [int](($gr.top + $gr.bottom) / 2))
-    }
-
-    # ---- the verdicts, the same in both runs ----
-    # Done is the box that says so (a QMessageBox, found by class: its title is translated) or, on a
-    # run where the box is slow, the file standing still at a non-zero size.
-    $exists = $false
-    $box = $null
-    for ($k = 1; $k -le 120 -and -not $box; $k++) {
-      Start-Sleep -Milliseconds 500
-      $exists = Test-Path -LiteralPath $outFile
-      if ($exists) { $box = FindClass $app.Id 'QMessageBox' }
-      if (-not $exists -and $k -ge 24 -and $Control) { break }
-    }
-    $size = 0
-    if ($exists) { $size = (Get-Item -LiteralPath $outFile).Length }
-    Say ('  target exists=' + $exists + '  size=' + $size + '  done box=' + ($null -ne $box))
-    if (-not $exists) {
-      if ($Control) { Bail '  CONTROL: with nothing pressed no file came out -- the verdict is live (CONTROL exit 1)' }
-      Bail ('  the save box was accepted but no file came out at [' + $outFile + ']')
-    }
-    if ($box) {
-      Say ('  done box |' + $box.Current.Name + '|')
-      foreach ($t in @(FindType $box $CT::Text)) { Say ('    text |' + $t.Current.Name.Replace("`n", ' / ') + '|') }
-      $ok = MatchOne $box $CT::Button @('OK', (CjStr 0x786E, 0x5B9A))
-      if ($ok) { ClickAt $ok; Start-Sleep -Milliseconds 600 }
-    } else {
-      Bail '  the file came out but the box that says the export is done never did'
-    }
-    $checker = Join-Path $PSScriptRoot 'check_docx.py'
-    $checked = & python $checker $outFile 2>&1
-    $checkExit = $LASTEXITCODE
-    foreach ($l in @($checked | Select-Object -Last 3)) { Say ('  check_docx: ' + $l) }
-    if ($checkExit -ne 0) { Bail ('  check_docx.py exited ' + $checkExit + ' on the export') }
-    # Words that came off the page: the document part has text runs in it, and the page's own first
-    # characters among them when the caller says what they are (-Target on this mode).
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip = [System.IO.Compression.ZipFile]::OpenRead($outFile)
-    try {
-      $entry = $zip.GetEntry('word/document.xml')
-      $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
-      $xml = $reader.ReadToEnd()
-      $reader.Close()
-    } finally { $zip.Dispose() }
-    $runs = ([regex]::Matches($xml, '<w:t[ >]')).Count
-    Say ('  document.xml: ' + $xml.Length + ' characters, ' + $runs + ' text runs')
-    if ($runs -eq 0) { Bail '  the export has no text in it' }
-    if ($Target -and -not $xml.Contains($Target)) { Bail ('  the export does not carry [' + $Target + ']') }
-    Say '  exported through the screen, the file checks out, and the words are in it'
-  }
+  'wordexport' { Export-Round 'word' }
+  'excelexport' { Export-Round 'excel' }
+  'pptexport' { Export-Round 'ppt' }
+  'searchablepdf' { Export-Round 'searchable' }
   'langswitch' {
     # An installed copy speaks the system locale, and no setting written from outside can reach it
     # (sec.48 measured a whole packaged session that left HKCU:\Software\xyzpdf untouched). The door
@@ -5901,6 +5978,23 @@ switch ($Mode) {
     # ---- the picture ------------------------------------------------------------------------
     $tabs = @(FindType (Window $app.Id) $CT::TabItem)
     $sideTabs = @($tabs | Where-Object { (SidebarTabNames) -contains $_.Current.Name })
+    # In English the four labels are wider than the sidebar, so the strip scrolls: once the
+    # signatures page is current the first tabs sit left of the panel (measured -77 and -6 window
+    # px). Those are not on the reader's screen, so they are not framed; they are printed instead,
+    # because a strip that has to scroll is itself a reading about the layout.
+    $tr2 = $tree.Current.BoundingRectangle
+    $kept = @()
+    foreach ($t in $sideTabs) {
+      $r = $null
+      try { $r = $t.Current.BoundingRectangle } catch { }
+      if ($r -and $r.Width -gt 0 -and $r.X -ge ($tr2.X - 4) -and ($r.X + $r.Width) -le ($tr2.X + $tr2.Width + 4)) {
+        $kept += $t
+      } else {
+        Say ('  tab |' + $t.Current.Name + '| is scrolled out of the sidebar strip' +
+             $(if ($r) { ' (x=' + [int]$r.X + ', panel x=' + [int]$tr2.X + ')' } else { '' }))
+      }
+    }
+    $sideTabs = $kept
     $wrong = ($Control -and $Sample -eq 'broken-blob')
     if ($wrong) {
       Say '  CONTROL: the crop will be anchored to the client rectangle (the sec.89 mistake)'

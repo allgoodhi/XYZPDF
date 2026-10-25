@@ -99,7 +99,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime|formcombo|formlist|signedsave|signedlock|wordexport`（三十四种模式；`saverename` 仍收，是 `saveas` 的别名
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime|formcombo|formlist|signedsave|signedlock|wordexport|signaturepanel|excelexport|pptexport|searchablepdf`（三十八种模式；`saverename` 仍收，是 `saveas` 的别名
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -204,6 +204,17 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   另报"签名之后几次增量更新""覆盖有缺口"。工作线程 `SignatureSession`，被 `drainRenders()` 与析构等到。**测试不碰证书存储，也不碰密钥目录**：
   样本用**无名的 CNG 密钥**（只活在进程里）经 `CERT_KEY_CONTEXT_PROP_ID` + `CERT_NCRYPT_KEY_SPEC` 交给签名器（另外三种挂法量过都不行，
   写在 `tests/signaturesample.h`），"受信任"靠注入 `hExclusiveRoot` 内存存储。
+- **时间戳与吊销**（§130，handoff-08 J2）：RFC 3161 的 `messageImprint` 是**签名值**（SignerInfo 的 EncryptedHash）的摘要，不是文档的，
+  交给 `CryptVerifyTimeStampSignature` 的是签名值；它不管 TSA 的证书链，所以 TSA 再走一遍同一个根存储，不受信任就不采纳令牌的时间。
+  联网吊销关着时，证书带 CDP 而缓存里没答案，BASE 策略答 `CRYPT_E_REVOCATION_OFFLINE`（0x80092013）—— 那是"没人回答"不是"不受信任"，
+  所以离线那一支传 `CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS`（真 CA 签的文件个个带 CDP，不这样每一份都会被说成证书有问题）。
+  吊销读链自己的 `CERT_TRUST_IS_REVOKED`，策略号是 `CRYPT_E_REVOKED` 0x80092010（不是 `CERT_E_REVOKED`）。测试的 CRL 由测试进程里只听
+  127.0.0.1 的 `QTcpServer` 发，每轮换端口与路径（`CryptnetUrlCache` 按地址记）；开关关着那轮断言**一个请求都没收到**。
+- **侧栏签名行要可选**（§130）：只给 `ItemIsEnabled` 时点一下能设当前项（跳页照样成立），但不画选中，单页文件上看着像"点了没反应"
+  —— J1 在屏幕上看到的，测试用 `selectSignatureRow()` 在代码里按、看不见。`documenttab_smoke` 现在往视口送真鼠标事件。
+  英文界面下侧栏四个标签比栏宽，切到「签名」时标签条会滚，`signaturepanel` 只框看得见的标签、把滚出去的印出来。
+- **合并两个都改了 `xyzpdf_en.ts` 的分支**：冲突几乎全是 location 行。按 (context, source, comment) 三方合并（两边都有时取相对 base 改过的那边），
+  再 `update_translations` 让 lupdate 重排；不要逐块手解。
 - **测试目标的名字别带 `install` / `bench` / `verify` / `probe`**（§126）：`tools/build_all_tests.py` 的 `NOT_A_TEST` 按**子串**过滤，
   叫 `signatureverify_smoke` 的测试一次都不会被跑（门禁只少数一个目标、照样报全绿），所以它叫 `signaturecheck_smoke`。
 - **状态栏上接在一句话后面的句子，英文形自己带开头的空格**（§126）：中文句号后不用空格，英文要；`openedMessage += tr(...)` 直接接，
@@ -244,6 +255,14 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   （两段式表格每行都有缺口，那是表格）；WPS 把带分节符的段落排成零高，栏上方的空白要给栏里第一段。**从右往左的文字**
   PDFium 按阅读顺序给、x 往左走：行按 x 排序后要逐段倒回来，无几何的空格放在前一个字的**左边**，不做行宽拟合。
   竖排中文只做到"看着一样"（按行切成制表位），编辑时字序是横着读的。屏幕上那一遍：`-Mode wordexport`。
+- **四种转换共用一套外壳**（§130，handoff-09 合并）：转 Word / Excel / PowerPoint、扫描件转可搜索的 PDF 各有自己的 session，
+  但 `DocumentTab::isExporting()` 答"其中任何一个在跑"（一次只许一个），进度框是同一个，`MainWindow::ExportKind` 定它的标题、进度话和取消叫谁。
+  再加一种转换就加一个 `ExportKind` 值，不要再加一个 `bool`（三个分支各加了一个，合并时收成这一个）。屏幕上那一遍是 `Export-Round`
+  一个函数四个模式（`wordexport|excelexport|pptexport|searchablepdf`）；可搜索的 PDF 用 `pdfprobe --text` 读回（PDFium 的 text page，
+  要有 render mode 3 的字），并在跑前跑后各哈希一次 `-Doc`。**写出的新 PDF 不许是正在读的那一份**：路径按文字比之外，再比**文件身份**
+  （`GetFileInformationByHandle` 的卷序列号 + 文件索引；8.3 短名、目录联接、符号链接、硬链接都是另一种拼法的同一份文件）。
+  `canonicalFilePath` 看不穿目录联接（Qt 6 不再把联接当链接），量过。`searchablepdf_smoke` 用 `mklink /J` 钉住，且判的是**同一句拒话** ——
+  只判"失败"时去掉护栏也绿：文档开着，最后一步换文件被锁挡住，那是锁碰巧救了文件，不是程序拒写。
 - **bash heredoc 里写 C++ 不要带反斜杠**（§124 踩了四次）：这个环境的 Bash 工具会把 heredoc 里的 `\n` `\\d` `\\0` 先吃掉一层，
   `"\n"` 变成真换行（C2001）、正则 `\\d` 变成 `\d`、`'\\0'` 变成真 NUL 字节（`grep` 报 "Binary file matches"）。带反斜杠的改动用 Edit/Write。
 - **识别器要按文字的族挑**（§118，handoff-04 G3）：`pickEngine()` 按用户语言顺序拿引擎，这台机器是 zh-Hans-CN 在前，
@@ -285,6 +304,10 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
 - **控制必须能改变结果**（§99 又踩一次）：`if (const char *kind = false ? nullptr : f(x); …)` 看着像把
   分支关掉了，三目仍然求值了 `f(x)`，于是那趟"控制"26/0 全绿，而它什么都没测。判据是**结果变了**：
   控制跑要么让新钉的那条红，要么先证明它自己跑了（§86/§90/§95/§97 那族）。
+- **控制跑还原之后要碰一下文件的修改时间**（§130 实测）：用 `Copy-Item` 从备份还原，内容对了，但修改时间是备份那一刻的、比控制编出来的
+  `.obj` 旧，Ninja 就不重编 —— 下一趟"绿"跑的仍是控制的二进制，两条测试接着红。还原后 `(Get-Item $f).LastWriteTime = Get-Date`。
+  同一趟还踩到另一条：PowerShell 里 `[IO.File]::ReadAllText('相对路径')` 按**进程**的当前目录解析，不按 `cd` 之后的位置 —— 读失败、
+  什么都没换，控制跑出一片绿；哈希前后相同就是信号，路径一律写绝对的。
 - **`.ps1` 必须纯 ASCII，而且改完就查**：`python -c "d=open(p,'rb').read(); print(sum(1 for b in d if b>127))"`
   要 0 —— 中文字（含注释里的）在 GBK 控制台下是双字节前导码，会把解析器炸掉、退出码 1 而不说一句为什么
   （§72/§73/§74 各一次，§84 又两次，其中一次是注释里写了一句屏幕原文；**§90 第 11 次也是注释里的屏幕原文**，

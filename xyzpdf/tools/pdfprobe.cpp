@@ -43,6 +43,7 @@
 // in fpdf_transformpage.h and the rotation in fpdf_edit.h, and neither of those
 // is one formsample.h needs.
 #include <fpdf_edit.h>
+#include <fpdf_text.h>
 #include <fpdf_transformpage.h>
 
 // windows.h (via minwindef.h, line 95 of the SDK on this machine) does
@@ -124,6 +125,62 @@ const char *fieldTypeName(int type)
 QString fromWide(const FPDF_WCHAR *buffer)
 {
     return QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer));
+}
+
+// --text: what a reader's search would find, one line per page -- the character
+// count, how many of those are drawn invisibly (render mode 3, the shape a text
+// layer over a scan has), and the page's text itself in the ASCII-safe spelling.
+// Written for the searchable-PDF screen round: a file that came out of the save
+// box is judged by whether PDFium reads words out of it, not by its size.
+int dumpText(const QString &path)
+{
+    std::cout << std::unitbuf;
+    FPDF_InitLibrary(); // see dumpFields: FPDF_LoadPage needs it
+    FPDF_DOCUMENT document = FPDF_LoadDocument(path.toUtf8().constData(), nullptr);
+    if (!document) {
+        std::cerr << "could not open " << path.toStdString() << ": last error "
+                  << FPDF_GetLastError() << '\n';
+        FPDF_DestroyLibrary();
+        return 1;
+    }
+    const int pages = FPDF_GetPageCount(document);
+    std::cout << "file: " << path.toStdString() << '\n';
+    std::cout << "pages: " << pages << '\n';
+    int total = 0;
+    int invisibleTotal = 0;
+    for (int page = 0; page < pages; ++page) {
+        FPDF_PAGE handle = FPDF_LoadPage(document, page);
+        if (!handle)
+            continue;
+        FPDF_TEXTPAGE text = FPDFText_LoadPage(handle);
+        const int count = text ? FPDFText_CountChars(text) : 0;
+        int invisible = 0;
+        QString content;
+        if (count > 0) {
+            std::vector<unsigned short> buffer(size_t(count) + 1, 0);
+            FPDFText_GetText(text, 0, count, buffer.data());
+            content = QString::fromUtf16(reinterpret_cast<const char16_t *>(buffer.data()));
+            for (int index = 0; index < count; ++index) {
+                FPDF_PAGEOBJECT object = FPDFText_GetTextObject(text, index);
+                if (object
+                    && FPDFTextObj_GetTextRenderMode(object) == FPDF_TEXTRENDERMODE_INVISIBLE)
+                    ++invisible;
+            }
+        }
+        total += count;
+        invisibleTotal += invisible;
+        content.replace(QLatin1Char('\r'), QLatin1Char(' '));
+        content.replace(QLatin1Char('\n'), QLatin1Char(' '));
+        std::cout << "PAGE " << page << " chars=" << count << " invisible=" << invisible
+                  << " text=|" << asciiSafe(content).toStdString() << "|\n";
+        if (text)
+            FPDFText_ClosePage(text);
+        FPDF_ClosePage(handle);
+    }
+    std::cout << "chars: " << total << " invisible: " << invisibleTotal << '\n';
+    FPDF_CloseDocument(document);
+    FPDF_DestroyLibrary();
+    return 0;
 }
 
 // --fields: what the file says, one line per form field. The rectangle is in
@@ -580,6 +637,7 @@ int main(int argc, char **argv)
     if (arguments.size() < 2) {
         std::cerr << "usage: pdfprobe <file.pdf> [samples] [viewport width]\n"
                      "       pdfprobe --fields <file.pdf>\n"
+                     "       pdfprobe --text <file.pdf>\n"
                      "       pdfprobe --write-form-sample <path.pdf>\n"
                      "       pdfprobe --write-signed-sample <path.pdf> [--docmdp 0|1|2|3]\n";
         return 2;
@@ -595,6 +653,8 @@ int main(int argc, char **argv)
         }
         if (verb == QLatin1String("--fields"))
             return dumpFields(arguments.at(2));
+        if (verb == QLatin1String("--text"))
+            return dumpText(arguments.at(2));
         if (verb == QLatin1String("--write-form-sample"))
             return writeFormSample(arguments.at(2));
         if (verb == QLatin1String("--write-signed-sample")) {

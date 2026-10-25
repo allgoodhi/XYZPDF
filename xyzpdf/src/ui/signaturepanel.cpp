@@ -47,6 +47,13 @@ SignaturePanel::SignaturePanel(QWidget *parent)
     setRootIsDecorated(true);
     setUniformRowHeights(false);
     setWordWrap(true);
+    header()->setStretchLastSection(true);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // A line longer than the panel ends in an ellipsis and carries its whole text as a tooltip
+    // (set per item below). Wrapping does not do it on its own here: the tree sizes a child row
+    // for the column's width without its indent, so the wrapped text comes out one line short and
+    // is cut anyway (seen on the screen in §130).
+    setTextElideMode(Qt::ElideRight);
     connect(this, &QTreeWidget::itemClicked, this, [this] { rowPressed(); });
     connect(this, &QTreeWidget::itemActivated, this, [this] { rowPressed(); });
     // A signature the reader wants details about is one they will expand with the keyboard as
@@ -66,6 +73,7 @@ void SignaturePanel::setSignatures(const QVector<SignatureVerify::Signature> &si
         if (!when.isEmpty())
             line += QStringLiteral(" · ") + when;
         row->setText(0, line);
+        row->setToolTip(0, line);
         row->setIcon(0, iconFor(one.verdict));
         row->setData(0, VerdictRole, one.verdictLabel());
         row->setData(0, PageRole, one.page);
@@ -75,13 +83,21 @@ void SignaturePanel::setSignatures(const QVector<SignatureVerify::Signature> &si
         for (const QString &detail : one.detailLines()) {
             auto *child = new QTreeWidgetItem(row);
             child->setText(0, detail);
+            child->setToolTip(0, detail);
         }
-        row->setFlags(Qt::ItemIsEnabled);
+        // Selectable as well as enabled: a press has to show which signature it was about. With
+        // ItemIsEnabled alone the click set the current item (and the jump worked) but drew no
+        // selection, so on a one-page document the press looked like it did nothing -- found on
+        // the screen by handoff-08 J1, invisible to a test that pressed the row in code.
+        row->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     }
-    // The row that could not be placed on a page is still a row the reader can read, but pressing
-    // it must not move the page they are on. ItemIsEnabled alone says "readable", and rowPressed()
-    // checks the page it carries.
-    resizeColumnToContents(0);
+    // The row that could not be placed on a page is still a row the reader can read and select,
+    // but pressing it must not move the page they are on: rowPressed() checks the page it carries.
+    //
+    // No resizeColumnToContents(0) here: it made the one column as wide as the longest line
+    // (687 px in a 262 px sidebar, measured in §130), so setWordWrap() never had a width to wrap
+    // at and every detail line ran off the panel behind a horizontal scroll bar. The column is
+    // the viewport's width (the header stretches it) and the lines wrap inside it.
 }
 
 bool SignaturePanel::hasSignatures() const

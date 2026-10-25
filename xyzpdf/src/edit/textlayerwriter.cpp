@@ -50,6 +50,39 @@ QString comparablePath(const QString &path)
     return QDir::fromNativeSeparators(QFileInfo(path).absoluteFilePath()).toLower();
 }
 
+// The same file reached by another name: a short 8.3 name, a directory junction, a
+// symbolic link or a hard link spell a different path and are still the file being
+// read. Asked of the file system rather than of the names: the volume's serial
+// number and the file's index are what Windows itself calls a file's identity.
+// (QFileInfo::canonicalFilePath was tried first and does not see through a
+// junction -- Qt 6 stopped treating junctions as links; measured with mklink /J.)
+// Only asked when the destination exists: a file that is not there yet cannot be
+// the source.
+bool sameFileOnDisk(const QString &a, const QString &b)
+{
+    if (comparablePath(a) == comparablePath(b))
+        return true;
+    const auto identity = [](const QString &path, BY_HANDLE_FILE_INFORMATION *info) {
+        // No access asked for beyond the attributes, and every share mode allowed, so
+        // that asking never collides with the reader's own open handle on the file.
+        HANDLE handle = CreateFileW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(path).utf16()),
+                                    FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+            return false;
+        const BOOL ok = GetFileInformationByHandle(handle, info);
+        CloseHandle(handle);
+        return ok != FALSE;
+    };
+    BY_HANDLE_FILE_INFORMATION ia{};
+    BY_HANDLE_FILE_INFORMATION ib{};
+    if (!identity(a, &ia) || !identity(b, &ib))
+        return false;
+    return ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber
+        && ia.nFileIndexHigh == ib.nFileIndexHigh && ia.nFileIndexLow == ib.nFileIndexLow;
+}
+
 // A number as a content stream wants it: a C-locale decimal point and no exponent,
 // whatever the reader's locale is. Four places is a ten-thousandth of a point, far
 // below anything a screen or a printer can show.
@@ -316,7 +349,7 @@ TextLayerWriteReport writeTextLayer(const QString &source, const QString &destin
             = translated(QT_TRANSLATE_NOOP("SearchablePdf", "没有指定要写入的文件。"));
         return report;
     }
-    if (comparablePath(source) == comparablePath(destination)) {
+    if (sameFileOnDisk(source, destination)) {
         // The rule is AGENTS.md's 永不写用户的 PDF 文件, and the save dialog can hand
         // back the name it was seeded with.
         report.error = translated(QT_TRANSLATE_NOOP(

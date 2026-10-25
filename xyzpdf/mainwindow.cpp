@@ -1831,7 +1831,7 @@ void MainWindow::openFileDialog()
 void MainWindow::exportCurrentToWord()
 {
     DocumentTab *tab = currentTab();
-    if (!tab || !tab->isOpen() || tab->isExporting() || tab->isMakingSearchablePdf())
+    if (!tab || !tab->isOpen() || tab->isExporting())
         return;
 
     // The PDF's own name with the extension swapped, in the folder it came from:

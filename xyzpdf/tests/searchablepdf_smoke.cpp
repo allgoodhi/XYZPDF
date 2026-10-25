@@ -38,6 +38,7 @@
 #include <QByteArray>
 #include <QColor>
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
@@ -48,6 +49,7 @@
 #include <QPageSize>
 #include <QPdfWriter>
 #include <QPainter>
+#include <QProcess>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -607,6 +609,35 @@ int main(int argc, char **argv)
         check(!ontoItself.ok && !ontoItself.error.isEmpty(),
               "and asking for the output under the source's own name is refused");
         check(hashOfFile(sample) == sourceHashBefore, "which leaves the source as it was");
+    }
+    {
+        // The same file under another spelling: a directory junction to the sample's
+        // folder makes a path that shares no text with the source and is still it.
+        // The junction is made with mklink (no rights needed for /J) and removed with
+        // rmdir, which takes the link and never what it points at.
+        QTemporaryDir aliasRoot;
+        const QString alias = QDir::toNativeSeparators(aliasRoot.filePath(QStringLiteral("alias")));
+        const QString target = QDir::toNativeSeparators(QFileInfo(sample).absolutePath());
+        const int made = QProcess::execute(QStringLiteral("cmd.exe"),
+                                           { QStringLiteral("/c"), QStringLiteral("mklink"),
+                                             QStringLiteral("/J"), alias, target });
+        check(made == 0 && QFileInfo::exists(alias), "there is a junction to the sample's folder");
+        const QString throughAlias
+            = alias + QLatin1Char('\\') + QFileInfo(sample).fileName();
+        const SearchablePdfReport ontoAlias
+            = makeSearchablePdf(document, sample, QString(), throughAlias);
+        // The same refusal, not just a failure: with the guard gone the job still fails here,
+        // because the open document holds the file and the final move onto it is denied --
+        // after recognizing every page and leaving a finished copy behind. That is a lock
+        // happening to save the file, not this program declining to write it (measured: the
+        // control that reverts to a text-only comparison stayed green on "!ok" alone).
+        const SearchablePdfReport ontoItselfAgain
+            = makeSearchablePdf(document, sample, QString(), sample);
+        check(!ontoAlias.ok && ontoAlias.error == ontoItselfAgain.error,
+              QStringLiteral("and the source reached through a junction is refused the same way (%1)")
+                  .arg(ontoAlias.error.left(60)));
+        check(hashOfFile(sample) == sourceHashBefore, "which also leaves the source as it was");
+        QDir().rmdir(alias);
     }
     {
         TextLayerWriteReport missingDirectory = writeTextLayer(

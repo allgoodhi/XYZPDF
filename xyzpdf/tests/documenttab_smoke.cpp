@@ -36,6 +36,7 @@
 #include "../src/ui/propertiesdialog.h"
 #include "../src/ui/rotatepagesdialog.h"
 #include "../src/ui/searchpanel.h"
+#include "../src/ui/signaturepanel.h"
 #include "../src/ui/splitpagesdialog.h"
 #include "../src/ui/thumbnailpanel.h"
 #include "../src/ui/translatedialog.h"
@@ -77,13 +78,16 @@
 #include <QRadioButton>
 #include <QScrollBar>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QString>
 #include <QTemporaryDir>
+#include <QTabBar>
 #include <QTableWidget>
 #include <QThreadPool>
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 
 // The overwrite measurement asks the same question the save's last step does, and that is a Win32
 // call rather than a Qt one.
@@ -5724,6 +5728,97 @@ int main(int argc, char **argv)
             check(waitFor([&verifyTab] { return verifyTab.currentPage() == 1; }),
                   QStringLiteral("verify: pressing the row goes to the signature's page (%1)")
                       .arg(verifyTab.currentPage()));
+
+            // The same press through the mouse, the way a reader makes it: delivered to the
+            // tree's viewport, so the view's own press handling decides what is current and what
+            // is selected. selectSignatureRow() above sets the current item in code and so could
+            // not see the row being unselectable (J1 saw it on the screen: focus moved, nothing
+            // was highlighted).
+            verifyTab.setCurrentPage(0);
+            if (auto *panel = verifyTab.findChild<SignaturePanel *>()) {
+                panel->clearSelection();
+                QTreeWidgetItem *first = panel->topLevelItem(0);
+                const QRect rect = first ? panel->visualItemRect(first) : QRect();
+                const QPointF at(rect.left() + 24, rect.center().y());
+                const QPointF global = panel->viewport()->mapToGlobal(at);
+                QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::LeftButton,
+                                  Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(panel->viewport(), &press);
+                QMouseEvent release(QEvent::MouseButtonRelease, at, global, Qt::LeftButton,
+                                    Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(panel->viewport(), &release);
+                check(first && first->isSelected(),
+                      QStringLiteral("verify: a mouse press selects the signature row (rect %1,%2 %3x%4)")
+                          .arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height()));
+                check(waitFor([&verifyTab] { return verifyTab.currentPage() == 1; }),
+                      QStringLiteral("verify: and the mouse press goes to the signature's page (%1)")
+                          .arg(verifyTab.currentPage()));
+                // The detail lines wrap at the panel's width: a column sized to the longest
+                // line put them behind a horizontal scroll bar (808 px in this test, §130).
+                QCoreApplication::processEvents();
+                // A few px of slack: the hidden header is as wide as the tree's frame, two px more
+                // than its viewport. The defect this pins is hundreds of px (828 of 98 measured).
+                check(panel->columnWidth(0) <= panel->viewport()->width() + 8,
+                      QStringLiteral("verify: the signature column fits the panel (%1 of %2 px)")
+                          .arg(panel->columnWidth(0)).arg(panel->viewport()->width()));
+                // What the panel cuts with an ellipsis is still readable whole, as the tooltip.
+                bool tipsWhole = first && first->toolTip(0) == first->text(0) && first->childCount() > 0;
+                for (int index = 0; first && index < first->childCount(); ++index)
+                    tipsWhole = tipsWhole && first->child(index)->toolTip(0) == first->child(index)->text(0);
+                check(tipsWhole, "verify: every signature line carries its whole text as a tooltip");
+            } else {
+                check(false, "verify: the tab has a signature panel to press");
+            }
+            // Every sidebar tab stays on screen in the English interface at the width the sidebar
+            // opens at -- the case seen on the screen in §130 (262 px; Outline scrolled out of
+            // sight, Thumbnails cut). The English labels are put on the tabs here because this
+            // test runs untranslated, and the Chinese labels fit anyway: a check that cannot
+            // fail is not one.
+            if (auto *strip = verifyTab.findChild<QTabWidget *>(QStringLiteral("readingSidebar"))) {
+                QStringList oldTexts;
+                const QStringList english = { QStringLiteral("Outline"), QStringLiteral("Thumbnails"),
+                                              QStringLiteral("Search"), QStringLiteral("Signatures") };
+                for (int index = 0; index < strip->count(); ++index) {
+                    oldTexts << strip->tabText(index);
+                    if (index < english.size())
+                        strip->setTabText(index, english.at(index));
+                }
+                strip->setCurrentIndex(strip->count() - 1); // the signatures page, as on screen
+                // Through the splitter, as the reader drags it: asked for 262 px, it may give
+                // more when the sidebar's minimum says so. A fixed width would override exactly
+                // the minimum this is about.
+                if (auto *split = qobject_cast<QSplitter *>(strip->parentWidget())) {
+                    const int total = split->width();
+                    split->setSizes({ 262, qMax(1, total - 262) });
+                }
+                QCoreApplication::processEvents();
+                QTabBar *bar = strip->tabBar();
+                // Judged against the sidebar's own rectangle, not the bar's: a bar that will not
+                // shrink is simply wider than the sidebar and clipped by it, and its tabs are then
+                // "inside the bar" and off the screen.
+                QStringList outside;
+                QStringList seen;
+                for (int index = 0; index < bar->count(); ++index) {
+                    if (!bar->isTabVisible(index))
+                        continue;
+                    const QRect r = bar->tabRect(index);
+                    const QPoint left = bar->mapTo(strip, r.topLeft());
+                    const QPoint right = bar->mapTo(strip, r.topRight());
+                    seen << QStringLiteral("%1:%2..%3").arg(index).arg(left.x()).arg(right.x());
+                    if (left.x() < 0 || right.x() >= strip->width())
+                        outside << seen.last();
+                }
+                std::cout << "MEASURE narrow sidebar: strip " << strip->width() << " bar "
+                          << bar->width() << " tabs " << seen.join(QStringLiteral(" ")).toStdString()
+                          << '\n';
+                check(outside.isEmpty(),
+                      QStringLiteral("verify: a narrow sidebar keeps every tab on screen (%1 wide; %2)")
+                          .arg(strip->width()).arg(outside.join(QStringLiteral(", "))));
+                for (int index = 0; index < oldTexts.size(); ++index)
+                    strip->setTabText(index, oldTexts.at(index));
+            } else {
+                check(false, "verify: the tab has a reading sidebar");
+            }
 
             // A second document replaces the first: the panel must not still be showing the
             // answer about a file the tab no longer reads. This is drainRenders() and the

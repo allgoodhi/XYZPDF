@@ -206,6 +206,33 @@
                      -Control builds the 0 sample and keeps -ExpectDocMdp 2's verdicts, so it exits 1
                      on the accept button being grey -- the reading that says a grey button is a
                      cause and not a stuck control.
+      signaturepanel handoff-08 J1: the sidebar's signatures page, read off the window. -Sample
+                     names which of the ten samples the maker writes (xyzpdf_signaturecheck_smoke.exe
+                     beside -Exe, into a fresh directory under %TEMP%\xyzpdf-gui-probe); the round
+                     opens it, opens the sidebar through its own View-menu row, switches to the tab,
+                     and judges each top-level row's TEXT against the verdict that sample must
+                     produce on a machine whose root store does not hold the sample's own CA -- so
+                     valid, expired and appended-one say the certificate is not trusted or has
+                     expired, tampered and narrowed say the content changed, x509-rsa-sha1 and
+                     broken-blob say it cannot be checked. Every row is expanded and its detail
+                     lines read: appended-one must say there is one incremental update after the
+                     signature, appended-two two, and a file that was never appended to must say
+                     nothing about revisions. The first row is then clicked and the tree's selection
+                     must move to it (the page itself cannot move -- the sample is one page); if it
+                     does not, the row had keyboard focus and is enabled-not-selectable, which is
+                     reported as a product defect and exits 1 after the picture is taken, so the
+                     other readings are not lost. A PrintWindow picture of the tab strip and the panel
+                     is kept, its crop anchored to the window's FRAME (sec.89), and the crop is
+                     asserted to hold every sidebar tab and the tree. -Sample none is the negative
+                     half: no sample is made, -Doc must be a file with no signature, and the
+                     signatures tab must be absent -- with the other three tabs asserted first, so a
+                     sidebar that never opened cannot pass as "the tab is gone".
+                     -Control changes one route per sample and keeps the verdict: tampered expects
+                     the certificate sentence (the handoff's control), valid expects an incremental
+                     line on a file with none, narrowed expects two rows, appended-one expects two
+                     updates, x509-rsa-sha1 skips the tab switch, broken-blob anchors the crop to
+                     the client rectangle instead of the frame, and none expects a tab that is not
+                     there. Each of those must exit 1.
 
     THE FORM MODES. formfill/formtab/formcheck/formime are handoff-05 H2: form filling had been
     measured only in headless tests (sec.118 says so), so nothing in it had ever been on a screen.
@@ -282,6 +309,13 @@
       ... -Mode wordexport -Control -Doc xyzpdf/tests/fixtures/text.pdf   (exit 1: nothing pressed)
       wordexport writes its .docx into %TEMP%\xyzpdf-gui-probe\wordexport-<random>\ and checks it with
       tools/check_docx.py; -Target names words the export must carry. Installed: -Installed -OpenViaPicker.
+      ... -Mode signaturepanel -Sample valid -Language zh_CN -ExpectLanguage zh -Log H:/tmp/j1-valid-zh.txt
+      ... -Mode signaturepanel -Sample none -Doc xyzpdf/tests/fixtures/text.pdf -Language zh_CN
+      ... -Mode signaturepanel -Sample tampered -Control   (the handoff's control; exit 1)
+      The signature-panel mode makes its own ten samples in %TEMP%\xyzpdf-gui-probe\sign-<random>\
+      and replaces -Doc with the one -Sample names; -Sample none makes nothing and reads the file
+      -Doc names. A packaged run is pointed at the sample through its own picker automatically,
+      because the directory name is drawn in this run and no caller could type it in advance.
       The six form modes replace -Doc with the sample they make, so the path handed in is only what
       the guard hashes and copies; a fixtures path is fine and is not opened. The two signed modes do
       the same, with --write-signed-sample and the /P that -ExpectDocMdp asks for.
@@ -294,7 +328,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist', 'signedsave', 'signedlock', 'wordexport')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist', 'signedsave', 'signedlock', 'wordexport', 'signaturepanel')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -351,6 +385,11 @@ param(
   # The two signed modes keep every verdict too and change the document under them: signedsave
   # rotates a page before the save, so the bytes that must not move do, and signedlock builds a
   # document whose signature certifies nothing while still expecting the doors it refuses to be shut.
+  # signaturepanel reads it per sample: one route is deliberately wrong while every verdict it was
+  # written against is kept (the table in the help block), because each of its assertions -- the
+  # verdict text, the row count, the revision sentence and its number, the selected tab, the row's
+  # own selection, the crop's geometry, and the absent tab on an unsigned file -- has to be shown
+  # able to fail rather than merely able to print a line.
   [switch]$Control,
   # Run against the installed package instead of the build tree. It cannot be started by exe
   # path (WindowsApps blocks that) and takes no file argument (no AppExecutionAlias is declared),
@@ -381,6 +420,17 @@ param(
   # signedsave always builds the 0 sample: its verdict is about which bytes moved, not about which
   # edits are allowed.
   [string]$ExpectDocMdp = '',
+  # signaturepanel: which of the ten samples the maker writes and the panel is judged against.
+  # 'none' is the negative half -- no sample is made, and the file -Doc names must show no
+  # Signatures tab at all. The names are the ones tests/signaturecheck_smoke.cpp writes.
+  [ValidateSet('valid', 'tampered', 'narrowed', 'expired', 'appended-one', 'appended-two',
+               'x509-rsa-sha1', 'broken-blob', 'gap-at-front', 'token-unreadable', 'none')]
+  [string]$Sample = 'valid',
+  # The interface a round must be speaking. Every needle list in this file is bilingual, so a
+  # mode that assumed the language it asked for would pass in the other one and report a screen
+  # it never read (sec.92's lesson). 'any' accepts either and is what every older mode means.
+  [ValidateSet('any', 'en', 'zh')]
+  [string]$ExpectLanguage = 'any',
   [string]$Log = ''
 )
 
@@ -1891,6 +1941,80 @@ if ($script:signedModes -contains $Mode) {
   $Doc = $sample
 }
 
+# ---- the signature panel's samples ----------------------------------------------------------
+# handoff-08 J1. The panel is read from a document that carries signatures, and nothing on this
+# machine does -- except the ten samples tests/signaturecheck_smoke.cpp writes (one per verdict and
+# one per shape). It writes them into the directory XYZPDF_SIGNATURE_SAMPLE_DIR names, and refuses
+# a directory that already exists: a reading of last round's file is exactly the vacuous receipt
+# this suite keeps catching. So every round gets a directory of its own, made empty here.
+#
+# The binary sits in build-local-release\tests while the DLLs it needs were deployed one level up
+# by windeployqt; Windows searches the exe's own directory and PATH, not its parent. The directory
+# of the tree being driven goes on PATH for this child only -- a different tree is what parallel
+# worktrees must not share (sec.87's rule, read against this harness).
+if ($Mode -eq 'signaturepanel') {
+  if ($Sample -eq 'none') {
+    Say '  negative round: -Sample none makes nothing; the file -Doc names must carry no signature'
+    if (-not $Installed -and -not (Test-Path -LiteralPath $Doc)) {
+      Bail ('  no document at ' + $Doc + ' -- -Sample none reads the file -Doc names')
+    }
+  } else {
+    $tool = Join-Path (Join-Path (Split-Path -Parent $Exe) 'tests') 'xyzpdf_signaturecheck_smoke.exe'
+    if (-not (Test-Path -LiteralPath $tool)) {
+      Bail ('  no [' + $tool + '] beside -Exe -- -Mode signaturepanel makes its samples with it; ' +
+            'build the tree first (python tools/build_all_tests.py)')
+    }
+    $dir = Join-Path $scratch ('sign-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    if (Test-Path -LiteralPath $dir) {
+      Bail ('  the sample directory [' + $dir + '] already exists; the maker refuses to write into one')
+    }
+    $deployDir = Split-Path -Parent $Exe
+    $oldPath = $env:PATH
+    $made = @()
+    $code = 0
+    $env:XYZPDF_SIGNATURE_SAMPLE_DIR = $dir
+    try {
+      $env:PATH = $deployDir + ';' + $oldPath
+      Say ('  making the ten signature samples in [' + $dir + '] with [' + $tool + ']')
+      $made = @(& $tool 2>&1)
+      $code = $LASTEXITCODE
+    } finally {
+      $env:PATH = $oldPath
+      Remove-Item Env:\XYZPDF_SIGNATURE_SAMPLE_DIR -ErrorAction SilentlyContinue
+    }
+    $bad = @($made | Where-Object { $_ -like '*FAIL*' -or $_ -like '*SETUP*' })
+    foreach ($l in $bad) { Say ('  sample: ' + $l) }
+    foreach ($l in @($made | Select-Object -Last 2)) { Say ('  sample tail: ' + $l) }
+    if ($code -ne 0) {
+      Bail ('  the sample maker exited ' + $code + ', so there is no sample for -Mode signaturepanel')
+    }
+    $path = Join-Path $dir ($Sample + '.pdf')
+    if (-not (Test-Path -LiteralPath $path)) {
+      Bail ('  the maker reported success but [' + $path + '] is not on disk')
+    }
+    Say ('  sample [' + $path + '] ' + (Get-Item -LiteralPath $path).Length + ' bytes')
+    if ($Doc) { Say ('  -Doc [' + $Doc + '] is replaced by the sample this mode makes') }
+    $Doc = $path
+  }
+  if ($Installed) {
+    if ($Sample -eq 'none') {
+      if (-not $OpenViaPicker) { $OpenViaPicker = $Doc }
+      if ([System.IO.Path]::GetFileName($OpenViaPicker) -ne
+          [System.IO.Path]::GetFileName($Doc)) {
+        Bail ('  -OpenViaPicker names [' + [System.IO.Path]::GetFileName($OpenViaPicker) +
+              '] but -Doc names [' + [System.IO.Path]::GetFileName($Doc) + ']')
+      }
+    } else {
+      if ($OpenViaPicker) {
+        Say ('  -OpenViaPicker [' + $OpenViaPicker + '] is replaced: the sample''s directory is ' +
+             'drawn in this run, so no caller could have named it')
+      }
+      $OpenViaPicker = $Doc
+    }
+    Say ('  packaged run: the picker is given [' + $OpenViaPicker + ']')
+  }
+}
+
 # 'saverename' stays an accepted -Mode name because rounds since sec.44 are quoted by it in the
 # comments below and in the notes the main session keeps; the mode itself is Save As now. PowerShell
 # has no multi-label switch clause ('a','b' { } does not parse and @('a','b') never matches), so the
@@ -2805,6 +2929,262 @@ function Signed-Needles() {
     invalidate = @((CjStr 0x6570, 0x5B57, 0x7B7E, 0x540D, 0x90FD, 0x4F1A, 0x5931, 0x6548),
                    'will invalidate')
   }
+}
+function SignatureNeedles() {
+  # The sidebar's own labels and the four verdicts, both spellings of each, in one place. A second
+  # copy of this table is how one mode ends up readable in only one language (sec.87), and the
+  # Chinese halves have to be built from code points because this file must stay pure ASCII.
+  return @{
+    tab = @('Signatures', (CjStr 0x7B7E, 0x540D))
+    cert = @('Certificate not trusted or expired',
+             (CjStr 0x8BC1, 0x4E66, 0x4E0D, 0x53D7, 0x4FE1, 0x4EFB, 0x6216, 0x5DF2, 0x8FC7, 0x671F))
+    changed = @('Content changed', (CjStr 0x5185, 0x5BB9, 0x88AB, 0x6539, 0x8FC7))
+    cannot = @('Cannot be checked', (CjStr 0x65E0, 0x6CD5, 0x9A8C, 0x8BC1))
+    inc1 = @('There is 1 incremental update after the signature',
+             ((CjStr 0x7B7E, 0x540D, 0x4E4B, 0x540E, 0x8FD8, 0x6709) + ' 1 ' +
+              (CjStr 0x6B21, 0x589E, 0x91CF, 0x66F4, 0x65B0)))
+    inc2 = @('There are 2 incremental updates after the signature',
+             ((CjStr 0x7B7E, 0x540D, 0x4E4B, 0x540E, 0x8FD8, 0x6709) + ' 2 ' +
+              (CjStr 0x6B21, 0x589E, 0x91CF, 0x66F4, 0x65B0)))
+    incAny = @('incremental update after the signature',
+               (CjStr 0x7B7E, 0x540D, 0x4E4B, 0x540E, 0x8FD8, 0x6709))
+  }
+}
+function Pick-Needles($pair, [string]$lang) {
+  # A pair is @(english, chinese). A round that names its interface gets only that spelling, which
+  # is what makes an English installed run prove the English label was on screen instead of the
+  # Chinese one this file also knows how to match.
+  if ($lang -eq 'en') { return @($pair[0]) }
+  if ($lang -eq 'zh') { return @($pair[1]) }
+  return @($pair)
+}
+function InterfaceLanguage([int]$procId) {
+  # The menu bar's top-level words are tr()'d, so one membership test names the interface without
+  # reading a setting -- and the packaged copy's setting has no outside read path (sec.48). The
+  # names carry their mnemonic the way the source spells it: the Chinese bar reads the word for
+  # "file" followed by "(F)" and the English one "File" (the in-word & is not in the UIA name), so
+  # the match is a PREFIX on "File" and on the Chinese word rather than an exact name.
+  $zh = CjStr 0x6587, 0x4EF6
+  foreach ($n in (MenuBarNames $procId)) {
+    if ($n -like 'File*') { return 'en' }
+    if ($n -like ($zh + '*')) { return 'zh' }
+  }
+  return 'unknown'
+}
+function Check-EnglishSentences([string]$text, [string]$tag, [bool]$certificationWanted) {
+  # sec.126 items 1 and 2, read off the window rather than trusted to the catalogue: two sentences
+  # on the status bar are joined with a space in English, and the punctuation between counted
+  # fragments is the language's. "signatures.Its certification" and a full-width comma are what the
+  # bar said before the fix; both are checked here because a catalogue rule cannot see the line.
+  $ok = $true
+  if ($text -match '[.:][A-Z]') {
+    Say ('  ' + $tag + ': two English sentences are welded together in |' + $text + '|')
+    $ok = $false
+  }
+  $bad = @(0xFF0C, 0x3002, 0xFF1A, 0xFF1B, 0xFF01, 0xFF08, 0xFF09, 0x3001, 0xFF1F)
+  foreach ($cp in $bad) {
+    if ($text.Contains([string][char]$cp)) {
+      Say ('  ' + $tag + ': full-width punctuation U+' + $cp.ToString('X4') + ' in |' + $text + '|')
+      $ok = $false
+    }
+  }
+  if ($certificationWanted -and -not $text.Contains(' Its certification')) {
+    Say ('  ' + $tag + ': the certification sentence does not start with its own space in |' +
+         $text + '|')
+    $ok = $false
+  }
+  return $ok
+}
+function SidebarTabNames() {
+  # Every label the reading sidebar's four tabs can show. A document tab is a file name and none of
+  # these, which is how the sidebar's strip is told from the window's own tab strip.
+  return @('Outline', 'Thumbnails', 'Search', 'Signatures',
+           (CjStr 0x5927, 0x7EB2), (CjStr 0x7F29, 0x7565, 0x56FE),
+           (CjStr 0x641C, 0x7D22), (CjStr 0x7B7E, 0x540D))
+}
+function SidebarUpLoose($tabs) {
+  $names = SidebarTabNames
+  foreach ($t in $tabs) { if ($names -contains $t.Current.Name) { return $true } }
+  return $false
+}
+function SidebarComplete($tabs, [string]$lang) {
+  # The three tabs every document has. Requiring them before judging the signatures tab's absence
+  # is what keeps the negative half from passing on a sidebar that never opened -- a receipt that
+  # was true before the interaction is not a receipt (sec.97).
+  $sets = @()
+  if ($lang -ne 'zh') { $sets += ,@('Outline', 'Thumbnails', 'Search') }
+  if ($lang -ne 'en') { $sets += ,@((CjStr 0x5927, 0x7EB2), (CjStr 0x7F29, 0x7565, 0x56FE), (CjStr 0x641C, 0x7D22)) }
+  foreach ($set in $sets) {
+    $have = 0
+    foreach ($n in $set) {
+      foreach ($t in $tabs) { if ($t.Current.Name -eq $n) { $have++; break } }
+    }
+    if ($have -eq $set.Count) { return $true }
+  }
+  return $false
+}
+function Find-TabByName($tabs, [string[]]$names) {
+  foreach ($t in $tabs) {
+    foreach ($n in $names) { if ($t.Current.Name -eq $n) { return $t } }
+  }
+  return $null
+}
+function TabSelected($tab) {
+  # $null means the pattern is not offered, which is a different answer from "not selected" and is
+  # printed as such: a mode that conflated the two would call a missing pattern a product defect.
+  $sp = Pat $tab 'SelectionItem'
+  if (-not $sp) { return $null }
+  try { return [bool]$sp.Current.IsSelected } catch { return $null }
+}
+function TabOnScreen($tab) {
+  # A hidden QTabBar page is still enumerated by this Qt build's UIA provider: the signed panel and
+  # the hidden signatures tab both answer FindAll. "The page is not there" is a statement about the
+  # screen, so presence in the tree is not enough -- offscreen or a zero rectangle is not a tab the
+  # reader can see or press.
+  if (-not $tab) { return $false }
+  try {
+    if ($tab.Current.IsOffscreen) { return $false }
+    $r = $tab.Current.BoundingRectangle
+    return ($r.Width -gt 0 -and $r.Height -gt 0)
+  } catch { return $false }
+}
+function SignatureExpectation([string]$sample) {
+  # What the panel must say, from the verdict order in signatureverify.cpp: the document's own bytes
+  # coming apart is reported before any question about who signed it, so a tampered file is
+  # ContentModified even though its certificate is untrusted too. The trust half is this machine's:
+  # the sample's CA is not in the machine's root store, so every otherwise-valid sample is a
+  # certificate problem here. Rows is the top-level count; inc is the revision sentence's number.
+  switch ($sample) {
+    'valid'            { return @{ verdict = 'cert';    rows = 1; inc = 0 } }
+    'expired'          { return @{ verdict = 'cert';    rows = 1; inc = 0 } }
+    'appended-one'     { return @{ verdict = 'cert';    rows = 1; inc = 1 } }
+    'appended-two'     { return @{ verdict = 'cert';    rows = 1; inc = 2 } }
+    'tampered'         { return @{ verdict = 'changed'; rows = 1; inc = 0 } }
+    'narrowed'         { return @{ verdict = 'changed'; rows = 1; inc = 0 } }
+    'x509-rsa-sha1'    { return @{ verdict = 'cannot';  rows = 1; inc = 0 } }
+    'broken-blob'      { return @{ verdict = 'cannot';  rows = 1; inc = 0 } }
+    'gap-at-front'     { return @{ verdict = 'cert';    rows = 1; inc = 0 } }
+    'token-unreadable' { return @{ verdict = 'cert';    rows = 1; inc = 0 } }
+  }
+  return $null
+}
+function Dump-Names($root, [string]$tag) {
+  # "Nothing found" has three causes in this window -- the sidebar never opened, the page is not
+  # current, and the panel is genuinely empty -- and one line cannot tell them apart. Printing
+  # every distinct class+name is what turns a dead round into a reading (sec.87's rule).
+  Say ('  ' + $tag + ':')
+  $seen = @{}
+  foreach ($e in @($root.FindAll($TS::Descendants, $ANY))) {
+    $nm = $e.Current.Name
+    if ($null -eq $nm) { continue }
+    $nm = $nm.Replace("`r", ' ').Replace("`n", ' ').Trim()
+    if ($nm.Length -lt 2) { continue }
+    $key = $e.Current.ControlType.ProgrammaticName.Replace('ControlType.', '') + ' |' + $nm + '|'
+    if ($seen.ContainsKey($key)) { continue }
+    $seen[$key] = 1
+    Say ('    ' + $key)
+  }
+}
+function Save-WidgetPicture([IntPtr]$hwnd, [string]$name, $elements, [bool]$wrongAnchor) {
+  # One PrintWindow of the whole window, then a crop of the elements handed in -- the tab strip and
+  # the panel, so the picture shows which page is current and what it says. The crop is anchored to
+  # the window's FRAME and clamped into the client area, both geometric assertions borrowed from
+  # sec.89/sec.91: UIA's rectangle is the client area while PrintWindow paints the whole window, and
+  # a crop computed with the wrong one lands on the frame or above the strip while every count stays
+  # green. -Control passes $wrongAnchor to repeat that mistake on purpose.
+  $gr = [W32]::Rect($hwnd)
+  $co = [W32]::ClientOrigin($hwnd)
+  $fw = [int]($gr.right - $gr.left)
+  $fh = [int]($gr.bottom - $gr.top)
+  if ($fw -le 0 -or $fh -le 0) { Bail '  the window has no frame to paint into' }
+  $winBmp = New-Object System.Drawing.Bitmap($fw, $fh)
+  $wg = [System.Drawing.Graphics]::FromImage($winBmp)
+  $hdc = $wg.GetHdc()
+  $painted = [W32]::PrintWindow($hwnd, $hdc, 2)
+  $wg.ReleaseHdc($hdc)
+  $winShot = Join-Path $scratch ('signaturepanel-win-' + $name + '.png')
+  $winBmp.Save($winShot, [System.Drawing.Imaging.ImageFormat]::Png)
+  $wg.Dispose()
+  Say ('  PrintWindow returned ' + $painted + ', window ' + $fw + 'x' + $fh + ' kept at ' + $winShot +
+       ' (' + (Get-Item $winShot).Length + ' bytes, sha256 ' +
+       (Get-FileHash -LiteralPath $winShot -Algorithm SHA256).Hash.Substring(0, 16) + '...)')
+
+  $minX = [double]::MaxValue
+  $minY = [double]::MaxValue
+  $maxX = [double]::MinValue
+  $maxY = [double]::MinValue
+  $count = 0
+  foreach ($e in $elements) {
+    if ($null -eq $e) { continue }
+    $r = $e.Current.BoundingRectangle
+    if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+    $count++
+    if ($r.X -lt $minX) { $minX = $r.X }
+    if ($r.Y -lt $minY) { $minY = $r.Y }
+    if (($r.X + $r.Width) -gt $maxX) { $maxX = $r.X + $r.Width }
+    if (($r.Y + $r.Height) -gt $maxY) { $maxY = $r.Y + $r.Height }
+  }
+  if ($count -eq 0) {
+    $winBmp.Dispose()
+    Bail ('  no element with a rectangle to crop for [' + $name + ']')
+  }
+  $anchorX = $gr.left
+  $anchorY = $gr.top
+  if ($wrongAnchor) {
+    # the sec.89 mistake: the picture is anchored to the frame, UIA's rectangle is the client area
+    $anchorX = $co.x
+    $anchorY = $co.y
+  }
+  $left = [int][math]::Floor($minX - $anchorX - 8)
+  $top = [int][math]::Floor($minY - $anchorY - 8)
+  $width = [int][math]::Ceiling($maxX - $minX + 16)
+  $height = [int][math]::Ceiling($maxY - $minY + 16)
+  if ($left -lt 0) { $left = 0 }
+  if ($top -lt 0) { $top = 0 }
+  if ($left + $width -gt $fw) { $width = $fw - $left }
+  if ($top + $height -gt $fh) { $height = $fh - $top }
+  $cl = $co.x - $gr.left
+  $ct = $co.y - $gr.top
+  if ($left -lt $cl) { $left = $cl }
+  if ($top -lt $ct) { $top = $ct }
+  if ($left + $width -gt $fw) { $width = $fw - $left }
+  if ($top + $height -gt $fh) { $height = $fh - $top }
+  if ($width -le 0 -or $height -le 0) {
+    $winBmp.Dispose()
+    Bail ('  the crop collapsed for [' + $name + '] (' + $width + 'x' + $height + ')')
+  }
+  $outside = @()
+  foreach ($e in $elements) {
+    if ($null -eq $e) { continue }
+    $r = $e.Current.BoundingRectangle
+    if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+    $bx = [int]($r.X - $gr.left)
+    $by = [int]($r.Y - $gr.top)
+    if ($bx -lt $left -or $by -lt $top -or
+        ($bx + [int]$r.Width) -gt ($left + $width) -or
+        ($by + [int]$r.Height) -gt ($top + $height)) {
+      $outside += (($e.Current.ControlType.ProgrammaticName -replace 'ControlType\.', '') + ' |' +
+                   $e.Current.Name + '| maps to ' + $bx + ',' + $by + ' ' +
+                   [int]$r.Width + 'x' + [int]$r.Height)
+    }
+  }
+  if ($outside.Count -gt 0) {
+    foreach ($l in $outside) { Say ('  outside the crop: ' + $l) }
+    Say ('  crop ' + $left + ',' + $top + ' ' + $width + 'x' + $height + ' anchored at ' +
+         $anchorX + ',' + $anchorY + ' (' + $(if ($wrongAnchor) { 'CLIENT' } else { 'FRAME' }) + ')')
+    $winBmp.Dispose()
+    Bail ('  the sidebar does not fit inside the crop, so the picture is not of it' +
+          $(if ($wrongAnchor) { ' (CONTROL exit 1)' } else { '' }))
+  }
+  $cropRect = New-Object System.Drawing.Rectangle($left, $top, $width, $height)
+  $bmp = $winBmp.Clone($cropRect, $winBmp.PixelFormat)
+  $shot = Join-Path $scratch ('signaturepanel-' + $name + '.png')
+  $bmp.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+  $bmp.Dispose()
+  $winBmp.Dispose()
+  Say ('  crop ' + $width + 'x' + $height + ' at window-local ' + $left + ',' + $top +
+       ' kept at ' + $shot + ' (' + (Get-Item $shot).Length + ' bytes, sha256 ' +
+       (Get-FileHash -LiteralPath $shot -Algorithm SHA256).Hash.Substring(0, 16) + '...)')
 }
 function Focus-Delta([string]$tag, $f) {
   # Does this field hold the keyboard -- as a CHANGE inside its own rectangle, not a count of it.
@@ -4699,6 +5079,13 @@ switch ($Mode) {
     # they hashed to before it. 'The copy moved' is deliberately not the interesting reading -- a
     # whole-file rewrite moves it too, and moving it is exactly what -Control makes happen.
     $nd = Signed-Needles
+    $lang = InterfaceLanguage $app.Id
+    Say ('  signedsave: interface language off the menu bar -> ' + $lang + ' (expected ' +
+         $ExpectLanguage + ')')
+    if ($ExpectLanguage -ne 'any' -and $lang -ne $ExpectLanguage) {
+      Bail ('  signedsave: the window is speaking [' + $lang + '] but this round asked for [' +
+            $ExpectLanguage + ']')
+    }
     # The open-time line is read before anything is clicked. It is a timed message and a menu hover
     # replaces it outright (sec.114); the pointer was parked before the launch for this reason, and
     # sec.122 had to learn twice that a hover left over from the click that opened the file is enough
@@ -4709,6 +5096,16 @@ switch ($Mode) {
             (StatusName $app.Id) + ']) -- so nothing below can be about a signed document')
     }
     Say ('  signedsave: open line |' + $line.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    if ($lang -eq 'en') {
+      # handoff-07 I2's two sentences, read on the screen instead of the catalogue: the space
+      # between them and the punctuation of a counted summary are the two things lupdate cannot
+      # check. The sample is uncertified, so no certification sentence follows this line.
+      if (-not (Check-EnglishSentences $line 'signedsave open line' $false)) {
+        Bail ('  signedsave: the English status line breaks the sentence-spacing or punctuation ' +
+              'rule (details above)')
+      }
+      Say '  signedsave: the English status line is spaced and carries no full-width punctuation'
+    }
     $isOpenLine = $false
     foreach ($n in $nd.checking) { if ($line.Contains($n)) { $isOpenLine = $true } }
     if (-not $isOpenLine) {
@@ -4856,6 +5253,13 @@ switch ($Mode) {
     # box needs a menu press, which replaces it (sec.114) -- so the reading has to be taken while it is
     # on screen, and the order of the verdicts is then free to put the accept button first.
     $nd = Signed-Needles
+    $lang = InterfaceLanguage $app.Id
+    Say ('  signedlock: interface language off the menu bar -> ' + $lang + ' (expected ' +
+         $ExpectLanguage + ')')
+    if ($ExpectLanguage -ne 'any' -and $lang -ne $ExpectLanguage) {
+      Bail ('  signedlock: the window is speaking [' + $lang + '] but this round asked for [' +
+            $ExpectLanguage + ']')
+    }
     $wantP = [int]$script:expectP
     $grey = ($wantP -ge 1)          # structuralEditsRefused(): any DocMDP at all shuts all eight boxes
     # fillable() refuses at P=1 and at nothing else: P=0 is an ordinary signed document and P=2/3 are
@@ -4870,6 +5274,18 @@ switch ($Mode) {
             'below means anything')
     }
     Say ('  signedlock: open line |' + $line.Replace("`r", ' ').Replace("`n", ' / ') + '|')
+    if ($lang -eq 'en') {
+      # The two sentences sec.126 fixed for English, read off the bar: a P>=1 line carries the
+      # certification sentence, which must arrive with its own leading space; a P=0 line has only
+      # the opened/verdict sentence, and both must be free of full-width punctuation.
+      $certWanted = ($wantP -ge 1)
+      if (-not (Check-EnglishSentences $line 'signedlock open line' $certWanted)) {
+        Bail ('  signedlock: the English status line breaks the sentence-spacing or punctuation ' +
+              'rule (details above)')
+      }
+      Say ('  signedlock: the English status line is spaced and carries no full-width punctuation' +
+           $(if ($certWanted) { ', and the certification sentence starts after a space' } else { '' }))
+    }
     Form-TitleCheck 'signedlock'
     Read-FormFields $script:guardCopy 'signedlock-before' 2 | Out-Null
     $tgt = Field-At 'name' 'signedlock'
@@ -5012,6 +5428,491 @@ switch ($Mode) {
     if (-not (Guard-Check 'after signedlock')) { Bail '  signedlock: the original moved during the run' }
     Say ('  signedlock: P=' + $wantP + ' judged where the reader meets it' +
          $(if ($Control) { ' -- and the accept button proved it is a verdict that can fail' } else { '' }))
+  }
+
+  'signaturepanel' {
+    # handoff-08 J1: the sidebar's signatures page. Section 126 pinned the four verdicts, the
+    # revision sentence and the summary headless; this is the first round that asks the panel to
+    # DRAW them. What is judged, in the order a reader meets it: the tab exists, switching to it
+    # selects it, each top-level row's text carries the verdict that file must produce here, its
+    # expanded details carry the file's own revision count (or nothing when there were no
+    # revisions), clicking it puts it in the tree's selection, and a picture of the tab strip and
+    # the panel is kept. -Sample none is the negative: an unsigned file has no signatures tab, and
+    # the other three tabs are asserted first so a sidebar that never opened cannot pass for it.
+    #
+    # The interface is read off the menu bar rather than assumed: every needle list here is
+    # bilingual, so a round that asked for English and got Chinese would still match and report a
+    # screen it never read (sec.92).
+    $sn = SignatureNeedles
+    $win = $null
+    for ($k = 1; $k -le 10 -and -not $win; $k++) {
+      Start-Sleep -Milliseconds 500
+      $win = Window $app.Id
+    }
+    if (-not $win) { Bail '  no window' }
+    $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+    [W32]::SwitchToThisWindow($hwnd, $true)
+    Start-Sleep -Milliseconds 500
+    Say ('  foreground before the click [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
+    $wr = $win.Current.BoundingRectangle
+    [W32]::Click([int]($wr.X + $wr.Width / 2), [int]($wr.Y + 12))   # raise it by its own title bar
+    Start-Sleep -Milliseconds 800
+    Say ('  foreground after the click  [' + [W32]::Text([W32]::GetForegroundWindow()) + ']')
+
+    $lang = InterfaceLanguage $app.Id
+    Say ('  menu bar [' + ((MenuBarNames $app.Id) -join '| |') + '] -> interface [' + $lang + ']')
+    if ($ExpectLanguage -ne 'any' -and $lang -ne $ExpectLanguage) {
+      Bail ('  the window is speaking [' + $lang + '] but this round asked for [' + $ExpectLanguage +
+            '], so a match here would not be about the screen this round meant to read')
+    }
+    $readLang = $lang
+    if ($readLang -eq 'unknown') { $readLang = $ExpectLanguage }
+    $tabNeedles = Pick-Needles $sn.tab $readLang
+
+    # ---- the sidebar -------------------------------------------------------------------------
+    # Same route as outlinetree (its copy is intertwined with its tree read and was left alone):
+    # the row's TogglePattern state is read on both sides, the real click goes first because it is
+    # the channel that has worked since sec.34, and an open menu is collapsed first because asking
+    # the bar for a menu that is already open closes it (sec.56).
+    $tabs = @(FindType (Window $app.Id) $CT::TabItem)
+    if (-not (SidebarUpLoose $tabs)) {
+      Say ('  the sidebar is closed (' + $tabs.Count + ' tab item(s)); opening it through View')
+      foreach ($way in @('real click', 'toggle-pattern')) {
+        foreach ($bar in @(FindType (Window $app.Id) $CT::MenuBar)) {
+          foreach ($t in @($bar.FindAll($TS::Children, $ANY))) {
+            $xp = Pat $t 'ExpandCollapse'
+            if ($xp -and $xp.Current.ExpandCollapseState.ToString() -eq 'Expanded') {
+              try { $xp.Collapse(); Say ('  collapsed an open [' + $t.Current.Name + '] first') } catch { }
+            }
+          }
+        }
+        Start-Sleep -Milliseconds 400
+        TopMenu $app.Id @('View', (CjStr 0x67E5, 0x770B)) | Out-Null
+        $row = RowAny $app.Id @('Navigation Sidebar', (CjStr 0x5BFC, 0x822A, 0x4FA7, 0x680F))
+        if (-not $row) { Say ('  ' + $way + ': no Navigation Sidebar row in the View menu'); continue }
+        $tg = Pat $row 'Toggle'
+        $beforeState = '(no TogglePattern)'
+        if ($tg) { $beforeState = $tg.Current.ToggleState.ToString() }
+        $rr = $row.Current.BoundingRectangle
+        Say ('  ' + $way + ': aiming at |' + $row.Current.Name + '| at ' + [int]$rr.X + ',' +
+             [int]$rr.Y + ' enabled=' + $row.Current.IsEnabled + ' toggle=' + $beforeState)
+        if ($way -eq 'toggle-pattern') {
+          if (-not $tg) { Say '  no TogglePattern to call'; continue }
+          try { $tg.Toggle() } catch { Say ('  Toggle threw: ' + $_.Exception.Message) }
+        } else {
+          ClickAt $row
+        }
+        for ($k = 1; $k -le 8; $k++) {
+          Start-Sleep -Milliseconds 500
+          $tabs = @(FindType (Window $app.Id) $CT::TabItem)
+          if (SidebarUpLoose $tabs) { break }
+        }
+        Say ('  ' + $way + ' gave ' + $tabs.Count + ' tab item(s)')
+        if (SidebarUpLoose $tabs) { break }
+      }
+    }
+    if (-not (SidebarUpLoose $tabs)) {
+      Dump-Names (Window $app.Id) 'the sidebar did not come up; every name this window has'
+      Bail 'the sidebar did not come up -- the names printed above are what this window offered'
+    }
+
+    $tabs = @(FindType (Window $app.Id) $CT::TabItem)
+    Say ('  ' + $tabs.Count + ' tab item(s) on screen:')
+    $ti = 0
+    foreach ($t in $tabs) {
+      $ti++
+      $nm = '(no name)'
+      try { $nm = $t.Current.Name } catch { }
+      # A hidden QTabBar page keeps its TabItem in the tree, and on this Qt build asking it for a
+      # rectangle THROWS -- a statement-terminating error that silently swallowed the whole printed
+      # line (the first negative run counted five tabs and listed four). Reading it has to be a
+      # caught step of its own, and "hidden" is then a reading rather than a missing line.
+      try {
+        $tr = $t.Current.BoundingRectangle
+        $off = $t.Current.IsOffscreen
+        Say ('    tab ' + $ti + ' |' + $nm + '| at ' + [int]$tr.X + ',' + [int]$tr.Y + ' ' +
+             [int]$tr.Width + 'x' + [int]$tr.Height + ' selected=' + (TabSelected $t) +
+             ' offscreen=' + $off)
+      } catch {
+        Say ('    tab ' + $ti + ' |' + $nm + '| has no on-screen rectangle (hidden page)')
+      }
+    }
+    if (-not (SidebarComplete $tabs $readLang)) {
+      Bail ('  the sidebar is missing at least one of its three ordinary tabs, so "the signatures ' +
+            'tab is not there" would be a claim about a sidebar that is not fully up')
+    }
+    Say '  the sidebar is up with its three ordinary tabs'
+
+    $sigTab = Find-TabByName $tabs $tabNeedles
+
+    if ($Sample -eq 'none') {
+      # ---- the negative half ---------------------------------------------------------------
+      if (-not $Control) {
+        if ($sigTab -and (TabOnScreen $sigTab)) {
+          Bail ('  an unsigned document still shows a |' + $sigTab.Current.Name + '| tab -- the ' +
+                'page is supposed to be there only for a file that carries signatures')
+        }
+        if ($sigTab) {
+          Say '  a signatures tab is in the tree but has no on-screen rectangle -- a hidden page, not a page'
+        }
+        Say '  the unsigned document shows no signatures tab on screen, and the other three are up'
+        $sideTabs = @($tabs | Where-Object { TabOnScreen $_ -and (SidebarTabNames) -contains $_.Current.Name })
+        Save-WidgetPicture $hwnd ($Sample + '-' + $readLang) @($sideTabs) $false
+        Say '  the negative half holds: no signatures tab on a document with no signature'
+        break
+      }
+      if (-not ($sigTab -and (TabOnScreen $sigTab))) {
+        Bail ('  CONTROL: an unsigned document was expected to show a signatures tab on screen and ' +
+              'shows none -- the negative assertion is a reading that can fail (CONTROL exit 1)')
+      }
+      Bail ('  an unsigned document shows a |' + $sigTab.Current.Name + '| tab')
+    }
+
+    # ---- the tab ----------------------------------------------------------------------------
+    if (-not (TabOnScreen $sigTab)) {
+      Bail '  the signatures tab is in the tree but has no on-screen rectangle -- a signed document cannot have a hidden page'
+    }
+    Say ('  signatures tab |' + $sigTab.Current.Name + '| selected=' + (TabSelected $sigTab))
+    $skipTab = ($Control -and $Sample -eq 'x509-rsa-sha1')
+    if ($skipTab) {
+      Say '  CONTROL: not switching to the signatures page; the read below is expected to fail'
+    } else {
+      ClickAt $sigTab
+      Start-Sleep -Milliseconds 800
+      $tabs = @(FindType (Window $app.Id) $CT::TabItem)
+      $sigTab = Find-TabByName $tabs $tabNeedles
+    }
+    $sel = $null
+    if ($sigTab) { $sel = TabSelected $sigTab }
+    if ($null -eq $sel -and $sigTab) {
+      # Some Qt builds put selection on the tab STRIP rather than on each TabItem; ask that too
+      # before calling the switch unproven, and print which channel answered.
+      $parent = $null
+      try { $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($sigTab) } catch { }
+      if ($parent) {
+        $sp = Pat $parent 'Selection'
+        if ($sp) {
+          try {
+            $names = @($sp.Current.GetSelection() | ForEach-Object { $_.Current.Name })
+            Say ('  the tab strip''s own selection holds |' + ($names -join '| |') + '|')
+            foreach ($n in $names) { if ($tabNeedles -contains $n) { $sel = $true } }
+          } catch { Say ('  the tab strip''s SelectionPattern threw: ' + $_.Exception.Message) }
+        }
+      }
+    }
+    Say ('  the signatures tab reports selected=' + $sel + ' after the switch')
+    if ($sel -ne $true) {
+      Bail ('  the signatures tab is not the selected page after the click (it reports [' + $sel +
+            '])' + $(if ($skipTab) { ' -- the tab was never clicked (CONTROL exit 1)' } else { '' }))
+    }
+
+    # ---- the tree ---------------------------------------------------------------------------
+    # Scoped to the tab strip first: the window also has the document tab strip, and its pages are
+    # not this panel. Every candidate is printed, because "the first tree" was a reading outlinetree
+    # could take when only one existed and is a guess now.
+    $win = Window $app.Id
+    $parent = $null
+    try { if ($sigTab) { $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($sigTab) } } catch { }
+    if ($parent) {
+      Say ('  the signatures tab''s parent is ' + $parent.Current.ControlType.ProgrammaticName +
+           ' class=' + $parent.Current.ClassName + ' name=|' + $parent.Current.Name + '|')
+    }
+    $trees = @()
+    if ($parent) { $trees = @(FindType $parent $CT::Tree) }
+    if ($trees.Count -eq 0) { $trees = @(FindType $win $CT::Tree) }
+    Say ('  ' + $trees.Count + ' tree element(s) reachable from ' +
+         $(if ($parent) { 'the tab strip' } else { 'the window' }) + ':')
+    foreach ($t in $trees) {
+      $tr = $t.Current.BoundingRectangle
+      Say ('    tree at ' + [int]$tr.X + ',' + [int]$tr.Y + ' ' + [int]$tr.Width + 'x' + [int]$tr.Height)
+    }
+    $tree = $null
+    foreach ($t in $trees) {
+      $tr = $t.Current.BoundingRectangle
+      if ($tr.Width -gt 0 -and $tr.Height -gt 0) { if (-not $tree) { $tree = $t } }
+    }
+    if (-not $tree) {
+      Dump-Names $(if ($parent) { $parent } else { $win }) 'no tree with a rectangle; what the sidebar offers'
+      Bail ('  no tree element on the signatures page' +
+            $(if ($skipTab) { ' -- the tab was never clicked (CONTROL exit 1)' } else { '' }))
+    }
+    $rootRows = @($tree.FindAll($TS::Children, (New-Object $PC($AE::ControlTypeProperty, $CT::TreeItem))))
+    $allRows = @(FindType $tree $CT::TreeItem)
+    $gp = Pat $tree 'Grid'
+    if ($gp) { Say ('  GridPattern rows=' + $gp.Current.RowCount + ' columns=' + $gp.Current.ColumnCount) }
+    $tp = Pat $tree 'Table'
+    if ($tp) { Say ('  TablePattern rows=' + $tp.Current.RowCount) }
+    $treeSel = Pat $tree 'Selection'
+    if ($treeSel) {
+      try { Say ('  SelectionPattern holds ' + $treeSel.Current.GetSelection().Length + ' item(s)') } catch { }
+    }
+    Say ('  TreeItem root children=' + $rootRows.Count + ' descendants=' + $allRows.Count)
+    if ($rootRows.Count -eq 0) {
+      Dump-Names $tree 'the tree has no top-level row; what is in it'
+      Bail ('  no signature row on the signatures page (the tab was ' +
+            $(if ($skipTab) { 'never clicked' } else { 'clicked' }) + ')' +
+            $(if ($skipTab) { ' (CONTROL exit 1)' } else { '' }))
+    }
+
+    # ---- the rows ---------------------------------------------------------------------------
+    # UIA's ExpandCollapsePattern.Expand() is tried first, then a real click on the branch
+    # indicator: on this tree the pattern call leaves the state Collapsed (measured on
+    # appended-one), and the detail children only exist once the row is open. The row's UIA
+    # rectangle starts after the branch indent (row x = tree x + 31 on a 16-px icon theme), so the
+    # chevron is aimed at the tree's own left edge, not at the row rectangle. Rows are opened
+    # bottom-up so expanding one never moves the rectangles of the ones still to be clicked.
+    #
+    # After opening, the tree's own element references go stale (the pre-expand row element then
+    # answers an empty name), so everything below is read again from a fresh FindAll. On this Qt
+    # build the detail items are exposed as SIBLINGS in document order, not as children of the
+    # row, so a row's details are the items between its own name and the next row's name.
+    $tr = $tree.Current.BoundingRectangle
+    $rowNames = @($rootRows | ForEach-Object { $_.Current.Name.Trim() })
+    $openedByUia = 0
+    $openedByClick = 0
+    for ($i = $rootRows.Count - 1; $i -ge 0; $i--) {
+      $ex = Pat $rootRows[$i] 'ExpandCollapse'
+      $state0 = '(none)'
+      if ($ex) { try { $state0 = $ex.Current.ExpandCollapseState.ToString() } catch { } }
+      if ($ex -and $state0 -ne 'Expanded') {
+        try { $ex.Expand() } catch { Say ('  Expand threw: ' + $_.Exception.Message) }
+      }
+      $state1 = $state0
+      if ($ex) { try { $state1 = $ex.Current.ExpandCollapseState.ToString() } catch { } }
+      if ($state1 -ne 'Expanded') {
+        $rrX = $rootRows[$i].Current.BoundingRectangle
+        $bx = [int]($tr.X + 11)
+        $by = [int]($rrX.Y + $rrX.Height / 2)
+        Say ('  row ' + ($i + 1) + ': UIA Expand left it ' + $state1 +
+             '; clicking the branch indicator at ' + $bx + ',' + $by)
+        [W32]::Click($bx, $by)
+        Start-Sleep -Milliseconds 500
+        $openedByClick++
+        if ($ex) { try { $state1 = $ex.Current.ExpandCollapseState.ToString() } catch { } }
+      } elseif ($ex) {
+        $openedByUia++
+      }
+      Say ('  row ' + ($i + 1) + ' expand state ' + $state0 + ' -> ' + $state1)
+    }
+    Start-Sleep -Milliseconds 500
+    Say ('  opened ' + $openedByUia + ' row(s) through UIA Expand and ' + $openedByClick +
+         ' through the branch indicator')
+
+    $afterRows = @(FindType $tree $CT::TreeItem)
+    Say ('  tree holds ' + $afterRows.Count + ' TreeItem(s) after opening:')
+    foreach ($r in $afterRows) { Say ('    item |' + $r.Current.Name.Trim() + '|') }
+
+    $rowText = @()
+    $rowKids = @()
+    $rowEls = @()
+    $nextRow = 0
+    foreach ($it in $afterRows) {
+      $n = $it.Current.Name.Trim()
+      if ($nextRow -lt $rowNames.Count -and $n -eq $rowNames[$nextRow]) {
+        $rowText += $n
+        $rowKids += ,@()
+        $rowEls += $it
+        $nextRow++
+      } elseif ($rowText.Count -gt 0) {
+        $rowKids[$rowText.Count - 1] = @($rowKids[$rowText.Count - 1]) + $n
+      } else {
+        Say ('  an item before the first signature row: |' + $n + '|')
+      }
+    }
+    if ($nextRow -ne $rowNames.Count) {
+      Dump-Names $tree 'the opened tree no longer matches the rows it showed before opening'
+      Bail ('  read ' + $nextRow + ' of ' + $rowNames.Count + ' signature row(s) after opening')
+    }
+    for ($i = 0; $i -lt $rowText.Count; $i++) {
+      Say ('  row |' + $rowText[$i] + '| with ' + $rowKids[$i].Count + ' detail line(s)')
+      foreach ($d in $rowKids[$i]) { Say ('    detail |' + $d + '|') }
+    }
+    if ($rowEls.Count -gt 0) {
+      $freshKids = @($rowEls[0].FindAll($TS::Children, (New-Object $PC($AE::ControlTypeProperty, $CT::TreeItem))))
+      Say ('  the first row element holds ' + $freshKids.Count + ' TreeItem child(ren) of its own')
+    }
+
+    $exp = SignatureExpectation $Sample
+    if (-not $exp) { Bail ('  no expectation table entry for -Sample [' + $Sample + ']') }
+    $wantRows = [int]$exp.rows
+    $wantVerdict = [string]$exp.verdict
+    $wantInc = [int]$exp.inc
+    if ($Control) {
+      # One deliberately wrong reading per sample, each keeping the verdict it was written against,
+      # so every assertion below is shown to be able to fail (sec.99).
+      if ($Sample -eq 'valid') { $wantInc = 1 }
+      if ($Sample -eq 'narrowed') { $wantRows = 2 }
+      if ($Sample -eq 'tampered') { $wantVerdict = 'cert' }
+      if ($Sample -eq 'appended-one') { $wantInc = 2 }
+    }
+    Say ('  expecting ' + $wantRows + ' row(s), verdict [' + $wantVerdict + '], ' + $wantInc +
+         ' incremental-update line(s)' + $(if ($Control) { '  (CONTROL)' } else { '' }))
+
+    if ($rowText.Count -ne $wantRows) {
+      Bail ('  the panel shows ' + $rowText.Count + ' top-level row(s), not ' + $wantRows +
+            $(if ($Control -and $Sample -eq 'narrowed') { ' (CONTROL exit 1)' } else { '' }))
+    }
+
+    $verdictPair = $null
+    switch ($wantVerdict) {
+      'cert'    { $verdictPair = $sn.cert }
+      'changed' { $verdictPair = $sn.changed }
+      'cannot'  { $verdictPair = $sn.cannot }
+    }
+    $verdictNeedles = Pick-Needles $verdictPair $readLang
+    $first = $rowText[0]
+    $verdictSaid = $false
+    foreach ($n in $verdictNeedles) { if ($first -like ('*' + $n + '*')) { $verdictSaid = $true } }
+    Say ('  the first row carries the expected verdict=' + $verdictSaid)
+    if (-not $verdictSaid) {
+      Bail ('  the first row reads |' + $first + '| and the sample [' + $Sample + '] must read [' +
+            ($verdictNeedles -join ' / ') + ']' +
+            $(if ($Control -and $Sample -eq 'tampered') { ' (CONTROL exit 1)' } else { '' }))
+    }
+
+    $incNeedles = Pick-Needles $sn.incAny $readLang
+    $incLines = @()
+    foreach ($d in $rowKids[0]) { if (Says-Any $d $incNeedles) { $incLines += $d } }
+    Say ('  incremental-update line(s) on the first row: ' + $incLines.Count + '  expected ' +
+         $wantInc)
+    if ($wantInc -eq 0) {
+      if ($incLines.Count -ne 0) {
+        Bail ('  a file that was never appended to still says [' + $incLines[0] + ']' +
+              $(if ($Control -and $Sample -eq 'valid') { ' (CONTROL exit 1)' } else { '' }))
+      }
+      Say '  the row says nothing about revisions after the signature, and the file has none'
+    } else {
+      if ($incLines.Count -ne 1) {
+        Bail ('  the row carries ' + $incLines.Count + ' incremental-update line(s), expected exactly 1')
+      }
+      $incPair = $(if ($wantInc -eq 1) { $sn.inc1 } else { $sn.inc2 })
+      $incNeedles2 = Pick-Needles $incPair $readLang
+      Say ('  number check: line=[' + $incLines[0] + '] pair=' + $incPair.Count + ' [' +
+           ($incPair -join ' / ') + '] needles=[' + ($incNeedles2 -join ' / ') +
+           '] lang=' + $readLang + ' match=' + (Says-Any $incLines[0] $incNeedles2))
+      if (-not (Says-Any $incLines[0] $incNeedles2)) {
+        Bail ('  the row reads [' + $incLines[0] + '] instead of naming ' + $wantInc + ' update(s)' +
+              $(if ($Control -and $Sample -eq 'appended-one') { ' (CONTROL exit 1)' } else { '' }))
+      }
+      Say ('  the row names exactly ' + $wantInc + ' incremental update(s) after the signature')
+    }
+
+    # ---- the click --------------------------------------------------------------------------
+    # The sample is one page, so the page cannot move; what a press must do is select the row. The
+    # blank click first is what makes "selected" a change rather than a state that was already true
+    # before the interaction (sec.97's rule, applied to a selection).
+    #
+    # A press that reaches the row but leaves the selection empty is a PRODUCT defect, not a missed
+    # click: this panel gives every row Qt::ItemIsEnabled alone (signaturepanel.cpp, setSignatures),
+    # which also clears ItemIsSelectable, so Qt cannot select it however the press is delivered.
+    # Both proof channels are printed -- an empty selection also reads exactly like a click that
+    # landed on the page. The round keeps going through the picture and names the defect at the end,
+    # so one product defect does not cost the other readings (or the picture) this mode exists for.
+    $selNames0 = @()
+    if ($treeSel) {
+      try { $selNames0 = @($treeSel.Current.GetSelection() | ForEach-Object { $_.Current.Name }) } catch { }
+    }
+    Say ('  selection before any click: [' + ($selNames0 -join '| |') + ']')
+
+    $tr = $tree.Current.BoundingRectangle
+    $rr0 = $rowEls[0].Current.BoundingRectangle
+    # "Blank" means below every visible item, not below the first row: after opening, the row's own
+    # 30-px rectangle is followed by its detail lines, and a click in there would select a DETAIL
+    # child (those are selectable even though the row is not) and become a baseline that was never
+    # empty. The lowest item is looked up from the fresh list for the same reason.
+    $lowest = $rr0.Y + $rr0.Height
+    foreach ($it in $afterRows) {
+      try {
+        $ir = $it.Current.BoundingRectangle
+        if ($ir.Height -gt 0 -and $ir.Y + $ir.Height -gt $lowest) { $lowest = $ir.Y + $ir.Height }
+      } catch { }
+    }
+    $blankY = [int](($lowest + $tr.Y + $tr.Height) / 2)
+    if ($blankY -lt ($tr.Y + $tr.Height - 8) -and $blankY -gt $lowest + 4) {
+      [W32]::Click([int]($tr.X + $tr.Width / 2), $blankY)
+      Start-Sleep -Milliseconds 350
+      if ($treeSel) {
+        try { $selNames0 = @($treeSel.Current.GetSelection() | ForEach-Object { $_.Current.Name }) } catch { }
+      }
+      Say ('  selection after a blank click inside the tree: [' + ($selNames0 -join '| |') + ']')
+    } else {
+      Say '  no blank space below the row inside the tree; the baseline is whatever it was'
+    }
+    # The row's UIA rectangle is as wide as the COLUMN, not as the viewport: this panel resizes its
+    # one column to the longest line, so on a 262-px sidebar the row rectangle reads 569 px wide and
+    # its own centre falls outside the tree (a click there lands on the page). Aim at the middle of
+    # the part of the row the reader can actually see, and say so.
+    $visL = [Math]::Max($rr0.X, $tr.X)
+    $visR = [Math]::Min($rr0.X + $rr0.Width, $tr.X + $tr.Width)
+    $cy = $rr0.Y + [Math]::Min($rr0.Height, $tr.Height) / 2
+    Say ('  clicking the first row at ' + [int](($visL + $visR) / 2) + ',' + [int]$cy +
+         ' (row rect ' + [int]$rr0.X + ',' + [int]$rr0.Y + ' ' + [int]$rr0.Width + 'x' +
+         [int]$rr0.Height + ', tree ' + [int]$tr.X + ',' + [int]$tr.Y + ' ' + [int]$tr.Width +
+         'x' + [int]$tr.Height + '; the row''s own centre ' +
+         $(if ($rr0.X + $rr0.Width / 2 -gt $tr.X + $tr.Width) { 'is outside the tree' } else { 'is inside the tree' }) + ')')
+    [W32]::Click([int](($visL + $visR) / 2), [int]$cy)
+    Start-Sleep -Milliseconds 600
+    # Two channels that say whether the press reached the row even when it cannot select it: the
+    # tree takes keyboard focus on a press, and the row's own UIA state names both selectability
+    # and focus. Printed because a panel whose rows are enabled-but-not-selectable would otherwise
+    # read exactly like a click that missed. The row element is looked up again after the press:
+    # opening a row rebuilt this tree's accessible objects once already.
+    $clickedRow = @(FindType $tree $CT::TreeItem | Where-Object { $_.Current.Name.Trim() -eq $first } |
+                    Select-Object -First 1)
+    if (-not $clickedRow) { $clickedRow = $rowEls[0] }
+    $ri0 = Pat $clickedRow 'SelectionItem'
+    Say ('  after the click: tree focused=' + $tree.Current.HasKeyboardFocus +
+         ' row focused=' + $clickedRow.Current.HasKeyboardFocus +
+         ' row enabled=' + $clickedRow.Current.IsEnabled +
+         ' row selection pattern=' + [bool]$ri0 +
+         $(if ($ri0) { ' selected=' + $ri0.Current.IsSelected } else { '' }))
+    $selNames1 = @()
+    if ($treeSel) {
+      try { $selNames1 = @($treeSel.Current.GetSelection() | ForEach-Object { $_.Current.Name }) } catch { }
+    }
+    Say ('  selection after clicking the first row: [' + ($selNames1 -join '| |') + ']')
+    $selected = $false
+    foreach ($n in $selNames1) { if ($n -eq $first) { $selected = $true } }
+    if (-not $selected -and -not $treeSel) {
+      # The tree may expose selection only on the row itself; ask that as a second channel before
+      # calling the press unproven.
+      $ri = Pat $clickedRow 'SelectionItem'
+      if ($ri) {
+        try { if ($ri.Current.IsSelected) { $selected = $true } } catch { }
+        Say ('  the row''s own SelectionItemPattern says selected=' + $selected)
+      } else {
+        Say '  neither the tree nor the row offers a selection pattern to read'
+      }
+    }
+    $selectionDefect = $false
+    if ($selected) {
+      Say '  the press selected the first row'
+    } else {
+      $selectionDefect = $true
+      Say ('  PRODUCT DEFECT: the press reached the first row (tree focused=' +
+           $tree.Current.HasKeyboardFocus + ', row focused=' + $clickedRow.Current.HasKeyboardFocus +
+           ') but its selection never changes; the row is enabled and not selectable, so nobody ' +
+           '(mouse, keyboard or UIA) can select it')
+    }
+    $w2 = Window $app.Id
+    if (-not $w2) { Bail '  the window went away after the row click' }
+    Say ('  the window is still up after the click [' + $w2.Current.Name + ']')
+
+    # ---- the picture ------------------------------------------------------------------------
+    $tabs = @(FindType (Window $app.Id) $CT::TabItem)
+    $sideTabs = @($tabs | Where-Object { (SidebarTabNames) -contains $_.Current.Name })
+    $wrong = ($Control -and $Sample -eq 'broken-blob')
+    if ($wrong) {
+      Say '  CONTROL: the crop will be anchored to the client rectangle (the sec.89 mistake)'
+    }
+    Save-WidgetPicture $hwnd ($Sample + '-' + $readLang) @($sideTabs + @($tree)) $wrong
+    Say ('  the screen holds: ' + $rowText.Count + ' signature row(s), verdict [' + $wantVerdict +
+         '], ' + $wantInc + ' revision line(s)' + $(if ($Control) { '  (CONTROL)' } else { '' }))
+    if ($selectionDefect) {
+      Bail ('  the screen shows the expected rows and verdicts, but clicking a signature row does ' +
+            'not change the selection: the row is enabled-not-selectable, so Qt refuses to select ' +
+            'it (PRODUCT DEFECT, reported rather than fixed)')
+    }
   }
 
   'uacache' {

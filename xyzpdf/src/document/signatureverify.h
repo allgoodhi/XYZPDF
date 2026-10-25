@@ -88,9 +88,11 @@ struct Options
     // A HCERTSTORE the *chain engine* takes as its exclusive root store, which replaces the
     // system 受信任的根 store for this call. Nothing in the product sets it -- it exists so a
     // test can make one of its own in-memory self-signed roots trusted without writing to any
-    // store on this machine (AGENTS.md: 测试绝不写这台机器的证书存储). `void *` so that this
-    // header does not hand <windows.h> to every widget that shows a verdict; the caller that
-    // sets it includes <wincrypt.h> and passes an HCERTSTORE.
+    // store on this machine (AGENTS.md: 测试绝不写这台机器的证书存储). The same store is asked
+    // about the timestamp authority when a token is present: a token whose TSA chains nowhere
+    // this reader trusts is not adopted as the signing time. `void *` so that this header does
+    // not hand <windows.h> to every widget that shows a verdict; the caller that sets it includes
+    // <wincrypt.h> and passes an HCERTSTORE.
     void *exclusiveRootStore = nullptr;
 
     // Ask the chain about this certificate as it stood at this moment. Empty means the
@@ -123,6 +125,10 @@ struct Signature
     bool signatureBlockVerifies = false;
     bool chainBuilt = false;
     bool chainTrusted = false;
+    // The issuer said the signer's certificate was revoked. It is a separate fact from "the root
+    // is unknown" because the answer is different in kind: not "I cannot tell who this is" but
+    // "this identity was withdrawn".
+    bool certificateRevoked = false;
     // True when the chain was built against `Options::exclusiveRootStore` rather than the
     // system root store -- which is what a test does, and what lets the test say the verdict
     // did not come from something already installed on this machine.

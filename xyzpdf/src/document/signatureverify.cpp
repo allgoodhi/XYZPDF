@@ -648,6 +648,9 @@ ChainAnswer checkChain(const CERT_CONTEXT *signer, const QDateTime &at, const Op
     answer.checkedOnline = options.checkRevocationOnline;
 
     PCCERT_CHAIN_CONTEXT chain = nullptr;
+    // Asked with no additional store: measured, the two-certificate chain (a timestamp authority
+    // under its own CA, both living only in the injected store) builds from hExclusiveRoot alone,
+    // so nothing is handed to the builder besides the chain's own bytes.
     if (!CertGetCertificateChain(engine, signer, &checkTime, nullptr, &chainPara, flags, nullptr,
                                  &chain)) {
         answer.notes << lastErrorText("CertGetCertificateChain");
@@ -660,6 +663,14 @@ ChainAnswer checkChain(const CERT_CONTEXT *signer, const QDateTime &at, const Op
 
     CERT_CHAIN_POLICY_PARA policyPara{};
     policyPara.cbSize = sizeof(policyPara);
+    // "Nobody answered the revocation question" is the state of a document whose reader turned 联网
+    // 检查吊销状态 off: the certificate carries a distribution point, the cache is empty, and the
+    // BASE policy answers CRYPT_E_REVOCATION_OFFLINE (0x80092013) -- measured on this machine. That
+    // is not a statement about the certificate, so it must not move the verdict; the detail line
+    // says 未联网检查吊销状态 out loud instead. Asked with the switch on, nothing is ignored and a
+    // CRL that names the serial is the verdict 证书不受信任或已过期.
+    if (!options.checkRevocationOnline)
+        policyPara.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS;
     CERT_CHAIN_POLICY_STATUS policyStatus{};
     policyStatus.cbSize = sizeof(policyStatus);
     if (!CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_BASE, chain, &policyPara,
@@ -691,6 +702,10 @@ struct BlobAnswer
     QDateTime signingTime;      // the CMS signing-time attribute: the signer's own word
     bool timestampTokenPresent = false;
     QByteArray timestampToken;  // its bytes, for the check the caller runs against the file
+    // The SignerInfo's own signature value. RFC 3161's messageImprint is a digest of *these*
+    // bytes (2.4.2), not of the document, which is what lets a token keep naming this signature
+    // after the file has been saved again.
+    QByteArray signatureValue;
     QStringList notes;
 };
 
@@ -759,6 +774,9 @@ void inspectBlob(const QByteArray &contents, BlobAnswer *answer)
         = reinterpret_cast<const CMSG_SIGNER_INFO *>(signerBuffer.constData());
 
     answer->digestOid = QString::fromLatin1(signerInfo->HashAlgorithm.pszObjId);
+    answer->signatureValue = QByteArray(
+        reinterpret_cast<const char *>(signerInfo->EncryptedHash.pbData),
+        int(signerInfo->EncryptedHash.cbData));
     if (!digestAlgorithmOf(answer->digestOid, &answer->algId, &answer->digestName)) {
         answer->notes << QStringLiteral("unsupported digest algorithm %1").arg(answer->digestOid);
         CryptMsgClose(message);
@@ -911,15 +929,21 @@ void inspectBlob(const QByteArray &contents, BlobAnswer *answer)
     CryptMsgClose(message);
 }
 
-// The token branch. Windows reads a TimeStampToken and checks its imprint; what it is asked to
-// match is the signed content, so the bytes fed in here are the same spans the digest covers.
-// When it says no -- an unreadable token, an imprint that does not match -- the caller keeps the
-// declared time and the detail line says which of the two happened.
-QDateTime verifyTimestampToken(const QByteArray &token, const QByteArray &covered,
-                               QString *note)
+// The token branch. Windows reads a TimeStampToken and checks two things: that the TSA's
+// signature covers the TSTInfo, and that the TSTInfo's messageImprint is the digest of the bytes
+// handed in here. Those bytes are the SignerInfo's signature value -- RFC 3161 2.4.2 hashes the
+// signature, not the document -- which is why the imprint still names this signature after the
+// file has been saved again.
+//
+// It does not say whether the TSA's own certificate chains to anything this reader trusts; its
+// documentation states that the caller has to. So the same root store the signature's chain used
+// answers that question too. When either half fails the caller keeps the declared time and the
+// detail line says the token did not verify.
+QDateTime verifyTimestampToken(const QByteArray &token, const QByteArray &signatureValue,
+                               const Options &options, QString *note)
 {
-    if (token.isEmpty() || covered.isEmpty()) {
-        *note = QStringLiteral("timestamp token or covered bytes missing");
+    if (token.isEmpty() || signatureValue.isEmpty()) {
+        *note = QStringLiteral("timestamp token or signature value missing");
         return {};
     }
     CRYPT_TIMESTAMP_CONTEXT *context = nullptr;
@@ -927,13 +951,34 @@ QDateTime verifyTimestampToken(const QByteArray &token, const QByteArray &covere
     HCERTSTORE store = nullptr;
     const BOOL ok = CryptVerifyTimeStampSignature(
         reinterpret_cast<const BYTE *>(token.constData()), DWORD(token.size()),
-        reinterpret_cast<const BYTE *>(covered.constData()), DWORD(covered.size()), nullptr,
-        &context, &signer, &store);
+        reinterpret_cast<const BYTE *>(signatureValue.constData()), DWORD(signatureValue.size()),
+        nullptr, &context, &signer, &store);
     QDateTime answer;
-    if (ok && context && context->pTimeStamp)
-        answer = fileTimeToUtc(context->pTimeStamp->ftTime);
-    else
+    if (ok && context && context->pTimeStamp) {
+        const QDateTime tokenTime = fileTimeToUtc(context->pTimeStamp->ftTime);
+        if (!signer) {
+            *note = QStringLiteral("the timestamp token names no authority's certificate");
+        } else {
+            const ChainAnswer authority = checkChain(signer, tokenTime, options);
+            if (authority.trusted) {
+                answer = tokenTime;
+            } else {
+                // The two Windows statuses, same as the signature's own chain carries them. Without
+                // them the note says "not trusted" and nothing else, which leaves the next person
+                // to re-run the sample to find out which of the several refusals it was.
+                QStringList notes;
+                notes << QStringLiteral(
+                    "the timestamp authority's certificate is not trusted (chain 0x%1 policy "
+                    "0x%2)")
+                              .arg(authority.chainErrorStatus, 8, 16, QLatin1Char('0'))
+                              .arg(quint32(authority.policyError), 8, 16, QLatin1Char('0'));
+                notes.append(authority.notes);
+                *note = notes.join(QStringLiteral(" / "));
+            }
+        }
+    } else {
         *note = lastErrorText("CryptVerifyTimeStampSignature");
+    }
     if (context)
         CryptMemFree(context);
     if (signer)
@@ -1107,6 +1152,8 @@ QStringList Signature::detailLines() const
                       : QCoreApplication::translate("SignatureVerify", "证书链不受信任。"));
     else if (!signerName.isEmpty() || !technicalNote.isEmpty())
         lines << QCoreApplication::translate("SignatureVerify", "建不起证书链。");
+    if (certificateRevoked)
+        lines << QCoreApplication::translate("SignatureVerify", "证书已被吊销。");
     lines << (revocationCheckedOnline
                   ? QCoreApplication::translate("SignatureVerify", "已联网检查过吊销状态。")
                   : QCoreApplication::translate("SignatureVerify", "未联网检查吊销状态。"));
@@ -1302,11 +1349,9 @@ QVector<Signature> verifyDocument(const QString &path, const QString &password,
         // attribute, which beats the dictionary's /M -- and the line says which of the three the
         // reader is looking at, because only the first is a third party's claim.
         if (blob.timestampTokenPresent) {
-            QByteArray covered;
-            for (const QByteArray &span : spans)
-                covered += span;
             QString tokenNote;
-            record.time = verifyTimestampToken(blob.timestampToken, covered, &tokenNote);
+            record.time = verifyTimestampToken(blob.timestampToken, blob.signatureValue, options,
+                                               &tokenNote);
             if (record.time.isValid()) {
                 record.timeSource = TimeSource::TimestampToken;
             } else if (record.technicalNote.isEmpty()) {
@@ -1338,6 +1383,14 @@ QVector<Signature> verifyDocument(const QString &path, const QString &password,
         const ChainAnswer chain = checkChain(blob.signerContext, moment, options);
         record.chainBuilt = chain.built;
         record.chainTrusted = chain.trusted;
+        // Revocation is reported from the chain's own status rather than inferred from the
+        // policy's failure: a revoked certificate fails the policy for a reason the reader has to
+        // be told apart from "this root is unknown". Measured against a CRL served on loopback by
+        // the test: the chain's TrustStatus carries CERT_TRUST_IS_REVOKED (0x4) and the BASE policy
+        // answers CRYPT_E_REVOKED (0x80092010) -- note which of the two this reads, because the
+        // policy's number is the one a report quotes and the status bit is the one the verdict
+        // decides on.
+        record.certificateRevoked = (chain.chainErrorStatus & CERT_TRUST_IS_REVOKED) != 0;
         record.chainUsedInjectedRootStore = chain.usedInjectedStore;
         record.revocationCheckedOnline = chain.checkedOnline;
         record.chainTimeUsed = moment;
@@ -1357,7 +1410,7 @@ QVector<Signature> verifyDocument(const QString &path, const QString &password,
             record.verdict = Verdict::ContentModified;
         else if (!record.signatureBlockVerifies || !blob.decoded)
             record.verdict = Verdict::Unverifiable;
-        else if (chain.trusted)
+        else if (chain.trusted && !record.certificateRevoked)
             record.verdict = Verdict::Valid;
         else
             record.verdict = Verdict::CertificateProblem;

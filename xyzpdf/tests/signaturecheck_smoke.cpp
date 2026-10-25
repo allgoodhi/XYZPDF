@@ -7,13 +7,17 @@
 // store the test injected, and the very next row asks the same question about the same file with
 // the injection off, which is the measurement that says the machine trusted nothing.
 //
-// Nothing here goes near the network. The revocation question is asked in cache-only mode for
-// every row, and the one row that turns the online mode on uses a certificate with no CRL
-// distribution point and no OCSP address in it -- so there is no address to connect to, and the
-// answer is checked to be the same verdict with the note that says it was asked differently.
-// (The online path's real behaviour -- which addresses a genuine certificate reaches, and how
-// long it takes -- is a manual measurement, recorded in the commit report rather than in a test
-// that would have to reach somebody's responder to prove anything.)
+// The revocation question is asked of a CRL distribution point that exists only for the length
+// of this test: a QTcpServer on 127.0.0.1, named by an http:// URL inside the very certificate it
+// answers about, serving a CRL signed by the CA that issued that certificate. The default mode is
+// checked to make no request at all, and the online mode is checked to visit exactly that address
+// -- the request targets the service received are printed, because they are the answer to "which
+// addresses did it actually visit". No other address is reachable from these samples: the
+// certificates carry no OCSP address and no authority-information address.
+//
+// A real CA-signed PDF and a real timestamping authority are still manual measurements (that is
+// what handoff-08 J2 says they are), but the token here is a real RFC 3161 TimeStampToken built
+// by this test's own authority, so the product's token path is exercised end to end.
 
 #include "../src/document/signatureverify.h"
 
@@ -23,9 +27,17 @@
 #include <QDateTime>
 #include <QFileInfo>
 #include <QDir>
+#include <QHostAddress>
+#include <QMutex>
+#include <QSemaphore>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QThread>
 #include <QUuid>
 
+#include <atomic>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -84,6 +96,9 @@ struct Sample
 {
     QString path;
     QByteArray bytes;
+    // The two moments the generator encoded, so a reading of "the time came from the token" can
+    // be compared against the token's own claim instead of against a guess.
+    SignedSample::Written times;
     QVector<SignatureVerify::Signature> results;
     const SignatureVerify::Signature *first() const
     {
@@ -97,7 +112,7 @@ Sample sign(const Scratch &scratch, const QString &name,
     Sample sample;
     sample.path = scratch.file(name);
     QString why;
-    if (!SignedSample::write(sample.path, identity, shape, &sample.bytes, &why)) {
+    if (!SignedSample::write(sample.path, identity, shape, &sample.bytes, &why, &sample.times)) {
         std::cerr << "SETUP: could not write " << name.toStdString() << ": "
                   << why.toStdString() << '\n';
         ++failures;
@@ -127,6 +142,190 @@ bool rewrite(const Sample &sample, const QByteArray &bytes)
     file.close();
     return true;
 }
+
+// A CRL distribution point on this machine and nowhere else.
+//
+// A certificate under test names `http://127.0.0.1:<port>/<random>.crl` in its cRLDistributionPoints
+// extension, so when the chain engine is allowed to go to the network it has exactly one address
+// to visit -- this thread -- and every target it asks for is recorded. The body is a CRL signed by
+// the same CA that issued the certificate, so a "not revoked" answer is the engine's own reading
+// of a CRL it verified, not the shape of a failed download.
+//
+// The port and the path are random per round on purpose: Windows caches downloaded CRLs by URL
+// (CryptnetUrlCache), so a second round that reused an address could be answered from the first
+// round's bytes and would print no request at all.
+class LocalCrlServer : public QThread
+{
+public:
+    ~LocalCrlServer() override { stop(); }
+
+    bool startServer(const QByteArray &initial)
+    {
+        {
+            QMutexLocker locker(&mutex_);
+            crl_ = initial;
+            path_ = QStringLiteral("/xyzpdf-crl-%1.crl")
+                        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        }
+        start();
+        ready_.acquire();
+        return listening_;
+    }
+
+    void stop()
+    {
+        if (!isRunning())
+            return;
+        stop_.store(true);
+        wait();
+    }
+
+    void setCrl(const QByteArray &bytes)
+    {
+        QMutexLocker locker(&mutex_);
+        crl_ = bytes;
+    }
+
+    QString url() const
+    {
+        QMutexLocker locker(&mutex_);
+        return QStringLiteral("http://127.0.0.1:%1%2").arg(port_).arg(path_);
+    }
+
+    // The targets exactly as received, first line second token: "/x.crl" for a direct request,
+    // "http://host/x.crl" if it ever went through a proxy. Recorded verbatim because that is the
+    // measurement, not a normalised version of it.
+    QStringList requests() const
+    {
+        QMutexLocker locker(&mutex_);
+        return requests_;
+    }
+
+    QString servedPath() const
+    {
+        QMutexLocker locker(&mutex_);
+        return path_;
+    }
+
+protected:
+    void run() override
+    {
+        QTcpServer server;
+        {
+            QMutexLocker locker(&mutex_);
+            listening_ = server.listen(QHostAddress::LocalHost, 0);
+            port_ = server.serverPort();
+        }
+        ready_.release();
+        if (!listening_)
+            return;
+        while (!stop_.load()) {
+            // Nothing here runs an event loop: the sockets are served one at a time in this
+            // thread, which is what makes a blocking chain call in the test thread and this
+            // thread able to meet.
+            if (!server.waitForNewConnection(200))
+                continue;
+            while (QTcpSocket *socket = server.nextPendingConnection()) {
+                serve(socket);
+                delete socket;
+            }
+        }
+    }
+
+private:
+    void serve(QTcpSocket *socket)
+    {
+        QByteArray request;
+        while (!request.contains("\r\n\r\n") && request.size() < 65536) {
+            if (!socket->waitForReadyRead(2000))
+                break;
+            request += socket->readAll();
+        }
+        const QByteArray firstLine = request.left(request.indexOf("\r\n"));
+        const QList<QByteArray> parts = firstLine.split(' ');
+        const QString target = parts.size() >= 2 ? QString::fromLatin1(parts.at(1)) : QString();
+        QString path = target;
+        const int scheme = path.indexOf(QStringLiteral("://"));
+        if (scheme >= 0) {
+            const int slash = path.indexOf(QLatin1Char('/'), scheme + 3);
+            path = slash >= 0 ? path.mid(slash) : QStringLiteral("/");
+        }
+        QByteArray body;
+        {
+            QMutexLocker locker(&mutex_);
+            requests_ << target;
+            if (path == path_)
+                body = crl_;
+        }
+        const QByteArray response
+            = body.isEmpty()
+            ? QByteArray("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            : QByteArray("HTTP/1.1 200 OK\r\nContent-Type: application/pkix-crl\r\n"
+                         "Content-Length: ")
+                + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+        socket->write(response);
+        socket->flush();
+        socket->waitForBytesWritten(2000);
+        socket->disconnectFromHost();
+    }
+
+    mutable QMutex mutex_;
+    QByteArray crl_;
+    QString path_;
+    QStringList requests_;
+    quint16 port_ = 0;
+    bool listening_ = false;
+    QSemaphore ready_;
+    std::atomic<bool> stop_{false};
+};
+
+// A CA, a leaf it issued, and the local service that leaf's CRL distribution point names. A fresh
+// round per question, because the address lives inside the certificate and the engine's cache
+// lives by that address.
+struct RevocationRound
+{
+    LocalCrlServer server;
+    SignedSample::Identity ca;
+    SignedSample::Identity leaf;
+    Sample sample;
+    bool ready = false;
+
+    ~RevocationRound()
+    {
+        SignedSample::releaseIdentity(&leaf);
+        SignedSample::releaseIdentity(&ca);
+    }
+
+    bool build(const Scratch &scratch, const QString &name, const QDateTime &now,
+               bool revokeTheLeaf, QString *why)
+    {
+        if (!SignedSample::createCaIdentity(&ca, QStringLiteral("XYZPDF test revocation CA"),
+                                            now.addDays(-30), now.addDays(365), why))
+            return false;
+        // The service has to be listening before the certificate is issued: its address is a
+        // field of that certificate. It starts on an empty CRL and is given the real one as soon
+        // as the leaf's serial exists.
+        if (!server.startServer(SignedSample::makeCrl(ca, {}, now.addSecs(-60), now.addDays(1),
+                                                      why)))
+            return false;
+        SignedSample::LeafOptions leafOptions;
+        leafOptions.crlUrl = server.url();
+        if (!SignedSample::createLeaf(&leaf, ca, QStringLiteral("XYZPDF revocable signer"),
+                                      now.addDays(-30), now.addDays(365), leafOptions, why))
+            return false;
+        QVector<QByteArray> revoked;
+        if (revokeTheLeaf)
+            revoked << leaf.serial;
+        const QByteArray crl
+            = SignedSample::makeCrl(ca, revoked, now.addSecs(-60), now.addDays(1), why);
+        if (crl.isEmpty())
+            return false;
+        server.setCrl(crl);
+        sample = sign(scratch, name, leaf, SignedSample::Shape());
+        ready = sample.first() != nullptr;
+        return ready;
+    }
+};
 
 } // namespace
 
@@ -225,23 +424,19 @@ int main(int argc, char **argv)
                   "with no store passed in, no store was injected");
             check(untrusted.first().digestMatches,
                   "but the covered bytes still match: the problem is the certificate, not the file");
-            // The status Windows answered with, not just the bool derived from it: 0x80000004 is
-            // CERT_TRUST_IS_UNTRUSTED_ISSUER, and naming it is what separates "this root is not in
-            // the store" from the other ways a chain can fail -- which matters because the test's
-            // whole claim is that the machine's own root store did not supply a trust path.
             // The status Windows answered with, not just the bool derived from it. Measured on
-            // this machine for a self-signed root that is in no store: the chain's own status says
-            // CERT_TRUST_IS_OFFLINE_REVOCATION (0x20 -- which is also the evidence that the
-            // cache-only mode did not go to the wire, since there was nothing cached to find), and
-            // the base policy answers CERT_E_UNTRUSTEDROOT (0x800b0109). Naming them separates
-            // "this root is not in the store" from the other ways a chain can fail, and the whole
-            // point of the row is that the machine's own root store supplied no trust path.
+            // this machine for a self-signed root that is in no store: CERT_TRUST_IS_UNTRUSTED_ROOT
+            // (0x20) in the chain status and CERT_E_UNTRUSTEDROOT (0x800b0109) from the base
+            // policy. Naming them separates "this root is not in the store" from the other ways a
+            // chain can fail, and the whole point of the row is that the machine's own root store
+            // supplied no trust path. (0x20 is the untrusted-root bit, not the offline-revocation
+            // one -- 0x01000000 is offline revocation, and it may or may not be set here.)
             note("chain error status", QString::number(untrusted.first().chainErrorStatus, 16));
             note("policy error", QString::number(untrusted.first().policyError, 16));
             check(untrusted.first().policyError == 0x800b0109u,
                   "and the base policy names an untrusted root");
             check(untrusted.first().chainErrorStatus & 0x20u,
-                  "and the chain status says the revocation check stayed offline");
+                  "and the chain status names an untrusted root too");
         }
 
         SignatureVerify::Options injected;
@@ -555,6 +750,313 @@ int main(int argc, char **argv)
         }
         if (store)
             CertCloseStore(store, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // 时间戳: a real RFC 3161 token, adopted only when it verifies and chains
+    // ------------------------------------------------------------------
+    {
+        // RFC 3161 2.3: a timestamp authority carries id-kp-timeStamping as a critical EKU, which
+        // makes its certificate an end entity -- so the root it chains to is a separate CA, and
+        // both go into the store the call injects.
+        SignedSample::Identity timestampCa;
+        check(SignedSample::createCaIdentity(&timestampCa,
+                                             QStringLiteral("XYZPDF test timestamp CA"),
+                                             now.addDays(-30), now.addDays(365), &why),
+              "a CA for the timestamp authority could be made");
+        SignedSample::LeafOptions tsaOptions;
+        tsaOptions.timestamping = true;
+        SignedSample::Identity tsa;
+        check(SignedSample::createLeaf(&tsa, timestampCa, QStringLiteral("XYZPDF test TSA"),
+                                       now.addDays(-30), now.addDays(365), tsaOptions, &why),
+              "a timestamp authority certificate with the critical timeStamping EKU could be "
+              "issued");
+
+        SignedSample::Shape shape;
+        shape.timestampAuthority = &tsa;
+        Sample sample = sign(scratch, QStringLiteral("timestamped.pdf"), signer, shape);
+
+        SignatureVerify::Options both;
+        const HCERTSTORE bothStore = SignedSample::memoryStoreWith(signer, timestampCa);
+        both.exclusiveRootStore = bothStore;
+        const QVector<SignatureVerify::Signature> results = verify(sample, both);
+        if (bothStore)
+            CertCloseStore(bothStore, 0);
+        check(!results.isEmpty(), "the timestamped sample states a signature");
+        if (!results.isEmpty()) {
+            note("token time (written by the test)",
+                 sample.times.tokenTime.toString(Qt::ISODate));
+            note("signing time (written by the test)",
+                 sample.times.signingTime.toString(Qt::ISODate));
+            note("timestamp verdict", results.first().verdictLabel());
+            note("timestamp time", results.first().timeText());
+            note("timestamp note", results.first().technicalNote);
+            check(results.first().timestampTokenPresent, "the token is found in the blob");
+            check(results.first().timeSource == SignatureVerify::TimeSource::TimestampToken,
+                  "a token that verifies and whose authority chains to the injected root is the "
+                  "reported time");
+            // The token's moment, not the signer's: the two are two minutes apart by construction,
+            // so a fallback to the declared time cannot satisfy this row.
+            check(results.first().time.toSecsSinceEpoch()
+                      == sample.times.tokenTime.toSecsSinceEpoch(),
+                  "and it is the moment the token names");
+            check(results.first().time.toSecsSinceEpoch()
+                      != sample.times.signingTime.toSecsSinceEpoch(),
+                  "which is not the moment the signer declared");
+            check(results.first().timeText().contains(QStringLiteral("（时间戳）")),
+                  "and the sentence says the time is a timestamp");
+            check(results.first().detailLines().join(QLatin1Char('\n'))
+                      .contains(QStringLiteral("时间取的是令牌里的")),
+                  "and the detail line says the time came from the token");
+            check(results.first().verdict == SignatureVerify::Verdict::Valid,
+                  "while the signature itself still verifies");
+        }
+
+        // ---- the same token with one byte of its messageImprint wrong ----
+        // The token is the TSA's own: only the digest inside it does not describe this signature.
+        // A reader that adopted its moment anyway would be reading a date off a document that
+        // never had one.
+        SignedSample::Shape flippedShape;
+        flippedShape.timestampAuthority = &tsa;
+        flippedShape.timestampImprintFlip = true;
+        Sample flipped = sign(scratch, QStringLiteral("timestamp-imprint-wrong.pdf"), signer,
+                              flippedShape);
+        SignatureVerify::Options flippedOptions;
+        const HCERTSTORE flippedStore = SignedSample::memoryStoreWith(signer, timestampCa);
+        flippedOptions.exclusiveRootStore = flippedStore;
+        const QVector<SignatureVerify::Signature> flippedRun = verify(flipped, flippedOptions);
+        if (flippedStore)
+            CertCloseStore(flippedStore, 0);
+        check(!flippedRun.isEmpty(), "the sample with a wrong imprint states a signature");
+        if (!flippedRun.isEmpty()) {
+            note("wrong-imprint verdict", flippedRun.first().verdictLabel());
+            note("wrong-imprint time", flippedRun.first().timeText());
+            note("wrong-imprint note", flippedRun.first().technicalNote);
+            check(flippedRun.first().timestampTokenPresent,
+                  "the token is still noticed even though it does not describe this signature");
+            check(flippedRun.first().timeSource == SignatureVerify::TimeSource::DeclaredBySigner,
+                  "a token that fails its check is not allowed to become the reported time");
+            check(flippedRun.first().time.toSecsSinceEpoch()
+                      == flipped.times.signingTime.toSecsSinceEpoch(),
+                  "the signer's own declared time is what is reported instead");
+            check(flippedRun.first().technicalNote.contains(
+                      QStringLiteral("CryptVerifyTimeStampSignature")),
+                  "and the note names the call that refused it");
+            // The number it refused with, measured: 0x80090002. Not a hash-value error and not an
+            // ASN.1 one -- the token decodes, its own signature verifies, and the imprint simply
+            // does not describe this signature.
+            check(flippedRun.first().technicalNote.contains(QStringLiteral("0x80090002")),
+                  "and the number Windows answered with");
+            check(flippedRun.first().detailLines().join(QLatin1Char('\n'))
+                      .contains(QStringLiteral("没能通过校验")),
+                  "the detail line says the token did not verify");
+            check(flippedRun.first().verdict == SignatureVerify::Verdict::Valid,
+                  "the signature itself was not moved by the bad token");
+        }
+
+        // ---- the token verifies, but its authority is a stranger ----
+        // Windows verifies the token's own signature and imprint; its documentation leaves the
+        // question of whether the TSA is trusted to the caller. Asked with a store that holds
+        // only the signer's root, the answer has to be "not adopted", not "the token's time".
+        SignatureVerify::Options signerOnly;
+        const HCERTSTORE signerStore = SignedSample::memoryStoreWith(signer);
+        signerOnly.exclusiveRootStore = signerStore;
+        const QVector<SignatureVerify::Signature> stranger = verify(sample, signerOnly);
+        if (signerStore)
+            CertCloseStore(signerStore, 0);
+        check(!stranger.isEmpty(), "the same sample read with only the signer's root");
+        if (!stranger.isEmpty()) {
+            note("untrusted TSA time", stranger.first().timeText());
+            note("untrusted TSA note", stranger.first().technicalNote);
+            check(stranger.first().timeSource == SignatureVerify::TimeSource::DeclaredBySigner,
+                  "a token whose authority chains nowhere this reader trusts is not adopted");
+            check(stranger.first().technicalNote.contains(
+                      QStringLiteral("the timestamp authority's certificate is not trusted")),
+                  "and the note says which half of the question failed");
+            // The note carries the two statuses it decided on. Measured here: the chain is partial
+            // (CERT_TRUST_IS_PARTIAL_CHAIN 0x00010000 -- the authority's CA is in no store this call
+            // was given) and the base policy answers CERT_E_CHAINING (0x800b010a). A note that said
+            // only "not trusted" would leave the next person to re-run the sample to find out which
+            // of several refusals it was.
+            check(stranger.first().technicalNote.contains(QStringLiteral("0x800b010a")),
+                  "and names the chaining error the policy answered, not a paraphrase");
+            check(stranger.first().detailLines().join(QLatin1Char('\n'))
+                      .contains(QStringLiteral("没能通过校验")),
+                  "the detail line calls the token unverified as well");
+            check(stranger.first().verdict == SignatureVerify::Verdict::Valid,
+                  "the signer's own chain is still trusted, so the verdict does not move");
+        }
+
+        SignedSample::releaseIdentity(&tsa);
+        SignedSample::releaseIdentity(&timestampCa);
+    }
+
+    // ------------------------------------------------------------------
+    // 联网吊销: a CRL served by this test, and the switch that is allowed to look
+    // ------------------------------------------------------------------
+    {
+        // The certificate names http://127.0.0.1:<port>/<random>.crl, which is this process and
+        // nothing else. The CRL it serves does not name the certificate, so the answer has to be
+        // the verdict the file already had -- with a note that the question went out.
+        RevocationRound round;
+        check(round.build(scratch, QStringLiteral("crl-not-revoked.pdf"), now, false, &why),
+              "a certificate whose revocation answer lives on this machine could be made");
+        if (round.ready) {
+            note("CRL address", round.server.url());
+            SignatureVerify::Options online;
+            const HCERTSTORE store = SignedSample::memoryStoreWith(round.ca);
+            online.exclusiveRootStore = store;
+            online.checkRevocationOnline = true;
+            const QVector<SignatureVerify::Signature> results = verify(round.sample, online);
+            if (store)
+                CertCloseStore(store, 0);
+            const QStringList requests = round.server.requests();
+            for (const QString &target : requests)
+                note("MEASURE CRL request", target);
+            check(!results.isEmpty(), "the sample states a signature");
+            if (!results.isEmpty()) {
+                note("not-revoked verdict", results.first().verdictLabel());
+                note("not-revoked note", results.first().technicalNote);
+                check(results.first().revocationCheckedOnline,
+                      "the answer says the online mode is what was used");
+                check(!requests.isEmpty(),
+                      "and the chain engine really visited the address the certificate names");
+                for (const QString &target : requests)
+                    check(target.endsWith(round.server.servedPath()),
+                          "the address it visited is the CRL distribution point");
+                check(!results.first().certificateRevoked,
+                      "a certificate the CRL does not name is not reported revoked");
+                check(results.first().verdict == SignatureVerify::Verdict::Valid,
+                      "and the verdict is the one it was before the question was asked");
+                check(results.first().detailLines().join(QLatin1Char('\n'))
+                          .contains(QStringLiteral("已联网检查过吊销状态")),
+                      "the detail line says the question went to the network");
+            }
+        }
+    }
+
+    {
+        // The same shape, with the CRL naming this certificate's serial. The two rounds get
+        // different ports and paths because the address is part of the certificate -- the
+        // engine's URL cache keys on it, and a reused address could answer this round from the
+        // previous round's bytes.
+        RevocationRound round;
+        check(round.build(scratch, QStringLiteral("crl-revoked.pdf"), now, true, &why),
+              "a certificate the local CRL names could be made");
+        if (round.ready) {
+            note("CRL address", round.server.url());
+            note("revoked serial (written by the test)",
+                 QString::fromLatin1(round.leaf.serial.toHex()));
+            SignatureVerify::Options online;
+            const HCERTSTORE store = SignedSample::memoryStoreWith(round.ca);
+            online.exclusiveRootStore = store;
+            online.checkRevocationOnline = true;
+            const QVector<SignatureVerify::Signature> results = verify(round.sample, online);
+            if (store)
+                CertCloseStore(store, 0);
+            const QStringList requests = round.server.requests();
+            for (const QString &target : requests)
+                note("MEASURE CRL request", target);
+            check(!results.isEmpty(), "the revoked sample states a signature");
+            if (!results.isEmpty()) {
+                note("revoked verdict", results.first().verdictLabel());
+                note("revoked chain status",
+                     QString::number(results.first().chainErrorStatus, 16));
+                note("revoked policy error", QString::number(results.first().policyError, 16));
+                note("revoked note", results.first().technicalNote);
+                check(!requests.isEmpty(),
+                      "the answer came from a CRL this test actually served");
+                check(results.first().certificateRevoked,
+                      "a serial the CRL names is reported as a revoked certificate");
+                check(!results.first().chainTrusted, "and the chain is not trusted");
+                // The two numbers the machine answered with, as assertions rather than as printout:
+                // the chain's status carries CERT_TRUST_IS_REVOKED (0x4) and the BASE policy answers
+                // CRYPT_E_REVOKED (0x80092010). Not CERT_E_REVOKED (0x800b010c) -- measured, and the
+                // reason the product reads the status bit.
+                check((results.first().chainErrorStatus & CERT_TRUST_IS_REVOKED) != 0,
+                      "the chain status carries the revoked bit itself");
+                check(results.first().policyError == DWORD(CRYPT_E_REVOKED),
+                      "and the policy names CRYPT_E_REVOKED, the revocation number, not the "
+                      "untrusted-root one");
+                check(results.first().verdict == SignatureVerify::Verdict::CertificateProblem,
+                      "a revoked certificate is the certificate row, not 有效");
+                check(results.first().detailLines().join(QLatin1Char('\n'))
+                          .contains(QStringLiteral("证书已被吊销")),
+                      "and the detail line says revoked rather than merely untrusted");
+                check(results.first().detailLines().join(QLatin1Char('\n'))
+                          .contains(QStringLiteral("已联网检查过吊销状态")),
+                      "beside the note that the question went out");
+            }
+        }
+    }
+
+    {
+        // The default mode must ask nobody. The zero is a reading only if the very same address
+        // can be reached when the switch is on, so the second half of this block turns it on and
+        // looks at the service again -- a test-side control rather than a product mutation.
+        RevocationRound round;
+        check(round.build(scratch, QStringLiteral("crl-switch-off.pdf"), now, false, &why),
+              "a third certificate with a local revocation address could be made");
+        if (round.ready) {
+            SignatureVerify::Options offline;
+            const HCERTSTORE store = SignedSample::memoryStoreWith(round.ca);
+            offline.exclusiveRootStore = store;
+            const QVector<SignatureVerify::Signature> results = verify(round.sample, offline);
+            if (store)
+                CertCloseStore(store, 0);
+            note("default-mode CRL requests",
+                 QString::number(round.server.requests().size()));
+            check(round.server.requests().isEmpty(),
+                  "with the switch off the default mode sent nothing to the distribution point");
+            check(!results.isEmpty(), "and the sample still states a signature");
+            if (!results.isEmpty()) {
+                note("switch-off verdict", results.first().verdictLabel());
+                note("switch-off chain status",
+                     QString::number(results.first().chainErrorStatus, 16));
+                note("switch-off policy error",
+                     QString::number(results.first().policyError, 16));
+                note("switch-off note", results.first().technicalNote);
+                check(!results.first().revocationCheckedOnline,
+                      "the record says the revocation question was not taken to the network");
+                check(results.first().detailLines().join(QLatin1Char('\n'))
+                          .contains(QStringLiteral("未联网检查吊销状态")),
+                      "and the detail line says nobody asked");
+                check(results.first().verdict == SignatureVerify::Verdict::Valid,
+                      "the verdict is what it is without the network question");
+                // Which two bits the machine actually answered with, so the row above means what it
+                // says: the chain does report the revocation question as unanswered
+                // (CERT_TRUST_IS_OFFLINE_REVOCATION 0x01000000 plus
+                // CERT_TRUST_REVOCATION_STATUS_UNKNOWN 0x40), and with the switch off the policy is
+                // asked to ignore exactly that, so it comes back 0 rather than
+                // CRYPT_E_REVOCATION_OFFLINE (0x80092013) -- the number this row measured before the
+                // ignore was added, and the reason 未联网 could otherwise read as 不受信任.
+                check((results.first().chainErrorStatus & CERT_TRUST_IS_OFFLINE_REVOCATION) != 0
+                          && (results.first().chainErrorStatus
+                              & CERT_TRUST_REVOCATION_STATUS_UNKNOWN)
+                              != 0,
+                      "the chain still says nobody answered the revocation question");
+                check(results.first().policyError == 0,
+                      "and the policy was asked to ignore that answer rather than act on it");
+                check(!results.first().certificateRevoked,
+                      "an unanswered question is not reported as a revoked certificate");
+            }
+
+            SignatureVerify::Options online;
+            const HCERTSTORE onlineStore = SignedSample::memoryStoreWith(round.ca);
+            online.exclusiveRootStore = onlineStore;
+            online.checkRevocationOnline = true;
+            const QVector<SignatureVerify::Signature> reachable = verify(round.sample, online);
+            if (onlineStore)
+                CertCloseStore(onlineStore, 0);
+            note("switch-on CRL requests",
+                 QString::number(round.server.requests().size()));
+            check(!round.server.requests().isEmpty(),
+                  "the same address is reached once the switch is on, which is what makes the "
+                  "zero above a reading rather than a dead service");
+            check(!reachable.isEmpty() && reachable.first().verdict
+                      == SignatureVerify::Verdict::Valid,
+                  "and the answer is the same valid verdict");
+        }
     }
 
     // ------------------------------------------------------------------

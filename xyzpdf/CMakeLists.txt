@@ -770,12 +770,14 @@ endif()
 # one test that exercises it directly. The name is signaturecheck rather than
 # signatureverify because tools/build_all_tests.py skips any target whose name contains
 # "verify" -- it is in NOT_A_TEST for probes that print numbers instead of passing -- and a
-# smoke test with that word in it is never run.
+# smoke test with that word in it is never run. Qt6::Network is for the CRL responder the
+# revocation rounds start on 127.0.0.1: the certificate the test makes points at it, and the
+# chain engine fetches from it the way it would fetch from any CA's distribution point.
 option(XYZPDF_BUILD_SIGNATURECHECK_SMOKE "Build the signature verification smoke test" OFF)
 if(XYZPDF_BUILD_SIGNATURECHECK_SMOKE)
     xyzpdf_add_test(signaturecheck_smoke
         SOURCES src/document/signatureverify.cpp
-        LIBRARIES xyzpdf_pdfium qpdf::libqpdf crypt32 ncrypt)
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf crypt32 ncrypt Qt6::Network)
 endif()
 
 # What QPDF does with an encrypted file when only the user password is in hand. Built

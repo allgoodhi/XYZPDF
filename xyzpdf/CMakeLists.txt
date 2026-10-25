@@ -403,6 +403,10 @@ set(XYZPDF_SOURCES
     src/export/imageexport.cpp
     src/export/wordexport.h
     src/export/wordexport.cpp
+    src/export/pptxwriter.h
+    src/export/pptxwriter.cpp
+    src/export/pptexport.h
+    src/export/pptexport.cpp
     src/export/zipwriter.h
     src/export/zipwriter.cpp
 
@@ -435,6 +439,8 @@ set(XYZPDF_SOURCES
     src/services/translatesession.cpp
     src/services/wordexportsession.h
     src/services/wordexportsession.cpp
+    src/services/pptexportsession.h
+    src/services/pptexportsession.cpp
 
     src/settings/settingsdialog.h
     src/settings/settingsdialog.cpp
@@ -967,6 +973,8 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/export/xlsxwriter.cpp
                 src/export/imageexport.cpp
                 src/export/wordexport.cpp
+                src/export/pptxwriter.cpp
+                src/export/pptexport.cpp
                 src/export/pageanalysis.cpp
                 src/document/pdfiumcontent.cpp
                 src/export/zipwriter.cpp
@@ -1004,6 +1012,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
                 src/services/excelexportsession.cpp
+                src/services/pptexportsession.cpp
                 src/theme/thememanager.cpp
         LIBRARIES ${XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES})
 endif()
@@ -1047,6 +1056,8 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/export/xlsxwriter.cpp
                 src/export/imageexport.cpp
                 src/export/wordexport.cpp
+                src/export/pptxwriter.cpp
+                src/export/pptexport.cpp
                 src/export/pageanalysis.cpp
                 src/document/pdfiumcontent.cpp
                 src/export/zipwriter.cpp
@@ -1065,6 +1076,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
                 src/services/excelexportsession.cpp
+                src/services/pptexportsession.cpp
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/documenttabbar.cpp
@@ -1168,6 +1180,27 @@ if(XYZPDF_BUILD_EXCELEXPORT_SMOKE)
         SOURCES src/export/xlsxwriter.cpp
                 src/export/excelexport.cpp
                 src/export/excelvalue.cpp
+                src/export/pageanalysis.cpp
+                src/document/pdfiumcontent.cpp
+                src/export/zipwriter.cpp
+                src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES xyzpdf_pdfium)
+endif()
+
+# A PDF read out as slides.
+#
+# The same three halves as the Word export, with the writer replaced: the layout
+# analysis is shared, so the subject here is the EMU arithmetic, the slide's own
+# parts, and that a page comes out as a slide with its words on it -- checked by
+# unpacking the written file with a reader the test brought itself.
+option(XYZPDF_BUILD_PPTEXPORT_SMOKE "Build the PowerPoint export smoke test" OFF)
+if(XYZPDF_BUILD_PPTEXPORT_SMOKE)
+    xyzpdf_add_test(pptexport_smoke
+        SOURCES src/export/pptxwriter.cpp
+                src/export/pptexport.cpp
                 src/export/pageanalysis.cpp
                 src/document/pdfiumcontent.cpp
                 src/export/zipwriter.cpp

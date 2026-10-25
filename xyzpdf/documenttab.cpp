@@ -203,6 +203,14 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(excelExport.get(), &ExcelExportSession::reportFinished, this,
             &DocumentTab::excelExportFinished);
 
+    // The PowerPoint export is assembled the same way; it reports through its own
+    // pair of signals so the window can word a finish that has slides in it.
+    powerPointExport = std::make_unique<PptExportSession>(openDocument);
+    connect(powerPointExport.get(), &PptExportSession::progress, this,
+            &DocumentTab::powerPointExportProgress);
+    connect(powerPointExport.get(), &PptExportSession::reportFinished, this,
+            &DocumentTab::powerPointExportFinished);
+
     // Printing and exporting to images are the two jobs that run in front of the
     // reader, on this thread, pumping events between pages -- so they are the
     // two that hold the tab's foreground count, and the window asks that count
@@ -346,6 +354,8 @@ DocumentTab::~DocumentTab()
     // take longest to notice, because a document is a lot of pages to read.
     wordExport->cancelPending();
     wordExport->waitUntilFinished();
+    powerPointExport->cancelPending();
+    powerPointExport->waitUntilFinished();
 
     // And the table export, for the same reason: it reads the document page by
     // page, and a reload under it would free what it is reading.
@@ -392,12 +402,21 @@ bool DocumentTab::searchRunning() const
 
 void DocumentTab::exportToWord(const QString &path)
 {
+    if (isExporting())
+        return;
     wordExport->exportToWord(path);
+}
+
+void DocumentTab::exportToPowerPoint(const QString &path)
+{
+    if (isExporting())
+        return;
+    powerPointExport->exportToPowerPoint(path);
 }
 
 bool DocumentTab::isExporting() const
 {
-    return wordExport->isRunning();
+    return wordExport->isRunning() || powerPointExport->isRunning() || excelExport->isRunning();
 }
 
 void DocumentTab::cancelWordExport()
@@ -407,17 +426,25 @@ void DocumentTab::cancelWordExport()
 
 void DocumentTab::exportToExcel(const QString &path, bool exportText)
 {
+    if (isExporting())
+        return;
     excelExport->exportToExcel(path, exportText);
-}
-
-bool DocumentTab::isExportingExcel() const
-{
-    return excelExport->isRunning();
 }
 
 void DocumentTab::cancelExcelExport()
 {
     excelExport->cancel();
+}
+
+void DocumentTab::cancelPowerPointExport()
+{
+    powerPointExport->cancel();
+}
+
+QSizeF DocumentTab::powerPointSlideSize() const
+{
+    Document *document = opened ? backend.get() : nullptr;
+    return document ? ::powerPointSlideSize(*document) : QSizeF();
 }
 
 void DocumentTab::showFindBar()
@@ -517,9 +544,10 @@ void DocumentTab::drainRenders()
     // waited for below on the same grounds. Told to stop here rather than left to
     // run out: a search of one page is quick, an export of five hundred is not.
     wordExport->cancelPending();
-    // The table export reads the same document the same way, so it gets the same
-    // treatment.
+    // The table export and the slides read the same document the same way, so
+    // they get the same treatment.
     excelExport->cancelPending();
+    powerPointExport->cancelPending();
     // And the signature check, which reads the file again -- once through PDFium for the
     // signature dictionaries, once through qpdf for the field names and pages. It holds no
     // pointer to this tab's document so it cannot dangle, but a verification of the file the
@@ -533,7 +561,7 @@ void DocumentTab::drainRenders()
     QElapsedTimer timer;
     timer.start();
     constexpr int kGiveUpAfter = 2000;
-    while ((renderer->inFlight() > 0 || searchRunning() || isExporting() || isExportingExcel()
+    while ((renderer->inFlight() > 0 || searchRunning() || isExporting()
             || thumbnailPanel->rendering() || signatures->running())
            && timer.elapsed() < kGiveUpAfter) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);

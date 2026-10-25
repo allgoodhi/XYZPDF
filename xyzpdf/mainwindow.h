@@ -13,6 +13,7 @@
 
 class WrappingToolBarArea;
 struct ExcelExportReport;
+struct PptExportReport;
 struct WordExportReport;
 
 #include <QList>
@@ -104,13 +105,17 @@ private:
     // came of it.
     void exportCurrentToExcel();
     void reportExcelExport(const ExcelExportReport &report);
+    // The same two for 导出为 PowerPoint: one slide per page.
+    void exportCurrentToPowerPoint();
+    void reportPowerPointExport(const PptExportReport &report);
     // The progress box, put up when the export reports its first page and taken
     // down when it reports its last. Driven by the tab's own signals rather than
     // by the menu item, so that it describes work that is happening rather than
     // work that was asked for -- and so that an export started any other way gets
-    // one too. `excel` picks the wording and the cancel call; one export at a time
-    // is enforced by the callers, so one box is enough for both.
-    void showExportProgress(DocumentTab *tab, int done, int total, bool excel = false);
+    // one too. `kind` picks the wording and the cancel call; one export at a time
+    // is enforced by the callers, so one box is enough for all of them.
+    enum class ExportKind { Word, Excel, PowerPoint };
+    void showExportProgress(DocumentTab *tab, int done, int total, ExportKind kind);
     void closeExportProgress();
     void closeTab(int index);
     // False when the reader said they did not mean to lose the edits this tab is
@@ -251,8 +256,8 @@ private:
     // shows how far it got rather than snapping back to nothing.
     int exportDone = 0;
     // Which export the box belongs to: it words itself differently and cancels a
-    // different job.
-    bool exportExcel = false;
+    // different job. Set when the box is made, from the signal that made it.
+    ExportKind exportKind = ExportKind::Word;
 
     QComboBox *pageBox = nullptr;
     QComboBox *zoomBox = nullptr;
@@ -273,6 +278,7 @@ private:
     QAction *selectAllAction = nullptr;
     QAction *exportWordAction = nullptr;
     QAction *exportExcelAction = nullptr;
+    QAction *exportPowerPointAction = nullptr;
     QAction *printAction = nullptr;
     QAction *exportImagesAction = nullptr;
     QAction *propertiesAction = nullptr;

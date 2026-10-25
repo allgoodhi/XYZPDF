@@ -1564,6 +1564,11 @@ This document carries %n digital signatures, and they are being checked.</numeru
             <translation>PDF documents (*.pdf);;All files (*)</translation>
         </message>
         <message>
+            <location filename="../../mainwindow.cpp" line="1827" />
+            <source>PowerPoint 演示文稿 (*.pptx)</source>
+            <translation>PowerPoint presentations (*.pptx)</translation>
+        </message>
+        <message>
             <location filename="../../mainwindow.cpp" line="1783" />
             <source>Word 文档 (*.docx)</source>
             <translation>Word document (*.docx)</translation>
@@ -1633,6 +1638,14 @@ Save them first?</translation>
             <translation>Close &amp;Tab</translation>
         </message>
         <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2035" />
+            <source>其中 %n 个带网格的表格已按单元格拆成可编辑的文本框。</source>
+            <translation>
+                <numerusform>%n ruled table was split into one editable text box per cell.</numerusform>
+                <numerusform>%n ruled tables were split into one editable text box per cell.</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
             <location filename="../../mainwindow.cpp" line="1918" />
             <source>其中 %n 个带网格的表格已转换为可编辑 Word 表格。</source>
             <translation>
@@ -1649,11 +1662,35 @@ Save them first?</translation>
             </translation>
         </message>
         <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2040" />
+            <source>其中 %n 处图形（图表、框图、照片等）已按图片放在原来的位置。</source>
+            <translation>
+                <numerusform>%n figure (chart, diagram, photograph, and so on) was placed as a picture where it stood.</numerusform>
+                <numerusform>%n figures (charts, diagrams, photographs, and so on) were placed as pictures where they stood.</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2046" />
+            <source>其中 %n 页没有文字层或包含复杂图表/表格，已按整页图片放进幻灯片，页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。</source>
+            <translation>
+                <numerusform>%n page had no text layer, or held a chart or table too involved to rebuild; it went in as a picture of the whole page, so the text in it cannot be edited directly. To get editable text out of it, run the Recognize tool first.</numerusform>
+                <numerusform>%n pages had no text layer, or held charts and tables too involved to rebuild; they went in as pictures of the whole pages, so the text in them cannot be edited directly. To get editable text out of one, run the Recognize tool first.</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
             <location filename="../../mainwindow.cpp" line="1936" />
             <source>其中 %n 页没有文字层或包含复杂图表/表格，已按整页图片还原以保持原貌，但页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。</source>
             <translation>
                 <numerusform>%n page had no text layer, or held a chart or table too involved to rebuild; it was reproduced as a full-page image to keep its appearance, so the text in it cannot be edited directly. To get editable text out of it, run the Recognize tool first.</numerusform>
                 <numerusform>%n pages had no text layer, or held charts and tables too involved to rebuild; they were reproduced as full-page images to keep their appearance, so the text in them cannot be edited directly. To get editable text out of one, run the Recognize tool first.</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2029" />
+            <source>其中 %n 页的尺寸和第一页不同，已按比例缩放后居中放在幻灯片上。</source>
+            <translation>
+                <numerusform>%n page was a different size from the first and has been scaled to fit and centred on its slide.</numerusform>
+                <numerusform>%n pages were a different size from the first and have been scaled to fit and centred on their slides.</numerusform>
             </translation>
         </message>
         <message>
@@ -1697,6 +1734,14 @@ Save them first?</translation>
             <translation>
                 <numerusform>Another %n page had neither text nor any rendered content, and was skipped.</numerusform>
                 <numerusform>Another %n pages had neither text nor any rendered content, and were skipped.</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2053" />
+            <source>另有 %n 页既没有文字，也没有渲染出内容：那些幻灯片是空白的。</source>
+            <translation>
+                <numerusform>%n more page had neither text nor anything that could be rendered: its slide is blank.</numerusform>
+                <numerusform>%n more pages had neither text nor anything that could be rendered: their slides are blank.</numerusform>
             </translation>
         </message>
         <message numerus="yes">
@@ -1763,6 +1808,23 @@ Save them first?</translation>
             <location filename="../../mainwindow.cpp" line="572" />
             <source>导出为 Excel(&amp;C)…</source>
             <translation>Export to Ex&amp;cel…</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="1826" />
+            <location filename="../../mainwindow.cpp" line="2017" />
+            <location filename="../../mainwindow.cpp" line="2059" />
+            <source>导出为 PowerPoint</source>
+            <translation>Export to PowerPoint</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="1849" />
+            <source>导出为 PowerPoint — %1</source>
+            <translation>Export to PowerPoint — %1</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="574" />
+            <source>导出为 PowerPoint(&amp;D)…</source>
+            <translation>Export to PowerPoi&amp;nt…</translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="1782" />
@@ -1860,10 +1922,26 @@ Save them first?</translation>
                 <numerusform>Exported %n images to %1</numerusform>
             </translation>
         </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2021" />
+            <source>已导出 %n 张幻灯片到：
+%1</source>
+            <translation>
+                <numerusform>Exported %n slide to:
+%1</numerusform>
+                <numerusform>Exported %n slides to:
+%1</numerusform>
+            </translation>
+        </message>
         <message>
             <location filename="../../mainwindow.cpp" line="2042" />
             <source>已导出为 Excel</source>
             <translation>Exported to Excel</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="2058" />
+            <source>已导出为 PowerPoint</source>
+            <translation>Exported to PowerPoint</translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="1950" />
@@ -1992,6 +2070,11 @@ Save them first?</translation>
             <location filename="../../mainwindow.cpp" line="567" />
             <source>把这份 PDF 的文字导出为 .docx 文档</source>
             <translation>Export the text of this PDF as a .docx document</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="576" />
+            <source>把这份 PDF 的每一页导出为 .pptx 幻灯片</source>
+            <translation>Export every page of this PDF as a .pptx slide</translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="574" />
@@ -2154,6 +2237,25 @@ Save them first?</translation>
             <translation numerus="yes">
                 <numerusform>Exporting to Excel… (%n page)</numerusform>
                 <numerusform>Exporting to Excel… (%n pages)</numerusform>
+            </translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="1831" />
+            <source>正在导出为 PowerPoint…</source>
+            <translation>Exporting to PowerPoint…</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="1503" />
+            <location filename="../../mainwindow.cpp" line="1923" />
+            <source>正在导出为 PowerPoint…（%1 / %2 页）</source>
+            <translation>Exporting to PowerPoint… (page %1 of %2)</translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="1924" />
+            <source>正在导出为 PowerPoint…（共 %n 页）</source>
+            <translation>
+                <numerusform>Exporting to PowerPoint… (%n page)</numerusform>
+                <numerusform>Exporting to PowerPoint… (%n pages)</numerusform>
             </translation>
         </message>
         <message>
@@ -3006,6 +3108,29 @@ The original file is not touched. This step only records the change; a save is s
             <location filename="../../src/document/pdfiumformfill.cpp" line="860" />
             <source>这份文档的表单没能写出来。原来的文件没有改动。</source>
             <translation>The form in this document could not be written out. The original file is unchanged.</translation>
+        </message>
+    </context>
+    <context>
+        <name>PptExport</name>
+        <message>
+            <location filename="../../src/export/pptexport.cpp" line="220" />
+            <source>写入文件失败：%1</source>
+            <translation>The file could not be written: %1</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/pptexport.cpp" line="105" />
+            <source>导出已取消。</source>
+            <translation>The export was cancelled.</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/pptexport.cpp" line="97" />
+            <source>没有指定要写入的文件。</source>
+            <translation>No file was given to write to.</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/pptexport.cpp" line="111" />
+            <source>这份 PDF 没有可导出的内容：既没有文字层，也没有渲染得出来的页面。</source>
+            <translation>This PDF has nothing to export: it has no text layer and no page that can be rendered.</translation>
         </message>
     </context>
     <context>

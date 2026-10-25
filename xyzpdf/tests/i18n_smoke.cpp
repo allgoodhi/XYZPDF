@@ -393,6 +393,19 @@ int main(int argc, char **argv)
             { "MainWindow", "其中 %n 个带网格的表格已转换为可编辑 Word 表格。", 1 },
             { "MainWindow", "其中 %n 处图形（图表、框图、照片等）已按图片插入，"
                             "其所在页面的文字仍是可以编辑的。", 1 },
+            // The PowerPoint export's finish report and its progress box. Every one of
+            // these counts something, so every one is invisible to the catalogue's shape
+            // rules -- the two forms can be identical and the row still matches -- and
+            // the only machine that asks for both is this table.
+            { "MainWindow", "正在导出为 PowerPoint…（共 %n 页）", 1 },
+            { "MainWindow", "已导出 %n 张幻灯片到：\n%1", 1 },
+            { "MainWindow", "其中 %n 页的尺寸和第一页不同，已按比例缩放后居中放在幻灯片上。", 1 },
+            { "MainWindow", "其中 %n 个带网格的表格已按单元格拆成可编辑的文本框。", 1 },
+            { "MainWindow", "其中 %n 处图形（图表、框图、照片等）已按图片放在原来的位置。", 1 },
+            { "MainWindow",
+              "其中 %n 页没有文字层或包含复杂图表/表格，已按整页图片放进幻灯片，"
+              "页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。", 1 },
+            { "MainWindow", "另有 %n 页既没有文字，也没有渲染出内容：那些幻灯片是空白的。", 1 },
             { "DocumentTab", "\n\n列表里前面 %n 个文件已经记下了，要退回去用撤销。", 1 },
             { "DeletePagesDialog", "\n\n这 %n 页里有 %1 页是合并进来的，屏幕上没有它们的页码，"
                                    "这里删不到它们。", 1 },

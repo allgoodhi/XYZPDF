@@ -1881,18 +1881,21 @@ function Probe-Tool([string]$tag) {
 if ($script:formModes -contains $Mode) {
   $script:probeTool = Probe-Tool $Mode
   if (-not (Test-Path $scratch)) { New-Item -ItemType Directory -Path $scratch | Out-Null }
-  $sample = Join-Path $scratch 'form-screen.pdf'
-  if (Test-Path -LiteralPath $sample) { Remove-Item -LiteralPath $sample -Force }
-  $made = & $script:probeTool --write-form-sample $sample 2>&1
+  # $sampleFile, never $sample: PowerShell names are case-blind and -Sample is a ValidateSet
+  # parameter (signaturepanel), so assigning a path to $sample is REFUSED and it keeps 'valid' --
+  # sec.130 found the signed sample written as ./valid in the repository root that way.
+  $sampleFile = Join-Path $scratch 'form-screen.pdf'
+  if (Test-Path -LiteralPath $sampleFile) { Remove-Item -LiteralPath $sampleFile -Force }
+  $made = & $script:probeTool --write-form-sample $sampleFile 2>&1
   foreach ($l in @($made)) { Say ('  sample: ' + $l) }
   if ($LASTEXITCODE -ne 0) {
     Bail ('  --write-form-sample exited ' + $LASTEXITCODE + ', so there is no sample for -Mode ' + $Mode)
   }
-  if (-not (Test-Path -LiteralPath $sample)) {
-    Bail ('  --write-form-sample reported success but [' + $sample + '] is not on disk')
+  if (-not (Test-Path -LiteralPath $sampleFile)) {
+    Bail ('  --write-form-sample reported success but [' + $sampleFile + '] is not on disk')
   }
   if ($Doc) { Say ('  -Doc [' + $Doc + '] is replaced by the sample this mode makes') }
-  $Doc = $sample
+  $Doc = $sampleFile
 }
 
 # ---- the signed modes' sample -------------------------------------------------------------
@@ -1935,15 +1938,15 @@ if ($script:signedModes -contains $Mode) {
   }
   $script:builtP = $script:expectP
   if ($Control) { $script:builtP = '0' }
-  $sample = Join-Path $scratch ('signed-screen-p' + $script:builtP + '.pdf')
-  if (Test-Path -LiteralPath $sample) { Remove-Item -LiteralPath $sample -Force }
-  $made = & $script:probeTool --write-signed-sample $sample --docmdp $script:builtP 2>&1
+  $sampleFile = Join-Path $scratch ('signed-screen-p' + $script:builtP + '.pdf')
+  if (Test-Path -LiteralPath $sampleFile) { Remove-Item -LiteralPath $sampleFile -Force }
+  $made = & $script:probeTool --write-signed-sample $sampleFile --docmdp $script:builtP 2>&1
   foreach ($l in @($made)) { Say ('  sample: ' + $l) }
   if ($LASTEXITCODE -ne 0) {
     Bail ('  --write-signed-sample exited ' + $LASTEXITCODE + ', so there is no sample for -Mode ' + $Mode)
   }
-  if (-not (Test-Path -LiteralPath $sample)) {
-    Bail ('  --write-signed-sample reported success but [' + $sample + '] is not on disk')
+  if (-not (Test-Path -LiteralPath $sampleFile)) {
+    Bail ('  --write-signed-sample reported success but [' + $sampleFile + '] is not on disk')
   }
   # The number the file carries, as opposed to the one that was asked for. pdfprobe already compares
   # the two and exits 1 when they disagree, but the modes' own verdicts are written against
@@ -1951,7 +1954,7 @@ if ($script:signedModes -contains $Mode) {
   Say ('  signed sample: built with /P ' + $script:builtP + ', the round judges it as /P ' +
        $script:expectP + $(if ($Control) { '  (CONTROL)' } else { '' }))
   if ($Doc) { Say ('  -Doc [' + $Doc + '] is replaced by the signed sample this mode makes') }
-  $Doc = $sample
+  $Doc = $sampleFile
 }
 
 # ---- the signature panel's samples ----------------------------------------------------------

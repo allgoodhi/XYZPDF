@@ -8005,6 +8005,10 @@ gui-probe 的签名模式按 I1 的新说法匹配（"正在检查"那句只活�
   那一行落在列表可见区之外，点击打在旁边、「打开」什么都没开（同一个模式连续四轮 Bail 在"没有窗口叫这个名字"，而一小时前同一轮是过的）。
 - `langswitch -Keep` 末尾是裸 `exit 0`，跳过了文件末尾的 kill，装上的那份一直开着进下一轮；现在先 `Kill-ProbeApp`。真切换来回两趟，各剩 0 个进程。
   （选中已经是当前的那种语言时没有重启提示，那一轮 exit 1 —— 产品本来就该这样。）
+- **J1 的 `-Sample` 参数吃掉了表单与签名模式的样本路径**：它带 `ValidateSet`，而 PowerShell 变量名不分大小写，`$sample = <路径>` 被校验拒绝、
+  值留在 `'valid'`，于是 `--write-signed-sample` 把样本写成了仓库根目录下的 `./valid`（提交时 git 的换行警告才露出来，已从提交里撤掉）。
+  模式照样全绿，因为打开的就是那份文件。局部变量改名 `$sampleFile`；重跑 `signedlock`、`formfill`，样本回到 `%TEMP%\xyzpdf-gui-probe`。
+  §129 的 `$target` 是同一条规矩。
 
 **门禁 31 passed / 0 failed**（38 个目标），目录 829 条，numerus 81。**§16 现在对到 §130。**
 

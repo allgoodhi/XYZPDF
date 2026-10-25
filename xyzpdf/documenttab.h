@@ -20,6 +20,7 @@
 //
 //   searchsession.h       the scan, the matches, the bar's label and the hits list
 //   wordexportsession.h   the document's text out as a Word file
+//   excelexportsession.h  the document's tables out as a workbook
 //   documentoutput.h      printing and a folder of images, both foreground
 //   ocrsession.h          the box dragged on a page, and reading what is in it
 //   translatesession.h    the two questions before a request, and the request
@@ -35,9 +36,11 @@
 
 #include "src/document/document.h"
 #include "src/document/outline.h"
+#include "src/export/excelexport.h"
 #include "src/export/wordexport.h"
 #include "src/render/rendercache.h"
 #include "src/services/documentoutput.h"
+#include "src/services/excelexportsession.h"
 #include "src/services/filechangenotice.h"
 #include "src/services/foregroundjobs.h"
 #include "src/services/ocrsession.h"
@@ -475,6 +478,14 @@ public:
     // leaves nothing behind to explain.
     void cancelWordExport();
 
+    // The same three handles on the table export, which has its own session for
+    // the same reason the Word one has one: it reads every page off the UI
+    // thread and must not be reading when the document is replaced. `exportText`
+    // is the one choice the export dialog asks about (src/ui/excelexportdialog.h).
+    void exportToExcel(const QString &path, bool exportText);
+    bool isExportingExcel() const;
+    void cancelExcelExport();
+
 Q_SIGNALS:
     void titleChanged(const QString &title);
     void pageChanged(int page, int pageCount);
@@ -501,6 +512,10 @@ Q_SIGNALS:
     // it did not. The window is what words them.
     void wordExportProgress(int done, int total);
     void wordExportFinished(const WordExportReport &report);
+    // The Excel export's two answers, relayed from ExcelExportSession in the same
+    // way: how far it has got, and what it wrote or why it did not.
+    void excelExportProgress(int done, int total);
+    void excelExportFinished(const ExcelExportReport &report);
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
@@ -686,6 +701,9 @@ private:
     // exists to prevent. Its flag is set first, so that the wait is one page
     // rather than a whole document -- both of those live with the session.
     std::unique_ptr<WordExportSession> wordExport;
+
+    // The table export, assembled and waited for on exactly the same grounds.
+    std::unique_ptr<ExcelExportSession> excelExport;
 
     // The box the reader drags on a page: the crop's own render, the recognizer,
     // and the window the answer goes into. It is not one of the jobs

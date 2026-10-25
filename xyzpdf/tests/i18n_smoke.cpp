@@ -515,6 +515,34 @@ int main(int argc, char **argv)
             { "DocumentTab", "允许联网检查" },
             { "DocumentTab", "不检查" },
             { "SettingsDialog", "联网检查证书是否被吊销" },
+            // handoff-09 K1 (PDF → Excel). The three counted rows are the reason this block
+            // exists: `%n` never appears in a numerus source's English, so every catalogue
+            // shape rule looks straight past them, and the only machine that asks for n=1 and
+            // n=40 and compares the answers with the digits masked is this table. The
+            // ExcelExport rows are probed by name for a second reason: those sentences are
+            // reached through a helper called translated(), which is the shape §112 records
+            // as invisible to lupdate unless the call site carries QT_TRANSLATE_NOOP -- an
+            // entry that is simply absent reads as the source string, and only a probe that
+            // names it turns that into a red test.
+            { "MainWindow", "导出为 Excel(&C)…" },
+            { "MainWindow", "把这份 PDF 里的表格导出为 .xlsx 工作簿" },
+            { "MainWindow", "导出为 Excel" },
+            { "MainWindow", "Excel 工作簿 (*.xlsx)" },
+            { "MainWindow", "正在导出为 Excel…" },
+            { "MainWindow", "正在导出为 Excel…（%1 / %2 页）" },
+            { "MainWindow", "导出为 Excel — %1" },
+            { "MainWindow", "已导出为 Excel" },
+            { "MainWindow", "正在导出为 Excel…（共 %n 页）", 1 },
+            { "MainWindow", "%n 页没有表格，已把其中的文字按行写进工作表。", 1 },
+            { "MainWindow", "另有 %n 页没有表格，已跳过。", 1 },
+            { "ExcelExport", "这份 PDF 里没有找到表格，没有可导出的内容。" },
+            { "ExcelExport", "第 %1 页 表 %2" },
+            { "ExcelExport", "第 %1 页 文字" },
+            { "ExcelExportDialog", "导出为 Excel" },
+            { "ExcelExportDialog", "表格之外的文字也导出" },
+            { "ExcelExportDialog", "没有表格的页面，把它的文字按行写进一张工作表" },
+            { "ExcelExportDialog",
+              "这份 PDF 里每张表格会写进一张工作表：合并的格子、列宽行高、边框和底纹都按原样。" },
         };
 
         for (const Probe &probe : probes) {

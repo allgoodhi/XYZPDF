@@ -12,6 +12,7 @@
 #include "src/settings/settingsdialog.h"
 #include "src/theme/thememanager.h"
 #include "src/ui/documenttabbar.h"
+#include "src/ui/excelexportdialog.h"
 #include "src/ui/wrappingtoolbararea.h"
 #include "src/ui/thirdpartydialog.h"
 #include "src/view/pagelayout.h"
@@ -567,6 +568,12 @@ void MainWindow::buildMenus()
     exportWordAction->setToolTip(tr("把这份 PDF 的文字导出为 .docx 文档"));
     connect(exportWordAction, &QAction::triggered, this, &MainWindow::exportCurrentToWord);
     fileMenu->addAction(exportWordAction);
+
+    exportExcelAction = makeAction(tr("导出为 Excel(&C)…"), QKeySequence());
+    exportExcelAction->setObjectName(QStringLiteral("exportExcelAction"));
+    exportExcelAction->setToolTip(tr("把这份 PDF 里的表格导出为 .xlsx 工作簿"));
+    connect(exportExcelAction, &QAction::triggered, this, &MainWindow::exportCurrentToExcel);
+    fileMenu->addAction(exportExcelAction);
 
     printAction = makeAction(tr("打印(&P)…"), QKeySequence(QStringLiteral("Ctrl+P")));
     printAction->setObjectName(QStringLiteral("printAction"));
@@ -1487,6 +1494,19 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                 closeExportProgress();
                 reportWordExport(report);
             });
+    // The table export, wired the same way and for the same reasons: a progress
+    // line and a box while it runs, and a message naming the file when it ends.
+    connect(tab, &DocumentTab::excelExportProgress, this, [this, tab](int done, int total) {
+        if (!tab->isExportingExcel())
+            return;
+        setStatusMessage(tr("正在导出为 Excel…（%1 / %2 页）").arg(done).arg(total));
+        showExportProgress(tab, done, total, true);
+    });
+    connect(tab, &DocumentTab::excelExportFinished, this,
+            [this](const ExcelExportReport &report) {
+                closeExportProgress();
+                reportExcelExport(report);
+            });
     connect(tab, &DocumentTab::imageExportFinished, this, [this](const QString &directory,
                                                                  int pages) {
         setStatusMessage(tr("已导出 %n 张图片到 %1", nullptr, pages).arg(directory), 6000);
@@ -1768,7 +1788,7 @@ void MainWindow::openFileDialog()
 void MainWindow::exportCurrentToWord()
 {
     DocumentTab *tab = currentTab();
-    if (!tab || !tab->isOpen() || tab->isExporting())
+    if (!tab || !tab->isOpen() || tab->isExporting() || tab->isExportingExcel())
         return;
 
     // The PDF's own name with the extension swapped, in the folder it came from:
@@ -1790,7 +1810,36 @@ void MainWindow::exportCurrentToWord()
     tab->exportToWord(path);
 }
 
-void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
+void MainWindow::exportCurrentToExcel()
+{
+    DocumentTab *tab = currentTab();
+    if (!tab || !tab->isOpen() || tab->isExporting() || tab->isExportingExcel())
+        return;
+
+    // The one choice the export has, asked before the file name: a reader who
+    // wants the pages without tables as text should not have to find that out by
+    // getting a file that lacks them.
+    ExcelExportDialog options(this);
+    if (options.exec() != QDialog::Accepted)
+        return;
+
+    // The PDF's own name with the extension swapped, like the Word export, so a
+    // folder of exports sits recognisably beside the files it came from.
+    const QFileInfo info(tab->documentPath());
+    QString suggested = info.completeBaseName() + QStringLiteral(".xlsx");
+    if (!info.absolutePath().isEmpty())
+        suggested = info.absolutePath() + QLatin1Char('/') + suggested;
+
+    const QString path = WindowDialogs::getSaveFileName(this, tr("导出为 Excel"), suggested,
+                                                        tr("Excel 工作簿 (*.xlsx)"));
+    if (path.isEmpty())
+        return;
+
+    setStatusMessage(tr("正在导出为 Excel…"));
+    tab->exportToExcel(path, options.exportText());
+}
+
+void MainWindow::showExportProgress(DocumentTab *tab, int done, int total, bool excel)
 {
     if (!tab)
         return;
@@ -1802,7 +1851,9 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
         // be written, never puts one on screen at all.
         auto *dialog = new QProgressDialog(this);
         dialog->setObjectName(QStringLiteral("exportProgress"));
-        dialog->setWindowTitle(tr("导出为 Word — %1").arg(QFileInfo(tab->documentPath()).fileName()));
+        dialog->setWindowTitle(excel
+                                   ? tr("导出为 Excel — %1").arg(QFileInfo(tab->documentPath()).fileName())
+                                   : tr("导出为 Word — %1").arg(QFileInfo(tab->documentPath()).fileName()));
         dialog->setCancelButtonText(tr("取消"));
         dialog->setAutoClose(false);
         // A quarter of a second, and not Qt's own four: the document this was
@@ -1833,7 +1884,10 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
         connect(dialog, &QProgressDialog::canceled, this, [this, dialog, tab] {
             if (tab != exportTab)
                 return;
-            tab->cancelWordExport();
+            if (exportExcel)
+                tab->cancelExcelExport();
+            else
+                tab->cancelWordExport();
             const int stoppedAt = exportDone;
             QTimer::singleShot(0, dialog, [this, dialog, stoppedAt] {
                 if (exportProgress != dialog)
@@ -1857,6 +1911,7 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
 
         exportProgress = dialog;
         exportTab = tab;
+        exportExcel = excel;
         // Left to show itself: see setMinimumDuration above.
         dialog->setMaximum(total);
         dialog->setValue(0);
@@ -1871,8 +1926,10 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
     // Zero is the report that the export has started rather than finished: "第 0
     // 页" is not a page, so it says the size of the job instead.
     exportProgress->setLabelText(done > 0
-                                     ? tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total)
-                                     : tr("正在导出为 Word…（共 %n 页）", nullptr, total));
+                                     ? (excel ? tr("正在导出为 Excel…（%1 / %2 页）").arg(done).arg(total)
+                                              : tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total))
+                                     : (excel ? tr("正在导出为 Excel…（共 %n 页）", nullptr, total)
+                                              : tr("正在导出为 Word…（共 %n 页）", nullptr, total)));
 }
 
 void MainWindow::closeExportProgress()
@@ -1949,6 +2006,41 @@ void MainWindow::reportWordExport(const WordExportReport &report)
         message += QStringLiteral("\n\n") + detail;
     setStatusMessage(tr("已导出为 Word"), 5000);
     WindowDialogs::information(this, tr("导出为 Word"), message);
+}
+
+void MainWindow::reportExcelExport(const ExcelExportReport &report)
+{
+    if (report.cancelled) {
+        setStatusMessage(tr("导出已取消"), 5000);
+        return;
+    }
+
+    if (!report.ok) {
+        setStatusMessage(tr("导出失败"), 5000);
+        WindowDialogs::warning(this, tr("导出为 Excel"), report.error);
+        return;
+    }
+
+    QString message = tr("已导出 %1 个表格（共读 %2 页）到：\n%3")
+                          .arg(report.tables)
+                          .arg(report.pages)
+                          .arg(QDir::toNativeSeparators(report.path));
+
+    QString detail;
+    if (report.textSheets > 0) {
+        detail = tr("%n 页没有表格，已把其中的文字按行写进工作表。", nullptr, report.textSheets);
+    }
+    if (report.skippedPages > 0) {
+        // Named rather than left out: a reader who exported a report and got only
+        // its tables has to be told about the pages that went nowhere, and why.
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("另有 %n 页没有表格，已跳过。", nullptr, report.skippedPages);
+    }
+    if (!detail.isEmpty())
+        message += QStringLiteral("\n\n") + detail;
+    setStatusMessage(tr("已导出为 Excel"), 5000);
+    WindowDialogs::information(this, tr("导出为 Excel"), message);
 }
 
 bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
@@ -2381,7 +2473,7 @@ void MainWindow::updateForCurrentTab()
                             rotateRightAction, continuousAction, singlePageAction,
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
-                            exportWordAction, printAction, exportImagesAction,
+                            exportWordAction, exportExcelAction, printAction, exportImagesAction,
                             propertiesAction, reloadAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,

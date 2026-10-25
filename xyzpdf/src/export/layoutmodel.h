@@ -43,6 +43,8 @@ struct RunStyle
     // Extra room after every character, in points (negative to set them closer):
     // what makes a line as wide in Word as it is in the PDF.
     double spacing = 0;
+    // Arabic, Hebrew: written in reading order and marked so Word sets it right to left.
+    bool rightToLeft = false;
 
     bool operator==(const RunStyle &other) const
     {
@@ -50,7 +52,7 @@ struct RunStyle
             && qAbs(size - other.size) < 0.26 && bold == other.bold && italic == other.italic
             && underline == other.underline && color == other.color
             && superscript == other.superscript && subscript == other.subscript
-            && qAbs(spacing - other.spacing) < 0.026;
+            && qAbs(spacing - other.spacing) < 0.026 && rightToLeft == other.rightToLeft;
     }
     bool operator!=(const RunStyle &other) const { return !(*this == other); }
 };
@@ -128,6 +130,7 @@ struct LayoutImage
 };
 
 struct LayoutTable;
+struct LayoutColumns;
 
 struct LayoutBlock
 {
@@ -136,11 +139,15 @@ struct LayoutBlock
         Paragraph,
         Image,
         Table,
+        // A stretch of the page set in two columns: Word gets a section with two columns, the
+        // left column's blocks, a column break, the right column's blocks.
+        Columns,
     };
     Kind kind = Kind::Paragraph;
     LayoutParagraph paragraph;
     LayoutImage image;
     std::shared_ptr<LayoutTable> table;
+    std::shared_ptr<LayoutColumns> columns;
     // Room above an image or a table (a paragraph keeps its own in `paragraph`),
     // and how far in from the region's left edge it starts.
     double spaceBefore = 0;
@@ -148,6 +155,18 @@ struct LayoutBlock
     // The block's extent on the page.
     double top = 0;
     double bottom = 0;
+};
+
+struct LayoutColumns
+{
+    // In points: the left column's width, the gap, the right column's width. The left column
+    // starts at the page's left margin.
+    double leftWidth = 0;
+    double gap = 0;
+    double rightWidth = 0;
+    // Each column's blocks, laid out against that column's own edges.
+    QVector<LayoutBlock> left;
+    QVector<LayoutBlock> right;
 };
 
 struct LayoutBorder

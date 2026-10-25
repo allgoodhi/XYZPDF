@@ -30,14 +30,11 @@
 #include "../src/export/wordexport.h"
 #include "../src/export/zipwriter.h"
 
-#include <QtConcurrent/QtConcurrentRun>
 #include <QBuffer>
 #include <QColor>
 #include <QCoreApplication>
-#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
-#include <QFuture>
 #include <QHash>
 #include <QImage>
 #include <QRectF>
@@ -45,7 +42,6 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QThread>
 #include <QXmlStreamReader>
 
 #include <cmath>
@@ -538,6 +534,125 @@ int main(int argc, char **argv)
               QStringLiteral("a turned label is not a paragraph (%1)").arg(text));
     }
 
+    // ---- two columns of running text are two Word columns ----
+    //
+    // Read straight across, each left-column line and the right-column line beside it became one
+    // paragraph with a tab between them: right on the screen, sentences cut in half by the first
+    // edit. A two-part table (short entries, a gap inside every line) is not columns.
+    {
+        const auto twoColumns = [](bool prose) {
+            PageContent page = blankPage();
+            add(page, {QStringLiteral("A Heading Across The Page"), 200, 60, 16});
+            // Prose lines differ from each other: identical lines would put every word gap at the
+            // same place on every line, which is what a table's channels look like.
+            const QStringList pool = {QStringLiteral("many"), QStringLiteral("words"), QStringLiteral("fill"),
+                                      QStringLiteral("a"), QStringLiteral("column"), QStringLiteral("of"),
+                                      QStringLiteral("text"), QStringLiteral("that"), QStringLiteral("flows")};
+            const auto proseLine = [&pool](const QString &lead, int k) {
+                QString line = lead;
+                for (int w = 0; line.size() < 34; ++w)
+                    line += QLatin1Char(' ') + pool.at((k * 2 + w) % pool.size());
+                return line.left(35);
+            };
+            for (int k = 0; k < 12; ++k) {
+                const QString digit = QString::number(k % 10);
+                if (prose) {
+                    add(page, {proseLine(QStringLiteral("running"), k), 60, 100.0 + 13 * k, 10});
+                    add(page, {proseLine(QStringLiteral("other"), k + 3).left(32), 320, 100.0 + 13 * k, 10});
+                } else {
+                    add(page, {QStringLiteral("Key") + digit, 60, 100.0 + 13 * k, 10});
+                    add(page, {QStringLiteral("its meaning") + digit, 150, 100.0 + 13 * k, 10});
+                    add(page, {QStringLiteral("Key") + digit, 320, 100.0 + 13 * k, 10});
+                    add(page, {QStringLiteral("other meaning") + digit, 400, 100.0 + 13 * k, 10});
+                }
+            }
+            return analysePage(page, AnalysisOptions());
+        };
+        const LayoutPage laid = twoColumns(true);
+        const LayoutBlock *columns = nullptr;
+        for (const LayoutBlock &block : laid.blocks) {
+            if (block.kind == LayoutBlock::Kind::Columns)
+                columns = &block;
+        }
+        check(columns != nullptr, "two columns of running text are one block of columns");
+        if (columns) {
+            QString left, right;
+            for (const LayoutBlock &block : columns->columns->left)
+                left += block.paragraph.text();
+            for (const LayoutBlock &block : columns->columns->right)
+                right += block.paragraph.text();
+            check(left.count(QStringLiteral("running")) >= 12 && !left.contains(QStringLiteral("other")),
+                  QStringLiteral("the left column holds only its own lines (%1)").arg(left.left(80)));
+            check(right.count(QStringLiteral("other")) >= 12 && !right.contains(QStringLiteral("running ")),
+                  QStringLiteral("and the right column its own (%1)").arg(right.left(80)));
+            check(left.count(QLatin1Char('\t')) == 0, "with no tab standing in for the gap between them");
+            check(allText(laid).contains(QStringLiteral("A Heading Across The Page")),
+                  QStringLiteral("the heading across the page stays outside the columns (%1)").arg(allText(laid).left(120)));
+            DocxWriter writer;
+            writer.addPage(laid);
+            const QByteArray xml = unpackZip(writer.toBytes()).value(QStringLiteral("word/document.xml")).content;
+            QString error;
+            check(wellFormed(xml, &error), QStringLiteral("the page with columns is well-formed XML (%1)").arg(error));
+            check(xml.contains("w:num=\"2\"") && xml.contains("<w:br w:type=\"column\"/>")
+                      && xml.contains("<w:type w:val=\"continuous\"/>"),
+                  "it is written as a two-column section with a column break, continuous on its page");
+            check(xml.count("<w:sectPr>") == 3,
+                  QStringLiteral("cut into the part above, the columns, and the rest of the page (%1 sections)")
+                      .arg(xml.count("<w:sectPr>")));
+        }
+        bool tableAsColumns = false;
+        for (const LayoutBlock &block : twoColumns(false).blocks)
+            tableAsColumns = tableAsColumns || block.kind == LayoutBlock::Kind::Columns;
+        check(!tableAsColumns, "a two-part table with a gap in every line is not made into columns");
+    }
+
+    // ---- right-to-left text is written in reading order ----
+    //
+    // PDFium hands Arabic and Hebrew over in reading order with the pen moving left; a row sorted
+    // left to right reversed every word, and Word, joining letters in the order it is given, set
+    // each Arabic letter on its own. The spaces between such words have no geometry of their own
+    // and were put on the wrong side of the word before them.
+    {
+        PageContent page = blankPage();
+        const QString words = QString::fromUtf8("\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D \xD7\xA2\xD7\x95\xD7\x9C\xD7\x9D");
+        double x = 400;
+        for (const QChar c : words) {
+            ContentChar ch;
+            ch.code = c.unicode();
+            ch.size = 12;
+            ch.baseline = 100;
+            ch.font = QStringLiteral("Arial");
+            if (c == QLatin1Char(' ')) {
+                ch.box = QRectF(x, 100, 0, 0); // no geometry, as PDFium answers for such a space
+                x -= 3;                         // though the pen did move by a space's width
+            } else {
+                ch.box = QRectF(x - 6, 92, 6, 8);
+                ch.loose = QRectF(x - 6, 89, 6, 13);
+                x -= 6;
+            }
+            page.chars.append(ch);
+        }
+        add(page, {QStringLiteral("An English line under it"), 72, 140, 12});
+        const LayoutPage laid = analysePage(page, plain);
+        QString hebrew;
+        bool marked = false;
+        for (const LayoutParagraph &paragraph : paragraphsOf(laid)) {
+            for (const LayoutRun &run : paragraph.runs) {
+                if (run.style.rightToLeft) {
+                    hebrew += run.text;
+                    marked = true;
+                }
+            }
+        }
+        check(hebrew.trimmed() == words,
+              QStringLiteral("the words come out in reading order, the space between them where it was (%1)").arg(hebrew));
+        check(marked, "and their runs are marked right to left");
+        DocxWriter writer;
+        writer.addPage(laid);
+        check(unpackZip(writer.toBytes()).value(QStringLiteral("word/document.xml")).content.contains("<w:rtl/>"),
+              "which the document says with <w:rtl/>");
+    }
+
     // ---- fonts: the name Word can find ----
     {
         check(wordFontFamily(QStringLiteral("ABCDEF+Arial-BoldMT")) == QStringLiteral("Arial"), "a subset Arial is Arial");
@@ -905,35 +1020,29 @@ int main(int argc, char **argv)
                                                      .arg(whole.paragraphs));
     }
 
-    // A stop that lands mid-export: noticed, reported, and no half file. The two
-    // numbers are printed because which one is interesting depends on the machine.
+    // A stop that lands mid-export: noticed between pages, reported, and no half file. Asked for from
+    // the progress report after page 10, which is where a reader's click lands -- a timer armed at a
+    // quarter of a 26-millisecond export lost the race on a slow round, and a test that a timer can
+    // lose passes on a loop that never looked at the flag.
     if (const QString path = fixture(directory, QStringLiteral("many-pages.pdf")); !path.isEmpty()) {
         PdfiumBackend document;
         check(document.load(path, QString()) == Document::Status::Ready, "the forty-page fixture opens");
-        QTemporaryDir measure;
-        QElapsedTimer clock;
-        clock.start();
-        const WordExportReport full = exportToWord(document, measure.filePath(QStringLiteral("whole.docx")));
-        const qint64 fullMs = qMax(qint64(1), clock.elapsed());
-        check(full.ok && full.pages == 40, QStringLiteral("a whole export of it writes forty pages (%1 ms)").arg(fullMs));
         QTemporaryDir output;
         const QString file = output.filePath(QStringLiteral("stopped-midway.docx"));
         auto flag = QSharedPointer<QAtomicInt>::create(0);
-        const qint64 armAfter = qMax(qint64(1), fullMs / 4);
-        QFuture<void> stopper = QtConcurrent::run([flag, armAfter] {
-            QThread::msleep(armAfter);
-            flag->storeRelaxed(1);
-        });
+        int lastReported = 0;
         WordExportOptions options;
         options.cancel = flag;
-        QElapsedTimer part;
-        part.start();
+        options.progress = [flag, &lastReported](int done, int) {
+            lastReported = done;
+            if (done == 10)
+                flag->storeRelaxed(1);
+        };
         const WordExportReport report = exportToWord(document, file, options);
-        const qint64 taken = part.elapsed();
-        stopper.waitForFinished();
-        std::cout << "MEASURE export stop: whole " << fullMs << " ms, stopped after " << taken << " ms, armed at "
-                  << armAfter << " ms\n";
-        check(report.cancelled && !QFileInfo::exists(file), "a stop armed mid-export is reported and writes nothing");
+        std::cout << "MEASURE export stop: asked at page 10, last progress at page " << lastReported << "\n";
+        check(report.cancelled && !QFileInfo::exists(file), "a stop asked for mid-export is reported and writes nothing");
+        check(lastReported >= 10 && lastReported <= 11,
+              QStringLiteral("and the export stopped at the next page, not at the end (%1 of 40)").arg(lastReported));
     }
 
     if (failures == 0) {

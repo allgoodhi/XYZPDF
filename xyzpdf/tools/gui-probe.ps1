@@ -278,6 +278,10 @@
       ... -Mode signedlock -ExpectDocMdp 2 -Doc xyzpdf/tests/fixtures/text.pdf
       ... -Mode signedlock -ExpectDocMdp 0 -Doc xyzpdf/tests/fixtures/text.pdf   (the negative half)
       ... -Mode signedlock -ExpectDocMdp 2 -Control -Doc xyzpdf/tests/fixtures/text.pdf   (exit 1)
+      ... -Mode wordexport -Doc xyzpdf/tests/fixtures/text.pdf -Target 'XYZPDF one'
+      ... -Mode wordexport -Control -Doc xyzpdf/tests/fixtures/text.pdf   (exit 1: nothing pressed)
+      wordexport writes its .docx into %TEMP%\xyzpdf-gui-probe\wordexport-<random>\ and checks it with
+      tools/check_docx.py; -Target names words the export must carry. Installed: -Installed -OpenViaPicker.
       The six form modes replace -Doc with the sample they make, so the path handed in is only what
       the guard hashes and copies; a fixtures path is fine and is not opened. The two signed modes do
       the same, with --write-signed-sample and the /P that -ExpectDocMdp asks for.
@@ -290,7 +294,7 @@
     lands as ./tmpfoo.txt in the repository root.
 #>
 param(
-  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist', 'signedsave', 'signedlock')]
+  [ValidateSet('inventory', 'menudump', 'exportstatus', 'mergedonor', 'splitsagain', 'saverename', 'saveinplace', 'closeprompt', 'saveas', 'langswitch', 'formpage', 'uacache', 'openpicker', 'outlinetree', 'tabstrip', 'bookdialog', 'deletesummary', 'pathforms', 'propsdialog', 'findwhole', 'snapshot', 'strippreview', 'mnemonics', 'translatesetup', 'xfanotice', 'replynotice', 'formfill', 'formtab', 'formcheck', 'formime', 'formcombo', 'formlist', 'signedsave', 'signedlock', 'wordexport')]
   [string]$Mode = 'inventory',
   [string]$Exe = 'H:\test\XYZPDF\xyzpdf\build-local-release\xyzpdf.exe',
   [string]$Doc = 'H:\tmp\num34\doc40.pdf',
@@ -3506,6 +3510,99 @@ switch ($Mode) {
     if (-not $rotated) { Bail '  the new file is a rewrite of the untouched source -- the rotation is not in it' }
     if (-not (Guard-Check 'after Save As')) { Bail '  Save As wrote the original file this probe was handed' }
     Say '  Save As wrote its own new file, left the copy and the original alone, and the tab moved to it'
+  }
+  'wordexport' {
+    # File > Export to Word on the screen: the menu row, the native save box, the background
+    # conversion, the box that says it is done -- and the .docx itself, checked by
+    # tools/check_docx.py (zipfile and ElementTree, not this program's own reader) and for the
+    # page's words. sec.124 rebuilt the conversion and sec.125 left this as the one link never
+    # pressed on the installed copy. The .docx goes into the probe's own directory; nothing here
+    # writes beside the document. (Not $target: PowerShell names are case-blind, and that one is the
+    # -Target parameter this mode reads.) -Control presses nothing and keeps every verdict: no box, no
+    # file, exit 1.
+    $outDir = Join-Path $scratch ('wordexport-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $outDir | Out-Null
+    $outFile = Join-Path $outDir 'exported.docx'
+    Say ('  the export will be written to [' + $outFile + ']')
+    if (-not (TakeForeground $app.Id)) { Bail '  could not take the foreground' }
+    $sv = $null
+    if ($Control) {
+      Say '  CONTROL: the Export to Word row is not pressed; every verdict stays'
+    } else {
+      $rowNeedles = @('Export to Word', ((CjStr 0x5BFC, 0x51FA, 0x4E3A) + ' Word'))
+      for ($try = 1; $try -le 3 -and -not $sv; $try++) {
+        TopMenu $app.Id @('File', (CjStr 0x6587, 0x4EF6)) | Out-Null
+        $row = RowAny $app.Id $rowNeedles
+        if (-not $row) { Say ('  try ' + $try + ': no Export to Word row under File'); Start-Sleep -Milliseconds 600; continue }
+        Say ('  try ' + $try + ': menu row |' + $row.Current.Name + '| enabled=' + $row.Current.IsEnabled)
+        ClickAt $row
+        for ($k = 1; $k -le 10 -and -not $sv; $k++) {
+          Start-Sleep -Milliseconds 500
+          $sv = FindPicker $app.Id
+        }
+      }
+      if (-not $sv) { Bail '  no native save box after three tries at the Export to Word row' }
+      Say ('  save box [' + $sv.Current.Name + '] class=' + $sv.Current.ClassName)
+      $kids = PickerChildren $sv
+      $go = $null
+      foreach ($h in $kids) {
+        if ([W32]::Cls($h) -eq 'Button' -and [W32]::GetDlgCtrlID($h) -eq 1) { $go = $h }
+      }
+      $nameBox = NameField $kids
+      if (-not ($nameBox -and $go)) { Bail '  no file-name field / no Button id=1 in the save box' }
+      [W32]::SendMessageW($nameBox, 0x000C, [IntPtr]0, $outFile) | Out-Null
+      Start-Sleep -Milliseconds 700
+      # A real click on the drawn button: the save box does not answer BM_CLICK (sec.44).
+      $gr = [W32]::Rect([IntPtr]$go)
+      [W32]::Click([int](($gr.left + $gr.right) / 2), [int](($gr.top + $gr.bottom) / 2))
+    }
+
+    # ---- the verdicts, the same in both runs ----
+    # Done is the box that says so (a QMessageBox, found by class: its title is translated) or, on a
+    # run where the box is slow, the file standing still at a non-zero size.
+    $exists = $false
+    $box = $null
+    for ($k = 1; $k -le 120 -and -not $box; $k++) {
+      Start-Sleep -Milliseconds 500
+      $exists = Test-Path -LiteralPath $outFile
+      if ($exists) { $box = FindClass $app.Id 'QMessageBox' }
+      if (-not $exists -and $k -ge 24 -and $Control) { break }
+    }
+    $size = 0
+    if ($exists) { $size = (Get-Item -LiteralPath $outFile).Length }
+    Say ('  target exists=' + $exists + '  size=' + $size + '  done box=' + ($null -ne $box))
+    if (-not $exists) {
+      if ($Control) { Bail '  CONTROL: with nothing pressed no file came out -- the verdict is live (CONTROL exit 1)' }
+      Bail ('  the save box was accepted but no file came out at [' + $outFile + ']')
+    }
+    if ($box) {
+      Say ('  done box |' + $box.Current.Name + '|')
+      foreach ($t in @(FindType $box $CT::Text)) { Say ('    text |' + $t.Current.Name.Replace("`n", ' / ') + '|') }
+      $ok = MatchOne $box $CT::Button @('OK', (CjStr 0x786E, 0x5B9A))
+      if ($ok) { ClickAt $ok; Start-Sleep -Milliseconds 600 }
+    } else {
+      Bail '  the file came out but the box that says the export is done never did'
+    }
+    $checker = Join-Path $PSScriptRoot 'check_docx.py'
+    $checked = & python $checker $outFile 2>&1
+    $checkExit = $LASTEXITCODE
+    foreach ($l in @($checked | Select-Object -Last 3)) { Say ('  check_docx: ' + $l) }
+    if ($checkExit -ne 0) { Bail ('  check_docx.py exited ' + $checkExit + ' on the export') }
+    # Words that came off the page: the document part has text runs in it, and the page's own first
+    # characters among them when the caller says what they are (-Target on this mode).
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($outFile)
+    try {
+      $entry = $zip.GetEntry('word/document.xml')
+      $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
+      $xml = $reader.ReadToEnd()
+      $reader.Close()
+    } finally { $zip.Dispose() }
+    $runs = ([regex]::Matches($xml, '<w:t[ >]')).Count
+    Say ('  document.xml: ' + $xml.Length + ' characters, ' + $runs + ' text runs')
+    if ($runs -eq 0) { Bail '  the export has no text in it' }
+    if ($Target -and -not $xml.Contains($Target)) { Bail ('  the export does not carry [' + $Target + ']') }
+    Say '  exported through the screen, the file checks out, and the words are in it'
   }
   'langswitch' {
     # An installed copy speaks the system locale, and no setting written from outside can reach it

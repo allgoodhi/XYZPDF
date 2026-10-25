@@ -5,6 +5,7 @@
 #include <QCryptographicHash>
 
 #include <cmath>
+#include <functional>
 
 namespace {
 
@@ -107,6 +108,8 @@ QByteArray runPropertiesXml(const RunStyle &style)
         xml += "<w:vertAlign w:val=\"superscript\"/>";
     else if (style.subscript)
         xml += "<w:vertAlign w:val=\"subscript\"/>";
+    if (style.rightToLeft)
+        xml += "<w:rtl/>";
     xml += "</w:rPr>";
     return xml;
 }
@@ -352,6 +355,20 @@ QByteArray DocxWriter::spacerXml(double height, const QByteArray &leading, bool 
     return xml;
 }
 
+QByteArray DocxWriter::innerBreakXml(double height, const QByteArray &leading, const QByteArray &marker,
+                                     const QByteArray &content)
+{
+    QByteArray xml = "<w:p><w:pPr>";
+    xml += kLayoutProperties;
+    xml += kLayoutTail;
+    xml += "<w:spacing w:before=\"0\" w:after=\"0\" w:line=\"" + number(qMax<qint64>(20, twips(height)))
+        + "\" w:lineRule=\"exact\"/>";
+    xml += kTinyMark;
+    xml += marker; // replaced by that section's properties in documentXml()
+    xml += "</w:pPr>" + leading + content + "</w:p>";
+    return xml;
+}
+
 QByteArray DocxWriter::tableXml(const LayoutTable &table, double indent)
 {
     const int columns = table.columns.size() - 1;
@@ -463,6 +480,29 @@ QByteArray DocxWriter::blocksXml(const QVector<LayoutBlock> &blocks, QByteArray 
                 xml += spacerXml(1.0, QByteArray(), true);
             break;
         }
+        case LayoutBlock::Kind::Columns: {
+            // A section of its own with two columns. What came before it on the page is closed
+            // as a one-column section by a paragraph exactly as high as the room above the
+            // columns; the left column ends in a column break, the right one in the paragraph
+            // that closes the two-column section. Each closing paragraph is 1 point, which
+            // pageanalysis.cpp counts in. A section that starts mid-page is continuous; the first
+            // one on a page starts it.
+            const LayoutColumns &columns = *block.columns;
+            const QByteArray startsWith = innerSections ? "C" : "P";
+            xml += innerBreakXml(block.spaceBefore + 1.0, leading, "\x01SUB1" + startsWith + "\x01", QByteArray());
+            leading.clear();
+            innerSections = true;
+            xml += blocksXml(columns.left, QByteArray(), false);
+            xml += innerBreakXml(1.0, QByteArray(), QByteArray(), "<w:r><w:br w:type=\"column\"/></w:r>");
+            xml += blocksXml(columns.right, QByteArray(), false);
+            xml += innerBreakXml(1.0, QByteArray(),
+                                 "\x01SUB2C:" + number(twips(columns.leftWidth)) + ":" + number(twips(columns.gap))
+                                     + ":" + number(twips(columns.rightWidth)) + "\x01",
+                                 QByteArray());
+            if (last && sectionBreak)
+                xml += spacerXml(1.0, QByteArray(), true);
+            break;
+        }
         }
     }
     if (blocks.isEmpty() && (sectionBreak || !leading.isEmpty()))
@@ -525,7 +565,9 @@ void DocxWriter::addPage(const LayoutPage &page)
     } else {
         for (const LayoutAnchor &anchor : page.anchors)
             leading += drawingXml(anchor.image, true, anchor.behindText);
+        innerSections = false;
         section.body = blocksXml(page.blocks, leading, true);
+        section.continuous = innerSections;
     }
     if (!page.header.isEmpty())
         section.headerId = headerFor(page.header, false);
@@ -534,7 +576,7 @@ void DocxWriter::addPage(const LayoutPage &page)
     sections.append(section);
 }
 
-QByteArray DocxWriter::sectionXml(const Section &section) const
+QByteArray DocxWriter::sectionXml(const Section &section, const QByteArray &columns, bool continuous) const
 {
     const LayoutPage &page = section.geometry;
     QByteArray xml = "<w:sectPr>";
@@ -544,6 +586,8 @@ QByteArray DocxWriter::sectionXml(const Section &section) const
         xml += "<w:headerReference w:type=\"default\" r:id=\"" + header.toLatin1() + "\"/>";
     if (!footer.isEmpty())
         xml += "<w:footerReference w:type=\"default\" r:id=\"" + footer.toLatin1() + "\"/>";
+    if (continuous)
+        xml += "<w:type w:val=\"continuous\"/>";
     const bool landscape = page.size.width() > page.size.height();
     xml += "<w:pgSz w:w=\"" + number(twips(page.size.width())) + "\" w:h=\"" + number(twips(page.size.height()))
         + "\"" + (landscape ? " w:orient=\"landscape\"" : "") + "/>";
@@ -551,17 +595,55 @@ QByteArray DocxWriter::sectionXml(const Section &section) const
         + "\" w:bottom=\"" + number(twips(page.marginBottom)) + "\" w:left=\"" + number(twips(page.marginLeft))
         + "\" w:header=\"" + number(twips(page.headerDistance)) + "\" w:footer=\""
         + number(twips(page.footerDistance)) + "\" w:gutter=\"0\"/>";
-    xml += "<w:cols w:space=\"0\"/>";
+    xml += columns.isEmpty() ? QByteArray("<w:cols w:space=\"0\"/>") : columns;
     xml += "</w:sectPr>";
     return xml;
 }
+
+namespace {
+
+// "\x01SUB1P\x01", "\x01SUB1C\x01", "\x01SUB2C:<left>:<gap>:<right>\x01" (twips): the sections a
+// page in columns is cut into, written as markers while the page's own geometry is not final.
+QByteArray expandInnerSections(const QByteArray &page, const std::function<QByteArray(const QByteArray &, bool)> &section)
+{
+    QByteArray out;
+    qsizetype at = 0;
+    while (true) {
+        const qsizetype start = page.indexOf("\x01SUB", at);
+        if (start < 0)
+            break;
+        const qsizetype end = page.indexOf('\x01', start + 1);
+        if (end < 0)
+            break;
+        out += page.mid(at, start - at);
+        const QByteArray spec = page.mid(start + 4, end - start - 4); // "1P", "1C", "2C:l:g:r"
+        QByteArray columns;
+        if (spec.startsWith('2')) {
+            const QList<QByteArray> parts = spec.split(':');
+            if (parts.size() == 4) {
+                columns = "<w:cols w:num=\"2\" w:space=\"" + parts.at(2) + "\" w:equalWidth=\"0\"><w:col w:w=\""
+                    + parts.at(1) + "\" w:space=\"" + parts.at(2) + "\"/><w:col w:w=\"" + parts.at(3)
+                    + "\"/></w:cols>";
+            }
+        }
+        out += section(columns, spec.size() > 1 && spec.at(1) == 'C');
+        at = end + 1;
+    }
+    out += page.mid(at);
+    return out;
+}
+
+} // namespace
 
 QByteArray DocxWriter::documentXml() const
 {
     QByteArray body;
     for (int i = 0; i < sections.size(); ++i) {
-        QByteArray page = sections.at(i).body;
-        const QByteArray section = sectionXml(sections.at(i));
+        const Section &current = sections.at(i);
+        QByteArray page = expandInnerSections(current.body, [this, &current](const QByteArray &columns, bool continuous) {
+            return sectionXml(current, columns, continuous);
+        });
+        const QByteArray section = sectionXml(current, QByteArray(), current.continuous);
         if (i + 1 < sections.size()) {
             page.replace("\x01SECT\x01", section);
             body += page;

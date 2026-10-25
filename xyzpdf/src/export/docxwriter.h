@@ -78,6 +78,9 @@ private:
         LayoutPage geometry;
         QString headerId;
         QString footerId;
+        // The page holds more than one Word section (a stretch in two columns): its last
+        // section starts mid-page, so its break is continuous.
+        bool continuous = false;
     };
 
     QByteArray paragraphXml(const LayoutParagraph &paragraph, const QByteArray &leading,
@@ -93,7 +96,10 @@ private:
     QString mediaFor(const QByteArray &bytes, const QString &extension);
     QString relationship(const QString &type, const QString &target, bool external);
     QString headerFor(const QVector<LayoutParagraph> &lines, bool footer);
-    QByteArray sectionXml(const Section &section) const;
+    QByteArray sectionXml(const Section &section, const QByteArray &columns = QByteArray(),
+                          bool continuous = false) const;
+    QByteArray innerBreakXml(double height, const QByteArray &leading, const QByteArray &marker,
+                             const QByteArray &content);
     QByteArray documentXml() const;
     void addParts(ZipWriter &zip) const;
 
@@ -107,6 +113,8 @@ private:
     QString emptyFooterId;
     QString defaultFamily = QStringLiteral("Calibri");
     double defaultSize = 11;
+    // While a page's blocks are written: whether a section has already been closed on it.
+    bool innerSections = false;
     int paragraphs = 0;
     int images = 0;
     int tables = 0;

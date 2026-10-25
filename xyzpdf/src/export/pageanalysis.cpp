@@ -8,6 +8,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <numeric>
 
@@ -47,6 +48,12 @@ bool isCjk(char32_t code)
     return (code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF)
         || (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFF00 && code <= 0xFFEF)
         || (code >= 0x3000 && code <= 0x303F) || (code >= 0x20000 && code <= 0x2FA1F);
+}
+
+// Arabic, Hebrew and their presentation forms: text a reader reads from right to left.
+bool isRightToLeft(char32_t code)
+{
+    return (code >= 0x0590 && code <= 0x08FF) || (code >= 0xFB1D && code <= 0xFDFF) || (code >= 0xFE70 && code <= 0xFEFF);
 }
 
 bool isSpace(char32_t code)
@@ -572,8 +579,10 @@ Page prepared(const PageContent &content)
             if (page.glyphs.isEmpty())
                 continue;
             const Glyph &before = page.glyphs.last();
-            glyph.box = QRectF(before.box.right(), before.box.top(), 0.01, qMax(0.01, before.box.height()));
-            glyph.loose = QRectF(before.box.right(), before.loose.top(), 0.01, qMax(0.01, before.loose.height()));
+            // After it means on its left when it is read right to left.
+            const double at = isRightToLeft(before.code) ? before.box.left() - 0.01 : before.box.right();
+            glyph.box = QRectF(at, before.box.top(), 0.01, qMax(0.01, before.box.height()));
+            glyph.loose = QRectF(at, before.loose.top(), 0.01, qMax(0.01, before.loose.height()));
             glyph.baseline = before.baseline;
             glyph.size = before.size;
             glyph.style = before.style;
@@ -591,7 +600,9 @@ Page prepared(const PageContent &content)
     for (qsizetype i = page.glyphs.size() - 2; i >= 0; --i) {
         const Glyph &space = page.glyphs.at(i);
         const Glyph &next = page.glyphs.at(i + 1);
-        if (!isSpace(space.code) || space.box.width() < 0.5 || isSpace(next.code)
+        // Right-to-left text moves the pen the other way: its next character is meant to be on
+        // the left, and the rule below would take every word gap out of an Arabic line.
+        if (!isSpace(space.code) || space.box.width() < 0.5 || isSpace(next.code) || isRightToLeft(next.code)
             || std::fabs(next.baseline - space.baseline) > 0.3 * space.size)
             continue;
         // The next character's pen position, not its ink: bold Courier "`define"
@@ -1206,15 +1217,48 @@ void appendText(QVector<LayoutRun> &runs, const QString &text, const RunStyle &s
 
 // One row's glyphs [from, to) as runs, with the spaces a reader would type where
 // the PDF only moved the pen.
+// How far apart two glyphs are, whichever of them is on the left.
+double gapBetween(const Glyph &a, const Glyph &b)
+{
+    return qMax(b.box.left() - a.box.right(), a.box.left() - b.box.right());
+}
+
 void appendRowRuns(QVector<LayoutRun> &runs, const QVector<Glyph> &glyphs, const Row &row, int from,
                    int to)
 {
+    // The order the characters are written in. A row is sorted left to right, which is reading
+    // order except for Arabic and Hebrew: those are put back the right way round, a stretch at a
+    // time (the spaces between two right-to-left words go with them). Left as sorted, an Arabic
+    // line came out with its letters reversed and every one of them standing alone, because
+    // joining runs in reading order.
+    QVector<int> order;
+    for (int k = from; k < to; ++k)
+        order.append(k);
+    for (int n = 0; n < order.size();) {
+        if (!isRightToLeft(glyphs.at(row.glyphs.at(order.at(n))).code)) {
+            ++n;
+            continue;
+        }
+        int end = n;
+        for (int m = n + 1; m < order.size(); ++m) {
+            const char32_t code = glyphs.at(row.glyphs.at(order.at(m))).code;
+            if (isRightToLeft(code))
+                end = m;
+            else if (!isSpace(code))
+                break;
+        }
+        std::reverse(order.begin() + n, order.begin() + end + 1);
+        n = end + 1;
+    }
+
     QVector<LayoutRun> piece;
     int previous = -1;
-    int first = -1;
-    for (int k = from; k < to; ++k) {
+    double inkLeft = 0, inkRight = 0;
+    for (int n = 0; n < order.size(); ++n) {
+        const int k = order.at(n);
         const Glyph &glyph = glyphs.at(row.glyphs.at(k));
         RunStyle style = glyph.style;
+        style.rightToLeft = isRightToLeft(glyph.code);
         if (glyph.size < row.size * 0.8) {
             if (glyph.baseline < row.baseline - 0.15 * row.size)
                 style.superscript = true;
@@ -1228,14 +1272,14 @@ void appendRowRuns(QVector<LayoutRun> &runs, const QVector<Glyph> &glyphs, const
             // and PDFium's inserted spaces then turned "1983" into "1 9 8 3" and
             // "Verilog" into "V e r i l o g"; the ink of those letters is no further
             // apart than any other two letters of a word.
-            int next = k + 1;
-            while (next < to && isSpace(glyphs.at(row.glyphs.at(next)).code))
+            int next = n + 1;
+            while (next < order.size() && isSpace(glyphs.at(row.glyphs.at(order.at(next))).code))
                 ++next;
-            if (previous < 0 || next >= to || piece.isEmpty() || piece.last().text.endsWith(QLatin1Char(' ')))
+            if (previous < 0 || next >= order.size() || piece.isEmpty() || piece.last().text.endsWith(QLatin1Char(' ')))
                 continue;
             const Glyph &before = glyphs.at(row.glyphs.at(previous));
-            const Glyph &after = glyphs.at(row.glyphs.at(next));
-            const double gap = after.box.left() - before.box.right();
+            const Glyph &after = glyphs.at(row.glyphs.at(order.at(next)));
+            const double gap = gapBetween(before, after);
             const bool cjk = isCjk(before.code) && isCjk(after.code);
             if (gap >= (cjk ? 0.3 : 0.08) * row.size)
                 appendText(piece, QStringLiteral(" "), piece.last().style, piece.last().uri, piece.last().targetPage);
@@ -1248,7 +1292,7 @@ void appendRowRuns(QVector<LayoutRun> &runs, const QVector<Glyph> &glyphs, const
             // judgement of that is better than a gap read off ink boxes, which stop
             // short of a letter's width and put a space inside every other word. A
             // space is added here only for a gap no word spacing explains.
-            const double gap = glyph.box.left() - before.box.right();
+            const double gap = gapBetween(before, glyph);
             const bool cjkPair = isCjk(glyph.code) && isCjk(before.code);
             const double threshold = cjkPair ? 0.9 * row.size : 0.6 * row.size;
             if (gap > threshold && !piece.isEmpty() && !piece.last().text.endsWith(QLatin1Char(' ')))
@@ -1256,26 +1300,28 @@ void appendRowRuns(QVector<LayoutRun> &runs, const QVector<Glyph> &glyphs, const
                            piece.last().targetPage);
         }
         appendText(piece, QString::fromUcs4(&glyph.code, 1), style, glyph.uri, glyph.targetPage);
-        if (first < 0)
-            first = k;
+        const QRectF pen = glyph.loose.isNull() ? glyph.box : glyph.loose;
+        inkLeft = previous < 0 ? pen.left() : qMin(inkLeft, pen.left());
+        inkRight = previous < 0 ? pen.right() : qMax(inkRight, pen.right());
         previous = k;
     }
-    if (first >= 0) {
-        // As wide as the PDF set it: from the first character's pen position to the
-        // last one's advance, less a little so Word's own rounding cannot tip it.
-        const Glyph &left = glyphs.at(row.glyphs.at(first));
-        const Glyph &right = glyphs.at(row.glyphs.at(previous));
-        const double target = (right.loose.isNull() ? right.box : right.loose).right()
-            - (left.loose.isNull() ? left.box : left.loose).left() - 0.3;
+    if (previous >= 0) {
+        // As wide as the PDF set it: from the leftmost character's pen position to the
+        // rightmost one's advance, less a little so Word's own rounding cannot tip it.
+        const double target = inkRight - inkLeft - 0.3;
         double natural = 0;
         int count = 0;
+        bool shaped = false;
         for (const LayoutRun &run : std::as_const(piece)) {
+            shaped = shaped || run.style.rightToLeft;
             for (const char32_t code : run.text.toUcs4()) {
                 natural += AdvanceWidths::instance().of(run.style, code);
                 ++count;
             }
         }
-        if (count > 0 && natural > 0 && target > 0) {
+        // Not for Arabic or Hebrew: a letter measured on its own is its isolated form, wider than
+        // the joined one Word sets, and the "fit" squeezed a line until its word gaps vanished.
+        if (!shaped && count > 0 && natural > 0 && target > 0) {
             const double limit = 0.25 * row.size;
             // Word takes it in twentieths of a point; rounded down, never wider.
             const double spacing = std::floor(qBound(-limit, (target - natural) / count, limit) * 20.0) / 20.0;
@@ -1652,6 +1698,194 @@ void anchorShape(Context &context, const QRectF &box, const QColor &colour)
 
 QVector<LayoutBlock> layoutRegion(Context &context, const Region &region, QVector<int> glyphIndexes,
                                   bool allowTables);
+
+// ---------------------------------------------------------------------------
+// Two columns of running text
+// ---------------------------------------------------------------------------
+
+// The glyphs [from, to) of a row as a row of their own.
+Row rowSlice(const QVector<Glyph> &glyphs, const Row &row, int from, int to)
+{
+    Row piece = row;
+    piece.glyphs = row.glyphs.mid(from, to - from);
+    piece.breaks.clear();
+    for (int b : row.breaks) {
+        if (b > from && b < to)
+            piece.breaks.append(b - from);
+    }
+    piece.box = QRectF();
+    for (int index : std::as_const(piece.glyphs)) {
+        const Glyph &glyph = glyphs.at(index);
+        const QRectF box = glyph.loose.isNull() ? glyph.box : glyph.loose;
+        piece.box = piece.box.isNull() ? box : piece.box.united(box);
+    }
+    return piece;
+}
+
+struct ColumnZone
+{
+    double gutterLeft = 0;
+    double gutterRight = 0;
+    // Rows (by index into the row list) in the zone, top to bottom.
+    int first = 0;
+    int last = -1;
+    QVector<Row> left;
+    QVector<Row> right;
+};
+
+// A stretch of rows set in two columns: a gap down the middle that none of them crosses, with
+// lines of running text on both sides of it. Read straight across, such a page came out with each
+// left-column line and the right-column line beside it in one paragraph, separated by a tab --
+// right on the screen, and sentences cut in half the moment anyone edited it.
+//
+// Running text, not a two-column table: on both sides most lines reach most of the way across
+// their column (a key/value list, or code with comments beside it, has short left entries), and
+// there are at least five lines a side.
+QVector<ColumnZone> columnZones(const QVector<Glyph> &glyphs, const QVector<Row> &rows, const Region &region)
+{
+    QVector<ColumnZone> zones;
+    const double width = region.right - region.left;
+    if (rows.size() < 10 || width < 200)
+        return zones;
+    // Where each row has ink, as segments: glyphs closer than half their size are one segment.
+    struct Segment
+    {
+        double from;
+        double to;
+    };
+    QVector<QVector<Segment>> segments(rows.size());
+    for (int r = 0; r < rows.size(); ++r) {
+        for (int index : rows.at(r).glyphs) {
+            const Glyph &glyph = glyphs.at(index);
+            if (isSpace(glyph.code))
+                continue;
+            QVector<Segment> &mine = segments[r];
+            if (!mine.isEmpty() && glyph.box.left() - mine.last().to < 0.5 * qMax(1.0, glyph.size))
+                mine.last().to = qMax(mine.last().to, glyph.box.right());
+            else
+                mine.append({glyph.box.left(), glyph.box.right()});
+        }
+    }
+    // The gutter: the stretch of the middle of the region that the fewest rows cross.
+    const int bins = int(width);
+    QVector<int> crossing(bins, 0);
+    for (const QVector<Segment> &mine : std::as_const(segments)) {
+        for (const Segment &s : mine) {
+            const int from = qBound(0, int(s.from - region.left), bins - 1);
+            const int to = qBound(0, int(std::ceil(s.to - region.left)), bins - 1);
+            for (int x = from; x <= to; ++x)
+                ++crossing[x];
+        }
+    }
+    const int lo = int(width * 0.3);
+    const int hi = int(width * 0.7);
+    int best = INT_MAX;
+    for (int x = lo; x <= hi; ++x)
+        best = qMin(best, crossing.at(x));
+    if (best > rows.size() / 4)
+        return zones;
+    // A few rows may cross it -- a heading across the page cuts the gutter into pieces narrower than
+    // a word gap otherwise -- so the stretch is the longest one no more of them cross than that.
+    const int allowed = qMax(best, int(rows.size()) / 6);
+    int bestStart = -1, bestLength = 0;
+    for (int x = lo; x <= hi;) {
+        if (crossing.at(x) > allowed) {
+            ++x;
+            continue;
+        }
+        int end = x;
+        while (end + 1 < bins && crossing.at(end + 1) <= allowed)
+            ++end;
+        int start = x;
+        while (start - 1 >= 0 && crossing.at(start - 1) <= allowed)
+            --start;
+        // Inside that stretch, only the part within one row of its own minimum: the ragged ends of a
+        // column's lines are crossed by few rows too, and a gutter grown into them cut the column.
+        int least = INT_MAX;
+        for (int k = start; k <= end; ++k)
+            least = qMin(least, crossing.at(k));
+        int tightStart = -1, tightLength = 0;
+        for (int k = start; k <= end;) {
+            if (crossing.at(k) > least + 1) {
+                ++k;
+                continue;
+            }
+            int stop = k;
+            while (stop + 1 <= end && crossing.at(stop + 1) <= least + 1)
+                ++stop;
+            if (stop - k + 1 > tightLength) {
+                tightLength = stop - k + 1;
+                tightStart = k;
+            }
+            k = stop + 1;
+        }
+        if (tightLength > bestLength) {
+            bestLength = tightLength;
+            bestStart = tightStart;
+        }
+        x = end + 1;
+    }
+    if (bestLength < 10)
+        return zones;
+    const double gutterLeft = region.left + bestStart;
+    const double gutterRight = region.left + bestStart + bestLength;
+
+    // Runs of rows that do not cross it.
+    const auto crosses = [&](int r) {
+        for (const Segment &s : segments.at(r)) {
+            if (s.to > gutterLeft + 1 && s.from < gutterRight - 1)
+                return true;
+        }
+        return false;
+    };
+    int r = 0;
+    while (r < rows.size()) {
+        if (crosses(r)) {
+            ++r;
+            continue;
+        }
+        int end = r;
+        while (end + 1 < rows.size() && !crosses(end + 1))
+            ++end;
+        ColumnZone zone;
+        zone.gutterLeft = gutterLeft;
+        zone.gutterRight = gutterRight;
+        zone.first = r;
+        zone.last = end;
+        QVector<double> leftWidths, rightWidths;
+        for (int k = r; k <= end; ++k) {
+            const Row &row = rows.at(k);
+            int cut = 0;
+            while (cut < row.glyphs.size() && glyphs.at(row.glyphs.at(cut)).centreX() < gutterLeft)
+                ++cut;
+            if (cut > 0) {
+                Row piece = rowSlice(glyphs, row, 0, cut);
+                leftWidths.append(piece.box.right() - region.left);
+                zone.left.append(piece);
+            }
+            if (cut < row.glyphs.size()) {
+                Row piece = rowSlice(glyphs, row, cut, row.glyphs.size());
+                rightWidths.append(piece.box.right() - gutterRight);
+                zone.right.append(piece);
+            }
+        }
+        const double leftColumn = gutterLeft - region.left;
+        const double rightColumn = region.right - gutterRight;
+        // And lines of prose have no gaps of their own: a two-part table (a symbol and its meaning
+        // on each side, in a real book) has one in every line, and is a table, not two columns.
+        int gapped = 0;
+        for (const QVector<Row> *side : {&zone.left, &zone.right}) {
+            for (const Row &piece : *side)
+                gapped += piece.breaks.isEmpty() ? 0 : 1;
+        }
+        const int pieces = int(zone.left.size() + zone.right.size());
+        if (leftWidths.size() >= 5 && rightWidths.size() >= 5 && median(leftWidths) >= 0.7 * leftColumn
+            && median(rightWidths) >= 0.7 * rightColumn && gapped * 5 <= pieces)
+            zones.append(zone);
+        r = end + 1;
+    }
+    return zones;
+}
 
 void fillCell(Context &context, LayoutCell &cell)
 {
@@ -2131,6 +2365,78 @@ QVector<LayoutBlock> layoutRegion(Context &context, const Region &region, QVecto
         blocks.append(block);
     }
 
+    // Two columns of running text: each column laid out on its own, as one block.
+    if (allowTables) {
+        const QVector<ColumnZone> zones = columnZones(page.glyphs, rows, region);
+        QVector<bool> taken(rows.size(), false);
+        for (const ColumnZone &zone : zones) {
+            double top = page.size.height(), bottom = 0;
+            for (int k = zone.first; k <= zone.last; ++k) {
+                top = qMin(top, rows.at(k).box.top());
+                bottom = qMax(bottom, rows.at(k).box.bottom());
+            }
+            // A table or a picture in the flow beside or inside the zone would have to go into a
+            // column too; those pages keep the plain layout.
+            bool clear = true;
+            for (const LayoutBlock &block : std::as_const(blocks)) {
+                if (block.kind != LayoutBlock::Kind::Paragraph && block.bottom > top && block.top < bottom)
+                    clear = false;
+            }
+            if (!clear)
+                continue;
+            auto columns = std::make_shared<LayoutColumns>();
+            columns->leftWidth = zone.gutterLeft - region.left;
+            columns->gap = zone.gutterRight - zone.gutterLeft;
+            columns->rightWidth = region.right - zone.gutterRight;
+            Region leftRegion = region;
+            leftRegion.right = zone.gutterLeft;
+            Region rightRegion = region;
+            rightRegion.left = zone.gutterRight;
+            const auto blocksOf = [&](const QVector<Row> &side, const Region &within) {
+                QVector<LayoutBlock> made;
+                for (LayoutParagraph &paragraph : paragraphsOf(page.glyphs, side, within, page.bodySize, {})) {
+                    LayoutBlock block;
+                    block.top = paragraph.box.top();
+                    block.bottom = paragraph.box.bottom();
+                    block.paragraph = paragraph;
+                    made.append(block);
+                }
+                return made;
+            };
+            columns->left = blocksOf(zone.left, leftRegion);
+            columns->right = blocksOf(zone.right, rightRegion);
+            LayoutBlock block;
+            block.kind = LayoutBlock::Kind::Columns;
+            block.columns = columns;
+            block.top = top;
+            block.bottom = bottom;
+            blocks.append(block);
+            for (int k = zone.first; k <= zone.last; ++k)
+                taken[k] = true;
+        }
+        QVector<Row> rest;
+        for (int k = 0; k < rows.size(); ++k) {
+            if (taken.at(k))
+                continue;
+            // The columns' gutter is a channel the rows outside them were split at too: a heading
+            // across the page came out with a tab where its word gap met the gutter.
+            Row row = rows.at(k);
+            for (const ColumnZone &zone : zones) {
+                for (qsizetype b = row.breaks.size() - 1; b >= 0; --b) {
+                    const int at = row.breaks.at(b);
+                    if (at <= 0 || at >= row.glyphs.size())
+                        continue;
+                    const double gapLeft = page.glyphs.at(row.glyphs.at(at - 1)).box.right();
+                    const double gapRight = page.glyphs.at(row.glyphs.at(at)).box.left();
+                    if (gapLeft < zone.gutterRight && gapRight > zone.gutterLeft)
+                        row.breaks.removeAt(b);
+                }
+            }
+            rest.append(row);
+        }
+        rows = rest;
+    }
+
     QVector<double> barriers;
     for (const LayoutBlock &block : std::as_const(blocks)) {
         if (block.kind != LayoutBlock::Kind::Paragraph || !block.paragraph.framed)
@@ -2157,38 +2463,57 @@ QVector<LayoutBlock> layoutRegion(Context &context, const Region &region, QVecto
     // paragraph is whatever puts its first baseline where the PDF has it, measured
     // from where the previous block ended in Word -- not in the PDF, so that a
     // difference anywhere is not carried down the page.
-    double flow = region.top;
-    for (LayoutBlock &block : blocks) {
-        switch (block.kind) {
-        case LayoutBlock::Kind::Paragraph: {
-            LayoutParagraph &paragraph = block.paragraph;
-            const double size = paragraph.runs.isEmpty() ? 11 : paragraph.runs.first().style.size;
-            const double descent = 0.21 * size;
-            const double top = paragraph.firstBaseline - (paragraph.lineSpacing - descent);
-            if (paragraph.framed || (allowTables && paragraph.box.top() < region.top - 1.0)) {
-                // Its words above where the flow starts: placed where it is, out of the
-                // flow. Only the words count -- the line box of exact spacing reaches
-                // above them by half a line, and testing that framed the first lines of
-                // a page of code (two lines welded into one frame, the page's flow
-                // then starting at the heading under them).
-                paragraph.framed = true;
-                paragraph.spaceBefore = 0;
+    const std::function<double(QVector<LayoutBlock> &, double)> place = [&](QVector<LayoutBlock> &list,
+                                                                          double flow) {
+        for (LayoutBlock &block : list) {
+            switch (block.kind) {
+            case LayoutBlock::Kind::Paragraph: {
+                LayoutParagraph &paragraph = block.paragraph;
+                const double size = paragraph.runs.isEmpty() ? 11 : paragraph.runs.first().style.size;
+                const double descent = 0.21 * size;
+                const double top = paragraph.firstBaseline - (paragraph.lineSpacing - descent);
+                if (paragraph.framed || (allowTables && paragraph.box.top() < region.top - 1.0)) {
+                    // Its words above where the flow starts: placed where it is, out of the
+                    // flow. Only the words count -- the line box of exact spacing reaches
+                    // above them by half a line, and testing that framed the first lines of
+                    // a page of code (two lines welded into one frame, the page's flow
+                    // then starting at the heading under them).
+                    paragraph.framed = true;
+                    paragraph.spaceBefore = 0;
+                    break;
+                }
+                paragraph.spaceBefore = qMax(0.0, top - flow);
+                flow = flow + paragraph.spaceBefore + paragraph.lineCount * paragraph.lineSpacing;
                 break;
             }
-            paragraph.spaceBefore = qMax(0.0, top - flow);
-            flow = flow + paragraph.spaceBefore + paragraph.lineCount * paragraph.lineSpacing;
-            break;
+            case LayoutBlock::Kind::Image:
+                block.spaceBefore = qMax(0.0, block.top - flow);
+                flow = flow + block.spaceBefore + (block.bottom - block.top) + 0.4;
+                break;
+            case LayoutBlock::Kind::Table:
+                block.spaceBefore = qMax(0.0, block.top - flow);
+                flow = flow + block.spaceBefore + (block.bottom - block.top);
+                break;
+            case LayoutBlock::Kind::Columns: {
+                // The section break in front of the columns is a 1-point paragraph and the room
+                // above the columns goes to each column's first block: WPS lays the paragraph that
+                // carries a section break out at no height at all, whatever its line spacing says,
+                // so room given to it was room lost (measured: the columns came out 26 points high).
+                // Each column then starts at the same height, and what follows starts under the
+                // longer one. The column break and the closing section break are each a 1-point
+                // paragraph at the end of a column.
+                block.spaceBefore = 0;
+                const double start = flow + 1.0;
+                const double left = place(block.columns->left, start) + 1.0;
+                const double right = place(block.columns->right, start) + 1.0;
+                flow = qMax(left, right);
+                break;
+            }
+            }
         }
-        case LayoutBlock::Kind::Image:
-            block.spaceBefore = qMax(0.0, block.top - flow);
-            flow = flow + block.spaceBefore + (block.bottom - block.top) + 0.4;
-            break;
-        case LayoutBlock::Kind::Table:
-            block.spaceBefore = qMax(0.0, block.top - flow);
-            flow = flow + block.spaceBefore + (block.bottom - block.top);
-            break;
-        }
-    }
+        return flow;
+    };
+    place(blocks, region.top);
     return blocks;
 }
 

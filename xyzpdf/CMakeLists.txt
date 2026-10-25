@@ -390,6 +390,12 @@ set(XYZPDF_SOURCES
 
     src/export/docxwriter.h
     src/export/docxwriter.cpp
+    src/export/excelexport.h
+    src/export/excelexport.cpp
+    src/export/excelvalue.h
+    src/export/excelvalue.cpp
+    src/export/xlsxwriter.h
+    src/export/xlsxwriter.cpp
     src/export/layoutmodel.h
     src/export/pageanalysis.h
     src/export/pageanalysis.cpp
@@ -414,6 +420,8 @@ set(XYZPDF_SOURCES
 
     src/services/documentoutput.h
     src/services/documentoutput.cpp
+    src/services/excelexportsession.h
+    src/services/excelexportsession.cpp
     src/services/filechangenotice.h
     src/services/filechangenotice.cpp
     src/services/foregroundjobs.h
@@ -447,6 +455,8 @@ set(XYZPDF_SOURCES
     src/ui/documenttabbar.cpp
     src/ui/deletepagesdialog.h
     src/ui/deletepagesdialog.cpp
+    src/ui/excelexportdialog.h
+    src/ui/excelexportdialog.cpp
     src/ui/findbar.h
     src/ui/findbar.cpp
     src/ui/imageexportdialog.h
@@ -950,6 +960,9 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/document/textlayer.cpp
                 src/document/textsearch.cpp
                 src/export/docxwriter.cpp
+                src/export/excelexport.cpp
+                src/export/excelvalue.cpp
+                src/export/xlsxwriter.cpp
                 src/export/imageexport.cpp
                 src/export/wordexport.cpp
                 src/export/pageanalysis.cpp
@@ -964,6 +977,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/ui/deletepagesdialog.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
+                src/ui/excelexportdialog.cpp
                 src/ui/mergepagesdialog.cpp
                 src/ui/movepagesdialog.cpp
                 src/ui/ocrdialog.cpp
@@ -987,6 +1001,7 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/services/signaturesession.cpp
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
+                src/services/excelexportsession.cpp
                 src/theme/thememanager.cpp
         LIBRARIES ${XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES})
 endif()
@@ -1025,6 +1040,9 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/document/textsearch.cpp
                 src/edit/documenteditor.cpp
                 src/export/docxwriter.cpp
+                src/export/excelexport.cpp
+                src/export/excelvalue.cpp
+                src/export/xlsxwriter.cpp
                 src/export/imageexport.cpp
                 src/export/wordexport.cpp
                 src/export/pageanalysis.cpp
@@ -1044,6 +1062,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/services/signaturesession.cpp
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
+                src/services/excelexportsession.cpp
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/documenttabbar.cpp
@@ -1051,6 +1070,7 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/ui/deletepagesdialog.cpp
                 src/ui/findbar.cpp
                 src/ui/imageexportdialog.cpp
+                src/ui/excelexportdialog.cpp
                 src/ui/languagedialog.cpp
                 src/ui/mergepagesdialog.cpp
                 src/ui/movepagesdialog.cpp
@@ -1122,6 +1142,30 @@ if(XYZPDF_BUILD_WORDEXPORT_SMOKE)
     xyzpdf_add_test(wordexport_smoke
         SOURCES src/export/docxwriter.cpp
                 src/export/wordexport.cpp
+                src/export/pageanalysis.cpp
+                src/document/pdfiumcontent.cpp
+                src/export/zipwriter.cpp
+                src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES xyzpdf_pdfium)
+endif()
+
+# A PDF read out as a workbook.
+#
+# The same shape as the Word export test and for the same reason: the value
+# classification and the sheet-name rules need no PDF, the ZIP/XML package needs
+# no PDF, and one run over a fixture checks that the halves agree -- because a
+# writer whose only reader is its own test proves nothing about Excel. The ZIP is
+# unpacked by the test itself, and tools/check_xlsx.py reads the result with
+# libraries that are not ours.
+option(XYZPDF_BUILD_EXCELEXPORT_SMOKE "Build the Excel export smoke test" OFF)
+if(XYZPDF_BUILD_EXCELEXPORT_SMOKE)
+    xyzpdf_add_test(excelexport_smoke
+        SOURCES src/export/xlsxwriter.cpp
+                src/export/excelexport.cpp
+                src/export/excelvalue.cpp
                 src/export/pageanalysis.cpp
                 src/document/pdfiumcontent.cpp
                 src/export/zipwriter.cpp

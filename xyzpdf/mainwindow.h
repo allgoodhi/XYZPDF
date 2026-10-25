@@ -12,6 +12,7 @@
 #include "src/view/viewchrome.h"
 
 class WrappingToolBarArea;
+struct ExcelExportReport;
 struct WordExportReport;
 
 #include <QList>
@@ -98,12 +99,18 @@ private:
     void exportCurrentToWord();
     // Says what the export did, in a message box that names the file it wrote.
     void reportWordExport(const WordExportReport &report);
+    // The same pair for the table export: asks where to put the workbook, after
+    // the one choice the export has (src/ui/excelexportdialog.h), and reports what
+    // came of it.
+    void exportCurrentToExcel();
+    void reportExcelExport(const ExcelExportReport &report);
     // The progress box, put up when the export reports its first page and taken
     // down when it reports its last. Driven by the tab's own signals rather than
     // by the menu item, so that it describes work that is happening rather than
     // work that was asked for -- and so that an export started any other way gets
-    // one too.
-    void showExportProgress(DocumentTab *tab, int done, int total);
+    // one too. `excel` picks the wording and the cancel call; one export at a time
+    // is enforced by the callers, so one box is enough for both.
+    void showExportProgress(DocumentTab *tab, int done, int total, bool excel = false);
     void closeExportProgress();
     void closeTab(int index);
     // False when the reader said they did not mean to lose the edits this tab is
@@ -243,6 +250,9 @@ private:
     // The last page count reported, so that a box left saying "正在停止…" still
     // shows how far it got rather than snapping back to nothing.
     int exportDone = 0;
+    // Which export the box belongs to: it words itself differently and cancels a
+    // different job.
+    bool exportExcel = false;
 
     QComboBox *pageBox = nullptr;
     QComboBox *zoomBox = nullptr;
@@ -262,6 +272,7 @@ private:
     QAction *translateAction = nullptr;
     QAction *selectAllAction = nullptr;
     QAction *exportWordAction = nullptr;
+    QAction *exportExcelAction = nullptr;
     QAction *printAction = nullptr;
     QAction *exportImagesAction = nullptr;
     QAction *propertiesAction = nullptr;

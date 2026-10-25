@@ -195,6 +195,14 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(wordExport.get(), &WordExportSession::reportFinished, this,
             &DocumentTab::wordExportFinished);
 
+    // The table export is the same job with a different reading loop, assembled
+    // the same way and reporting through the tab's own two signals.
+    excelExport = std::make_unique<ExcelExportSession>(openDocument);
+    connect(excelExport.get(), &ExcelExportSession::progress, this,
+            &DocumentTab::excelExportProgress);
+    connect(excelExport.get(), &ExcelExportSession::reportFinished, this,
+            &DocumentTab::excelExportFinished);
+
     // Printing and exporting to images are the two jobs that run in front of the
     // reader, on this thread, pumping events between pages -- so they are the
     // two that hold the tab's foreground count, and the window asks that count
@@ -339,6 +347,11 @@ DocumentTab::~DocumentTab()
     wordExport->cancelPending();
     wordExport->waitUntilFinished();
 
+    // And the table export, for the same reason: it reads the document page by
+    // page, and a reload under it would free what it is reading.
+    excelExport->cancelPending();
+    excelExport->waitUntilFinished();
+
     // The signature verification reads the same file, so it is waited for by the same means. It
     // cannot be cut short in the middle of a call into Windows, which is why this one waits
     // rather than cancels.
@@ -390,6 +403,21 @@ bool DocumentTab::isExporting() const
 void DocumentTab::cancelWordExport()
 {
     wordExport->cancel();
+}
+
+void DocumentTab::exportToExcel(const QString &path, bool exportText)
+{
+    excelExport->exportToExcel(path, exportText);
+}
+
+bool DocumentTab::isExportingExcel() const
+{
+    return excelExport->isRunning();
+}
+
+void DocumentTab::cancelExcelExport()
+{
+    excelExport->cancel();
 }
 
 void DocumentTab::showFindBar()
@@ -489,6 +517,9 @@ void DocumentTab::drainRenders()
     // waited for below on the same grounds. Told to stop here rather than left to
     // run out: a search of one page is quick, an export of five hundred is not.
     wordExport->cancelPending();
+    // The table export reads the same document the same way, so it gets the same
+    // treatment.
+    excelExport->cancelPending();
     // And the signature check, which reads the file again -- once through PDFium for the
     // signature dictionaries, once through qpdf for the field names and pages. It holds no
     // pointer to this tab's document so it cannot dangle, but a verification of the file the
@@ -502,7 +533,7 @@ void DocumentTab::drainRenders()
     QElapsedTimer timer;
     timer.start();
     constexpr int kGiveUpAfter = 2000;
-    while ((renderer->inFlight() > 0 || searchRunning() || isExporting()
+    while ((renderer->inFlight() > 0 || searchRunning() || isExporting() || isExportingExcel()
             || thumbnailPanel->rendering() || signatures->running())
            && timer.elapsed() < kGiveUpAfter) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);

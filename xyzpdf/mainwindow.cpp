@@ -568,6 +568,16 @@ void MainWindow::buildMenus()
     connect(exportWordAction, &QAction::triggered, this, &MainWindow::exportCurrentToWord);
     fileMenu->addAction(exportWordAction);
 
+    // Next to the Word one because it is the same wish -- "this document, in the
+    // program I write in" -- and the mnemonic D keeps it out of the way of the
+    // rest of 文件 (F O E P G L R W X).
+    exportPowerPointAction = makeAction(tr("导出为 PowerPoint(&D)…"), QKeySequence());
+    exportPowerPointAction->setObjectName(QStringLiteral("exportPowerPointAction"));
+    exportPowerPointAction->setToolTip(tr("把这份 PDF 的每一页导出为 .pptx 幻灯片"));
+    connect(exportPowerPointAction, &QAction::triggered, this,
+            &MainWindow::exportCurrentToPowerPoint);
+    fileMenu->addAction(exportPowerPointAction);
+
     printAction = makeAction(tr("打印(&P)…"), QKeySequence(QStringLiteral("Ctrl+P")));
     printAction->setObjectName(QStringLiteral("printAction"));
     printAction->setToolTip(tr("把这份 PDF 打印出来"));
@@ -1487,6 +1497,17 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                 closeExportProgress();
                 reportWordExport(report);
             });
+    connect(tab, &DocumentTab::powerPointExportProgress, this, [this, tab](int done, int total) {
+        if (!tab->isExporting())
+            return;
+        setStatusMessage(tr("正在导出为 PowerPoint…（%1 / %2 页）").arg(done).arg(total));
+        showExportProgress(tab, done, total);
+    });
+    connect(tab, &DocumentTab::powerPointExportFinished, this,
+            [this](const PptExportReport &report) {
+                closeExportProgress();
+                reportPowerPointExport(report);
+            });
     connect(tab, &DocumentTab::imageExportFinished, this, [this](const QString &directory,
                                                                  int pages) {
         setStatusMessage(tr("已导出 %n 张图片到 %1", nullptr, pages).arg(directory), 6000);
@@ -1787,7 +1808,29 @@ void MainWindow::exportCurrentToWord()
     // Said now rather than when it finishes: the conversion reads every page, and
     // a reader who has just clicked something deserves to know it was heard.
     setStatusMessage(tr("正在导出为 Word…"));
+    exportPowerPoint = false;
     tab->exportToWord(path);
+}
+
+void MainWindow::exportCurrentToPowerPoint()
+{
+    DocumentTab *tab = currentTab();
+    if (!tab || !tab->isOpen() || tab->isExporting())
+        return;
+
+    const QFileInfo info(tab->documentPath());
+    QString suggested = info.completeBaseName() + QStringLiteral(".pptx");
+    if (!info.absolutePath().isEmpty())
+        suggested = info.absolutePath() + QLatin1Char('/') + suggested;
+
+    const QString path = WindowDialogs::getSaveFileName(this, tr("导出为 PowerPoint"), suggested,
+                                                       tr("PowerPoint 演示文稿 (*.pptx)"));
+    if (path.isEmpty())
+        return;
+
+    setStatusMessage(tr("正在导出为 PowerPoint…"));
+    exportPowerPoint = true;
+    tab->exportToPowerPoint(path);
 }
 
 void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
@@ -1802,7 +1845,9 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
         // be written, never puts one on screen at all.
         auto *dialog = new QProgressDialog(this);
         dialog->setObjectName(QStringLiteral("exportProgress"));
-        dialog->setWindowTitle(tr("导出为 Word — %1").arg(QFileInfo(tab->documentPath()).fileName()));
+        dialog->setWindowTitle(
+            (exportPowerPoint ? tr("导出为 PowerPoint — %1") : tr("导出为 Word — %1"))
+                .arg(QFileInfo(tab->documentPath()).fileName()));
         dialog->setCancelButtonText(tr("取消"));
         dialog->setAutoClose(false);
         // A quarter of a second, and not Qt's own four: the document this was
@@ -1833,7 +1878,10 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
         connect(dialog, &QProgressDialog::canceled, this, [this, dialog, tab] {
             if (tab != exportTab)
                 return;
-            tab->cancelWordExport();
+            if (exportPowerPoint)
+                tab->cancelPowerPointExport();
+            else
+                tab->cancelWordExport();
             const int stoppedAt = exportDone;
             QTimer::singleShot(0, dialog, [this, dialog, stoppedAt] {
                 if (exportProgress != dialog)
@@ -1870,9 +1918,15 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
     exportProgress->setValue(done);
     // Zero is the report that the export has started rather than finished: "第 0
     // 页" is not a page, so it says the size of the job instead.
-    exportProgress->setLabelText(done > 0
-                                     ? tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total)
-                                     : tr("正在导出为 Word…（共 %n 页）", nullptr, total));
+    if (exportPowerPoint) {
+        exportProgress->setLabelText(
+            done > 0 ? tr("正在导出为 PowerPoint…（%1 / %2 页）").arg(done).arg(total)
+                     : tr("正在导出为 PowerPoint…（共 %n 页）", nullptr, total));
+    } else {
+        exportProgress->setLabelText(done > 0
+                                         ? tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total)
+                                         : tr("正在导出为 Word…（共 %n 页）", nullptr, total));
+    }
 }
 
 void MainWindow::closeExportProgress()
@@ -1949,6 +2003,60 @@ void MainWindow::reportWordExport(const WordExportReport &report)
         message += QStringLiteral("\n\n") + detail;
     setStatusMessage(tr("已导出为 Word"), 5000);
     WindowDialogs::information(this, tr("导出为 Word"), message);
+}
+
+void MainWindow::reportPowerPointExport(const PptExportReport &report)
+{
+    if (report.cancelled) {
+        setStatusMessage(tr("导出已取消"), 5000);
+        return;
+    }
+
+    if (!report.ok) {
+        setStatusMessage(tr("导出失败"), 5000);
+        WindowDialogs::warning(this, tr("导出为 PowerPoint"), report.error);
+        return;
+    }
+
+    QString message = tr("已导出 %n 张幻灯片到：\n%1", nullptr, report.pages)
+                          .arg(QDir::toNativeSeparators(report.path));
+
+    QString detail;
+    if (report.scaledPages > 0) {
+        // The slide size is the first page's, so a document that mixed, say, A4
+        // and A5 pages did not keep every page the size it was. Said out loud
+        // because it is the one thing the reader cannot see from the PDF.
+        detail = tr("其中 %n 页的尺寸和第一页不同，已按比例缩放后居中放在幻灯片上。",
+                    nullptr, report.scaledPages);
+    }
+    if (report.tables > 0) {
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("其中 %n 个带网格的表格已按单元格拆成可编辑的文本框。", nullptr, report.tables);
+    }
+    if (report.figures > 0) {
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("其中 %n 处图形（图表、框图、照片等）已按图片放在原来的位置。", nullptr,
+                     report.figures);
+    }
+    if (report.picturePages > 0) {
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("其中 %n 页没有文字层或包含复杂图表/表格，已按整页图片放进幻灯片，"
+                     "页内的文字不能直接编辑。需要可编辑的文字可以先用“识别”工具。",
+                     nullptr, report.picturePages);
+    }
+    if (report.emptyPages > 0) {
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += tr("另有 %n 页既没有文字，也没有渲染出内容：那些幻灯片是空白的。", nullptr,
+                     report.emptyPages);
+    }
+    if (!detail.isEmpty())
+        message += QStringLiteral("\n\n") + detail;
+    setStatusMessage(tr("已导出为 PowerPoint"), 5000);
+    WindowDialogs::information(this, tr("导出为 PowerPoint"), message);
 }
 
 bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
@@ -2381,7 +2489,7 @@ void MainWindow::updateForCurrentTab()
                             rotateRightAction, continuousAction, singlePageAction,
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
-                            exportWordAction, printAction, exportImagesAction,
+                            exportWordAction, exportPowerPointAction, printAction, exportImagesAction,
                             propertiesAction, reloadAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,

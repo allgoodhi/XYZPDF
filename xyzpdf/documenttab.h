@@ -35,12 +35,14 @@
 
 #include "src/document/document.h"
 #include "src/document/outline.h"
+#include "src/export/pptexport.h"
 #include "src/export/wordexport.h"
 #include "src/render/rendercache.h"
 #include "src/services/documentoutput.h"
 #include "src/services/filechangenotice.h"
 #include "src/services/foregroundjobs.h"
 #include "src/services/ocrsession.h"
+#include "src/services/pptexportsession.h"
 #include "src/services/searchsession.h"
 #include "src/services/signaturesession.h"
 #include "src/services/translatesession.h"
@@ -51,6 +53,7 @@
 #include "src/view/pageview.h"
 #include "src/view/zoomcontroller.h"
 
+#include <QSizeF>
 #include <QVector>
 #include <QWidget>
 
@@ -467,6 +470,10 @@ public:
     // handles on it: start, ask, stop. The answer arrives in the signals below,
     // which the window is what words and shows.
     void exportToWord(const QString &path);
+    // The same job, written as slides instead of pages. One export at a time,
+    // Word or PowerPoint: both read the whole document and the window shows one
+    // progress box.
+    void exportToPowerPoint(const QString &path);
     bool isExporting() const;
     // The reader has asked for it to stop, through the window's progress box.
     // The same flag the destructor sets, and for the same reason: the export
@@ -474,6 +481,10 @@ public:
     // because the file is written at the very end, an export stopped this way
     // leaves nothing behind to explain.
     void cancelWordExport();
+    void cancelPowerPointExport();
+    // What a presentation would be shaped like, for the save box's own sentence.
+    // Empty when there is no page to take the size from.
+    QSizeF powerPointSlideSize() const;
 
 Q_SIGNALS:
     void titleChanged(const QString &title);
@@ -501,6 +512,9 @@ Q_SIGNALS:
     // it did not. The window is what words them.
     void wordExportProgress(int done, int total);
     void wordExportFinished(const WordExportReport &report);
+    // The same two for the PowerPoint export.
+    void powerPointExportProgress(int done, int total);
+    void powerPointExportFinished(const PptExportReport &report);
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
@@ -686,6 +700,8 @@ private:
     // exists to prevent. Its flag is set first, so that the wait is one page
     // rather than a whole document -- both of those live with the session.
     std::unique_ptr<WordExportSession> wordExport;
+    // The PowerPoint export, by the same means and for the same reasons.
+    std::unique_ptr<PptExportSession> powerPointExport;
 
     // The box the reader drags on a page: the crop's own render, the recognizer,
     // and the window the answer goes into. It is not one of the jobs

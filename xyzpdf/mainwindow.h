@@ -12,6 +12,7 @@
 #include "src/view/viewchrome.h"
 
 class WrappingToolBarArea;
+struct PptExportReport;
 struct WordExportReport;
 
 #include <QList>
@@ -98,6 +99,9 @@ private:
     void exportCurrentToWord();
     // Says what the export did, in a message box that names the file it wrote.
     void reportWordExport(const WordExportReport &report);
+    // The same two for 导出为 PowerPoint: one slide per page.
+    void exportCurrentToPowerPoint();
+    void reportPowerPointExport(const PptExportReport &report);
     // The progress box, put up when the export reports its first page and taken
     // down when it reports its last. Driven by the tab's own signals rather than
     // by the menu item, so that it describes work that is happening rather than
@@ -243,6 +247,9 @@ private:
     // The last page count reported, so that a box left saying "正在停止…" still
     // shows how far it got rather than snapping back to nothing.
     int exportDone = 0;
+    // Which of the two exports the box belongs to; the labels and the cancel
+    // button go to different sessions.
+    bool exportPowerPoint = false;
 
     QComboBox *pageBox = nullptr;
     QComboBox *zoomBox = nullptr;
@@ -262,6 +269,7 @@ private:
     QAction *translateAction = nullptr;
     QAction *selectAllAction = nullptr;
     QAction *exportWordAction = nullptr;
+    QAction *exportPowerPointAction = nullptr;
     QAction *printAction = nullptr;
     QAction *exportImagesAction = nullptr;
     QAction *propertiesAction = nullptr;

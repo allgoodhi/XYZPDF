@@ -1426,13 +1426,19 @@ function Open-PackagedDocument($theApp, [string]$rowName) {
 
   $kids = PickerChildren $pk
 
-  if (-not $target) {
-    Say ('  no row naming [' + $base + '] in the folder the picker opened at; controls in the box:')
-    if ($rowName -notmatch '[\\:]') {
-      Say '  -OpenViaPicker gave a bare name, so the row click is the only route'
-      return $false
-    }
+  # A full path is always typed into the file-name box, even when its row is in the list: the row
+  # click aims at the row's on-screen rectangle, and the last file of a folder (text.pdf in
+  # tests/fixtures) can sit below the visible part of the list -- the click then lands beside it and
+  # Open opens nothing (sec.130: four rounds in a row, after save boxes had changed the remembered
+  # size of the dialog). Typing the path was proven in sec.90 and does not depend on the view.
+  if ($rowName -match '[\\:]') {
+    if (-not $target) { Say ('  no row naming [' + $base + '] in the folder the picker opened at') }
+    Say '  a full path was given: typing it into the file-name box'
     if (-not (TypePathIntoPicker $pk $rowName)) { return $false }
+  } elseif (-not $target) {
+    Say ('  no row naming [' + $base + '] in the folder the picker opened at')
+    Say '  -OpenViaPicker gave a bare name, so the row click is the only route'
+    return $false
   } else {
     ClickAt $target
     Start-Sleep -Milliseconds 600
@@ -4087,7 +4093,9 @@ switch ($Mode) {
     Say ('  after the click, before any restart the app reports [' + $mid + '] ' +
          '-- the store took the value; the interface cannot change under itself by design')
 
-    if ($Keep) { Say '  -Keep set: the language is left as switched'; exit 0 }
+    # -Keep keeps the LANGUAGE, not the instance: a bare exit here skipped the kill at the end of the
+    # file and left the packaged copy running into the next round (sec.130, after four -Keep runs).
+    if ($Keep) { Say '  -Keep set: the language is left as switched'; Kill-ProbeApp; exit 0 }
 
     $app2 = Restart-ProbeApp $Language
     if (-not $app2) { Bail '  the relaunch produced no window' }

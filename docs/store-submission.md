@@ -7983,4 +7983,30 @@ gui-probe 的签名模式按 I1 的新说法匹配（"正在检查"那句只活�
 不留进程。`signaturepanel` 在英文界面里还撞到一处 harness 的假设：四个英文标签比侧栏宽，切到「签名」时标签条滚动，前两个标签落在窗口外，
 截图那条几何判据因此 Bail —— 改成只框看得见的标签、把滚出去的印出来。
 
-**门禁 31 passed / 0 failed**（38 个目标），目录 829 条，numerus 81。
+**重打包重装**：`xyzpdf.exe` `2ff31d660140…` / 2,345,984；两颗壳 DLL 与 `xyzpdfshell.dll` 与 §127 逐字节相同（`e7af8eb02ccc…`、`d9fd7429ce37…`、`5a957cae7979…`）；
+包 20,114,048 字节，`verify-package` exit 0，**四列全等，八颗 `same=True`**。
+
+**装上的那一份**（经它自己的「文件 → 打开」交文件）：
+
+| 模式 | 中文界面 | 英文界面 |
+|---|---|---|
+| `wordexport`（text.pdf） | exit 0 | exit 0（"Exported 2 pages and 2 paragraphs"） |
+| `excelexport`（table.pdf） | exit 0（"已导出 1 个表格到："） | exit 0（"Exported 1 table to:"） |
+| `pptexport`（mixed.pdf） | exit 0（2 张，1 页整页成图并说明） | exit 0 |
+| `searchablepdf`（scan.pdf） | exit 0（识别 3 页、写入 204 个词、500 个不可见字；`-Doc` 哈希不变） | exit 0 |
+| `signaturepanel` appended-one / tampered / none | 三轮 exit 0（点一下选中；无签名的文件没有「签名」页） | appended-one、none 各 exit 0 |
+| `signedsave`、`signedlock -ExpectDocMdp 1/2/0` | （§128 已过） | 四轮 exit 0；状态栏两句之间有空格、没有全角标点，P≥1 时认证那句以空格起头 |
+
+英文那一趟前后用 `langswitch -Installed -To English -Keep` / `-To 跟随系统 -Keep` 切换，**改回去在同一趟里验了**（读到 Follow the system）。
+`scan.pdf` 第 3 页是合成的条纹，识别出来的是乱字 —— 判据只要求有不可见字层，真文字的识别由 `searchablepdf_smoke` 现画的图管。
+
+屏幕这一趟又修了 harness 两处：
+- `-OpenViaPicker` 给完整路径时**一律把路径写进文件名框**，不再点列表里那一行：text.pdf 是 fixtures 的最后一个文件，几次保存框改过对话框记住的大小之后，
+  那一行落在列表可见区之外，点击打在旁边、「打开」什么都没开（同一个模式连续四轮 Bail 在"没有窗口叫这个名字"，而一小时前同一轮是过的）。
+- `langswitch -Keep` 末尾是裸 `exit 0`，跳过了文件末尾的 kill，装上的那份一直开着进下一轮；现在先 `Kill-ProbeApp`。真切换来回两趟，各剩 0 个进程。
+  （选中已经是当前的那种语言时没有重启提示，那一轮 exit 1 —— 产品本来就该这样。）
+
+**门禁 31 passed / 0 failed**（38 个目标），目录 829 条，numerus 81。**§16 现在对到 §130。**
+
+**没验的**：真 CA 证书签的 PDF、真 TSA 的令牌、OCSP（需要作者提供样本）；微软 Excel / PowerPoint 本身（这台机器只有 WPS）；
+可搜索的 PDF 在加密文件和带 `/Rotate` 的真扫描件上；签名细节行折行（现在是省略号 + 提示）。

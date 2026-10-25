@@ -1,0 +1,54 @@
+%PDF-1.7
+%xyzpdf-sample
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /AcroForm /Fields [5 0 R 6 0 R] /DA (/Helv 9 Tf 0 g ) /DR << /Font << /Helv 8 0 R >> >> >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /Helv 8 0 R >> >> /Annots [5 0 R 6 0 R] >>
+endobj
+5 0 obj
+<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [60 600 260 630] /P 4 0 R /F 4 /V (before) /DA (/Helv 10 Tf 0 g ) >>
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Widget /FT /Sig /T (sig1) /Rect [300 600 400 630] /P 4 0 R /F 4 /V 10 0 R >>
+endobj
+7 0 obj
+null
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+9 0 obj
+null
+endobj
+10 0 obj
+<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0000000000 0000000909 0000000975 0000000367] /Contents <ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB> /M (D:20261024120000+08'00') >>
+endobj
+11 0 obj
+null
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000024 00000 n 
+0000000089 00000 n 
+0000000146 00000 n 
+0000000261 00000 n 
+0000000395 00000 n 
+0000000536 00000 n 
+0000000654 00000 n 
+0000000674 00000 n 
+0000000744 00000 n 
+0000000764 00000 n 
+0000001015 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+1036
+%%EOF

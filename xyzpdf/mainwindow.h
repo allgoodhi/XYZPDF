@@ -12,6 +12,7 @@
 #include "src/view/viewchrome.h"
 
 class WrappingToolBarArea;
+struct SearchablePdfReport;
 struct WordExportReport;
 
 #include <QList>
@@ -98,12 +99,21 @@ private:
     void exportCurrentToWord();
     // Says what the export did, in a message box that names the file it wrote.
     void reportWordExport(const WordExportReport &report);
+    // Asks where to put the searchable copy, and tells the tab in front to make it.
+    // The source file is only read; the answer names the new file and how many pages
+    // were recognized, left alone and found empty.
+    void exportCurrentToSearchablePdf();
+    void reportSearchablePdf(const SearchablePdfReport &report);
     // The progress box, put up when the export reports its first page and taken
     // down when it reports its last. Driven by the tab's own signals rather than
     // by the menu item, so that it describes work that is happening rather than
     // work that was asked for -- and so that an export started any other way gets
     // one too.
-    void showExportProgress(DocumentTab *tab, int done, int total);
+    //
+    // One box for both exports: the work is the same shape -- pages done of pages in
+    // the document -- and the only differences are the sentence and which cancel the
+    // button calls.
+    void showExportProgress(DocumentTab *tab, int done, int total, bool searchable);
     void closeExportProgress();
     void closeTab(int index);
     // False when the reader said they did not mean to lose the edits this tab is
@@ -240,6 +250,9 @@ private:
     // nothing is being exported, which is the state the box is shown in.
     QProgressDialog *exportProgress = nullptr;
     QPointer<DocumentTab> exportTab;
+    // Which of the two exports the box belongs to: it changes the title, the progress
+    // line and which cancel the button calls.
+    bool exportSearchable = false;
     // The last page count reported, so that a box left saying "正在停止…" still
     // shows how far it got rather than snapping back to nothing.
     int exportDone = 0;
@@ -262,6 +275,7 @@ private:
     QAction *translateAction = nullptr;
     QAction *selectAllAction = nullptr;
     QAction *exportWordAction = nullptr;
+    QAction *searchablePdfAction = nullptr;
     QAction *printAction = nullptr;
     QAction *exportImagesAction = nullptr;
     QAction *propertiesAction = nullptr;

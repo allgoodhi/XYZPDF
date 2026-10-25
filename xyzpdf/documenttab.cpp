@@ -195,6 +195,17 @@ DocumentTab::DocumentTab(QWidget *parent)
     connect(wordExport.get(), &WordExportSession::reportFinished, this,
             &DocumentTab::wordExportFinished);
 
+    // The searchable-PDF pass is the Word export's arrangement with a different reading
+    // loop, plus the two things the writer needs to reopen the file itself: its path and
+    // the key the reader opened it with.
+    searchablePdf = std::make_unique<SearchablePdfSession>(
+        openDocument, [this] { return documentPath(); },
+        [this] { return documentPassword; });
+    connect(searchablePdf.get(), &SearchablePdfSession::progress, this,
+            &DocumentTab::searchablePdfProgress);
+    connect(searchablePdf.get(), &SearchablePdfSession::reportFinished, this,
+            &DocumentTab::searchablePdfFinished);
+
     // Printing and exporting to images are the two jobs that run in front of the
     // reader, on this thread, pumping events between pages -- so they are the
     // two that hold the tab's foreground count, and the window asks that count
@@ -339,6 +350,10 @@ DocumentTab::~DocumentTab()
     wordExport->cancelPending();
     wordExport->waitUntilFinished();
 
+    // The searchable-PDF pass reads the document the same way and for the same reason.
+    searchablePdf->cancelPending();
+    searchablePdf->waitUntilFinished();
+
     // The signature verification reads the same file, so it is waited for by the same means. It
     // cannot be cut short in the middle of a call into Windows, which is why this one waits
     // rather than cancels.
@@ -390,6 +405,21 @@ bool DocumentTab::isExporting() const
 void DocumentTab::cancelWordExport()
 {
     wordExport->cancel();
+}
+
+void DocumentTab::makeSearchablePdf(const QString &path)
+{
+    searchablePdf->makeSearchable(path);
+}
+
+bool DocumentTab::isMakingSearchablePdf() const
+{
+    return searchablePdf->isRunning();
+}
+
+void DocumentTab::cancelMakeSearchablePdf()
+{
+    searchablePdf->cancel();
 }
 
 void DocumentTab::showFindBar()
@@ -489,6 +519,9 @@ void DocumentTab::drainRenders()
     // waited for below on the same grounds. Told to stop here rather than left to
     // run out: a search of one page is quick, an export of five hundred is not.
     wordExport->cancelPending();
+    // And the searchable-PDF pass, which is an export's worth of pages, each one a
+    // render and a recognition.
+    searchablePdf->cancelPending();
     // And the signature check, which reads the file again -- once through PDFium for the
     // signature dictionaries, once through qpdf for the field names and pages. It holds no
     // pointer to this tab's document so it cannot dangle, but a verification of the file the
@@ -503,7 +536,7 @@ void DocumentTab::drainRenders()
     timer.start();
     constexpr int kGiveUpAfter = 2000;
     while ((renderer->inFlight() > 0 || searchRunning() || isExporting()
-            || thumbnailPanel->rendering() || signatures->running())
+            || isMakingSearchablePdf() || thumbnailPanel->rendering() || signatures->running())
            && timer.elapsed() < kGiveUpAfter) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     }

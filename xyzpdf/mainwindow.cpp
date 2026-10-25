@@ -586,6 +586,15 @@ void MainWindow::buildMenus()
     });
     fileMenu->addAction(exportImagesAction);
 
+    // Next to the other two exports, and last of them: it produces a PDF, which is the
+    // same kind of file the reader is looking at rather than another program's.
+    searchablePdfAction = makeAction(tr("扫描件转成可搜索的 PDF(&S)…"), QKeySequence());
+    searchablePdfAction->setObjectName(QStringLiteral("searchablePdfAction"));
+    searchablePdfAction->setToolTip(tr("识别没有文字层的扫描页，另存为一份可以搜索和复制的 PDF"));
+    connect(searchablePdfAction, &QAction::triggered, this,
+            &MainWindow::exportCurrentToSearchablePdf);
+    fileMenu->addAction(searchablePdfAction);
+
     // Beside the exports rather than beside Open: it is a thing done to the
     // document that is already open, and F5 is the key every reader uses for
     // it.
@@ -1480,12 +1489,27 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
         if (!tab->isExporting())
             return;
         setStatusMessage(tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total));
-        showExportProgress(tab, done, total);
+        showExportProgress(tab, done, total, false);
     });
     connect(tab, &DocumentTab::wordExportFinished, this,
             [this](const WordExportReport &report) {
                 closeExportProgress();
                 reportWordExport(report);
+            });
+    // The searchable-PDF pass, in the same two shapes: the progress line and box, and
+    // the answer.
+    connect(tab, &DocumentTab::searchablePdfProgress, this, [this, tab](int done, int total) {
+        // Same stale-report rule as the Word export's: the last page's progress can
+        // arrive after the report, and it must not put the job back on the status bar.
+        if (!tab->isMakingSearchablePdf())
+            return;
+        setStatusMessage(tr("正在识别扫描页…（%1 / %2 页）").arg(done).arg(total));
+        showExportProgress(tab, done, total, true);
+    });
+    connect(tab, &DocumentTab::searchablePdfFinished, this,
+            [this](const SearchablePdfReport &report) {
+                closeExportProgress();
+                reportSearchablePdf(report);
             });
     connect(tab, &DocumentTab::imageExportFinished, this, [this](const QString &directory,
                                                                  int pages) {
@@ -1768,7 +1792,7 @@ void MainWindow::openFileDialog()
 void MainWindow::exportCurrentToWord()
 {
     DocumentTab *tab = currentTab();
-    if (!tab || !tab->isOpen() || tab->isExporting())
+    if (!tab || !tab->isOpen() || tab->isExporting() || tab->isMakingSearchablePdf())
         return;
 
     // The PDF's own name with the extension swapped, in the folder it came from:
@@ -1790,7 +1814,33 @@ void MainWindow::exportCurrentToWord()
     tab->exportToWord(path);
 }
 
-void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
+void MainWindow::exportCurrentToSearchablePdf()
+{
+    DocumentTab *tab = currentTab();
+    if (!tab || !tab->isOpen() || tab->isExporting() || tab->isMakingSearchablePdf())
+        return;
+
+    // A new name in the same folder, and never the file being read: the writer refuses
+    // a destination that is the source, but the name offered here should not invite
+    // the reader to try.
+    const QFileInfo info(tab->documentPath());
+    QString suggested = info.completeBaseName() + QStringLiteral("-searchable.pdf");
+    if (!info.absolutePath().isEmpty())
+        suggested = info.absolutePath() + QLatin1Char('/') + suggested;
+
+    const QString path = WindowDialogs::getSaveFileName(this, tr("扫描件转成可搜索的 PDF"),
+                                                       suggested, tr("PDF 文档 (*.pdf)"));
+    if (path.isEmpty())
+        return;
+
+    // Said now rather than when it finishes: recognition reads every scanned page at
+    // print resolution, and a reader who has just clicked something deserves to know it
+    // was heard.
+    setStatusMessage(tr("正在识别扫描页…"));
+    tab->makeSearchablePdf(path);
+}
+
+void MainWindow::showExportProgress(DocumentTab *tab, int done, int total, bool searchable)
 {
     if (!tab)
         return;
@@ -1802,7 +1852,11 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
         // be written, never puts one on screen at all.
         auto *dialog = new QProgressDialog(this);
         dialog->setObjectName(QStringLiteral("exportProgress"));
-        dialog->setWindowTitle(tr("导出为 Word — %1").arg(QFileInfo(tab->documentPath()).fileName()));
+        dialog->setWindowTitle(
+            searchable
+                ? tr("扫描件转成可搜索的 PDF — %1")
+                      .arg(QFileInfo(tab->documentPath()).fileName())
+                : tr("导出为 Word — %1").arg(QFileInfo(tab->documentPath()).fileName()));
         dialog->setCancelButtonText(tr("取消"));
         dialog->setAutoClose(false);
         // A quarter of a second, and not Qt's own four: the document this was
@@ -1830,10 +1884,13 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
         // is about to be hidden, so it is said after that has happened; and the
         // button is disabled rather than replaced, because it is in the middle of
         // emitting the very signal this is running from.
-        connect(dialog, &QProgressDialog::canceled, this, [this, dialog, tab] {
+        connect(dialog, &QProgressDialog::canceled, this, [this, dialog, tab, searchable] {
             if (tab != exportTab)
                 return;
-            tab->cancelWordExport();
+            if (searchable)
+                tab->cancelMakeSearchablePdf();
+            else
+                tab->cancelWordExport();
             const int stoppedAt = exportDone;
             QTimer::singleShot(0, dialog, [this, dialog, stoppedAt] {
                 if (exportProgress != dialog)
@@ -1857,6 +1914,7 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
 
         exportProgress = dialog;
         exportTab = tab;
+        exportSearchable = searchable;
         // Left to show itself: see setMinimumDuration above.
         dialog->setMaximum(total);
         dialog->setValue(0);
@@ -1870,9 +1928,14 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total)
     exportProgress->setValue(done);
     // Zero is the report that the export has started rather than finished: "第 0
     // 页" is not a page, so it says the size of the job instead.
-    exportProgress->setLabelText(done > 0
-                                     ? tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total)
-                                     : tr("正在导出为 Word…（共 %n 页）", nullptr, total));
+    exportProgress->setLabelText(
+        done > 0
+            ? (exportSearchable ? tr("正在识别扫描页…（%1 / %2 页）")
+                                      .arg(done)
+                                      .arg(total)
+                                : tr("正在导出为 Word…（%1 / %2 页）").arg(done).arg(total))
+            : (exportSearchable ? tr("正在识别扫描页…（共 %n 页）", nullptr, total)
+                                : tr("正在导出为 Word…（共 %n 页）", nullptr, total)));
 }
 
 void MainWindow::closeExportProgress()
@@ -1883,6 +1946,7 @@ void MainWindow::closeExportProgress()
     QProgressDialog *dialog = exportProgress;
     exportProgress = nullptr;
     exportDone = 0;
+    exportSearchable = false;
     // Cleared before the close, and that is not tidiness: closing a progress
     // dialog emits canceled(), and this one is not being cancelled -- it is
     // finished. With the tab forgotten first, that signal finds nothing to stop.
@@ -1949,6 +2013,39 @@ void MainWindow::reportWordExport(const WordExportReport &report)
         message += QStringLiteral("\n\n") + detail;
     setStatusMessage(tr("已导出为 Word"), 5000);
     WindowDialogs::information(this, tr("导出为 Word"), message);
+}
+
+void MainWindow::reportSearchablePdf(const SearchablePdfReport &report)
+{
+    // The same rule as the Word export's: a run stopped because the document was
+    // replaced is not an interruption about a document the reader has moved on from.
+    if (report.cancelled) {
+        setStatusMessage(tr("已取消"), 5000);
+        return;
+    }
+
+    if (!report.ok) {
+        setStatusMessage(tr("没有写出文件"), 5000);
+        WindowDialogs::warning(this, tr("扫描件转成可搜索的 PDF"), report.error);
+        return;
+    }
+
+    QString message = tr("已写出：\n%1").arg(QDir::toNativeSeparators(report.path));
+
+    // The three counts the reader needs to judge the result: how much was recognized,
+    // how much was already readable, and how much came back with no words at all. The
+    // last is said even when it is zero -- a scan of a photograph is the common case
+    // that produces it, and "0" is an answer where silence would look like a failure.
+    QString detail = tr("识别了 %n 页扫描页。", nullptr, report.recognized);
+    detail += QLatin1Char('\n')
+        + tr("另有 %n 页本来就有文字层，没有动。", nullptr, report.skipped);
+    detail += QLatin1Char('\n') + tr("其中 %n 页没有认出文字。", nullptr, report.empty);
+    if (report.words > 0)
+        detail += QLatin1Char('\n') + tr("一共写入 %n 个词。", nullptr, report.words);
+    message += QStringLiteral("\n\n") + detail;
+
+    setStatusMessage(tr("已写出可搜索的 PDF"), 6000);
+    WindowDialogs::information(this, tr("扫描件转成可搜索的 PDF"), message);
 }
 
 bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
@@ -2382,6 +2479,7 @@ void MainWindow::updateForCurrentTab()
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, printAction, exportImagesAction,
+                            searchablePdfAction,
                             propertiesAction, reloadAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,

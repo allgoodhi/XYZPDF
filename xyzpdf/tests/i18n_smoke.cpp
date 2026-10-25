@@ -512,6 +512,30 @@ int main(int argc, char **argv)
             { "DocumentTab", "允许联网检查" },
             { "DocumentTab", "不检查" },
             { "SettingsDialog", "联网检查证书是否被吊销" },
+            // handoff-09 K3. The report box is built out of four counted rows -- pages
+            // recognized, pages left alone, pages with nothing in them, words written -- and
+            // a `%n` row is invisible to every catalogue shape rule, so each is asked at n=1
+            // and n=40 by name. The menu row is probed because it carries a mnemonic, which is
+            // how §15's double-escaped entries reached the screen, and the refusals beside it
+            // because a save path that answers in Chinese on an English window is a save path
+            // nobody can follow.
+            { "MainWindow", "扫描件转成可搜索的 PDF(&S)…" },
+            { "MainWindow", "识别没有文字层的扫描页，另存为一份可以搜索和复制的 PDF" },
+            { "MainWindow", "正在识别扫描页…（共 %n 页）", 1 },
+            { "MainWindow", "识别了 %n 页扫描页。", 1 },
+            { "MainWindow", "另有 %n 页本来就有文字层，没有动。", 1 },
+            { "MainWindow", "其中 %n 页没有认出文字。", 1 },
+            { "MainWindow", "一共写入 %n 个词。", 1 },
+            { "MainWindow", "已写出可搜索的 PDF" },
+            { "MainWindow", "没有写出文件" },
+            { "SearchablePdf", "不能把结果写回正在打开的这份 PDF。请换一个文件名。" },
+            { "SearchablePdf", "没有可以写入文字层的词。" },
+            { "SearchablePdf", "这台电脑没有装文字识别的语言包，扫描页没有识别。"
+                               "可以在 Windows 设置里添加语言之后再试。" },
+            { "SearchablePdf", "这份 PDF 的每一页都已经有文字层了，不需要再加。" },
+            { "SearchablePdf", "没有从扫描页里认出可以放进文字层的文字。" },
+            { "SearchablePdf", "这份 PDF 里的不同字符太多（%1 个），文字层放不下。" },
+            { "Ocr", "这一页没有可以识别的内容。" },
         };
 
         for (const Probe &probe : probes) {

@@ -20,6 +20,7 @@
 //
 //   searchsession.h       the scan, the matches, the bar's label and the hits list
 //   wordexportsession.h   the document's text out as a Word file
+//   searchablepdfsession.h  a scan's pages out as invisible text over the same picture
 //   documentoutput.h      printing and a folder of images, both foreground
 //   ocrsession.h          the box dragged on a page, and reading what is in it
 //   translatesession.h    the two questions before a request, and the request
@@ -42,6 +43,7 @@
 #include "src/services/foregroundjobs.h"
 #include "src/services/ocrsession.h"
 #include "src/services/searchsession.h"
+#include "src/services/searchablepdfsession.h"
 #include "src/services/signaturesession.h"
 #include "src/services/translatesession.h"
 #include "src/services/wordexportsession.h"
@@ -475,6 +477,16 @@ public:
     // leaves nothing behind to explain.
     void cancelWordExport();
 
+    // ---- 扫描件转成可搜索的 PDF ----
+    //
+    // The same three handles on a different reading loop (searchablepdfsession.h):
+    // the pages without a text layer are recognized and the words are written back as
+    // invisible text where the ink is. The source file is read, never written; the
+    // destination is a new file the reader named.
+    void makeSearchablePdf(const QString &path);
+    bool isMakingSearchablePdf() const;
+    void cancelMakeSearchablePdf();
+
 Q_SIGNALS:
     void titleChanged(const QString &title);
     void pageChanged(int page, int pageCount);
@@ -501,6 +513,11 @@ Q_SIGNALS:
     // it did not. The window is what words them.
     void wordExportProgress(int done, int total);
     void wordExportFinished(const WordExportReport &report);
+    // The searchable-PDF pass, in the same two shapes: pages done of pages in the
+    // document, and what was written or why nothing was. The report carries the three
+    // counts the window words -- recognized, left alone, found nothing.
+    void searchablePdfProgress(int done, int total);
+    void searchablePdfFinished(const SearchablePdfReport &report);
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
@@ -686,6 +703,11 @@ private:
     // exists to prevent. Its flag is set first, so that the wait is one page
     // rather than a whole document -- both of those live with the session.
     std::unique_ptr<WordExportSession> wordExport;
+
+    // The searchable-PDF pass reads and renders the same document page by page, so it
+    // is one of the jobs drainRenders() stops for and ~DocumentTab waits for -- declared
+    // after `backend` like the rest of the sessions for the same reason.
+    std::unique_ptr<SearchablePdfSession> searchablePdf;
 
     // The box the reader drags on a page: the crop's own render, the recognizer,
     // and the window the answer goes into. It is not one of the jobs

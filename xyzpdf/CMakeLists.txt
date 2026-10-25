@@ -387,6 +387,10 @@ set(XYZPDF_SOURCES
 
     src/edit/documenteditor.h
     src/edit/documenteditor.cpp
+    src/edit/glyphlessfont.h
+    src/edit/glyphlessfont.cpp
+    src/edit/textlayerwriter.h
+    src/edit/textlayerwriter.cpp
 
     src/export/docxwriter.h
     src/export/docxwriter.cpp
@@ -395,6 +399,8 @@ set(XYZPDF_SOURCES
     src/export/pageanalysis.cpp
     src/export/imageexport.h
     src/export/imageexport.cpp
+    src/export/searchablepdf.h
+    src/export/searchablepdf.cpp
     src/export/wordexport.h
     src/export/wordexport.cpp
     src/export/zipwriter.h
@@ -421,6 +427,8 @@ set(XYZPDF_SOURCES
     src/services/ocrsession.cpp
     src/services/searchsession.h
     src/services/searchsession.cpp
+    src/services/searchablepdfsession.h
+    src/services/searchablepdfsession.cpp
     src/services/signaturesession.h
     src/services/signaturesession.cpp
     src/services/translatesession.h
@@ -829,6 +837,26 @@ if(XYZPDF_BUILD_OUTLINEPROBE)
         LIBRARIES xyzpdf_pdfium qpdf::libqpdf)
 endif()
 
+# A scan put back as a file that can be searched: the pages recognized, the invisible text
+# written where the ink is, the pixels that must not move, and the file that must not change.
+# Windows only and on the real platform, because half of it is the machine's own recognizer
+# and the other half is a page image drawn with the fonts this machine has -- offscreen Qt has
+# no fonts (see tests/ocr_smoke.cpp).
+option(XYZPDF_BUILD_SEARCHABLEPDF_SMOKE "Build the searchable-PDF smoke test" OFF)
+if(XYZPDF_BUILD_SEARCHABLEPDF_SMOKE AND WIN32)
+    xyzpdf_add_test(searchablepdf_smoke
+        SOURCES src/export/searchablepdf.cpp
+                src/edit/textlayerwriter.cpp
+                src/edit/glyphlessfont.cpp
+                src/ocr/ocrengine.cpp
+                src/document/pdfiumcontent.cpp
+                src/document/pdfiumbackend.cpp
+                src/document/pdfiumformfill.cpp
+                src/document/outline.cpp
+                src/document/pagemetrics.cpp
+        LIBRARIES xyzpdf_pdfium qpdf::libqpdf Qt6::Concurrent windowsapp)
+endif()
+
 # The performance baseline. Built with everything else and deliberately not run:
 # tools/build_all_tests.py skips any target whose name contains 'bench', because
 # this prints numbers instead of passing or failing, and a threshold weak enough
@@ -987,6 +1015,10 @@ if(XYZPDF_BUILD_DOCUMENTTAB_SMOKE)
                 src/services/signaturesession.cpp
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
+                src/services/searchablepdfsession.cpp
+                src/export/searchablepdf.cpp
+                src/edit/textlayerwriter.cpp
+                src/edit/glyphlessfont.cpp
                 src/theme/thememanager.cpp
         LIBRARIES ${XYZPDF_DOCUMENTTAB_SMOKE_LIBRARIES})
 endif()
@@ -1044,6 +1076,10 @@ if(XYZPDF_BUILD_MAINWINDOW_SMOKE)
                 src/services/signaturesession.cpp
                 src/services/translatesession.cpp
                 src/services/wordexportsession.cpp
+                src/services/searchablepdfsession.cpp
+                src/export/searchablepdf.cpp
+                src/edit/textlayerwriter.cpp
+                src/edit/glyphlessfont.cpp
                 src/settings/settingsdialog.cpp
                 src/theme/thememanager.cpp
                 src/ui/documenttabbar.cpp

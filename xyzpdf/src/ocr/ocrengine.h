@@ -23,7 +23,9 @@
 // done on the calling thread.
 #pragma once
 
+#include <QRectF>
 #include <QString>
+#include <QVector>
 
 class QImage;
 
@@ -58,5 +60,46 @@ bool isAvailable();
 // See the flattening in OcrSession::captureRegion(), which is what the first
 // version of this feature was missing.
 Result recognize(const QImage &image);
+
+// One word, where the recognizer found it.
+struct LayoutWord
+{
+    QString text;
+    // In the pixels of the image that was handed to recognizeLayout(), top-left
+    // origin -- also when the service made the picture smaller than the one it was
+    // given (see the size limit in recognizeWorker): the box is scaled back, because
+    // a caller drawing something at the word's place needs the caller's coordinates.
+    QRectF box;
+};
+
+struct LayoutLine
+{
+    QString text;
+    QVector<LayoutWord> words;
+    QRectF box;
+};
+
+// The same recognition, with the place of every word.
+//
+// This is what a searchable PDF is made of: the invisible text an OCR program lays
+// over a scan has to sit where the ink is, or selecting it drags a highlight across
+// the wrong part of the page and copying it reads in an order nobody wrote.
+// Windows.Media.Ocr hands out OcrLine and OcrWord bounding rectangles, so the
+// position is the service's own answer rather than a guess made from pixels.
+//
+// The engine choice is recognize()'s, including the second pass for a picture the
+// first engine's answer says was the wrong script -- the two calls share the code
+// that makes it, so they cannot drift apart on which pack reads what.
+//
+// Blocking, and the same expectations as recognize(): an image, a copied QImage,
+// opaque pixels.
+struct LayoutResult
+{
+    bool ok = false;
+    QVector<LayoutLine> lines;
+    QString error;
+};
+
+LayoutResult recognizeLayout(const QImage &image);
 
 } // namespace Ocr

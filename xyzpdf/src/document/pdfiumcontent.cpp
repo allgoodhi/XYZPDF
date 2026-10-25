@@ -147,6 +147,8 @@ QByteArray encoded(const QImage &image, QString *extension)
 struct PdfiumContentReader
 {
     static PageContent read(PdfiumBackend &backend, int pageIndex, bool graphics);
+    static bool userSpacePoint(PdfiumBackend &backend, int pageIndex, QPointF displayed,
+                               QPointF *userSpace);
 };
 
 namespace {
@@ -611,4 +613,43 @@ PageContent pageContentOf(Document &document, int page, bool graphics)
     if (!pdfium)
         return PageContent();
     return PdfiumContentReader::read(*pdfium, page, graphics);
+}
+
+bool PdfiumContentReader::userSpacePoint(PdfiumBackend &backend, int pageIndex,
+                                         QPointF displayed, QPointF *userSpace)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    PdfiumBackend::Impl &impl = *backend.impl;
+    if (!impl.document)
+        return false;
+    const FPDF_PAGE page = impl.holdPage(pageIndex, false);
+    if (!page)
+        return false;
+
+    // The same hundred-times-a-point device grid displayTransform() asks the other
+    // direction at. FPDF_DeviceToPage and FPDF_PageToDevice are one matrix and its
+    // inverse inside the library, so asking on a fine grid makes the two round trips
+    // agree to a hundredth of a point rather than to a whole one -- and the library is
+    // the one applying /Rotate and the crop box, both ways.
+    constexpr int kScale = 100;
+    const int width = int(std::lround(FPDF_GetPageWidthF(page) * kScale));
+    const int height = int(std::lround(FPDF_GetPageHeightF(page) * kScale));
+    if (width <= 0 || height <= 0)
+        return false;
+    double x = 0;
+    double y = 0;
+    if (!FPDF_DeviceToPage(page, 0, 0, width, height, 0,
+                           int(std::lround(displayed.x() * kScale)),
+                           int(std::lround(displayed.y() * kScale)), &x, &y))
+        return false;
+    *userSpace = QPointF(x, y);
+    return true;
+}
+
+bool userSpacePoint(Document &document, int page, QPointF displayed, QPointF *userSpace)
+{
+    auto *pdfium = dynamic_cast<PdfiumBackend *>(&document);
+    if (!pdfium)
+        return false;
+    return PdfiumContentReader::userSpacePoint(*pdfium, page, displayed, userSpace);
 }

@@ -21,6 +21,7 @@
 //   searchsession.h       the scan, the matches, the bar's label and the hits list
 //   wordexportsession.h   the document's text out as a Word file
 //   excelexportsession.h  the document's tables out as a workbook
+//   searchablepdfsession.h  a scan's pages out as invisible text over the same picture
 //   documentoutput.h      printing and a folder of images, both foreground
 //   ocrsession.h          the box dragged on a page, and reading what is in it
 //   translatesession.h    the two questions before a request, and the request
@@ -47,6 +48,7 @@
 #include "src/services/ocrsession.h"
 #include "src/services/pptexportsession.h"
 #include "src/services/searchsession.h"
+#include "src/services/searchablepdfsession.h"
 #include "src/services/signaturesession.h"
 #include "src/services/translatesession.h"
 #include "src/services/wordexportsession.h"
@@ -474,8 +476,8 @@ public:
     // which the window is what words and shows.
     void exportToWord(const QString &path);
     // The same job, written as slides instead of pages. One export at a time,
-    // Word, Excel or PowerPoint: all read the whole document and the window shows
-    // one progress box. isExporting() answers for any of them.
+    // Word, Excel, PowerPoint or the searchable PDF: all read the whole document and
+    // the window shows one progress box. isExporting() answers for any of them.
     void exportToPowerPoint(const QString &path);
     bool isExporting() const;
     // The reader has asked for it to stop, through the window's progress box.
@@ -495,6 +497,15 @@ public:
     // is the one choice the export dialog asks about (src/ui/excelexportdialog.h).
     void exportToExcel(const QString &path, bool exportText);
     void cancelExcelExport();
+
+    // ---- 扫描件转成可搜索的 PDF ----
+    //
+    // The same three handles on a different reading loop (searchablepdfsession.h):
+    // the pages without a text layer are recognized and the words are written back as
+    // invisible text where the ink is. The source file is read, never written; the
+    // destination is a new file the reader named.
+    void makeSearchablePdf(const QString &path);
+    void cancelMakeSearchablePdf();
 
 Q_SIGNALS:
     void titleChanged(const QString &title);
@@ -529,6 +540,11 @@ Q_SIGNALS:
     // The same two for the PowerPoint export.
     void powerPointExportProgress(int done, int total);
     void powerPointExportFinished(const PptExportReport &report);
+    // The searchable-PDF pass, in the same two shapes: pages done of pages in the
+    // document, and what was written or why nothing was. The report carries the three
+    // counts the window words -- recognized, left alone, found nothing.
+    void searchablePdfProgress(int done, int total);
+    void searchablePdfFinished(const SearchablePdfReport &report);
     // A page-image export finished: how many files and where, for the window to
     // say so in the status bar.
     void imageExportFinished(const QString &directory, int pages);
@@ -719,6 +735,11 @@ private:
 
     // The table export, assembled and waited for on exactly the same grounds.
     std::unique_ptr<ExcelExportSession> excelExport;
+
+    // The searchable-PDF pass reads and renders the same document page by page, so it
+    // is one of the jobs drainRenders() stops for and ~DocumentTab waits for -- declared
+    // after `backend` like the rest of the sessions for the same reason.
+    std::unique_ptr<SearchablePdfSession> searchablePdf;
 
     // The box the reader drags on a page: the crop's own render, the recognizer,
     // and the window the answer goes into. It is not one of the jobs

@@ -210,6 +210,16 @@ DocumentTab::DocumentTab(QWidget *parent)
             &DocumentTab::powerPointExportProgress);
     connect(powerPointExport.get(), &PptExportSession::reportFinished, this,
             &DocumentTab::powerPointExportFinished);
+    // The searchable-PDF pass is the Word export's arrangement with a different reading
+    // loop, plus the two things the writer needs to reopen the file itself: its path and
+    // the key the reader opened it with.
+    searchablePdf = std::make_unique<SearchablePdfSession>(
+        openDocument, [this] { return documentPath(); },
+        [this] { return documentPassword; });
+    connect(searchablePdf.get(), &SearchablePdfSession::progress, this,
+            &DocumentTab::searchablePdfProgress);
+    connect(searchablePdf.get(), &SearchablePdfSession::reportFinished, this,
+            &DocumentTab::searchablePdfFinished);
 
     // Printing and exporting to images are the two jobs that run in front of the
     // reader, on this thread, pumping events between pages -- so they are the
@@ -362,6 +372,10 @@ DocumentTab::~DocumentTab()
     excelExport->cancelPending();
     excelExport->waitUntilFinished();
 
+    // The searchable-PDF pass reads the document the same way and for the same reason.
+    searchablePdf->cancelPending();
+    searchablePdf->waitUntilFinished();
+
     // The signature verification reads the same file, so it is waited for by the same means. It
     // cannot be cut short in the middle of a call into Windows, which is why this one waits
     // rather than cancels.
@@ -416,7 +430,8 @@ void DocumentTab::exportToPowerPoint(const QString &path)
 
 bool DocumentTab::isExporting() const
 {
-    return wordExport->isRunning() || powerPointExport->isRunning() || excelExport->isRunning();
+    return wordExport->isRunning() || powerPointExport->isRunning() || excelExport->isRunning()
+        || searchablePdf->isRunning();
 }
 
 void DocumentTab::cancelWordExport()
@@ -445,6 +460,18 @@ QSizeF DocumentTab::powerPointSlideSize() const
 {
     Document *document = opened ? backend.get() : nullptr;
     return document ? ::powerPointSlideSize(*document) : QSizeF();
+}
+
+void DocumentTab::makeSearchablePdf(const QString &path)
+{
+    if (isExporting())
+        return;
+    searchablePdf->makeSearchable(path);
+}
+
+void DocumentTab::cancelMakeSearchablePdf()
+{
+    searchablePdf->cancel();
 }
 
 void DocumentTab::showFindBar()
@@ -548,6 +575,9 @@ void DocumentTab::drainRenders()
     // they get the same treatment.
     excelExport->cancelPending();
     powerPointExport->cancelPending();
+    // And the searchable-PDF pass, which is an export's worth of pages, each one a
+    // render and a recognition.
+    searchablePdf->cancelPending();
     // And the signature check, which reads the file again -- once through PDFium for the
     // signature dictionaries, once through qpdf for the field names and pages. It holds no
     // pointer to this tab's document so it cannot dangle, but a verification of the file the

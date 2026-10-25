@@ -14,6 +14,7 @@
 class WrappingToolBarArea;
 struct ExcelExportReport;
 struct PptExportReport;
+struct SearchablePdfReport;
 struct WordExportReport;
 
 #include <QList>
@@ -108,13 +109,20 @@ private:
     // The same two for 导出为 PowerPoint: one slide per page.
     void exportCurrentToPowerPoint();
     void reportPowerPointExport(const PptExportReport &report);
+    // Asks where to put the searchable copy, and tells the tab in front to make it.
+    // The source file is only read; the answer names the new file and how many pages
+    // were recognized, left alone and found empty.
+    void exportCurrentToSearchablePdf();
+    void reportSearchablePdf(const SearchablePdfReport &report);
     // The progress box, put up when the export reports its first page and taken
     // down when it reports its last. Driven by the tab's own signals rather than
     // by the menu item, so that it describes work that is happening rather than
     // work that was asked for -- and so that an export started any other way gets
     // one too. `kind` picks the wording and the cancel call; one export at a time
     // is enforced by the callers, so one box is enough for all of them.
-    enum class ExportKind { Word, Excel, PowerPoint };
+    // The searchable-PDF pass shares it: the work is the same shape -- pages done of
+    // pages in the document.
+    enum class ExportKind { Word, Excel, PowerPoint, Searchable };
     void showExportProgress(DocumentTab *tab, int done, int total, ExportKind kind);
     void closeExportProgress();
     void closeTab(int index);
@@ -279,6 +287,7 @@ private:
     QAction *exportWordAction = nullptr;
     QAction *exportExcelAction = nullptr;
     QAction *exportPowerPointAction = nullptr;
+    QAction *searchablePdfAction = nullptr;
     QAction *printAction = nullptr;
     QAction *exportImagesAction = nullptr;
     QAction *propertiesAction = nullptr;

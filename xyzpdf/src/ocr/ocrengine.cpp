@@ -202,16 +202,86 @@ OcrEngine engineOf(Family wanted)
     return nullptr;
 }
 
+// One reading of one picture: the text recognize() has always reported, and the
+// word boxes recognizeLayout() adds. Both come out of the same RecognizeAsync call
+// on purpose -- the two callers must not be able to disagree about what was read.
+struct Reading
+{
+    QString text;
+    QVector<Ocr::LayoutLine> lines;
+};
+
 // One engine, one picture, the words it found -- line by line, not Text(): the
 // whole-picture string joins with \r\n, and the lines are also what keeps the
 // caller free to reflow them.
-QString recognizeLines(const OcrEngine &engine, const SoftwareBitmap &bitmap)
+//
+// `pixelsPerOriginal` undoes the shrinking describeBitmap() does for a picture the
+// service would refuse: the boxes OcrWord reports are in the bitmap it was given,
+// and a caller placing text on the original picture needs its own coordinates back.
+Reading readLines(const OcrEngine &engine, const SoftwareBitmap &bitmap,
+                  double pixelsPerOriginal)
 {
     const auto recognized = engine.RecognizeAsync(bitmap).get();
+    Reading reading;
     QStringList lines;
-    for (const auto &line : recognized.Lines())
-        lines.append(QString::fromWCharArray(line.Text().c_str()));
-    return lines.join(QLatin1Char('\n'));
+    for (const auto &line : recognized.Lines()) {
+        const QString said = QString::fromWCharArray(line.Text().c_str());
+        lines.append(said);
+
+        Ocr::LayoutLine shaped;
+        shaped.text = said;
+        for (const auto &word : line.Words()) {
+            Ocr::LayoutWord one;
+            one.text = QString::fromWCharArray(word.Text().c_str());
+            const auto rect = word.BoundingRect();
+            one.box = QRectF(rect.X * pixelsPerOriginal, rect.Y * pixelsPerOriginal,
+                             rect.Width * pixelsPerOriginal, rect.Height * pixelsPerOriginal)
+                          .normalized();
+            shaped.words.append(one);
+            shaped.box |= one.box;
+        }
+        reading.lines.append(shaped);
+    }
+    reading.text = lines.join(QLatin1Char('\n'));
+    return reading;
+}
+
+// The engine's answer, or the other family's when the first says it was the wrong
+// tool.
+//
+// The second pass is asked only of a picture the first engine's own answer says it
+// was the wrong tool for. Two shapes say that, and both are in the measurement
+// above: it said *nothing* at all, which is what en-US answers for Chinese
+// characters, and a CJK engine said something with not one CJK character in it,
+// which is what zh-Hans answers for a line of Latin words -- and that answer is the
+// one that spells X as ")(".
+//
+// What is deliberately not here: a search for the best of several engines. One
+// extra pass is the whole cost, and on this machine the second engine is the only
+// other family there is. A reader whose Windows has one pack installed gets exactly
+// the answer this feature gave before, because there is nobody else to ask.
+Reading readWithFallback(const Engine &engine, const SoftwareBitmap &bitmap,
+                         double pixelsPerOriginal)
+{
+    Reading reading = readLines(engine.handle, bitmap, pixelsPerOriginal);
+    const bool saidNothing = reading.text.trimmed().isEmpty();
+    const bool wrongScript = engine.family == Family::Cjk && !hasCjkCharacter(reading.text);
+    if (saidNothing || wrongScript) {
+        const Family wanted = engine.family == Family::Cjk ? Family::Latin : Family::Cjk;
+        if (const OcrEngine other = engineOf(wanted)) {
+            const Reading again = readLines(other, bitmap, pixelsPerOriginal);
+            // An empty second answer never replaces one that said something.
+            //
+            // Measured, and the honest half of that: on this machine the trigger
+            // above already keeps a picture of Chinese from ever reaching this line,
+            // so deleting only this condition reddens no test at all. What it covers
+            // is the other shape -- a first engine that guessed something and a
+            // second that found nothing.
+            if (!again.text.trimmed().isEmpty())
+                reading = again;
+        }
+    }
+    return reading;
 }
 
 // The image as a SoftwareBitmap, by way of PNG.
@@ -246,17 +316,43 @@ SoftwareBitmap toSoftwareBitmap(const QImage &image)
         .get();
 }
 
-Ocr::Result recognizeWorker(QImage image)
+// The service refuses images larger than this outright. Rather than fail on a
+// huge crop, bring it down to a size it accepts: the text that survives a halving
+// is still text, and a refusal nobody can recover from is the worst answer
+// available.
+//
+// `pixelsPerOriginal` is 1.0 when nothing was changed, and otherwise the factor
+// that turns a box in the smaller picture back into the caller's -- the boxes
+// OcrWord reports belong to the bitmap the engine was handed, not to the image
+// the caller knows.
+QImage limitedForService(QImage image, double *pixelsPerOriginal)
+{
+    const unsigned maximum = OcrEngine::MaxImageDimension();
+    if (unsigned(image.width()) <= maximum && unsigned(image.height()) <= maximum)
+        return image;
+    const QImage scaled = image.scaled(
+        QSize(image.width(), image.height()).boundedTo(QSize(int(maximum), int(maximum))),
+        Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    if (!scaled.isNull() && scaled.width() > 0)
+        *pixelsPerOriginal = double(image.width()) / double(scaled.width());
+    return scaled;
+}
+
+// Pool threads arrive with no apartment at all, and this is what makes blocking
+// .get() legal on one. A thread that already has an apartment throws here; that is
+// fine, because it was already the way the work needs it.
+void joinApartment()
 {
     try {
-        // Pool threads arrive with no apartment at all, and this is what makes
-        // blocking .get() legal on one. A thread that already has an apartment
-        // throws here; that is fine, because it was already the way the work
-        // needs it.
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
     } catch (const winrt::hresult_error &) {
         // Already initialised on this thread.
     }
+}
+
+Ocr::Result recognizeWorker(QImage image)
+{
+    joinApartment();
 
     try {
         const Engine engine = pickEngine();
@@ -264,51 +360,13 @@ Ocr::Result recognizeWorker(QImage image)
             return {false, {},
                     sentence(QT_TRANSLATE_NOOP("Ocr", "这台 Windows 没有安装文字识别的语言包，无法识别文字。"))};
 
-        // The service refuses images larger than this outright. Rather than
-        // fail on a huge crop, bring it down to a size it accepts: the text
-        // that survives a halving is still text, and a refusal nobody can
-        // recover from is the worst answer available.
-        const unsigned maximum = OcrEngine::MaxImageDimension();
-        if (unsigned(image.width()) > maximum || unsigned(image.height()) > maximum) {
-            image = image.scaled(QSize(image.width(), image.height()).boundedTo(
-                                     QSize(int(maximum), int(maximum))),
-                                 Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        }
-
+        double pixelsPerOriginal = 1.0;
+        image = limitedForService(std::move(image), &pixelsPerOriginal);
         const auto bitmap = toSoftwareBitmap(image);
-        QString text = recognizeLines(engine.handle, bitmap);
 
-        // The second pass, asked only of a picture the first engine's own answer
-        // says it was the wrong tool for. Two shapes say that, and both are in
-        // the measurement above: it said *nothing* at all, which is what en-US
-        // answers for Chinese characters, and a CJK engine said something with
-        // not one CJK character in it, which is what zh-Hans answers for a line
-        // of Latin words -- and that answer is the one that spells X as ")(".
-        //
-        // What is deliberately not here: a search for the best of several
-        // engines. One extra pass is the whole cost, and on this machine the
-        // second engine is the only other family there is. A reader whose Windows
-        // has one pack installed gets exactly the answer this feature gave before,
-        // because there is nobody else to ask.
-        const bool saidNothing = text.trimmed().isEmpty();
-        const bool wrongScript = engine.family == Family::Cjk && !hasCjkCharacter(text);
-        if (saidNothing || wrongScript) {
-            const Family wanted = engine.family == Family::Cjk ? Family::Latin : Family::Cjk;
-            if (const OcrEngine other = engineOf(wanted)) {
-                const QString again = recognizeLines(other, bitmap);
-                // An empty second answer never replaces one that said something.
-                //
-                // Measured, and the honest half of that: on this machine the
-                // trigger above already keeps a picture of Chinese from ever
-                // reaching this line, so deleting only this condition reddens no
-                // test at all. What it covers is the other shape -- a first
-                // engine that guessed something and a second that found nothing.
-                if (!again.trimmed().isEmpty())
-                    text = again;
-            }
-        }
-
-        return {true, text, {}};
+        // Both engine passes live in readWithFallback(); the note there says which
+        // two shapes of answer ask for the second one.
+        return {true, readWithFallback(engine, bitmap, pixelsPerOriginal).text, {}};
     } catch (const winrt::hresult_error &error) {
         return {false, {},
                 sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错：%1")).arg(QString::fromWCharArray(error.message().c_str()))};
@@ -320,6 +378,34 @@ Ocr::Result recognizeWorker(QImage image)
         // rethrow it on the UI thread, where nothing catches it -- the process dies
         // for a picture the engine could not read (handoff-02 F4 caught that shape
         // with a debugger: QUnhandledException, what=[Unknown exception]).
+        return {false, {}, sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错了。"))};
+    }
+}
+
+Ocr::LayoutResult recognizeLayoutWorker(QImage image)
+{
+    joinApartment();
+
+    try {
+        const Engine engine = pickEngine();
+        if (!engine.handle)
+            return {false, {},
+                    sentence(QT_TRANSLATE_NOOP("Ocr", "这台 Windows 没有安装文字识别的语言包，无法识别文字。"))};
+
+        double pixelsPerOriginal = 1.0;
+        image = limitedForService(std::move(image), &pixelsPerOriginal);
+        const auto bitmap = toSoftwareBitmap(image);
+
+        Ocr::LayoutResult result;
+        result.ok = true;
+        result.lines = readWithFallback(engine, bitmap, pixelsPerOriginal).lines;
+        return result;
+    } catch (const winrt::hresult_error &error) {
+        return {false, {},
+                sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错：%1")).arg(QString::fromWCharArray(error.message().c_str()))};
+    } catch (const std::exception &error) {
+        return {false, {}, sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错：%1")).arg(QString::fromLocal8Bit(error.what()))};
+    } catch (...) {
         return {false, {}, sentence(QT_TRANSLATE_NOOP("Ocr", "识别时出错了。"))};
     }
 }
@@ -348,5 +434,19 @@ Ocr::Result Ocr::recognize(const QImage &image)
     QImage copy = image;
     return onMtaThread([copy = std::move(copy)]() mutable {
         return recognizeWorker(std::move(copy));
+    });
+}
+
+Ocr::LayoutResult Ocr::recognizeLayout(const QImage &image)
+{
+    // A sentence of its own rather than recognize()'s: the caller here is a page,
+    // not a box the reader dragged, and telling them the dragged region was empty
+    // would name something they never did.
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0)
+        return {false, {}, sentence(QT_TRANSLATE_NOOP("Ocr", "这一页没有可以识别的内容。"))};
+
+    QImage copy = image;
+    return onMtaThread([copy = std::move(copy)]() mutable {
+        return recognizeLayoutWorker(std::move(copy));
     });
 }

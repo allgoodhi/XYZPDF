@@ -585,7 +585,16 @@ void MainWindow::buildMenus()
             &MainWindow::exportCurrentToPowerPoint);
     fileMenu->addAction(exportPowerPointAction);
 
-    printAction = makeAction(tr("打印(&P)…"), QKeySequence(QStringLiteral("Ctrl+P")));
+    // With the other conversions, and last of them: it produces a PDF, which is the
+    // same kind of file the reader is looking at rather than another program's.
+    searchablePdfAction = makeAction(tr("扫描件转成可搜索的 PDF(&S)…"), QKeySequence());
+    searchablePdfAction->setObjectName(QStringLiteral("searchablePdfAction"));
+    searchablePdfAction->setToolTip(tr("识别没有文字层的扫描页，另存为一份可以搜索和复制的 PDF"));
+    connect(searchablePdfAction, &QAction::triggered, this,
+            &MainWindow::exportCurrentToSearchablePdf);
+    fileMenu->addAction(searchablePdfAction);
+
+    printAction =makeAction(tr("打印(&P)…"), QKeySequence(QStringLiteral("Ctrl+P")));
     printAction->setObjectName(QStringLiteral("printAction"));
     printAction->setToolTip(tr("把这份 PDF 打印出来"));
     connect(printAction, &QAction::triggered, this, [this] {
@@ -1528,6 +1537,19 @@ DocumentTab *MainWindow::openDocument(const QString &path, int page, const QStri
                 closeExportProgress();
                 reportPowerPointExport(report);
             });
+    // The searchable-PDF pass, in the same two shapes: the progress line and box, and
+    // the answer.
+    connect(tab, &DocumentTab::searchablePdfProgress, this, [this, tab](int done, int total) {
+        if (!tab->isExporting())
+            return;
+        setStatusMessage(tr("正在识别扫描页…（%1 / %2 页）").arg(done).arg(total));
+        showExportProgress(tab, done, total, ExportKind::Searchable);
+    });
+    connect(tab, &DocumentTab::searchablePdfFinished, this,
+            [this](const SearchablePdfReport &report) {
+                closeExportProgress();
+                reportSearchablePdf(report);
+            });
     connect(tab, &DocumentTab::imageExportFinished, this, [this](const QString &directory,
                                                                  int pages) {
         setStatusMessage(tr("已导出 %n 张图片到 %1", nullptr, pages).arg(directory), 6000);
@@ -1809,7 +1831,7 @@ void MainWindow::openFileDialog()
 void MainWindow::exportCurrentToWord()
 {
     DocumentTab *tab = currentTab();
-    if (!tab || !tab->isOpen() || tab->isExporting())
+    if (!tab || !tab->isOpen() || tab->isExporting() || tab->isMakingSearchablePdf())
         return;
 
     // The PDF's own name with the extension swapped, in the folder it came from:
@@ -1880,6 +1902,32 @@ void MainWindow::exportCurrentToPowerPoint()
     tab->exportToPowerPoint(path);
 }
 
+void MainWindow::exportCurrentToSearchablePdf()
+{
+    DocumentTab *tab = currentTab();
+    if (!tab || !tab->isOpen() || tab->isExporting())
+        return;
+
+    // A new name in the same folder, and never the file being read: the writer refuses
+    // a destination that is the source, but the name offered here should not invite
+    // the reader to try.
+    const QFileInfo info(tab->documentPath());
+    QString suggested = info.completeBaseName() + QStringLiteral("-searchable.pdf");
+    if (!info.absolutePath().isEmpty())
+        suggested = info.absolutePath() + QLatin1Char('/') + suggested;
+
+    const QString path = WindowDialogs::getSaveFileName(this, tr("扫描件转成可搜索的 PDF"),
+                                                       suggested, tr("PDF 文档 (*.pdf)"));
+    if (path.isEmpty())
+        return;
+
+    // Said now rather than when it finishes: recognition reads every scanned page at
+    // print resolution, and a reader who has just clicked something deserves to know it
+    // was heard.
+    setStatusMessage(tr("正在识别扫描页…"));
+    tab->makeSearchablePdf(path);
+}
+
 void MainWindow::showExportProgress(DocumentTab *tab, int done, int total, ExportKind kind)
 {
     if (!tab)
@@ -1894,6 +1942,7 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total, Expor
         dialog->setObjectName(QStringLiteral("exportProgress"));
         const QString title = kind == ExportKind::Excel        ? tr("导出为 Excel — %1")
                               : kind == ExportKind::PowerPoint ? tr("导出为 PowerPoint — %1")
+                              : kind == ExportKind::Searchable ? tr("扫描件转成可搜索的 PDF — %1")
                                                                : tr("导出为 Word — %1");
         dialog->setWindowTitle(title.arg(QFileInfo(tab->documentPath()).fileName()));
         dialog->setCancelButtonText(tr("取消"));
@@ -1930,6 +1979,8 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total, Expor
                 tab->cancelExcelExport();
             else if (exportKind == ExportKind::PowerPoint)
                 tab->cancelPowerPointExport();
+            else if (exportKind == ExportKind::Searchable)
+                tab->cancelMakeSearchablePdf();
             else
                 tab->cancelWordExport();
             const int stoppedAt = exportDone;
@@ -1982,6 +2033,11 @@ void MainWindow::showExportProgress(DocumentTab *tab, int done, int total, Expor
         exportProgress->setLabelText(
             done > 0 ? tr("正在导出为 PowerPoint…（%1 / %2 页）").arg(done).arg(total)
                      : tr("正在导出为 PowerPoint…（共 %n 页）", nullptr, total));
+        break;
+    case ExportKind::Searchable:
+        exportProgress->setLabelText(
+            done > 0 ? tr("正在识别扫描页…（%1 / %2 页）").arg(done).arg(total)
+                     : tr("正在识别扫描页…（共 %n 页）", nullptr, total));
         break;
     case ExportKind::Word:
         exportProgress->setLabelText(done > 0
@@ -2080,9 +2136,10 @@ void MainWindow::reportExcelExport(const ExcelExportReport &report)
         return;
     }
 
-    QString message = tr("已导出 %1 个表格（共读 %2 页）到：\n%3")
-                          .arg(report.tables)
-                          .arg(report.pages)
+    // %n rather than %1 for the count (AGENTS: "1 tables" is what %1 says in English);
+    // the pages read are told by the two detail lines below, so they are not counted
+    // a second time here.
+    QString message = tr("已导出 %n 个表格到：\n%1", nullptr, report.tables)
                           .arg(QDir::toNativeSeparators(report.path));
 
     QString detail;
@@ -2154,6 +2211,39 @@ void MainWindow::reportPowerPointExport(const PptExportReport &report)
         message += QStringLiteral("\n\n") + detail;
     setStatusMessage(tr("已导出为 PowerPoint"), 5000);
     WindowDialogs::information(this, tr("导出为 PowerPoint"), message);
+}
+
+void MainWindow::reportSearchablePdf(const SearchablePdfReport &report)
+{
+    // The same rule as the Word export's: a run stopped because the document was
+    // replaced is not an interruption about a document the reader has moved on from.
+    if (report.cancelled) {
+        setStatusMessage(tr("已取消"), 5000);
+        return;
+    }
+
+    if (!report.ok) {
+        setStatusMessage(tr("没有写出文件"), 5000);
+        WindowDialogs::warning(this, tr("扫描件转成可搜索的 PDF"), report.error);
+        return;
+    }
+
+    QString message = tr("已写出：\n%1").arg(QDir::toNativeSeparators(report.path));
+
+    // The three counts the reader needs to judge the result: how much was recognized,
+    // how much was already readable, and how much came back with no words at all. The
+    // last is said even when it is zero -- a scan of a photograph is the common case
+    // that produces it, and "0" is an answer where silence would look like a failure.
+    QString detail = tr("识别了 %n 页扫描页。", nullptr, report.recognized);
+    detail += QLatin1Char('\n')
+        + tr("另有 %n 页本来就有文字层，没有动。", nullptr, report.skipped);
+    detail += QLatin1Char('\n') + tr("其中 %n 页没有认出文字。", nullptr, report.empty);
+    if (report.words > 0)
+        detail += QLatin1Char('\n') + tr("一共写入 %n 个词。", nullptr, report.words);
+    message += QStringLiteral("\n\n") + detail;
+
+    setStatusMessage(tr("已写出可搜索的 PDF"), 6000);
+    WindowDialogs::information(this, tr("扫描件转成可搜索的 PDF"), message);
 }
 
 bool MainWindow::confirmDiscardingEdits(DocumentTab *tab)
@@ -2587,7 +2677,7 @@ void MainWindow::updateForCurrentTab()
                             twoPageAction, bookModeAction,
                             selectAllAction, findAction, findNextAction, findPreviousAction,
                             exportWordAction, exportExcelAction, exportPowerPointAction,
-                            printAction, exportImagesAction,
+                            searchablePdfAction, printAction, exportImagesAction,
                             propertiesAction, reloadAction,
                             deletePagesAction, rotatePagesAction, movePagesAction,
                             mergeFileAction, splitFileAction, protectFileAction,

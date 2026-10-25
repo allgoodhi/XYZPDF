@@ -27,6 +27,7 @@
 #include <QByteArray>
 #include <QColor>
 #include <QImage>
+#include <QPointF>
 #include <QPolygonF>
 #include <QRectF>
 #include <QSize>
@@ -122,3 +123,17 @@ struct PageContent
 // which is what a pass over every page to find its running header wants: a page of
 // photographs costs its decoding only once, in the pass that writes it.
 PageContent pageContentOf(Document &document, int page, bool graphics = true);
+
+// The other direction of the mapping everything above is in: a point of the displayed
+// page (points, top-left origin, /Rotate applied) as the PDF's own user space -- the
+// space a content stream appended to the page is written in.
+//
+// This exists because the searchable-PDF export has to put recognition boxes, which are
+// in the space a reader sees, back where the file draws them. Asked of PDFium's
+// FPDF_DeviceToPage for the same reason displayTransform() asks FPDF_PageToDevice: the
+// library knows the crop box and the page's own /Rotate, and a hand-rolled inverse would
+// have to be right about both -- and to have the same idea of which corner is the origin.
+//
+// False when the backend cannot answer (anything but PDFium) or the page will not load;
+// `userSpace` is untouched then.
+bool userSpacePoint(Document &document, int page, QPointF displayed, QPointF *userSpace);

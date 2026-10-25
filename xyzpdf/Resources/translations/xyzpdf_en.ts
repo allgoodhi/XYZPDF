@@ -1559,6 +1559,11 @@ This document carries %n digital signatures, and they are being checked.</numeru
             <translation>Excel workbook (*.xlsx)</translation>
         </message>
         <message>
+            <location filename="../../mainwindow.cpp" line="1832" />
+            <source>PDF 文档 (*.pdf)</source>
+            <translation>PDF documents (*.pdf)</translation>
+        </message>
+        <message>
             <location filename="../../mainwindow.cpp" line="1763" />
             <source>PDF 文档 (*.pdf);;所有文件 (*)</source>
             <translation>PDF documents (*.pdf);;All files (*)</translation>
@@ -1586,6 +1591,14 @@ This document carries %n digital signatures, and they are being checked.</numeru
             <translation>“%1” still has changes that are not in any file: %2.
 
 Save them first?</translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2044" />
+            <source>一共写入 %n 个词。</source>
+            <translation>
+                <numerusform>%n word was written into the layer.</numerusform>
+                <numerusform>%n words were written into the layer.</numerusform>
+            </translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="1078" />
@@ -1686,6 +1699,14 @@ Save them first?</translation>
             </translation>
         </message>
         <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2042" />
+            <source>其中 %n 页没有认出文字。</source>
+            <translation>
+                <numerusform>%n page had no text in it.</numerusform>
+                <numerusform>%n pages had no text in them.</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
             <location filename="../../mainwindow.cpp" line="2029" />
             <source>其中 %n 页的尺寸和第一页不同，已按比例缩放后居中放在幻灯片上。</source>
             <translation>
@@ -1742,6 +1763,14 @@ Save them first?</translation>
             <translation>
                 <numerusform>%n more page had neither text nor anything that could be rendered: its slide is blank.</numerusform>
                 <numerusform>%n more pages had neither text nor anything that could be rendered: their slides are blank.</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2041" />
+            <source>另有 %n 页本来就有文字层，没有动。</source>
+            <translation>
+                <numerusform>%n page already had a text layer and was left alone.</numerusform>
+                <numerusform>%n pages already had a text layer and were left alone.</numerusform>
             </translation>
         </message>
         <message numerus="yes">
@@ -1883,6 +1912,18 @@ Save them first?</translation>
             <translation>Saved to %1</translation>
         </message>
         <message>
+            <location filename="../../mainwindow.cpp" line="2047" />
+            <source>已写出可搜索的 PDF</source>
+            <translation>Searchable PDF written</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="2033" />
+            <source>已写出：
+%1</source>
+            <translation>Written:
+%1</translation>
+        </message>
+        <message>
             <location filename="../../mainwindow.cpp" line="1518" />
             <source>已写成 %1 个新文件（整份 %2 页）：%3</source>
             <translation>Wrote %1 new files (%2 pages in all): %3</translation>
@@ -1894,6 +1935,11 @@ Save them first?</translation>
                 <numerusform>Wrote a new file (%n page): %1</numerusform>
                 <numerusform>Wrote a new file (%n pages): %1</numerusform>
             </translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="2023" />
+            <source>已取消</source>
+            <translation>Cancelled</translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="1499" />
@@ -2025,6 +2071,23 @@ Save them first?</translation>
             <location filename="../../mainwindow.cpp" line="551" />
             <source>打开(&amp;O)…</source>
             <translation>&amp;Open…</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="1831" />
+            <location filename="../../mainwindow.cpp" line="2029" />
+            <location filename="../../mainwindow.cpp" line="2048" />
+            <source>扫描件转成可搜索的 PDF</source>
+            <translation>Make Scanned Pages Searchable</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="1857" />
+            <source>扫描件转成可搜索的 PDF — %1</source>
+            <translation>Make Scanned Pages Searchable — %1</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="591" />
+            <source>扫描件转成可搜索的 PDF(&amp;S)…</source>
+            <translation>Make Scanned Pages &amp;Searchable…</translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="1398" />
@@ -2278,9 +2341,33 @@ Save them first?</translation>
             </translation>
         </message>
         <message>
+            <location filename="../../mainwindow.cpp" line="1839" />
+            <source>正在识别扫描页…</source>
+            <translation>Recognizing scanned pages…</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="1506" />
+            <location filename="../../mainwindow.cpp" line="1933" />
+            <source>正在识别扫描页…（%1 / %2 页）</source>
+            <translation>Recognizing scanned pages… (page %1 of %2)</translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="1937" />
+            <source>正在识别扫描页…（共 %n 页）</source>
+            <translation>
+                <numerusform>Recognizing scanned pages… (%n page)</numerusform>
+                <numerusform>Recognizing scanned pages… (%n pages)</numerusform>
+            </translation>
+        </message>
+        <message>
             <location filename="../../mainwindow.cpp" line="2225" />
             <source>没有其他窗口可以合并</source>
             <translation>There are no other windows to merge</translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="2028" />
+            <source>没有写出文件</source>
+            <translation>No file was written</translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="1359" />
@@ -2426,6 +2513,19 @@ Save them first?</translation>
             <location filename="../../mainwindow.cpp" line="729" />
             <source>识别</source>
             <translation>Recognize</translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../../mainwindow.cpp" line="2039" />
+            <source>识别了 %n 页扫描页。</source>
+            <translation>
+                <numerusform>%n scanned page was recognized.</numerusform>
+                <numerusform>%n scanned pages were recognized.</numerusform>
+            </translation>
+        </message>
+        <message>
+            <location filename="../../mainwindow.cpp" line="593" />
+            <source>识别没有文字层的扫描页，另存为一份可以搜索和复制的 PDF</source>
+            <translation>Reads the scanned pages that have no text of their own, and saves a copy you can search and select in</translation>
         </message>
         <message>
             <location filename="../../mainwindow.cpp" line="2562" />
@@ -2982,6 +3082,11 @@ The original file is not touched. This step only records the change; a save is s
             <location filename="../../src/ocr/ocrengine.cpp" line="316" />
             <source>识别时出错：%1</source>
             <translation>Recognition failed: %1</translation>
+        </message>
+        <message>
+            <location filename="../../src/ocr/ocrengine.cpp" line="446" />
+            <source>这一页没有可以识别的内容。</source>
+            <translation>This page has nothing that can be recognized.</translation>
         </message>
         <message>
             <location filename="../../src/ocr/ocrengine.cpp" line="265" />
@@ -3751,6 +3856,107 @@ The original file is not touched. This step only records the change; a save is s
                 <numerusform>1 more match is not listed</numerusform>
                 <numerusform>%n more matches are not listed</numerusform>
             </translation>
+        </message>
+    </context>
+    <context>
+        <name>SearchablePdf</name>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="247" />
+            <source>不能把结果写回正在打开的这份 PDF。请换一个文件名。</source>
+            <translation>The result cannot be written back to the PDF that is open. Please choose another name.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="454" />
+            <source>写出文件时出错，原来的文件没有改动。
+
+解析器说：%1</source>
+            <translation>Writing the file failed, and the original file was not changed.
+
+The parser says: %1</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="470" />
+            <source>写出来的文件有 %2 页，而原来的文件是 %1 页，所以没有替换它。原来的文件没有改动。</source>
+            <translation>The file that was written has %2 pages while the original has %1, so it was not put in place. The original file was not changed.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="480" />
+            <source>写出来的文件没能重新打开，所以没有替换它。原来的文件没有改动。
+
+解析器说：%1</source>
+            <translation>The file that was written could not be opened again, so it was not put in place. The original file was not changed.
+
+The parser says: %1</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/searchablepdf.cpp" line="94" />
+            <source>已取消：原来的文件没有改动，也没有写出新文件。</source>
+            <translation>Cancelled: the original file was not changed and no new file was written.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="253" />
+            <source>文件夹不存在：%1</source>
+            <translation>The folder does not exist: %1</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="491" />
+            <source>新文件已经写好，但没法放到 %1 那里去——它可能被别的程序占着，或者这个名字不允许覆盖（Windows 错误 %2）。写好的文件留在 %3。</source>
+            <translation>The new file was written, but it could not be put in place at %1 — another program may be holding it, or this name may not be replaced (Windows error %2). The finished file has been left at %3.</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/searchablepdf.cpp" line="272" />
+            <source>没有从扫描页里认出可以放进文字层的文字。</source>
+            <translation>Nothing that could go into a text layer was found on the scanned pages.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="265" />
+            <location filename="../../src/edit/textlayerwriter.cpp" line="428" />
+            <source>没有可以写入文字层的词。</source>
+            <translation>There were no words to write into the text layer.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="241" />
+            <source>没有指定要写入的文件。</source>
+            <translation>No file was given to write to.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="312" />
+            <source>没有能装下这些字符的字体，文字层没有写。</source>
+            <translation>No font could hold these characters, so no text layer was written.</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/searchablepdf.cpp" line="101" />
+            <source>这个文件没有页面。</source>
+            <translation>This file has no pages.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="298" />
+            <source>这份 PDF 打不开，没法加文字层。
+
+解析器说：%1</source>
+            <translation>This PDF could not be opened to add a text layer.
+
+The parser says: %1</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="191" />
+            <source>这份 PDF 有一页的内容流结构不对，没法把文字层接在后面。原来的文件没有改动。</source>
+            <translation>One page of this PDF has a content stream that cannot be added to, so no text layer was written. The original file was not changed.</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/searchablepdf.cpp" line="270" />
+            <source>这份 PDF 的每一页都已经有文字层了，不需要再加。</source>
+            <translation>Every page of this PDF already has a text layer, so there was nothing to add.</translation>
+        </message>
+        <message>
+            <location filename="../../src/edit/textlayerwriter.cpp" line="281" />
+            <source>这份 PDF 里的不同字符太多（%1 个），文字层放不下。</source>
+            <translation>This PDF has too many different characters (%1) for one text layer.</translation>
+        </message>
+        <message>
+            <location filename="../../src/export/searchablepdf.cpp" line="158" />
+            <source>这台电脑没有装文字识别的语言包，扫描页没有识别。可以在 Windows 设置里添加语言之后再试。</source>
+            <translation>This computer has no language pack for reading text, so the scanned pages were not recognized. Add a language in Windows settings and try again.</translation>
         </message>
     </context>
     <context>

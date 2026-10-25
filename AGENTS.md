@@ -99,7 +99,7 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   互不重复，`…` 跟着词干；`.ts` 里 `&` 是 `&amp;`（数它的时候按 `(&amp;X)` 数，§96 那个假 0 就是这么来的）。
   **没验的一层**：Alt+字母真能打开对应项，这一族从没在屏幕上按过一次。
 - 真窗口那一遍：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/tools/gui-probe.ps1
-  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime|formcombo|formlist|signedsave|signedlock`（三十三种模式；`saverename` 仍收，是 `saveas` 的别名
+  -Mode inventory|menudump|exportstatus|mergedonor|splitsagain|saveas|saveinplace|closeprompt|langswitch|formpage|uacache|openpicker|outlinetree|tabstrip|bookdialog|deletesummary|pathforms|propsdialog|findwhole|snapshot|strippreview|mnemonics|translatesetup|xfanotice|replynotice|formfill|formtab|formcheck|formime|formcombo|formlist|signedsave|signedlock|wordexport`（三十四种模式；`saverename` 仍收，是 `saveas` 的别名
   都当场跑通过；脚本注释里就是踩过的坑）。`deletesummary` 带 `-ExpectForm present|absent`：**屏幕上的一条
   判定必须能红**，所以同一模式在无表单文件上跑 `present` 要 exit 1（§85 的控制就是这么做的），而"没读到"
   的失败消息要说清是没框还是没话 —— 合成输入按轮成败，重试是常规操作，不是缺陷。侧栏那棵书签树用 `-Mode outlinetree -Doc <带大纲的文件> -Log <utf8>` 数，
@@ -240,6 +240,10 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
   粗细按**字体那一面**比（含 `,Italic` 那段，不能按映射后的家族）；页眉页脚要**从页边往里连续**（一行代码碰巧重复两次不是页脚）；
   被后画的不透明形状盖住的字不写；整页是图纸（≥300 条线、字平均不到 8 个一段）或扫描（图占 60% 以上、字 ≤40）就整页成图；
   名字说不出字体（`CIDFont+F2`）时用内嵌字体自己的家族名。
+  **两栏正文**（§129）做成 Word 的两栏（连续分节 + 栏断），判据是沟两边各 ≥5 行、多数行占本栏七成宽、行内**不带缺口**
+  （两段式表格每行都有缺口，那是表格）；WPS 把带分节符的段落排成零高，栏上方的空白要给栏里第一段。**从右往左的文字**
+  PDFium 按阅读顺序给、x 往左走：行按 x 排序后要逐段倒回来，无几何的空格放在前一个字的**左边**，不做行宽拟合。
+  竖排中文只做到"看着一样"（按行切成制表位），编辑时字序是横着读的。屏幕上那一遍：`-Mode wordexport`。
 - **bash heredoc 里写 C++ 不要带反斜杠**（§124 踩了四次）：这个环境的 Bash 工具会把 heredoc 里的 `\n` `\\d` `\\0` 先吃掉一层，
   `"\n"` 变成真换行（C2001）、正则 `\\d` 变成 `\d`、`'\\0'` 变成真 NUL 字节（`grep` 报 "Binary file matches"）。带反斜杠的改动用 Edit/Write。
 - **识别器要按文字的族挑**（§118，handoff-04 G3）：`pickEngine()` 按用户语言顺序拿引擎，这台机器是 zh-Hans-CN 在前，

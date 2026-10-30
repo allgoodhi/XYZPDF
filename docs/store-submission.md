@@ -8159,3 +8159,14 @@ B 读流前不 `Seek` → `thumbnailprovider_smoke` 红在 "a stream left at its
 - 顺带看到一条没查的：手跑 `xyzpdf_pdfiumbackend_smoke.exe` 时把 `build-local-release` 放在 PATH 最前面，进程以 0xC0000409 退出；
   照门禁的 PATH（Qt 的 bin 在前）跑全绿。想拿主检出构建树里那颗测试 exe 对照，它挂住不结束，而且那颗来自主会话正在改的源码、
   说明不了"改前"，停掉了 —— **没调查**，不知道是不是改前就这样。
+
+**合并之后在屏幕上补了 §133 那几条"没验的"**（主检出，合并提交 `6cfe0bf`）：门禁 31 过 / 0 失败、目录 829。重新出包 `XYZPDF-0.1.0-setup.exe`
+16,165,225 字节，sha256 `85d31ecd…45ec`；静默覆盖安装 `/TASKS="shell,shell\preview,shell\thumbnail"`：exit 0，装上的 `xyzpdfthumbnail.dll`
+（97,792）/ `xyzpdfpreview.dll`（138,752）与构建树逐字节相同；ProgID 下两个指针、`CLSID\{4032B809-…}\InprocServer32` + `Apartment` 都在，
+没有 `DisableProcessIsolation`。`.pdf` 的默认程序已是 `xyzpdf.Document`（§132）。
+新建一个目录放四份样本（新名字，免得缩略图缓存里有旧图），资源管理器打开后经 `Shell.Application` 把视图设成图标、256 px（快捷键
+Ctrl+Shift+2 这一轮没送到窗口上，第一张图仍是详细信息视图），按外框 `PrintWindow`：**四份都显示第一页**（colored 的红字、table 的四格、
+mixed 的封面字、many-pages 的 "page 1"），右下角是 Windows 自己加的程序角标。**两个 explorer.exe 进程的模块表里没有 xyzpdf / Qt6 / pdfium 任何一颗**。
+画缩略图的那个隔离进程截图时已经退出，没抓到它的模块表 —— "在 DllHost 里画"仍是按文档推的，量到的是"不在 explorer 里"。
+子代理那条 0xC0000409：照它的手法（PATH 手排、不经门禁）跑，§133 没碰过的 `document_smoke` 一样崩（0xC0000005），`pdfiumbackend_smoke`
+换成 Qt 在前也只是 exit 1 —— 是手排的运行环境不全，不是这次的改动；按门禁跑全绿。

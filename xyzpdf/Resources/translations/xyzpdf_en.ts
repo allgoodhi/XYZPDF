@@ -5,8 +5,8 @@
     <name>AboutInfo</name>
     <message>
         <location filename="../../src/core/aboutinfo.h" line="27"/>
-        <source>&lt;h3&gt;%1 %2&lt;/h3&gt;&lt;p&gt;Windows PDF 阅读器。&lt;/p&gt;&lt;p&gt;Qt %3&lt;br&gt;渲染引擎：Qt PDF（PDFium）&lt;/p&gt;&lt;p&gt;版权所有 © 2026 allgoodhi&lt;/p&gt;</source>
-        <translation>&lt;h3&gt;%1 %2&lt;/h3&gt;&lt;p&gt;A Windows PDF reader.&lt;/p&gt;&lt;p&gt;Qt %3&lt;br&gt;Rendering engine: Qt PDF (PDFium)&lt;/p&gt;&lt;p&gt;Copyright © 2026 allgoodhi&lt;/p&gt;</translation>
+        <source>&lt;h3&gt;%1 %2&lt;/h3&gt;&lt;p&gt;Windows PDF 阅读器。&lt;/p&gt;&lt;p&gt;Qt %3&lt;br&gt;渲染引擎：PDFium&lt;/p&gt;&lt;p&gt;版权所有 © 2026 allgoodhi&lt;br&gt;以 MIT 许可证开源&lt;/p&gt;</source>
+        <translation>&lt;h3&gt;%1 %2&lt;/h3&gt;&lt;p&gt;A Windows PDF reader.&lt;/p&gt;&lt;p&gt;Qt %3&lt;br&gt;Rendering engine: PDFium&lt;/p&gt;&lt;p&gt;Copyright © 2026 allgoodhi&lt;br&gt;Open source under the MIT License&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../../src/core/aboutinfo.h" line="40"/>

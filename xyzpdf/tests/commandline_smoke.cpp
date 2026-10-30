@@ -235,6 +235,35 @@ int main(int argc, char **argv)
               "and a number from another build is not one of them");
     }
 
+    // ---- the installer's two switches ----
+    //
+    // packaging/xyzpdf.iss spells them out; these are the spellings it has to use.
+    {
+        using CommandLine::Setup;
+        const QString exe = QStringLiteral("xyzpdf.exe");
+        check(CommandLine::switchFor(Setup::RegisterShell) == QStringLiteral("--register-shell"),
+              "the installer registers with --register-shell");
+        check(CommandLine::switchFor(Setup::UnregisterShell) == QStringLiteral("--unregister-shell"),
+              "and unregisters with --unregister-shell");
+        check(CommandLine::switchFor(Setup::None).isEmpty(), "and None has no switch");
+        check(CommandLine::setupOf({exe, QStringLiteral("--register-shell")}) == Setup::RegisterShell,
+              "--register-shell on its own is the installer");
+        check(CommandLine::setupOf({exe, QStringLiteral("--unregister-shell")})
+                  == Setup::UnregisterShell,
+              "and so is --unregister-shell");
+        check(CommandLine::setupOf({exe}) == Setup::None, "a bare launch is not");
+        check(CommandLine::setupOf({exe, QStringLiteral("a.pdf")}) == Setup::None,
+              "nor is a document");
+        check(CommandLine::setupOf({exe, QStringLiteral("--"), QStringLiteral("--register-shell")})
+                  == Setup::None,
+              "nor a document called --register-shell after --");
+        check(CommandLine::setupOf({exe, QStringLiteral("--register-shell"), QStringLiteral("a.pdf")})
+                  == Setup::None,
+              "nor the switch with anything beside it");
+        check(CommandLine::setupOf({exe, QStringLiteral("--Register-Shell")}) == Setup::None,
+              "and the spelling is exact");
+    }
+
     if (failures == 0) {
         std::cout << "the command line holds together\n";
         return 0;

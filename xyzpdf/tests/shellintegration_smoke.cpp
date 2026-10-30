@@ -25,8 +25,11 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QSettings>
 #include <QString>
+#include <QTemporaryDir>
 
 #include <iostream>
 #include <string>
@@ -232,6 +235,58 @@ int main(int argc, char **argv)
         check(!ShellIntegration::hasAnyTrace(kDisposableClasses), "leaving nothing behind");
         check(valueCount(openWithSubKey) == 0,
               "and the shared 打开方式 key is left for the other programs that write to it");
+    }
+
+    // ---- the preview pane pointer ----
+    //
+    // Written under our ProgID only when xyzpdfpreview.dll sits beside the executable, and never
+    // under .pdf, where another program's previewer lives. Two stand-in files in a folder of the
+    // test's own: registerVerbs() asks only whether they exist.
+    {
+        const QString pointerSubKey = kDisposableClassesSubKeyPath
+                                      + QStringLiteral("\\xyzpdf.Document\\ShellEx\\"
+                                                       "{8895b1c6-b41f-4c1c-a562-0d564250836f}");
+        const QString extensionSlot = kDisposableClassesSubKeyPath
+                                      + QStringLiteral("\\.pdf\\ShellEx");
+        const auto pointerValue = [&] {
+            QSettings key(QStringLiteral("HKEY_CURRENT_USER\\") + pointerSubKey,
+                          QSettings::NativeFormat);
+            return key.value(QStringLiteral("Default")).toString();
+        };
+
+        QTemporaryDir folder;
+        check(folder.isValid(), "a folder for the stand-in program");
+        const QString executable = folder.filePath(QStringLiteral("xyzpdf.exe"));
+        const QString previewDll = folder.filePath(QStringLiteral("xyzpdfpreview.dll"));
+        const auto touch = [](const QString &path) {
+            QFile file(path);
+            return file.open(QIODevice::WriteOnly) && file.write("x", 1) == 1;
+        };
+        check(touch(executable), "the stand-in executable");
+
+        QString error;
+        check(ShellIntegration::registerVerbs(executable, kDisposableClasses, &error),
+              QStringLiteral("registering without a preview handler: %1").arg(error));
+        check(valueCount(pointerSubKey) == -1,
+              QStringLiteral("no preview pointer without the DLL (subkeys: %1)")
+                  .arg(subKeysUnder(kDisposableClassesSubKeyPath)));
+
+        check(touch(previewDll), "the stand-in preview handler");
+        check(ShellIntegration::registerVerbs(executable, kDisposableClasses, &error),
+              QStringLiteral("registering with a preview handler: %1").arg(error));
+        check(pointerValue().compare(QStringLiteral("{12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7}"),
+                                     Qt::CaseInsensitive)
+                  == 0,
+              QStringLiteral("the pointer names the class in previewhandler.cpp (found \"%1\"; "
+                             "subkeys: %2)")
+                  .arg(pointerValue(), subKeysUnder(kDisposableClassesSubKeyPath)));
+        check(valueCount(extensionSlot) == -1,
+              "and the extension's own ShellEx, where another previewer lives, is not touched");
+
+        check(ShellIntegration::unregisterVerbs(kDisposableClasses, &error),
+              QStringLiteral("unregistering: %1").arg(error));
+        check(valueCount(pointerSubKey) == -1, "the pointer goes with the ProgID");
+        check(!ShellIntegration::hasAnyTrace(kDisposableClasses), "leaving nothing behind");
     }
 
     // ---- what a refusal looks like ----

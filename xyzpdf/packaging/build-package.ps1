@@ -69,7 +69,12 @@ param(
     [string]$VcpkgBin = '',
     [switch]$Sign,
     [string]$Cert = '',
-    [switch]$Install
+    [switch]$Install,
+    # Stop after step 2c: the staged program (install, strip, C runtime, QPDF) and no
+    # manifest, index or pack. build-installer.ps1 passes it, so the GitHub installer
+    # carries exactly the payload the MSIX does rather than a second staging that
+    # forgets one of the runtimes.
+    [switch]$StageOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -271,6 +276,11 @@ foreach ($name in $qpdfRuntime) {
     }
 }
 Write-Host ("copied the QPDF runtime, {0} file(s), from $VcpkgBin" -f $qpdfRuntime.Count)
+
+if ($StageOnly) {
+    Write-Host "staged into $Stage (no manifest, no pack: -StageOnly)"
+    return
+}
 
 # ---------------------------------------------------------------------------
 # 3. The manifest and the pictures it names, then a check that both agree

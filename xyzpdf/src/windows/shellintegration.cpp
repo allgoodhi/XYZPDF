@@ -40,6 +40,14 @@ const QString kCascadeKey = QStringLiteral("xyzpdf");
 // What the extension is, and what the type is called in the 打开方式 list.
 const QString kExtension = QStringLiteral("pdf");
 
+// The preview handler: its DLL's name beside the executable, the class compiled into
+// src/windows/previewhandler.cpp (and declared in packaging/AppxManifest.xml, and registered by
+// packaging/xyzpdf.iss -- tests/shellintegration_smoke.cpp reads it back), and the shell's own
+// slot for "the preview handler of this type", IID_IPreviewHandler.
+const QString kPreviewDll = QStringLiteral("xyzpdfpreview.dll");
+const QString kPreviewHandlerClsid = QStringLiteral("{12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7}");
+const QString kPreviewHandlerSlot = QStringLiteral("{8895b1c6-b41f-4c1c-a562-0d564250836f}");
+
 // Windows enumerates subkeys alphabetically, so the order of the menu only
 // survives if it is written into the key names. One verb for now, numbered
 // anyway: the numbering is the part that would be forgotten when the second one
@@ -279,6 +287,24 @@ bool registerVerbs(const QString &executablePath, const QString &classesRoot,
         progIdCommand.setValue(QStringLiteral("Default"),
                                quotedCommand(program, CommandLine::Action::Open));
         progIdCommand.sync();
+    }
+
+    // The preview pane, when the preview handler sits beside this executable -- which is how the
+    // installer lays it out (packaging/xyzpdf.iss), and how the build tree has it too.
+    //
+    // Under our ProgID, not under .pdf: the extension's ShellEx is where the reader's other PDF
+    // program keeps its own previewer (Edge has one there, in HKCU as well as HKLM, on this
+    // machine), and overwriting it would take that preview away whether or not XYZPDF is what
+    // they open PDFs with. Under the ProgID it applies exactly when they chose XYZPDF, which is
+    // also what the packaged build's DesktopPreviewHandler declaration amounts to. The class
+    // itself (CLSID\...\InprocServer32) is the installer's to register, beside the DLL it
+    // names; a pointer to a class nobody registered is the pane saying "no preview", the same
+    // as no pointer at all. Removed with the ProgID by unregisterVerbs().
+    if (QFileInfo(executable.dir().filePath(kPreviewDll)).isFile()) {
+        QSettings preview = openKey(classesRoot + QLatin1Char('\\') + kProgId
+                                    + QStringLiteral("\\ShellEx\\") + kPreviewHandlerSlot);
+        preview.setValue(QStringLiteral("Default"), kPreviewHandlerClsid);
+        preview.sync();
     }
 
     // Offered for the type, never forced. Windows protects the actual default

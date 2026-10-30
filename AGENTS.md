@@ -24,6 +24,11 @@ Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
   三个 sha256，不对就拒绝）；`--download` 才会去 GitHub。这台机器上的那份在 `H:\test\XYZPDF-wt\third-party\pdfium-8111`。
   并行 worktree 和 `vcpkg_installed` 一样用 junction 借主检出的 `pdfium_installed`，删 worktree 之前先单独删链接。
 
+- **Inno Setup 6.7.4**（§131）：`%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`（按用户装的）；**GitHub CLI**：`%LOCALAPPDATA%\Programs\gh\bin\gh.exe`（不在 PATH，登录由作者自己做）。
+
+**发布走 GitHub 安装包，不上微软商店**（§131 起，作者的决定；MSIX 两条脚本留着，上架那一整条搁置）。仓库以 MIT 公开。
+出包：`powershell -NoProfile -ExecutionPolicy Bypass -File xyzpdf/packaging/build-installer.ps1` → `build-local-release/installer/XYZPDF-<版本>-setup.exe` + `.sha256`。
+
 **不要删构建树的 CMakeCache.txt** —— 项目不带 CMakePresets，Qt 的位置只存在于缓存里。
 
 **windeployqt 的那两颗 `dxcompiler.dll` / `dxil.dll` 是按**名字**捞的，连是不是 DLL 都不问**（§96 发现环境
@@ -217,6 +222,13 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
 - **侧栏签名行要可选**（§130）：只给 `ItemIsEnabled` 时点一下能设当前项（跳页照样成立），但不画选中，单页文件上看着像"点了没反应"
   —— J1 在屏幕上看到的，测试用 `selectSignatureRow()` 在代码里按、看不见。`documenttab_smoke` 现在往视口送真鼠标事件。
   英文界面下侧栏四个标签比栏宽，切到「签名」时标签条会滚，`signaturepanel` 只框看得见的标签、把滚出去的印出来。
+- **安装包**（§131，`packaging/xyzpdf.iss`）：按用户装、只写 HKCU。程序自己的注册表项（ProgID、打开方式、右键菜单、ProgID 下的预览指针）**只由程序写** ——
+  安装包调 `xyzpdf.exe --register-shell`，卸载前调 `--unregister-shell`（`CommandLine::Setup`，只在它是唯一参数时认、不走实例管道）；安装包自己只写
+  "必须挨着它装的文件"的东西：预览类的 `CLSID\…\InprocServer32`。预览指针挂在**我们的 ProgID** 下、不写 `.pdf\ShellEx`（那里是 Edge 等别人的预览器）。
+  缩略图不注册：`IInitializeWithFile` 的提供者要在 explorer.exe 里跑，等于把 Qt 装进资源管理器；要它先改成 `IInitializeWithStream`。
+  载荷来自 `build-package.ps1 -StageOnly`，与 MSIX 同一份暂存 —— 加运行库只改那一处。CLSID 由 `build-installer.ps1` 从清单读出并核对两份源码。
+  **装着旧 MSIX 的机器上**，非打包的那份一启动就按"包优先"撤掉自己的 HKCU 项（`MainWindow` 构造里），试装时别把这当成安装包的缺陷。
+  Inno 的向导按钮不进 UIA，要上屏幕走 Alt+字母 / Enter。
 - **合并两个都改了 `xyzpdf_en.ts` 的分支**：冲突几乎全是 location 行。按 (context, source, comment) 三方合并（两边都有时取相对 base 改过的那边），
   再 `update_translations` 让 lupdate 重排；不要逐块手解。
 - **测试目标的名字别带 `install` / `bench` / `verify` / `probe`**（§126）：`tools/build_all_tests.py` 的 `NOT_A_TEST` 按**子串**过滤，

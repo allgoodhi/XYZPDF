@@ -179,45 +179,8 @@ Write-Host "Package family name  $reservedFamilyName"
 # ---------------------------------------------------------------------------
 
 if (-not $CrtDirectory) {
-    # VCToolsRedistDir is only set inside a developer command prompt, and
-    # requiring one just to build a package is a trap: the error arrives after
-    # the staging has run, so it reads like something went wrong rather than like
-    # the shell was the wrong shell. Ask vswhere instead -- it sits at a fixed
-    # path precisely so it can be found without an initialised environment.
-    $redistRoots = @()
-    if ($env:VCToolsRedistDir) {
-        $redistRoots += $env:VCToolsRedistDir
-    } else {
-        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-        if (Test-Path $vswhere) {
-            $installs = & $vswhere -products * -latest -property installationPath
-            foreach ($install in @($installs)) {
-                $msvc = Join-Path $install 'VC\Redist\MSVC'
-                if (Test-Path $msvc) {
-                    # Newest toolset, compared as versions: sorted as text, 14.9
-                    # beats 14.51.
-                    $redistRoots += Get-ChildItem -Path $msvc -Directory |
-                        Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } `
-                                    -Descending |
-                        Select-Object -ExpandProperty FullName
-                }
-            }
-        }
-    }
-
-    foreach ($root in $redistRoots) {
-        $x64 = Join-Path $root 'x64'
-        if (-not (Test-Path $x64)) { continue }
-        $candidate = Get-ChildItem -Path $x64 -Filter 'Microsoft.VC*.CRT' -Directory `
-                        -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
-        if ($candidate) { $CrtDirectory = $candidate; break }
-    }
-
-    if (-not $CrtDirectory) {
-        throw ('Cannot find the Visual C++ runtime. Run this from a developer command ' +
-               'prompt, or pass -CrtDirectory with the folder holding vcruntime140.dll.')
-    }
+    # windowskit.ps1, shared with build-installer.ps1.
+    $CrtDirectory = Find-VcRuntimeDirectory
 }
 Write-Host "C runtime            $CrtDirectory"
 

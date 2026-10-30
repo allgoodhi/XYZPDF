@@ -68,6 +68,21 @@ QList<Request> coalesce(const QList<Request> &requests);
 // is a bare path and has no switch.
 QString switchFor(Action action);
 
+// What an installer asks of the program, as opposed to what a reader does.
+//
+// packaging/xyzpdf.iss runs `xyzpdf.exe --register-shell` after copying the files and
+// `--unregister-shell` before removing them, so the 打开方式 entry and the menu are written by
+// the same code the settings box uses -- one writer for those keys, not a second copy of them
+// in an installer script that drifts. Not an Action: these never cross the instance pipe (an
+// uninstall running while a window is open must not hand its request to that window), and
+// they are recognised only as the one argument on the line, so a document that happens to be
+// called "--register-shell" is still a document when it comes after "--".
+enum class Setup { None, RegisterShell, UnregisterShell };
+
+Setup setupOf(const QStringList &arguments);
+
+QString switchFor(Setup setup);
+
 // Whether an integer that came off the wire is an action this build knows.
 //
 // Asked rather than cast: what crosses the instance pipe comes from another

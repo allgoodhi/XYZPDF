@@ -7,6 +7,7 @@
 #include "src/core/tempmanager.h"
 #include "src/theme/thememanager.h"
 #include "src/translate/keystore.h"
+#include "src/windows/shellintegration.h"
 
 #include <QApplication>
 #include <QDir>
@@ -96,6 +97,26 @@ int main(int argc, char *argv[])
         else
             qWarning() << "[i18n] the catalogue for" << wanted
                        << "is missing; the interface stays Chinese";
+    }
+
+    // The installer's two calls, answered and left (src/cli/commandline.h says why they are not
+    // Actions). After the catalogues, because the menu entry and the type name are written in
+    // the interface language; before the instance door, so a window that is already open never
+    // sees them. The preference goes with the registry so the settings box shows what the
+    // installer did, and MainWindow's startup repair keeps the entries as they are.
+    if (const CommandLine::Setup setup = CommandLine::setupOf(QCoreApplication::arguments());
+        setup != CommandLine::Setup::None) {
+        const QString classesRoot = ShellIntegration::defaultClassesRoot();
+        const bool registering = setup == CommandLine::Setup::RegisterShell;
+        AppSettings::setShellIntegrationEnabled(registering);
+        QString error;
+        const bool done =
+            registering ? ShellIntegration::registerVerbs(QCoreApplication::applicationFilePath(),
+                                                          classesRoot, &error)
+                        : ShellIntegration::unregisterVerbs(classesRoot, &error);
+        if (!done)
+            qWarning().noquote() << "[setup]" << error;
+        return done ? 0 : 1;
     }
 
     // No font is chosen here on purpose. XYZip compiled three variable fonts

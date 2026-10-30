@@ -11,6 +11,8 @@ namespace {
 // anywhere in this program.
 const char kPrintSwitch[] = "--print";
 const char kPageSwitch[] = "--page";
+const char kRegisterShellSwitch[] = "--register-shell";
+const char kUnregisterShellSwitch[] = "--unregister-shell";
 
 // The spellings the shell hands over. Explorer's print verb has been "/p" since
 // before "--" existed, and Windows accepts "/page" as well as "-page"; both are
@@ -59,6 +61,32 @@ QString switchFor(Action action)
     case Action::Print:
         return QString::fromLatin1(kPrintSwitch);
     case Action::Open:
+        break;
+    }
+    return QString();
+}
+
+Setup setupOf(const QStringList &arguments)
+{
+    // The program name and the switch, and nothing else.
+    if (arguments.size() != 2)
+        return Setup::None;
+    const QString &argument = arguments.at(1);
+    if (argument == QLatin1String(kRegisterShellSwitch))
+        return Setup::RegisterShell;
+    if (argument == QLatin1String(kUnregisterShellSwitch))
+        return Setup::UnregisterShell;
+    return Setup::None;
+}
+
+QString switchFor(Setup setup)
+{
+    switch (setup) {
+    case Setup::RegisterShell:
+        return QString::fromLatin1(kRegisterShellSwitch);
+    case Setup::UnregisterShell:
+        return QString::fromLatin1(kUnregisterShellSwitch);
+    case Setup::None:
         break;
     }
     return QString();

@@ -8014,3 +8014,47 @@ gui-probe 的签名模式按 I1 的新说法匹配（"正在检查"那句只活�
 
 **没验的**：真 CA 证书签的 PDF、真 TSA 的令牌、OCSP（需要作者提供样本）；微软 Excel / PowerPoint 本身（这台机器只有 WPS）；
 可搜索的 PDF 在加密文件和带 `/Rotate` 的真扫描件上；签名细节行折行（现在是省略号 + 提示）。
+
+## 131. 不上商店，改发 GitHub 安装包；仓库以 MIT 开源（2026-10-30）
+
+**方向**：作者决定暂不上微软商店，改为在 GitHub 上发安装包，并把这个仓库本身公开、以 MIT 许可证开源（不另建仓库）。
+MSIX 那两条脚本（`build-package.ps1` / `build-store-package.ps1`）留着不删，上架所需的 Partner Center 身份、隐私政策网址等**整条搁置**。
+
+**工具**：作者同意下载 Inno Setup 6.7.4（`innosetup-6.7.4.exe`，10,604,576 字节，Authenticode 有效，签名者 Pyrsys B.V.，即 jrsoftware），
+`/CURRENTUSER` 装进 `%LOCALAPPDATA%\Programs\Inno Setup 6`；GitHub CLI 2.103.3（zip，SHA-256 与官方 checksums 文件相符），解到 `%LOCALAPPDATA%\Programs\gh`。
+官方语言包里没有简体中文，`ChineseSimplified.isl` 取自 jrsoftware/issrc 在 `is-6_7_4` 标签下的 Unofficial 目录，提交在 `packaging/` 里。
+
+**安装包**（`packaging/xyzpdf.iss` + `packaging/build-installer.ps1`）：
+- 按用户安装，不要管理员：`%LOCALAPPDATA%\Programs\XYZPDF`，只写 HKCU。载荷是 `build-package.ps1 -StageOnly` 的暂存（新加的开关：停在 2c，
+  不写清单、不打包），也就是与 MSIX 同一份：41 个文件 46.1 MB（MSIX 是 67 个，差的 26 个是磁贴、清单与 PRI），安装包 15.4 MB，LZMA2 固实压缩。
+- 程序自己写的注册表项（ProgID、打开方式、右键菜单）**仍由程序写**：新开关 `xyzpdf.exe --register-shell` / `--unregister-shell`
+  （`CommandLine::Setup`，不是 `Action`，不走实例管道，只在它是唯一参数时才认），调的就是设置框那套 `registerVerbs()`，同时把偏好 `shell/contextMenu` 设成相应值。
+  安装时 `[Run]` 调前者，卸载时 `[UninstallRun]` 在删文件之前调后者。
+- 预览窗格：`registerVerbs()` 在 exe 旁边有 `xyzpdfpreview.dll` 时，往**我们的 ProgID** 下写 `ShellEx\{8895b1c6-…}` → 预览类。不写 `.pdf\ShellEx`：
+  这台机器上 Edge 的预览器就在那儿（HKCU 和 HKLM 各一份），覆盖它等于不管读者用不用 XYZPDF 都抢走别人的预览。挂在 ProgID 下就是"XYZPDF 是默认程序时生效"，
+  和 MSIX 的声明是一个意思。类本身（`CLSID\{12DF01C2-…}\InprocServer32`，AppID 是系统 64 位预览宿主 prevhost）由安装包写，随卸载删。
+  `build-installer.ps1` 从 `AppxManifest.xml` 读 CLSID，再核对 `shellintegration.cpp` 和 `previewhandler.cpp` 里是不是同一个数。
+- **没注册缩略图**：它实现的是 `IInitializeWithFile`，Windows 要求这种提供者退出隔离、在 explorer.exe 里跑 —— 等于把 Qt 和 PDFium 装进资源管理器。
+  MSIX 那边是 DllHost 宿主。要缩略图得先改成 `IInitializeWithStream`。右键菜单的 `IExplorerCommand`（`xyzpdfshell.dll`）也不注册：Win11 第一层菜单只认包里的，经典动词已经够用。
+- 没有代码签名，SmartScreen 会提示未知发布者；构建脚本在安装包旁边写一份 `.sha256`。
+
+**测试**：`commandline_smoke` 加两个开关的拼写与"只在唯一参数时认"；`shellintegration_smoke` 加预览指针：没有 DLL 时不写、有 DLL 时写对类、
+`.pdf\ShellEx` 不碰、随 ProgID 删掉。**控制**：把写指针的条件换成 `if (false)`，那条红（`found ""`），还原后绿；源文件哈希与备份相同。
+第一次跑控制时直接双击测试 exe，两次都是 `-1073741515`（0xC0000135，Qt 不在 PATH）—— **"红"了，可那不是测试红，是根本没跑起来**；补上 PATH 才是真控制。
+门禁两次都是 **31 passed / 0 failed**，目录 829 条。
+
+**在这台机器上真装了一遍**（`/VERYSILENT /TASKS="shell,shell\preview"`）：文件 43 个（多出的是 `unins000.*`），ProgID 与右键菜单的命令都指向
+`%LOCALAPPDATA%\Programs\XYZPDF\bin\xyzpdf.exe "%1"`，打开方式里有 `xyzpdf.Document`，ProgID 下的预览指针、CLSID、`PreviewHandlers` 值都在，
+`.pdf\ShellEx` 仍是 Edge 的 `{3A84F9C2-…}`，开始菜单有快捷方式，卸载项 `XYZPDF 0.1.0`。在另一个 STA 的 PowerShell 里经 COM 创建预览类：成功，
+进程里从安装目录加载了 `xyzpdfpreview.dll`、`VCRUNTIME140*.dll`、`MSVCP140*.dll`、`Qt6Core.dll` —— 延迟加载那套在非打包路径下也成立。
+装上的 exe 打开 `links.pdf`：标题 `links.pdf — XYZPDF`，`pdfium.dll` / `qpdf30.dll` / `Qt6Widgets.dll` 都来自安装目录。
+**这台机器上还装着旧的 MSIX**，所以程序一启动就按"包优先"撤掉了自己的 HKCU 项（`MainWindow` 构造里那段，产品本来如此）；手动再 `--register-shell` 一次后静默卸载：
+上面每一项都没了，`.pdf\ShellEx` 仍是 Edge 的，目录与快捷方式都没了。试装前后把 `HKCU\Software\xyzpdf\xyzpdf\shell` 还原成原样（原来不存在）。
+向导中英两种语言各走到"附加任务"页按外框 `PrintWindow` 截图：`.iss` 里的中文（UTF-8 无 BOM，与官方语言包同一种编码）显示正常，子任务缩进在父任务下。
+向导的按钮不进 UIA（Inno 6.7 的现代向导），走到那一页靠 Alt+A / Enter。
+
+**顺手修的**：关于框一直写着"渲染引擎：Qt PDF（PDFium）"—— §116 之后就不对了，改成"PDFium"，并加一行"以 MIT 许可证开源"（英文目录同改）。
+README 整篇重写：原来那份停在 M0（还写着侧栏、打印、打包没做），现在是公开仓库的首页：下载安装、功能、从源码构建、出安装包、许可。
+
+**没验的**：预览窗格在屏幕上真画出来 —— 要 XYZPDF 是 `.pdf` 的默认程序，而这台机器的默认是旧 MSIX，`UserChoice` 只有作者能在系统设置里改；
+没装过 MSIX 的机器上从安装到双击打开、预览窗格的全流程。

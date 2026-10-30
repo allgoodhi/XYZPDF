@@ -20,8 +20,9 @@ namespace AboutInfo {
 // against. When a report turns out to be a Qt version difference, the number
 // that matters is the one that ran.
 //
-// The renderer is named with the Qt version it arrives inside, because that is
-// the fact: Qt PDF is PDFium, and v1 has no rendering code of its own.
+// The renderer is PDFium itself since §116 (it was "Qt PDF (PDFium)" until then,
+// and said so here for a year after it stopped being true). The licence line is
+// the one in LICENSE at the repository root.
 inline QString html()
 {
     return QCoreApplication::translate(
@@ -29,8 +30,9 @@ inline QString html()
                "<h3>%1 %2</h3>"
                "<p>Windows PDF 阅读器。</p>"
                "<p>Qt %3<br>"
-               "渲染引擎：Qt PDF（PDFium）</p>"
-               "<p>版权所有 © 2026 allgoodhi</p>")
+               "渲染引擎：PDFium</p>"
+               "<p>版权所有 © 2026 allgoodhi<br>"
+               "以 MIT 许可证开源</p>")
         .arg(Edition::productName(), QStringLiteral(XYZPDF_VERSION),
              QString::fromLatin1(qVersion()));
 }

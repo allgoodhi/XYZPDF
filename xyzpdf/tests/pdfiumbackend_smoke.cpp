@@ -55,6 +55,8 @@
 #include <fpdf_signature.h>
 #include <fpdfview.h>
 
+#include "encryptedsample.h"
+
 #include <cmath>
 #include <iostream>
 
@@ -583,6 +585,93 @@ void checkFailures(const QString &directory)
         damaged.load(fixture(directory, QStringLiteral("text.pdf")), QString());
     check(recovered == Document::Status::Ready, "a good file opens after a bad one");
     check(damaged.lastError().isEmpty(), "and the previous error is gone");
+}
+
+// loadData(): the document read from bytes rather than a path (sec.133), which is how
+// the thumbnail provider opens what Explorer hands it as an IStream.
+//
+// The comparison that matters is with load() on the same file: the same page count, the
+// same pixels. A memory load that drew a different page from the window's would be the
+// three-consumers-of-one-seam promise broken from the other side.
+void checkMemoryLoad(const QString &directory)
+{
+    const QString path = fixture(directory, QStringLiteral("text.pdf"));
+    QFile file(path);
+    check(file.open(QIODevice::ReadOnly), "memory load: the fixture can be read");
+    QByteArray bytes = file.readAll();
+    file.close();
+
+    PdfiumBackend fromFile;
+    check(fromFile.load(path, QString()) == Document::Status::Ready,
+          "memory load: the fixture opens from its path");
+    const QSize pixels(298, 421);
+    const QImage expected = fromFile.render(0, pixels, RenderOptions{});
+
+    PdfiumBackend fromMemory;
+    check(fromMemory.loadData(bytes, QString()) == Document::Status::Ready,
+          QStringLiteral("memory load: the same bytes open from memory (%1)")
+              .arg(fromMemory.lastError()));
+    check(fromMemory.path().isEmpty(), "memory load: and there is no path to name");
+    check(fromMemory.pageCount() == fromFile.pageCount() && fromMemory.pageCount() > 0,
+          QStringLiteral("memory load: the same page count (%1 vs %2)")
+              .arg(fromMemory.pageCount())
+              .arg(fromFile.pageCount()));
+
+    // The engine keeps a pointer into the bytes and reads lazily, so they have to outlive
+    // the caller's copy. Overwriting the caller's buffer detaches it from the one the
+    // backend holds; a backend that had kept only the raw pointer (QByteArray::fromRawData,
+    // or constData() of a temporary) would now be reading 'x's.
+    bytes.fill('x');
+    bytes.clear();
+    const QImage drawn = fromMemory.render(0, pixels, RenderOptions{});
+    check(!drawn.isNull() && !expected.isNull() && drawn.size() == expected.size(),
+          "memory load: the page renders after the caller let go of its bytes");
+    check(drawn.convertToFormat(QImage::Format_ARGB32)
+              == expected.convertToFormat(QImage::Format_ARGB32),
+          "memory load: pixel for pixel the page load() draws");
+
+    // Bytes that are not a PDF, and none at all: a status and a sentence, as for a path.
+    const QByteArray junk("this is not a PDF, whatever the extension says\n");
+    check(fromMemory.loadData(junk, QString()) == Document::Status::InvalidFormat,
+          "memory load: junk is not a PDF");
+    check(!fromMemory.lastError().isEmpty() && fromMemory.pageCount() == 0,
+          "memory load: and says so, with no pages left over from the last document");
+    check(fromMemory.loadData(QByteArray(), QString()) == Document::Status::InvalidFormat,
+          "memory load: nothing at all is not a PDF either");
+
+    QFile damaged(fixture(directory, QStringLiteral("damaged.pdf")));
+    check(damaged.open(QIODevice::ReadOnly), "memory load: the damaged fixture can be read");
+    check(fromMemory.loadData(damaged.readAll(), QString()) != Document::Status::Ready,
+          "memory load: a truncated PDF does not open from memory");
+    check(!fromMemory.lastError().isEmpty(), "memory load: and says why");
+
+    // The encrypted sample, which thumbnailprovider_smoke leans on: proven encrypted here
+    // (no password and a wrong one are refused) and proven a working document (both of its
+    // passwords open it) -- a sample that stopped being either would make the provider's
+    // "refused" mean nothing.
+    const std::string encrypted = encryptedsample::bytes();
+    check(!encrypted.empty(), "memory load: the encrypted sample was built");
+    const QByteArray locked(encrypted.data(), qsizetype(encrypted.size()));
+    check(fromMemory.loadData(locked, QString()) == Document::Status::NeedsPassword,
+          QStringLiteral("memory load: the encrypted sample asks for a password (%1)")
+              .arg(fromMemory.lastError()));
+    check(fromMemory.loadData(locked, QStringLiteral("wrong")) == Document::Status::NeedsPassword,
+          "memory load: and refuses a wrong one");
+    check(fromMemory.loadData(locked, QString::fromLatin1(encryptedsample::kUserPassword))
+                  == Document::Status::Ready
+              && fromMemory.pageCount() == 1,
+          QStringLiteral("memory load: and opens with its user password (%1)")
+              .arg(fromMemory.lastError()));
+    check(fromMemory.loadData(locked, QString::fromLatin1(encryptedsample::kOwnerPassword))
+                  == Document::Status::Ready,
+          "memory load: and with its owner password");
+
+    // A good document after all that: the error is cleared, as for a path.
+    QFile again(path);
+    check(again.open(QIODevice::ReadOnly), "memory load: the fixture again");
+    check(fromMemory.loadData(again.readAll(), QString()) == Document::Status::Ready
+              && fromMemory.lastError().isEmpty(),
+          "memory load: a good document after the failures opens, with no error left");
 }
 
 FormFill::Frame flatFrame()
@@ -1796,6 +1885,7 @@ int main(int argc, char **argv)
     checkRotation(directory);
     checkBand(directory);
     checkFailures(directory);
+    checkMemoryLoad(directory);
 
     checkDeleteWhileOpen(directory);
     checkReplaceWhileOpen(directory);

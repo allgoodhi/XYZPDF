@@ -48,6 +48,14 @@ const QString kPreviewDll = QStringLiteral("xyzpdfpreview.dll");
 const QString kPreviewHandlerClsid = QStringLiteral("{12DF01C2-01D6-4AF8-AD5F-969C3C3F88D7}");
 const QString kPreviewHandlerSlot = QStringLiteral("{8895b1c6-b41f-4c1c-a562-0d564250836f}");
 
+// The thumbnail provider, the same three things: its DLL beside the executable, the class
+// compiled into src/windows/thumbnailprovider.cpp (declared in packaging/AppxManifest.xml,
+// registered by packaging/xyzpdf.iss, checked against both by build-installer.ps1), and the
+// shell's slot for "the thumbnail handler of this type", IID_IThumbnailProvider (sec.133).
+const QString kThumbnailDll = QStringLiteral("xyzpdfthumbnail.dll");
+const QString kThumbnailProviderClsid = QStringLiteral("{4032B809-B50E-4F0A-AFC1-D300803A81CE}");
+const QString kThumbnailSlot = QStringLiteral("{e357fccd-a995-4576-b01f-234630154e96}");
+
 // Windows enumerates subkeys alphabetically, so the order of the menu only
 // survives if it is written into the key names. One verb for now, numbered
 // anyway: the numbering is the part that would be forgotten when the second one
@@ -305,6 +313,19 @@ bool registerVerbs(const QString &executablePath, const QString &classesRoot,
                                     + QStringLiteral("\\ShellEx\\") + kPreviewHandlerSlot);
         preview.setValue(QStringLiteral("Default"), kPreviewHandlerClsid);
         preview.sync();
+    }
+
+    // The icons in Explorer's tile and icon views, on exactly the same terms as the pane above:
+    // under our ProgID only, never under .pdf (where the default PDF program keeps its own), only
+    // when the DLL is beside this executable, and the class itself left to the installer. Since
+    // sec.133 the provider takes a stream, so the shell runs it in its isolated thumbnail process
+    // rather than in explorer.exe -- the reason sec.131 did not write this pointer at all. Removed
+    // with the ProgID by unregisterVerbs().
+    if (QFileInfo(executable.dir().filePath(kThumbnailDll)).isFile()) {
+        QSettings thumbnail = openKey(classesRoot + QLatin1Char('\\') + kProgId
+                                      + QStringLiteral("\\ShellEx\\") + kThumbnailSlot);
+        thumbnail.setValue(QStringLiteral("Default"), kThumbnailProviderClsid);
+        thumbnail.sync();
     }
 
     // Offered for the type, never forced. Windows protects the actual default

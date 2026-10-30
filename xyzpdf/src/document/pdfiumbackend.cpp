@@ -399,16 +399,58 @@ Document::Status PdfiumBackend::load(const QString &path, const QString &passwor
     impl->file.access.m_Param = &impl->file;
 
     impl->document = FPDF_LoadCustomDocument(&impl->file.access, password.toUtf8().constData());
+    return adoptLoaded(path, password);
+}
+
+Document::Status PdfiumBackend::loadData(const QByteArray &bytes, const QString &password)
+{
+    QMutexLocker locker(&pdfiumMutex());
+    impl->close();
+    impl->path.clear();
+    impl->error.clear();
+    impl->encrypted = false;
+
+    if (bytes.isEmpty()) {
+        impl->error = QCoreApplication::translate("PdfiumBackend",
+                                                  "这个文件不是有效的 PDF，或者已经损坏。");
+        return Status::InvalidFormat;
+    }
+
+    // Kept, not copied: QByteArray shares the caller's buffer, and the engine reads it
+    // lazily for as long as the document is open, so it has to outlive the document.
+    // impl->close() lets go of it only after FPDF_CloseDocument.
+    impl->memory = bytes;
+    impl->document = FPDF_LoadMemDocument64(impl->memory.constData(),
+                                            static_cast<size_t>(impl->memory.size()),
+                                            password.toUtf8().constData());
+    return adoptLoaded(QString(), password);
+}
+
+// What both loads do once PDFium has answered: report a refusal, or set up the form
+// layer and read the signatures. Caller holds the mutex, and has just put PDFium's
+// answer in impl->document. `path` is empty for a document read from memory.
+Document::Status PdfiumBackend::adoptLoaded(const QString &path, const QString &password)
+{
     if (!impl->document) {
         const unsigned long code = FPDF_GetLastError();
         // The handle goes with the failed load: FPDF_LoadCustomDocument did not
         // take ownership of it (the application keeps the file resources valid
-        // while the document is open, and there is no document).
+        // while the document is open, and there is no document). The same for the
+        // bytes of a memory load.
         impl->file.close();
+        impl->memory = QByteArray();
 
         const auto tr = [](const char *text) {
             return QCoreApplication::translate("PdfiumBackend", text);
         };
+        // Bytes have no path to name, so the two sentences that name one are
+        // replaced by the one that does not: from memory there is no "file not
+        // found", only bytes that are not a PDF.
+        if (path.isEmpty() && code != FPDF_ERR_PASSWORD && code != FPDF_ERR_SECURITY) {
+            impl->error = tr("这个文件不是有效的 PDF，或者已经损坏。");
+            return code == FPDF_ERR_FORMAT || code == FPDF_ERR_PAGE ? Status::InvalidFormat
+                                                                    : Status::FileError;
+        }
         switch (code) {
         case FPDF_ERR_PASSWORD:
             impl->error = tr("此文档已加密，需要密码。");

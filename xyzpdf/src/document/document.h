@@ -29,6 +29,7 @@
 #include "docmetadata.h"
 #include "outline.h"
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QImage>
 #include <QPointF>
@@ -157,6 +158,16 @@ public:
     // opened in one step, and the second attempt is the same call with the
     // password filled in.
     virtual Status load(const QString &path, const QString &password) = 0;
+
+    // Opens a document that is already in memory, replacing anything already open.
+    //
+    // For the one caller that is handed bytes rather than a path: the thumbnail
+    // provider, which Explorer gives an IStream (IInitializeWithStream) so that it can
+    // run in the isolated thumbnail process instead of inside explorer.exe (sec.133).
+    // The bytes are kept -- implicitly shared, so this is no copy -- for as long as the
+    // document is open, because the engine reads them lazily. path() answers empty,
+    // and nothing is ever written anywhere: not a temporary file, not the bytes.
+    virtual Status loadData(const QByteArray &bytes, const QString &password) = 0;
 
     // Lets go of the file while this object -- and everything holding a pointer to
     // it -- stays alive: afterwards there are no pages, path() still names the file,

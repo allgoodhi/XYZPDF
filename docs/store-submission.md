@@ -8088,3 +8088,74 @@ README 整篇重写：原来那份停在 M0（还写着侧栏、打印、打包�
   **explorer.exe 里一颗都没有**。
 - `Start-Process colored.pdf`（走默认程序的 open）：起来的是 `%LOCALAPPDATA%\Programs\XYZPDF\bin\xyzpdf.exe`，标题 `colored.pdf — XYZPDF`。
 - 卸载这一步没在这一轮重做（§131 已静默卸过一次、逐项撤干净），装上的这份留给作者日常用。
+
+## 133. 缩略图改成吃流（IInitializeWithStream），安装包开始注册它（2026-10-30）
+
+**起因**：§131 的安装包注册了预览窗格、故意没注册缩略图 —— `thumbnailprovider.cpp` 只实现 `IInitializeWithFile`，要拿到路径就得让类带
+`DisableProcessIsolation`、在 explorer.exe 里跑，等于把 Qt 和 PDFium 装进资源管理器。MSIX 靠 `com:SurrogateServer` 把它放进 DllHost，
+非打包的安装没有这条路。这一节把提供者改成吃流，Windows 就会在它自己的隔离缩略图进程里建它。
+
+**改了什么**：
+- `Document` 加 `loadData(QByteArray, password)`，`PdfiumBackend` 用 `FPDF_LoadMemDocument64` 实现；字节存在 `Impl::memory`（隐式共享，不复制），
+  `Impl::close()` 在 `FPDF_CloseDocument` **之后**才放掉 —— PDFium 是懒读的。`load()` 后半段（报错的 switch、表单层、签名计数）收成
+  `adoptLoaded(path, password)` 两条路共用；没有路径时不说"找不到文件 / 打开 %1 时出错"，统一说"不是有效的 PDF，或者已经损坏"，没加新句子，目录不动。
+- `ThumbnailProvider` 多答 `IInitializeWithStream`：`Initialize` 只收一次（第二次 `ERROR_ALREADY_INITIALIZED`，两种 Initialize 互斥），
+  流留着、`GetThumbnail` 时才读。`readWholeStream()`：先 `Stat`，声称超过 **256 MB** 的一个字节都不读就拒；`Stat` 答不上来的边读边数，
+  过线就拒（最多多读一块 64 KB）；读失败就拒（半个文件不是小文件，是坏文件）；读之前 `Seek` 回开头。加密的文件 `loadData` 答 `NeedsPassword`
+  → `E_FAIL`，不问密码。失败一律不给位图，资源管理器留它自己的图标。**不写任何临时文件**。`IInitializeWithFile` 仍答（MSIX 的代理、老测试）。
+- `ShellIntegration::registerVerbs` 在 `xyzpdfthumbnail.dll` 挨着 exe 时写 `xyzpdf.Document\ShellEx\{e357fccd-a995-4576-b01f-234630154e96}`
+  = `{4032B809-B50E-4F0A-AFC1-D300803A81CE}`，与预览指针同一个写法；`unregisterVerbs` 删 ProgID 时一起走。不碰 `.pdf\ShellEx`。
+- `xyzpdf.iss`：子任务 `shell\thumbnail`（默认勾选，中英两句说明），写 `CLSID\{4032B809-…}` + `InprocServer32` = `{app}\bin\xyzpdfthumbnail.dll`
+  + `ThreadingModel=Apartment`，**不写** `DisableProcessIsolation`（文件头写明了为什么不许加）；不勾时 `deletekey` 删干净。
+  `build-installer.ps1` 从 `AppxManifest.xml` 的 `desktop2:ThumbnailHandler` 读 CLSID，核对 `shellintegration.cpp` 的字符串形与
+  `thumbnailprovider.cpp` 的结构体首段，经 `/DThumbnailClsid` 交给 ISCC；`$needed` 加了 `bin\xyzpdfthumbnail.dll`。脚本仍是纯 ASCII（0 个高位字节）。
+
+**壳 DLL 改前改后**（同一台机器、同一套工具链，改前是本分支起点的全新构建）：
+
+| | 改前 | 改后 | 差 |
+|---|---|---|---|
+| `xyzpdfthumbnail.dll` | 95,744 B（`8A002195…`） | 97,792 B（`89311D77…`） | +2,048 |
+| `xyzpdfpreview.dll` | 137,216 B（`7B3714A8…`） | 138,752 B（`6DF07FAE…`） | +1,536 |
+
+`dumpbin /imports` 按（DLL, 函数名）比：缩略图 223 → 233 条，多的是 `pdfium.dll!FPDF_LoadMemDocument64` 与 `Qt6Core.dll` 的 8 个 `QByteArray`
+成员（构造、两个赋值、`clear` `data` `isEmpty` `reserve` `resize` `size`）；预览 303 → 309，多的是同一个 PDFium 函数与 5 个 `QByteArray` 成员 ——
+预览也变，是因为 `loadData` 在两颗壳共用的 `pdfiumbackend.cpp` 里。**没有新的 DLL**，Qt6Core 与 pdfium 都仍是 `/DELAYLOAD`。
+
+**测试**（门禁 **31 passed / 0 failed**，目录 829 条不变）：
+- `pdfiumbackend_smoke` 新 `checkMemoryLoad`：同一份 `text.pdf` 从路径与从内存开，页数相同、298×421 渲染**逐像素相同**，`path()` 为空；
+  调用方把自己那份字节 `fill('x')` 再 `clear()` 之后照样画得出来（钉住"字节要活得比调用方长"）；垃圾、空、`damaged.pdf` 都拒并有一句话；
+  加密样本无密码 / 错密码 → `NeedsPassword`，用户密码与所有者密码都 → `Ready`，1 页。
+- 加密样本 `tests/encryptedsample.h`：**按 PDF 32000-1 §7.6.3 的算法 2/3/4 造**（标准安全处理器 V1 R2，40 位 RC4，MD5 用 CNG），不带任何串与流，
+  所以只需 /O /U /ID —— 形状来自规范，不来自被测代码；"它真是加密的、且真能用密码打开"由上面那几条在 pdfiumbackend_smoke 里先证明，
+  缩略图测试才拿它当"加密文件"。缩略图测试不能链 qpdf，也不能先加载 Qt（会盖住漏写的延迟加载），所以没用 `writeEncryptedCopy`。
+- `thumbnailprovider_smoke` 新 `checkStreams`：ole32 的内存流交给 `IInitializeWithStream`，96 的缩略图与路径那条**逐字节相同**、竖版、有墨；
+  停在流末尾的流也从头读；`Initialize(nullptr)` 拒、第二次拒；垃圾 / 空 / `damaged.pdf` / 加密样本 都失败且不给位图；读必失败的流、
+  `Stat` 说 4 GB 的流（**一次 Read 都没被调用**）、不说大小且永不结束的流（读到 256 MB + 64 KB 停）都失败；整段期间 TMP/TEMP 指向一个空目录，跑完仍空。
+- `shellintegration_smoke`：只有预览 DLL 时不写缩略图指针（预览指针照写），放上缩略图 DLL 后指针 = 那个 CLSID，`.pdf\ShellEx` 不存在，反注册后指针没了、不留痕迹。
+
+**控制跑**（三处故意弄坏一起编，看各自那一行）：A `registerVerbs` 不看 DLL 在不在 → `shellintegration_smoke` 红在 "no thumbnail pointer without the DLL"；
+B 读流前不 `Seek` → `thumbnailprovider_smoke` 红在 "a stream left at its end is read from the start"；C `loadData` 改存 `QByteArray::fromRawData` →
+`pdfiumbackend_smoke` 红在 "the page renders after the caller let go of its bytes"。门禁 28/3。从备份还原、三个文件 sha256 与备份相同、
+修改时间碰成现在，重跑 31/0。另把 `thumbnailprovider.cpp` 里的结构体首段改一位跑 `build-installer.ps1`：在编译前抛
+"does not carry the thumbnail CLSID"；还原后哈希相同。
+
+**安装包**：`build-installer.ps1 -Build <本 worktree>\xyzpdf\build-local-release` 两遍都过（ISCC 收了 `ThumbnailClsid`），
+`XYZPDF-0.1.0-setup.exe` 16,165,171 字节，第二遍 sha256 `07aae598…`（第一遍 `1dbb5b24…`：同一份暂存两次编出不同字节，Inno 的包本身不可重现，
+这不是 §112 那条的反例 —— 那条管的是我们自己的四颗产物）。暂存里的 `xyzpdfthumbnail.dll` / `xyzpdfpreview.dll` 与构建树哈希相同、大小同上表。
+
+**真机**：按主会话的要求**没有安装、没有卸载、没碰 HKCU 里 xyzpdf 的任何键**（主会话正装着 v0.1.0 在验预览窗格，AppId 相同，装卸都会覆盖它）。
+改成在测试进程里直接 `LoadLibraryExW` **暂存目录里那颗** `xyzpdfthumbnail.dll`（PATH 只留 System32）→ `DllGetClassObject` →
+`IInitializeWithStream::Initialize(SHCreateStreamOnFileEx(...))` → `GetThumbnail(256)` → WIC 存 PNG：`many-pages.pdf`、`mixed.pdf`、`colored.pdf`
+三张都是 180×256、`WTSAT_RGB`，眼看是**第一页**（"XYZPDF page 1"、"XYZPDF typed cover"、黑红两行字，红色在）。那个进程的模块表里有
+`Qt6Core` `Qt6Gui` `pdfium` `MSVCP140_1/_2`，都来自暂存目录 —— 正是不能让它进 explorer.exe 的那一堆。
+
+**没验的**：
+- 资源管理器里真显示缩略图；缩略图实际由哪个进程画（预期是 Windows 隔离缩略图进程的 DllHost）；explorer.exe 的模块表里没有我们的 DLL 和 Qt ——
+  都要先装上，留给主会话合并后在屏幕上验（这台机器 `.pdf` 的默认程序是旧 MSIX，指针挂在我们的 ProgID 下，默认程序不是我们时本来就不生效）。
+- "两种 Initialize 都答时，没有 `DisableProcessIsolation` 的类一定被放进隔离进程、拿到的是流"是按文档推的，不是量的；上面那条屏幕验证就是它的判据。
+- 静默安装 / 卸载后注册表项在不在、撤没撤干净；升级时去掉勾 `deletekey` 真删；资源管理器缩略图缓存里旧图标何时被换掉。
+- 不勾 `shell\thumbnail` 时，`--register-shell` 仍会写 ProgID 下的缩略图指针（DLL 总是装的），指向一个没注册的类 = 资源管理器用默认图标 ——
+  与预览那条同一种设计，没在机器上看过。
+- 顺带看到一条没查的：手跑 `xyzpdf_pdfiumbackend_smoke.exe` 时把 `build-local-release` 放在 PATH 最前面，进程以 0xC0000409 退出；
+  照门禁的 PATH（Qt 的 bin 在前）跑全绿。想拿主检出构建树里那颗测试 exe 对照，它挂住不结束，而且那颗来自主会话正在改的源码、
+  说明不了"改前"，停掉了 —— **没调查**，不知道是不是改前就这样。

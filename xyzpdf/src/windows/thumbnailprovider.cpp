@@ -7,6 +7,22 @@
 // and pointed at by the file type's desktop2:ThumbnailHandler, so the shell
 // activates it in DllHost.exe and asks it for an IThumbnailProvider.
 //
+// ---- the stream, and why it is the one that matters (sec.133) ----
+//
+// The GitHub installer registers the class itself (packaging/xyzpdf.iss, HKCU
+// CLSID\...\InprocServer32) and the program points our ProgID's thumbnail slot at
+// it. There is no surrogate declaration outside a package, so where the code runs
+// is decided by the shell: a provider that takes IInitializeWithStream is created
+// in the isolated thumbnail process (a DllHost of Windows' own) unless its class
+// carries DisableProcessIsolation, which ours does not. One that could only take a
+// path would have to opt out of that isolation to be called at all -- Qt and PDFium
+// loaded into explorer.exe, which is why the installer of sec.131 registered no
+// thumbnails. So the stream is read here, whole, into memory, and handed to PDFium
+// from there (Document::loadData): no temporary file, nothing written anywhere.
+// IInitializeWithFile is still answered, for the package's surrogate and for the
+// existing probe; it costs nothing, because which one the shell asks for is
+// settled by where it created the object, not by what the object offers.
+//
 // It is its own DLL rather than another class inside xyzpdfpreview.dll because
 // that is the layout docs/PLAN.md §3.3 prescribes (shell / preview / thumbnail),
 // and because the two are never in the same process anyway: COM gives each
@@ -51,6 +67,7 @@
 #include "../document/document.h"
 #include "../document/documentfactory.h"
 
+#include <QByteArray>
 #include <QImage>
 #include <QPainter>
 #include <QString>
@@ -76,6 +93,59 @@ constexpr int kRenderScale = 2;
 // request still works, and the floor is where a rendering stops being meaningful.
 constexpr int kMinThumbnail = 16;
 constexpr int kMaxThumbnail = 512;
+
+// The most a stream may hold before it is refused without a thumbnail.
+//
+// The whole file is read into the thumbnail process's memory before PDFium sees a
+// byte of it (a stream from the shell is not something to hand PDFium a block
+// reader over: it may be a copy across a process boundary, and every seek is a
+// call). 256 MB is far above any document people browse a folder of, and low
+// enough that a folder of scanned books does not turn into gigabytes in DllHost.
+// A bigger file keeps the icon the shell already has; the reader opens it fine.
+constexpr quint64 kMaxStreamBytes = 256ull * 1024 * 1024;
+
+// The stream, read whole, from its start. False -- and nothing in `out` -- for a
+// stream that says it is too big, turns out to be too big while being read, or
+// fails a read: a thumbnail is a best effort, and a partial file is not a smaller
+// file, it is a damaged one.
+bool readWholeStream(IStream *stream, QByteArray *out)
+{
+    out->clear();
+    STATSTG stat = {};
+    if (SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME))) {
+        if (stat.cbSize.QuadPart > kMaxStreamBytes)
+            return false; // refused before a byte is read
+    } else {
+        stat.cbSize.QuadPart = 0; // unknown: the limit is enforced while reading
+    }
+    // From the start, whatever the position: the shell hands a fresh stream, but
+    // a stream that was read before would otherwise give the tail of a file.
+    // A stream that cannot seek is read from where it stands.
+    const LARGE_INTEGER zero = {};
+    stream->Seek(zero, STREAM_SEEK_SET, nullptr);
+
+    QByteArray bytes;
+    bytes.reserve(qsizetype(stat.cbSize.QuadPart));
+    constexpr ULONG kChunk = 64 * 1024;
+    for (;;) {
+        const qsizetype at = bytes.size();
+        if (quint64(at) > kMaxStreamBytes)
+            return false; // past the limit, whatever Stat said (at most one chunk over)
+        bytes.resize(at + kChunk);
+        ULONG got = 0;
+        const HRESULT result = stream->Read(bytes.data() + at, kChunk, &got);
+        if (FAILED(result))
+            return false;
+        bytes.resize(at + qsizetype(got));
+        // S_FALSE, or S_OK with nothing read, is the end of the stream.
+        if (result == S_FALSE || got == 0)
+            break;
+    }
+    if (quint64(bytes.size()) > kMaxStreamBytes)
+        return false;
+    *out = bytes;
+    return true;
+}
 
 // How many handlers are alive, and how many server locks are held. The DLL may
 // not go while either is non-zero.
@@ -160,6 +230,7 @@ HRESULT toBitmap(const QImage &image, HBITMAP *out)
 } // namespace
 
 class ThumbnailProvider final : public IThumbnailProvider,
+                                public IInitializeWithStream,
                                 public IInitializeWithFile,
                                 public IObjectWithSite {
 public:
@@ -172,6 +243,8 @@ public:
             return E_POINTER;
         if (id == IID_IUnknown || id == __uuidof(IThumbnailProvider))
             *object = static_cast<IThumbnailProvider *>(this);
+        else if (id == __uuidof(IInitializeWithStream))
+            *object = static_cast<IInitializeWithStream *>(this);
         else if (id == __uuidof(IInitializeWithFile))
             *object = static_cast<IInitializeWithFile *>(this);
         else if (id == IID_IObjectWithSite)
@@ -193,11 +266,31 @@ public:
         return left;
     }
 
+    // IInitializeWithStream: what the isolated thumbnail process hands over.
+    //
+    // Once per object, as the interface's contract says; the stream is kept and read
+    // when the thumbnail is asked for, not here -- the shell may create a provider
+    // and never ask it for anything.
+    IFACEMETHODIMP Initialize(IStream *stream, DWORD) override
+    {
+        if (!stream)
+            return E_INVALIDARG;
+        if (stream_)
+            return HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED);
+        stream->AddRef();
+        stream_ = stream;
+        path_.clear();
+        bytes_.clear();
+        return S_OK;
+    }
+
     // IInitializeWithFile
     IFACEMETHODIMP Initialize(LPCWSTR path, DWORD) override
     {
         if (!path)
             return E_INVALIDARG;
+        if (stream_)
+            return HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED);
         path_ = QString::fromWCharArray(path);
         return S_OK;
     }
@@ -238,12 +331,21 @@ public:
 
         if (box < kMinThumbnail || box > kMaxThumbnail)
             return E_INVALIDARG;
-        if (path_.isEmpty())
+        if (path_.isEmpty() && !stream_)
             return E_FAIL;
+
+        // The stream is read once: a second size from the same object is the same
+        // bytes, and a stream that has been read to the end has nothing more to say.
+        if (stream_ && bytes_.isEmpty() && !readWholeStream(stream_, &bytes_))
+            return E_FAIL; // too big, or a read failed: the shell keeps its icon
 
         if (!document_)
             document_ = createDocument();
-        if (document_->load(path_, QString()) != Document::Status::Ready) {
+        // No password, ever: an encrypted document answers NeedsPassword, and a
+        // folder view is not where anybody types one.
+        const Document::Status status = stream_ ? document_->loadData(bytes_, QString())
+                                                : document_->load(path_, QString());
+        if (status != Document::Status::Ready) {
             // Not a PDF, or not a readable one. No thumbnail, no dialog: the
             // icon the shell already has is the right thing to show, and this is
             // a folder view rather than a place to report an error.
@@ -259,6 +361,10 @@ public:
 private:
     ~ThumbnailProvider()
     {
+        // The document first: it reads from bytes_, which go with this object.
+        document_.reset();
+        if (stream_)
+            stream_->Release();
         if (site_)
             site_->Release();
         InterlockedDecrement(&liveThumbnails_);
@@ -266,6 +372,8 @@ private:
 
     long references_ = 1;
     IUnknown *site_ = nullptr;
+    IStream *stream_ = nullptr;
+    QByteArray bytes_;
     QString path_;
     std::unique_ptr<Document> document_;
 };

@@ -38,6 +38,8 @@
 #include <shobjidl_core.h>
 #include <thumbcache.h>
 
+#include "encryptedsample.h"
+
 #include <string>
 #include <vector>
 
@@ -111,6 +113,351 @@ bool readBack(HBITMAP bitmap, Pixels &out)
     }
     out.inkFraction = seen ? double(ink) / double(seen) : 0.0;
     return seen > 0;
+}
+
+std::string readFileBytes(const std::wstring &path)
+{
+    std::string bytes;
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return bytes;
+    char buffer[4096];
+    DWORD got = 0;
+    while (ReadFile(file, buffer, sizeof(buffer), &got, nullptr) && got > 0)
+        bytes.append(buffer, got);
+    CloseHandle(file);
+    return bytes;
+}
+
+std::wstring siblingOf(const std::wstring &path, const wchar_t *name)
+{
+    const size_t slash = path.find_last_of(L"\\/");
+    return (slash == std::wstring::npos ? std::wstring() : path.substr(0, slash + 1)) + name;
+}
+
+// A stream over bytes, the kind ole32 makes: what the shell's isolated thumbnail
+// process hands a provider is a stream over the file, and this is the same interface
+// over the same bytes without the shell.
+IStream *memoryStream(const std::string &bytes)
+{
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes.size() ? bytes.size() : 1);
+    if (!memory)
+        return nullptr;
+    if (void *at = GlobalLock(memory)) {
+        if (!bytes.empty())
+            memcpy(at, bytes.data(), bytes.size());
+        GlobalUnlock(memory);
+    }
+    IStream *stream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(memory, TRUE, &stream))) {
+        GlobalFree(memory);
+        return nullptr;
+    }
+    ULARGE_INTEGER size;
+    size.QuadPart = bytes.size();
+    stream->SetSize(size);
+    return stream;
+}
+
+// A stream that misbehaves in one chosen way, counting the reads it was asked for.
+//
+//   FailsToRead -- says it holds a small file, and every read fails: a network share
+//                  that went away mid-folder.
+//   ClaimsHuge  -- says it holds 4 GB: has to be refused before a byte is read.
+//   Endless     -- will not say how big it is, and never ends: the limit has to hold
+//                  while reading, not only against what Stat said.
+class OddStream final : public IStream {
+public:
+    enum class Kind { FailsToRead, ClaimsHuge, Endless };
+    explicit OddStream(Kind kind) : kind_(kind) {}
+
+    ULONG reads = 0;
+    unsigned long long handedOut = 0;
+
+    IFACEMETHODIMP QueryInterface(REFIID id, void **object) override
+    {
+        if (!object)
+            return E_POINTER;
+        if (id == IID_IUnknown || id == IID_IStream || id == IID_ISequentialStream) {
+            *object = static_cast<IStream *>(this);
+            AddRef();
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    IFACEMETHODIMP_(ULONG) AddRef() override { return ++references_; }
+    // Lives on the test's stack: the count is checked, never acted on.
+    IFACEMETHODIMP_(ULONG) Release() override { return --references_; }
+
+    IFACEMETHODIMP Read(void *buffer, ULONG wanted, ULONG *got) override
+    {
+        ++reads;
+        if (got)
+            *got = 0;
+        if (kind_ == Kind::FailsToRead)
+            return STG_E_READFAULT;
+        memset(buffer, 0, wanted);
+        handedOut += wanted;
+        if (got)
+            *got = wanted;
+        return S_OK;
+    }
+    IFACEMETHODIMP Write(const void *, ULONG, ULONG *) override { return STG_E_ACCESSDENIED; }
+    IFACEMETHODIMP Seek(LARGE_INTEGER, DWORD, ULARGE_INTEGER *position) override
+    {
+        if (position)
+            position->QuadPart = 0;
+        return S_OK;
+    }
+    IFACEMETHODIMP SetSize(ULARGE_INTEGER) override { return STG_E_ACCESSDENIED; }
+    IFACEMETHODIMP CopyTo(IStream *, ULARGE_INTEGER, ULARGE_INTEGER *, ULARGE_INTEGER *) override
+    {
+        return E_NOTIMPL;
+    }
+    IFACEMETHODIMP Commit(DWORD) override { return S_OK; }
+    IFACEMETHODIMP Revert() override { return S_OK; }
+    IFACEMETHODIMP LockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override
+    {
+        return STG_E_INVALIDFUNCTION;
+    }
+    IFACEMETHODIMP UnlockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override
+    {
+        return STG_E_INVALIDFUNCTION;
+    }
+    IFACEMETHODIMP Stat(STATSTG *stat, DWORD) override
+    {
+        if (!stat)
+            return E_POINTER;
+        if (kind_ == Kind::Endless)
+            return E_NOTIMPL;
+        *stat = {};
+        stat->type = STGTY_STREAM;
+        stat->cbSize.QuadPart = kind_ == Kind::ClaimsHuge ? 4ull * 1024 * 1024 * 1024 : 4096;
+        return S_OK;
+    }
+    IFACEMETHODIMP Clone(IStream **) override { return E_NOTIMPL; }
+
+private:
+    Kind kind_;
+    ULONG references_ = 1;
+};
+
+// One provider per stream, as the shell does it: a fresh object, initialised once,
+// asked for one size. The bitmap, when there is one, is the caller's to delete.
+struct StreamOutcome {
+    HRESULT initialised = E_FAIL;
+    HRESULT result = E_FAIL;
+    HBITMAP bitmap = nullptr;
+};
+
+StreamOutcome thumbnailFromStream(IClassFactory *factory, IStream *stream, UINT box)
+{
+    StreamOutcome outcome;
+    IThumbnailProvider *provider = nullptr;
+    if (FAILED(factory->CreateInstance(nullptr, __uuidof(IThumbnailProvider),
+                                       reinterpret_cast<void **>(&provider))))
+        return outcome;
+    IInitializeWithStream *initialise = nullptr;
+    if (SUCCEEDED(provider->QueryInterface(__uuidof(IInitializeWithStream),
+                                           reinterpret_cast<void **>(&initialise)))) {
+        outcome.initialised = initialise->Initialize(stream, STGM_READ);
+        initialise->Release();
+    }
+    HBITMAP bitmap = reinterpret_cast<HBITMAP>(-1);
+    WTS_ALPHATYPE alpha = WTSAT_UNKNOWN;
+    outcome.result = provider->GetThumbnail(box, &bitmap, &alpha);
+    // Untouched counts as nothing handed back; a failure that still handed a bitmap
+    // back shows up as a non-null one, which every caller below checks against.
+    outcome.bitmap = bitmap == reinterpret_cast<HBITMAP>(-1) ? nullptr : bitmap;
+    provider->Release();
+    return outcome;
+}
+
+// The whole bitmap, every byte, for comparing two of them.
+std::vector<unsigned char> bitsOf(HBITMAP bitmap, int *width, int *height)
+{
+    BITMAP info = {};
+    if (!bitmap || GetObjectW(bitmap, sizeof(info), &info) == 0 || !info.bmBits)
+        return {};
+    *width = info.bmWidth;
+    *height = info.bmHeight < 0 ? -info.bmHeight : info.bmHeight;
+    const auto *bits = static_cast<const unsigned char *>(info.bmBits);
+    return std::vector<unsigned char>(bits, bits + size_t(info.bmWidthBytes) * size_t(*height));
+}
+
+bool directoryIsEmpty(const std::wstring &directory)
+{
+    WIN32_FIND_DATAW found = {};
+    const HANDLE search = FindFirstFileW((directory + L"\\*").c_str(), &found);
+    if (search == INVALID_HANDLE_VALUE)
+        return true;
+    bool empty = true;
+    do {
+        if (wcscmp(found.cFileName, L".") != 0 && wcscmp(found.cFileName, L"..") != 0)
+            empty = false;
+    } while (empty && FindNextFileW(search, &found));
+    FindClose(search);
+    return empty;
+}
+
+// IInitializeWithStream (sec.133): the interface the shell's isolated thumbnail process
+// uses, and the reason the installer can register this provider at all -- one that only
+// took a path would have to run inside explorer.exe.
+void checkStreams(IClassFactory *factory, IThumbnailProvider *fileProvider,
+                  const std::wstring &fixture)
+{
+    // Somewhere to notice a temporary file in. The provider must not write one: the
+    // bytes go from the stream to memory to PDFium. GetTempPathW reads TMP and TEMP at
+    // the time of the call, so pointing both at an empty folder of our own is enough to
+    // see anything that asks Windows where temporary files go.
+    wchar_t base[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, base);
+    const std::wstring watched = std::wstring(base) + L"xyzpdf-thumbnail-stream-"
+                                 + std::to_wstring(GetCurrentProcessId());
+    CreateDirectoryW(watched.c_str(), nullptr);
+    wchar_t oldTmp[MAX_PATH] = {};
+    wchar_t oldTemp[MAX_PATH] = {};
+    const DWORD hadTmp = GetEnvironmentVariableW(L"TMP", oldTmp, MAX_PATH);
+    const DWORD hadTemp = GetEnvironmentVariableW(L"TEMP", oldTemp, MAX_PATH);
+    SetEnvironmentVariableW(L"TMP", watched.c_str());
+    SetEnvironmentVariableW(L"TEMP", watched.c_str());
+
+    const std::string pdf = readFileBytes(fixture);
+    check(!pdf.empty(), "stream: the fixture's bytes can be read");
+
+    // The good document: a bitmap, and the same bitmap the path gives -- byte for byte,
+    // because the two are one renderer over one file and anything else is a second
+    // thumbnail for the same page.
+    {
+        IStream *stream = memoryStream(pdf);
+        check(stream != nullptr, "stream: a stream over the fixture");
+        if (stream) {
+            const StreamOutcome outcome = thumbnailFromStream(factory, stream, 96);
+            check(SUCCEEDED(outcome.initialised), "stream: it takes the stream");
+            check(SUCCEEDED(outcome.result) && outcome.bitmap != nullptr,
+                  "stream: GetThumbnail(96) returns a bitmap from the stream");
+
+            HBITMAP fromPath = nullptr;
+            WTS_ALPHATYPE alpha = WTSAT_UNKNOWN;
+            fileProvider->GetThumbnail(96, &fromPath, &alpha);
+            int streamWidth = 0, streamHeight = 0, pathWidth = 0, pathHeight = 0;
+            const std::vector<unsigned char> streamBits =
+                bitsOf(outcome.bitmap, &streamWidth, &streamHeight);
+            const std::vector<unsigned char> pathBits = bitsOf(fromPath, &pathWidth, &pathHeight);
+            Pixels pixels;
+            check(outcome.bitmap && readBack(outcome.bitmap, pixels) && pixels.inkFraction > 0.0
+                      && pixels.inkFraction < 0.5 && pixels.height > pixels.width
+                      && pixels.height == 96,
+                  "stream: a portrait page with ink on it, as tall as the box");
+            check(!streamBits.empty() && streamBits == pathBits && streamWidth == pathWidth
+                      && streamHeight == pathHeight,
+                  "stream: byte for byte the thumbnail the path gives");
+            if (fromPath)
+                DeleteObject(fromPath);
+            if (outcome.bitmap)
+                DeleteObject(outcome.bitmap);
+
+            // Read from its start, whatever the position: a stream someone already read
+            // to the end would otherwise hand over nothing.
+            LARGE_INTEGER zero = {};
+            stream->Seek(zero, STREAM_SEEK_END, nullptr);
+            const StreamOutcome atEnd = thumbnailFromStream(factory, stream, 64);
+            check(SUCCEEDED(atEnd.result) && atEnd.bitmap != nullptr,
+                  "stream: a stream left at its end is read from the start");
+            if (atEnd.bitmap)
+                DeleteObject(atEnd.bitmap);
+
+            // Once per object, as IInitializeWithStream's contract says.
+            IThumbnailProvider *provider = nullptr;
+            IInitializeWithStream *initialise = nullptr;
+            factory->CreateInstance(nullptr, __uuidof(IThumbnailProvider),
+                                    reinterpret_cast<void **>(&provider));
+            if (provider)
+                provider->QueryInterface(__uuidof(IInitializeWithStream),
+                                         reinterpret_cast<void **>(&initialise));
+            check(initialise != nullptr, "stream: the provider answers IInitializeWithStream");
+            if (initialise) {
+                check(initialise->Initialize(nullptr, STGM_READ) == E_INVALIDARG,
+                      "stream: no stream is refused as an argument");
+                check(SUCCEEDED(initialise->Initialize(stream, STGM_READ)),
+                      "stream: the first stream is taken");
+                check(initialise->Initialize(stream, STGM_READ)
+                          == HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED),
+                      "stream: a second one is refused as already initialised");
+                initialise->Release();
+            }
+            if (provider)
+                provider->Release();
+            stream->Release();
+        }
+    }
+
+    // What has to fail, and fail without a bitmap: the shell then keeps its own icon.
+    struct Refused {
+        const char *what;
+        std::string bytes;
+    };
+    const std::wstring damagedPath = siblingOf(fixture, L"damaged.pdf");
+    const Refused refused[] = {
+        {"stream: junk that is not a PDF gives no thumbnail",
+         "this is not a PDF, whatever the extension says\n"},
+        {"stream: an empty stream gives no thumbnail", std::string()},
+        {"stream: a truncated PDF (damaged.pdf) gives no thumbnail", readFileBytes(damagedPath)},
+        {"stream: the encrypted sample gives no thumbnail, and asks nobody for a password",
+         encryptedsample::bytes()},
+    };
+    check(refused[2].bytes.size() > 0, "stream: damaged.pdf can be read");
+    check(refused[3].bytes.size() > 0, "stream: the encrypted sample was built");
+    for (const Refused &item : refused) {
+        IStream *stream = memoryStream(item.bytes);
+        if (!stream) {
+            check(false, item.what);
+            continue;
+        }
+        const StreamOutcome outcome = thumbnailFromStream(factory, stream, 64);
+        check(SUCCEEDED(outcome.initialised) && FAILED(outcome.result)
+                  && outcome.bitmap == nullptr,
+              item.what);
+        if (outcome.bitmap)
+            DeleteObject(outcome.bitmap);
+        stream->Release();
+    }
+
+    {
+        OddStream failing(OddStream::Kind::FailsToRead);
+        const StreamOutcome outcome = thumbnailFromStream(factory, &failing, 64);
+        check(FAILED(outcome.result) && outcome.bitmap == nullptr && failing.reads > 0,
+              "stream: a stream whose reads fail gives no thumbnail");
+    }
+    {
+        OddStream huge(OddStream::Kind::ClaimsHuge);
+        const StreamOutcome outcome = thumbnailFromStream(factory, &huge, 64);
+        check(FAILED(outcome.result) && outcome.bitmap == nullptr,
+              "stream: a stream that says it holds 4 GB gives no thumbnail");
+        char note[160];
+        snprintf(note, sizeof(note),
+                 "stream: and is refused before a byte is read (reads: %lu)", huge.reads);
+        check(huge.reads == 0, note);
+    }
+    {
+        OddStream endless(OddStream::Kind::Endless);
+        const StreamOutcome outcome = thumbnailFromStream(factory, &endless, 64);
+        check(FAILED(outcome.result) && outcome.bitmap == nullptr,
+              "stream: a stream that never ends gives no thumbnail");
+        // The provider's ceiling is 256 MB; whatever it reads past that is one chunk.
+        char note[160];
+        snprintf(note, sizeof(note),
+                 "stream: and reading stops at the ceiling (%llu bytes handed out)",
+                 endless.handedOut);
+        check(endless.handedOut > 0 && endless.handedOut <= 257ull * 1024 * 1024, note);
+    }
+
+    check(directoryIsEmpty(watched), "stream: and not one temporary file was written");
+    RemoveDirectoryW(watched.c_str());
+    SetEnvironmentVariableW(L"TMP", hadTmp ? oldTmp : nullptr);
+    SetEnvironmentVariableW(L"TEMP", hadTemp ? oldTemp : nullptr);
 }
 
 void writeJunkDocument(const std::wstring &path)
@@ -268,6 +615,9 @@ int main(int argc, char **argv)
         }
         DeleteObject(bitmap);
     }
+
+    if (provider)
+        checkStreams(factory, provider, fixture);
 
     // The engine actually in this process. Same assertion as the preview
     // handler's, and the same reason: a provider wired back to the other engine

@@ -6,10 +6,11 @@
 .DESCRIPTION
     1. Stages the program with build-package.ps1 -StageOnly, C runtime included:
        the same payload the MSIX carries, from the same lines.
-    2. Reads the version from CMakeLists.txt and the preview handler's CLSID from
-       AppxManifest.xml, and checks that CLSID against the two sources that
-       compile it in -- the installer registers the class, the program points the
-       ProgID at it, the DLL answers for it, and the three must be one number.
+    2. Reads the version from CMakeLists.txt and the CLSIDs of the preview
+       handler and the thumbnail provider from AppxManifest.xml, and checks each
+       against the two sources that compile it in -- the installer registers the
+       class, the program points the ProgID at it, the DLL answers for it, and the
+       three must be one number.
     3. Compiles packaging/xyzpdf.iss with Inno Setup's ISCC, passing those as
        defines, and writes the installer's SHA-256 beside it.
 
@@ -69,6 +70,28 @@ foreach ($c in $checks) {
 }
 Write-Host "preview handler class {$PreviewClsid}, the same in the manifest, shellintegration.cpp and previewhandler.cpp"
 
+# The thumbnail provider (sec.133), the same three-way check: the manifest's
+# desktop2:ThumbnailHandler, the program's ProgID pointer, the DLL's struct.
+$thumbnailNode = $manifest.GetElementsByTagName('desktop2:ThumbnailHandler') | Select-Object -First 1
+if (-not $thumbnailNode) { throw 'AppxManifest.xml declares no ThumbnailHandler' }
+$ThumbnailClsid = $thumbnailNode.GetAttribute('Clsid').ToUpperInvariant()
+if ($ThumbnailClsid -notmatch '^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$') {
+    throw "the manifest's thumbnail CLSID '$ThumbnailClsid' is not a bare GUID"
+}
+if ($ThumbnailClsid -eq $PreviewClsid) { throw 'the manifest gives the preview and the thumbnail one CLSID' }
+$firstThumb = $ThumbnailClsid.Substring(0, 8).ToLowerInvariant()
+$thumbChecks = @(
+    @{ File = 'src\windows\shellintegration.cpp';  Pattern = [regex]::Escape("{$ThumbnailClsid}") },
+    @{ File = 'src\windows\thumbnailprovider.cpp'; Pattern = "0x$firstThumb," }
+)
+foreach ($c in $thumbChecks) {
+    $path = Join-Path $Project $c.File
+    if (-not (Select-String -LiteralPath $path -Pattern $c.Pattern -Quiet)) {
+        throw "$($c.File) does not carry the thumbnail CLSID $ThumbnailClsid that AppxManifest.xml declares"
+    }
+}
+Write-Host "thumbnail provider class {$ThumbnailClsid}, the same in the manifest, shellintegration.cpp and thumbnailprovider.cpp"
+
 # ---------------------------------------------------------------------------
 # 2. ISCC
 # ---------------------------------------------------------------------------
@@ -100,7 +123,8 @@ $stage = Join-Path $outRoot 'app'
 # What the installer's own entries name, checked before compiling: ISCC packs a
 # folder, and a missing file there is an installer that runs, registers a class
 # for a DLL that is not on disk, and says nothing.
-$needed = @('bin\xyzpdf.exe', 'bin\xyzpdfpreview.dll', 'bin\pdfium.dll', 'bin\qpdf30.dll',
+$needed = @('bin\xyzpdf.exe', 'bin\xyzpdfpreview.dll', 'bin\xyzpdfthumbnail.dll',
+            'bin\pdfium.dll', 'bin\qpdf30.dll',
             'bin\vcruntime140.dll', 'bin\vcruntime140_1.dll', 'bin\msvcp140.dll',
             'bin\Qt6Core.dll', 'bin\Qt6Gui.dll', 'bin\Qt6Widgets.dll')
 $missing = @($needed | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stage $_)) })
@@ -117,7 +141,8 @@ $setup = Join-Path $outRoot ("XYZPDF-{0}-setup.exe" -f $Version)
 if (Test-Path -LiteralPath $setup) { Remove-Item -LiteralPath $setup -Force }
 $log = Join-Path $outRoot 'iscc.log'
 & $Iscc /Q "/DAppVersion=$Version" "/DStageDir=$stage" "/DOutputDir=$outRoot" `
-        "/DPreviewClsid=$PreviewClsid" (Join-Path $PSScriptRoot 'xyzpdf.iss') 2>&1 |
+        "/DPreviewClsid=$PreviewClsid" "/DThumbnailClsid=$ThumbnailClsid" `
+        (Join-Path $PSScriptRoot 'xyzpdf.iss') 2>&1 |
     Out-File -FilePath $log -Encoding utf8
 if ($LASTEXITCODE -ne 0) {
     Get-Content $log -Tail 40

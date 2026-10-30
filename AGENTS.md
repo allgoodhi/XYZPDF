@@ -222,11 +222,14 @@ PATH → 它印 `Updating dxcompiler.dll.` 并收了那颗 exe；把同目录的
 - **侧栏签名行要可选**（§130）：只给 `ItemIsEnabled` 时点一下能设当前项（跳页照样成立），但不画选中，单页文件上看着像"点了没反应"
   —— J1 在屏幕上看到的，测试用 `selectSignatureRow()` 在代码里按、看不见。`documenttab_smoke` 现在往视口送真鼠标事件。
   英文界面下侧栏四个标签比栏宽，切到「签名」时标签条会滚，`signaturepanel` 只框看得见的标签、把滚出去的印出来。
-- **安装包**（§131，`packaging/xyzpdf.iss`）：按用户装、只写 HKCU。程序自己的注册表项（ProgID、打开方式、右键菜单、ProgID 下的预览指针）**只由程序写** ——
+- **安装包**（§131，`packaging/xyzpdf.iss`）：按用户装、只写 HKCU。程序自己的注册表项（ProgID、打开方式、右键菜单、ProgID 下的预览指针与缩略图指针）**只由程序写** ——
   安装包调 `xyzpdf.exe --register-shell`，卸载前调 `--unregister-shell`（`CommandLine::Setup`，只在它是唯一参数时认、不走实例管道）；安装包自己只写
-  "必须挨着它装的文件"的东西：预览类的 `CLSID\…\InprocServer32`。预览指针挂在**我们的 ProgID** 下、不写 `.pdf\ShellEx`（那里是 Edge 等别人的预览器）。
-  缩略图不注册：`IInitializeWithFile` 的提供者要在 explorer.exe 里跑，等于把 Qt 装进资源管理器；要它先改成 `IInitializeWithStream`。
-  载荷来自 `build-package.ps1 -StageOnly`，与 MSIX 同一份暂存 —— 加运行库只改那一处。CLSID 由 `build-installer.ps1` 从清单读出并核对两份源码。
+  "必须挨着它装的文件"的东西：预览类与缩略图类的 `CLSID\…\InprocServer32`。两个指针都挂在**我们的 ProgID** 下（`ShellEx\{8895b1c6-…}` 预览、
+  `ShellEx\{e357fccd-…}` 缩略图）、各自在 DLL 挨着 exe 时才写，不写 `.pdf\ShellEx`（那里是 Edge 等别人的处理器）。
+  **缩略图从 §133 起注册**（子任务 `shell\thumbnail`，默认勾选）：提供者实现 `IInitializeWithStream`，把流整份读进内存交给 `FPDF_LoadMemDocument64`
+  （`Document::loadData`，上限 256 MB，不写临时文件），所以 Windows 在它自己的隔离缩略图进程（DllHost）里跑它。**这只在类下没有
+  `DisableProcessIsolation` 时成立** —— 谁在 `.iss` 里加了它，Qt 与 PDFium 就进了 explorer.exe。`IInitializeWithFile` 仍答（MSIX 的代理与旧测试用）。
+  载荷来自 `build-package.ps1 -StageOnly`，与 MSIX 同一份暂存 —— 加运行库只改那一处。两个 CLSID 都由 `build-installer.ps1` 从清单读出并各核对两份源码。
   **装着旧 MSIX 的机器上**，非打包的那份一启动就按"包优先"撤掉自己的 HKCU 项（`MainWindow` 构造里），试装时别把这当成安装包的缺陷。
   Inno 的向导按钮不进 UIA，要上屏幕走 Alt+字母 / Enter。
 - **合并两个都改了 `xyzpdf_en.ts` 的分支**：冲突几乎全是 location 行。按 (context, source, comment) 三方合并（两边都有时取相对 base 改过的那边），

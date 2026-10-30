@@ -26,6 +26,7 @@
 #include "formfill.h"
 #include "pdfiumbackend.h"
 
+#include <QByteArray>
 #include <QHash>
 #include <QMutex>
 #include <QMutexLocker>
@@ -540,6 +541,10 @@ struct PdfiumBackend::Impl
     };
 
     PdfFileHandle file;
+    // The bytes a loadData() document is read from, or empty. FPDF_LoadMemDocument64
+    // keeps a pointer into them and reads lazily, so they are let go only after
+    // FPDF_CloseDocument -- close() clears them right after the document.
+    QByteArray memory;
     FPDF_DOCUMENT document = nullptr;
     // The form-fill environment and its interface. Both live as long as the
     // document: fpdf_formfill.h says the FPDF_FORMFILLINFO must stay alive until
@@ -842,6 +847,7 @@ struct PdfiumBackend::Impl
             document = nullptr;
         }
         file.close();
+        memory = QByteArray();
         // Both answers were read off that document handle; with no document there is
         // nothing to have counted -- and the lock names belong to that document too.
         signatureCount = 0;

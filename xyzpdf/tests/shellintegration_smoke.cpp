@@ -289,6 +289,66 @@ int main(int argc, char **argv)
         check(!ShellIntegration::hasAnyTrace(kDisposableClasses), "leaving nothing behind");
     }
 
+    // ---- the thumbnail pointer (sec.133) ----
+    //
+    // The same rule as the pane's: under our ProgID, only when xyzpdfthumbnail.dll is beside
+    // the executable, never under .pdf. And each DLL answers for its own pointer only -- a
+    // folder with the preview handler and no thumbnail provider gets the pane and no icons.
+    {
+        const QString pointerSubKey = kDisposableClassesSubKeyPath
+                                      + QStringLiteral("\\xyzpdf.Document\\ShellEx\\"
+                                                       "{e357fccd-a995-4576-b01f-234630154e96}");
+        const QString previewSubKey = kDisposableClassesSubKeyPath
+                                      + QStringLiteral("\\xyzpdf.Document\\ShellEx\\"
+                                                       "{8895b1c6-b41f-4c1c-a562-0d564250836f}");
+        const QString extensionSlot = kDisposableClassesSubKeyPath
+                                      + QStringLiteral("\\.pdf\\ShellEx");
+        const auto pointerValue = [&] {
+            QSettings key(QStringLiteral("HKEY_CURRENT_USER\\") + pointerSubKey,
+                          QSettings::NativeFormat);
+            return key.value(QStringLiteral("Default")).toString();
+        };
+
+        QTemporaryDir folder;
+        check(folder.isValid(), "a folder for the stand-in program");
+        const QString executable = folder.filePath(QStringLiteral("xyzpdf.exe"));
+        const QString previewDll = folder.filePath(QStringLiteral("xyzpdfpreview.dll"));
+        const QString thumbnailDll = folder.filePath(QStringLiteral("xyzpdfthumbnail.dll"));
+        const auto touch = [](const QString &path) {
+            QFile file(path);
+            return file.open(QIODevice::WriteOnly) && file.write("x", 1) == 1;
+        };
+        check(touch(executable), "the stand-in executable");
+        check(touch(previewDll), "the stand-in preview handler");
+
+        QString error;
+        check(ShellIntegration::registerVerbs(executable, kDisposableClasses, &error),
+              QStringLiteral("registering without a thumbnail provider: %1").arg(error));
+        check(valueCount(pointerSubKey) == -1,
+              QStringLiteral("no thumbnail pointer without the DLL, even with the preview "
+                             "handler there (subkeys: %1)")
+                  .arg(subKeysUnder(kDisposableClassesSubKeyPath)));
+        check(valueCount(previewSubKey) >= 1, "while the pane's pointer is written");
+
+        check(touch(thumbnailDll), "the stand-in thumbnail provider");
+        check(ShellIntegration::registerVerbs(executable, kDisposableClasses, &error),
+              QStringLiteral("registering with a thumbnail provider: %1").arg(error));
+        check(pointerValue().compare(QStringLiteral("{4032B809-B50E-4F0A-AFC1-D300803A81CE}"),
+                                     Qt::CaseInsensitive)
+                  == 0,
+              QStringLiteral("the pointer names the class in thumbnailprovider.cpp (found \"%1\"; "
+                             "subkeys: %2)")
+                  .arg(pointerValue(), subKeysUnder(kDisposableClassesSubKeyPath)));
+        check(valueCount(extensionSlot) == -1,
+              "and the extension's own ShellEx, where another program's thumbnails live, is not "
+              "touched");
+
+        check(ShellIntegration::unregisterVerbs(kDisposableClasses, &error),
+              QStringLiteral("unregistering: %1").arg(error));
+        check(valueCount(pointerSubKey) == -1, "the thumbnail pointer goes with the ProgID");
+        check(!ShellIntegration::hasAnyTrace(kDisposableClasses), "leaving nothing behind");
+    }
+
     // ---- what a refusal looks like ----
     {
         QString error;

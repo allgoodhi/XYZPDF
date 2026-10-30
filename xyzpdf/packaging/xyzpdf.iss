@@ -8,19 +8,20 @@
 ;
 ; Per-user, no administrator: %LOCALAPPDATA%\Programs\XYZPDF, HKCU only. Every
 ; registry entry the program itself writes (the ProgID, 打开方式, the right-click
-; menu, the preview pane pointer under the ProgID) is written by the program,
-; through `xyzpdf.exe --register-shell` -- the same code the settings box runs --
-; and removed by `--unregister-shell` before the files go. What this script
-; writes itself is only what has to sit beside a file it installed: the COM class
-; of the preview handler, whose InprocServer32 is the DLL's path.
+; menu, the preview pane and thumbnail pointers under the ProgID) is written by the
+; program, through `xyzpdf.exe --register-shell` -- the same code the settings box
+; runs -- and removed by `--unregister-shell` before the files go. What this script
+; writes itself is only what has to sit beside a file it installed: the COM classes
+; of the preview handler and the thumbnail provider, whose InprocServer32 is the
+; DLL's path.
 ;
-; Not registered here: the thumbnail provider. It implements IInitializeWithFile,
-; and Windows runs such a provider inside explorer.exe (it has to opt out of the
-; isolated thumbnail process to get a path) -- Qt and PDFium loaded into Explorer.
-; The MSIX hosts it in DllHost instead. Until it takes a stream, the installed
-; build has no thumbnails. The Explorer command (xyzpdfshell.dll) is not
-; registered either: Windows 11's first-level menu takes it only from a package,
-; and the classic verb the program writes covers the same thing.
+; The thumbnail provider takes an IStream (IInitializeWithStream, sec.133), so the
+; shell creates it in its own isolated thumbnail process, never in explorer.exe.
+; That holds only while its class has no DisableProcessIsolation value -- which is
+; why nothing below writes one, and why a reader who finds one here should take it
+; out: it would load Qt and PDFium into Explorer. The Explorer command
+; (xyzpdfshell.dll) is not registered: Windows 11's first-level menu takes it only
+; from a package, and the classic verb the program writes covers the same thing.
 
 #ifndef AppVersion
   #error AppVersion is passed by build-installer.ps1
@@ -33,6 +34,9 @@
 #endif
 #ifndef PreviewClsid
   #error PreviewClsid is passed by build-installer.ps1 (read from AppxManifest.xml)
+#endif
+#ifndef ThumbnailClsid
+  #error ThumbnailClsid is passed by build-installer.ps1 (read from AppxManifest.xml)
 #endif
 
 [Setup]
@@ -84,6 +88,8 @@ chinesesimplified.TaskShell=在「打开方式」和右键菜单里加入 XYZPDF
 english.TaskShell=Add XYZPDF to "Open with" and the right-click menu
 chinesesimplified.TaskPreview=在资源管理器的预览窗格里预览 PDF（XYZPDF 是 PDF 默认程序时生效）
 english.TaskPreview=Preview PDFs in Explorer's preview pane (when XYZPDF opens PDFs by default)
+chinesesimplified.TaskThumbnail=在资源管理器的图标视图里显示 PDF 第一页缩略图（XYZPDF 是 PDF 默认程序时生效）
+english.TaskThumbnail=Show the first page as the PDF icon in Explorer (when XYZPDF opens PDFs by default)
 chinesesimplified.GroupShell=资源管理器：
 english.GroupShell=File Explorer:
 chinesesimplified.StatusShell=正在登记文件关联……
@@ -92,6 +98,7 @@ english.StatusShell=Registering the file association...
 [Tasks]
 Name: "shell"; Description: "{cm:TaskShell}"; GroupDescription: "{cm:GroupShell}"
 Name: "shell\preview"; Description: "{cm:TaskPreview}"; GroupDescription: "{cm:GroupShell}"
+Name: "shell\thumbnail"; Description: "{cm:TaskThumbnail}"; GroupDescription: "{cm:GroupShell}"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
@@ -114,6 +121,15 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\PreviewHandlers";
 ; entries of a task that is no longer selected where they were.
 Root: HKCU; Subkey: "Software\Classes\CLSID\{{{#PreviewClsid}}"; ValueType: none; Flags: deletekey; Tasks: not shell\preview
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\PreviewHandlers"; ValueType: none; ValueName: "{{{#PreviewClsid}}"; Flags: deletevalue; Tasks: not shell\preview
+; The thumbnail provider's class. Apartment, as the shell requires of a thumbnail
+; handler, and no DisableProcessIsolation: the shell then runs it in its isolated
+; thumbnail process (a DllHost) and hands it a stream. The program points the
+; ProgID's IThumbnailProvider slot at it; this only makes the class exist.
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{{#ThumbnailClsid}}"; ValueType: string; ValueData: "XYZPDF"; Flags: uninsdeletekey; Tasks: shell\thumbnail
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{{#ThumbnailClsid}}\InprocServer32"; ValueType: string; ValueData: "{app}\bin\xyzpdfthumbnail.dll"; Tasks: shell\thumbnail
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{{#ThumbnailClsid}}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"; Tasks: shell\thumbnail
+; Cleared box on an upgrade: the class goes, for the same reason as the preview's.
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{{#ThumbnailClsid}}"; ValueType: none; Flags: deletekey; Tasks: not shell\thumbnail
 
 [Run]
 Filename: "{app}\bin\xyzpdf.exe"; Parameters: "--register-shell"; StatusMsg: "{cm:StatusShell}"; Flags: runhidden waituntilterminated; Tasks: shell

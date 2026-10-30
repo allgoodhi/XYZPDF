@@ -73,6 +73,7 @@ public:
     ~PdfiumBackend() override;
 
     Status load(const QString &path, const QString &password) override;
+    Status loadData(const QByteArray &bytes, const QString &password) override;
     void close() override;
     QString lastError() const override;
     QString path() const override;
@@ -125,6 +126,9 @@ private:
     // friend rather than a member so that only the targets that export link it: the
     // two shell DLLs and most tests never see that file.
     friend struct PdfiumContentReader;
+
+    // The second half of load() and loadData(), once PDFium has answered.
+    Status adoptLoaded(const QString &path, const QString &password);
 
     struct Impl;
     std::unique_ptr<Impl> impl;

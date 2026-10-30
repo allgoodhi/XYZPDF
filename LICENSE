@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Third-party components keep their own licences: Qt (LGPL-3.0), PDFium
-(BSD-3-Clause and Apache-2.0), qpdf (Apache-2.0), and the zlib and libjpeg
-copies that come with qpdf. Their texts are in xyzpdf/Resources/licenses/ and
-are shown in the program under Help > Third-party licences
-(帮助 > 第三方开源许可).

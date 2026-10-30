@@ -1,7 +1,9 @@
 # XYZPDF
 
-Windows 桌面 PDF 阅读器（第一阶段只读预览，编辑后续）。
-**整体方案见 [docs/PLAN.md](docs/PLAN.md)，动手前先读完。**
+Windows 桌面 PDF 阅读器：阅读、页面编辑、表单填写、签名验证、转 Word / Excel / PowerPoint / 可搜索的 PDF。
+仓库以 MIT 公开（github.com/allgoodhi/XYZPDF），发布走 GitHub Releases 上的安装包（§131）。
+**整体方案见 [docs/PLAN.md](docs/PLAN.md)，动手前先读完**（它记的是起步时的分期，"只读预览、编辑后续"那一期早已过去）。
+**日志里 §131 之前引用的提交哈希是改写历史前的**（§132），GitHub 上已不存在，按 [docs/rewritten-hashes.txt](docs/rewritten-hashes.txt) 换成新的。
 
 ## 参照项目
 

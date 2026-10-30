@@ -1,0 +1,198 @@
+# 2026-10-30 改写历史（作者邮箱换成 GitHub noreply，§132）之后的提交哈希对照
+# 日志与交接文档里引用的是改写前的短哈希；GitHub 上已不存在，按这张表换成新的。
+# 每行：旧短哈希  新短哈希  提交标题（截断）
+79c23c0  6f9e848  Initial commit
+da08e3e  5eddcea  加入 XYZPDF 阅读器的完整实现、测试与忽..
+efda262  992b15e  鼠标分成三种工具，并修掉多行文档选不中..
+4a8a6d5  173b706  全文搜索、框选识别、拖入打开、可展开工..
+c795696  ff8ceba  导出为 Word：扫描页按图片还原，并修掉真..
+0bf32ef  23f9ec2  PDF 表格转 Word 可编辑表格，并修掉导出..
+d4772ba  c33fdad  新增划词翻译：可插拔免费后端、右键菜单..
+ede1a82  62aea17  新增书签大纲侧栏与可点击链接（M1/M2）
+9681af6  653dd57  新增打印（M3，完整选项）：页码范围、缩..
+e00e9c3  9487057  新增双页阅读模式（M3）
+4c47dde  45e5633  新增会话恢复（M3），并修双页"适应宽度"..
+68e2fc7  5b5df7f  新增书籍阅读模式（M3）：第1页居右、偶左..
+800263d  41641b0  新增导出为图片（M3）：范围/格式/DPI/目..
+496ef05  2514560  新增缩略图侧栏与标签页跨窗口拖拽（M1/M..
+0a09de1  d7736ac  新增全屏与演示模式（M3）
+4ca2112  a7fd1e1  实现夜间阅读反色，并补齐英文翻译的 166..
+9ba057b  429226a  新增性能基线（M4）：补齐 500+ 页与扫描..
+c78dd33  59f3363  把 AGENTS.md 收进仓库
+dcdeb95  56b538d  把 CLAUDE.md 缩成指向 AGENTS.md 的导入..
+66fccc5  9b054b1  新增区域截图到剪贴板（M3），复制的图片..
+cf645ad  2ac453d  新增 MSIX 本地打包（M4）：tile 图片、打..
+70d0b17  d7e34b4  清单里补上 .pdf 文件关联（M4），装包不..
+ebb7786  8e4c38f  修掉 mainwindow_smoke 里那个看运气的搜..
+9b4d82c  2f9517e  装上包验了一遍，把验证结果与脚本里那个..
+f59a6e4  46387c2  预览处理器探针（M3）：证明松散注册的包..
+472ad9b  af47884  预览处理器换成真实现（M3）：多页可滚，..
+51a0f81  2485d6b  缩略图处理器与右键动词（M3）：资源管理..
+859f1fd  09eca45  双语目录跟到源码：补上"复制图片"那条英..
+919785e  6a54c24  WACK 提权跑完了：新增 §8，记它两条死路..
+4a213e4  e96cfd4  签名与真部署跑通了，WACK 这才给出判词：..
+edf68c1  82d0bfa  补上商店包那条链路：磁贴出全套尺寸、包..
+07e472a  34bbaa7  出包时扔掉那 29.3 MB 程序从不打开的东西..
+2e18a4c  542e032  补上重装之后那四眼的结果：本机没有软件..
+cb946de  51f8596  预览窗格不再在宿主的线程上等 PDFium：一..
+863ddca  f0ba909  窗格那一下白纸到此为止；M5 先只把 QPDF..
+0ba0077  8b63e63  M5 的地基落地：删页与旋转先记成一串操作..
+71e5b4e  70e4aa3  M5 那一整片在真窗口里点了一遍，签名包也..
+f7c9975  bc1187c  页码框空着不再等于整份，丢弃确认里不再..
+c6367e6  0e6baa7  M5 重排落地：移到哪儿只由 planMove() 一..
+cea87ca  0919a87  §15 欠的那一次重打包补上了，这一节真正..
+f49de4a  3020334  M5 合并落地，页的身份从"一个数"变成"（..
+d037ae7  99bb12e  M5 拆分落地，它是第一个不改任何一页的操..
+82bd1db  46765e6  M5 加密落地，这一串第二个不改任何一页的..
+1ceaa0c  908a461  §24 还拆分名字的两条欠账，§25 还 §13 记..
+115513f  582be59  M5 水印落地，第七样，也是这一串里第一样..
+05c4203  0972974  §27 两条修复，§28 与 §29 两遍量。§27：..
+49fb9fb  48d9294  §30 还的是 §26 记下没动的那条测试，它钉..
+8dbb32a  a1a6885  §31–§34 四片一起记，因为目录文件和三份..
+82fa2c3  b33cafd  §35 还的是 §29 记下没钉的那一条，而它是..
+65b80b4  fdc8f41  §36–§39 四片一起记（同一份测试文件与同..
+6689974  45efcad  §40–§54 十五片一起记：两篇文档、一份测..
+73b1874  d8663d5  §55 XFA：表单的第二份副本，而我们这条写..
+acbad0e  e12ade6  §56–§58 三片一起记（同一份测试文件、同..
+8d1bcc4  0c289f7  §59–§74 十六片一起记（同一份测试文件、..
+0180b48  2338683  §75 量 §71 那条只推断、从没在文件上量过..
+ee16d12  6c06fbe  §76+§77 两片一起记（同一个函数、同一处..
+68d77f4  4c3366a  §78–§82 五片一起记（同一份产品文件、同..
+5421147  0b7bc85  §83–§88 六片一起记（同一根 gui-probe.p..
+9e4f941  e575555  §89–§92 四片一起记（同一根 gui-probe.p..
+f152e90  66411c8  §93–§97 五片一起记（同一对文档里按片接..
+8e5c980  92693fe  §98 §49 那 29 条英文助记符：括号是从源..
+c253d4c  41728fe  §99 §75 的路 (a) 做完了：书签的目的地从..
+6036af2  9658ee4  §100 review-03 那五条改完了 —— 而第四条..
+bc998c2  de09e7e  §101 缩略图的第二半：只渲看得见那一段、..
+afa5d41  21d49ce  §102 全词匹配：规则写在"字符是什么"上，..
+aa79b8b  20674e6  §103 截图成了一个工具，而不是识别窗口里..
+c3f57c0  5606199  §104 重新加载（F5）—— 而"删掉再读"这条..
+4deeec8  d1eb479  §105 编辑看得见了 —— 在缩略图条上：它显..
+3e49ec1  0aa764e  §106 重打包并重装：§16 那笔欠了二十二片..
+ea26406  f96889f  §106 补一处：日志里三段路径的反斜杠被转..
+515899e  2cd728a  §107 「翻译」在空窗口里该灰没灰 —— §10..
+8e805bd  f0ed954  §108 重打包并重装：§107 送进装上的那一..
+a072bcd  d6a22a0  review-03：记下他定的三件 —— 搜索结果列..
+a6963a4  fedc8f6  docs/handoff-01.md：交给并行分支的五件..
+c5ad38a  1a2363b  打印框表单提示，并补上 §105 欠的重排与..
+fe7f365  9cf9ea0  书签点击落到页内位置：侧栏行按标题+页接..
+1929564  81bd57b  B：文件改动提示条 —— watcher + 400 ms ..
+76c1d01  34d686a  handoff-01 A：搜索结果列表进侧栏第三页..
+593aa53  34d8957  gui-probe：补上五个真窗口新模式（属性框..
+ead2526  b23b1c7  合并 print-form-and-strip-tests（hando..
+0caf21d  da3085e  合并 file-change-notice（handoff-01 B）..
+5ab2fa2  d0b6d7d  合并 search-results-list（handoff-01 A..
+7307c0e  adc14c0  合并 bookmark-jump-position（handoff-0..
+aecad67  1c9ed22  合并 gui-probe-new-modes（handoff-01 D..
+186b0fa  d441f2a  合并后的英文目录：整体重生成一次（631 ..
+ed95820  163ca66  §109 §110 五件并行分支合进 main；查找栏..
+1e4df41  be9bfaa  §111 重打包并重装：§109–§110 送进装上的..
+270908b  350b809  docs/handoff-02.md：第二批全部按长期方..
+86dc9ca  671584c  F5 探针：PDFium 直接量一遍，默认构建看..
+7f2d968  4599601  docs/pdfium-plan.md：F5 报告与结论 —— ..
+01c7b9c  ab79801  docs/pdfium-plan.md：订正行数，F5 的结..
+209ea3f  b6d09ce  F2 可重现构建：/Brepro 与钉死 rcc 的资..
+76f5dc9  736f519  docs/pdfium-plan.md：本文档的行数从此不..
+3b2975a  5e72565  F1 翻译：官方接口、知情同意、密钥进 Wi..
+50f6845  24e8e25  F3：XFA 按规范处理 + §47 那句话 —— 改过..
+8c948b4  8cd423d  F4.1 §100 那条级联现在有红线了：看门狗..
+63d5e8e  7e22eec  F4 测试欠账 · 分支报告（test-debts）：..
+7bcd19b  dd45a37  F4 测试欠账 · 分支报告（test-debts）· ..
+bf66b45  2e5794c  合并 reproducible-build（handoff-02）
+cbf083e  8a5d655  合并 pdfium-plan（handoff-02）
+1664579  efe3f53  合并 test-debts（handoff-02）
+bd6c91a  29088e7  合并 xfa-and-reply-notice（handoff-02 ..
+6ae4329  c34f6b9  合并 translate-official（handoff-02 F1..
+9a69edd  8b9ca8d  合并后的修正：/NeedsRendering 是目录的..
+394786e  28d06a1  §112 §113 第二批第一阶段五件合进 main，..
+a9c678d  93a07f9  F6 第一片：搜索搬到 SearchSession
+4f0eeba  104a679  F6 第二片：文件改动监视搬到 FileChange..
+142cfea  208ecbb  F6 第三片：Word 导出搬到 WordExportSes..
+673497e  658c705  F6 第四片：打印与导出为图片搬到 Docume..
+41e934c  8f3fcf7  F6 第五片：区域截图与识别搬到 OcrSession
+97adfa6  3e78360  handoff-03 F9: 新句子上屏幕 —— 三个新模..
+dbabcf6  fa1350f  F6 第六片：翻译搬到 TranslateSession（..
+f6888bb  0a3f447  F6 收尾：documenttab.h 写清「还剩什么在..
+b1bccfe  b75caee  合并 gui-probe-sentences（handoff-03 F..
+3a5f5a4  d792c7f  合并 documenttab-split（handoff-03 F6）
+e65d9b6  8b5d6e6  F9 在屏幕上看见的两处产品缺陷：状态栏的..
+07f6d36  db6e9fe  §114 §115 第二阶段 F6、F9 合进 main，F..
+a52ac18  2865389  F7-A：Document 变成真的抽象，PageRende..
+1d68ff7  6b03fc3  F10：空闲超过 30 秒后的第二次识别会让整..
+7c93665  5e85d07  F7-B：PdfiumBackend 落地，构建期选后端..
+b55b14c  641f535  F7-C：PDFium 表单层只画，一句「字段是空..
+efbdfb6  df04299  F7-D：两颗壳 DLL 换后端，delay-load 认..
+7c33891  8f48a35  F8 就地保存：保存(&S) 写回正在读的这份..
+d6f44f1  3abc11e  F7-E：其余七个 Document 方法迁进 PDFiu..
+42c5cb1  3049267  F7-F：打印旗标与 flatten 的边界；第六片..
+b081b0a  2395b8e  合并 ocr-worker-crash（handoff-03 F10）
+cbfc049  98aa1de  合并 pdfium-backend（handoff-03 F7）
+0cca9d8  2b322f2  合并 save-in-place（handoff-03 F8）到 ..
+4585e06  553e8a1  合并后的两处修正：包里还带着 Qt6Pdf.dl..
+aa06356  6c27a1d  §116 §117 第三阶段 F7（PDFium）、F8（就..
+e1f4d6d  3948780  docs/handoff-04.md：第四批四件并行 —— ..
+85d4c7a  00d0fb5  gui-probe: 保存护栏先立起来 —— 会按保存..
+2457fdd  ea9721c  gui-probe: -Mode saveinplace —— Ctrl+S..
+04b36e4  c82cb03  gui-probe: -Mode closeprompt —— 关窗三..
+17e108c  868faca  G4 菜单助记字母查重：§116 那一类撞车现..
+d201c6f  d54e247  gui-probe: saverename 改成走另存为 + 头..
+bcc4ecc  4e033a8  G3 识别准确度：决定交给哪个识别器，而不..
+463b543  ec98a78  G1 表单填写：产品这一半（PDFium 的 FOR..
+ea23738  b54c15d  G1 表单填写：测试那一半、六条控制跑，和..
+624ea5b  ca2b6ee  合并 gui-probe-save（handoff-04）
+ba23b82  6216685  合并 mnemonic-check（handoff-04）
+7a25967  16b472b  合并 ocr-accuracy（handoff-04）
+14ca8bb  0c09f3c  合并 form-filling（handoff-04 G1）；关..
+6a9171d  6dfe83f  gui-probe：装上的那份上的保存模式第一次..
+e1e2249  8a6152b  §118 §119 第四批 G1–G4 合进 main，三答..
+6d491a7  91e4132  docs/handoff-05.md：第五批三件并行 —— ..
+8c2755f  8c0856a  H3 暂存文件按记录收走：两次暂存先把全路..
+c8dbbe0  e13f41d  pdfprobe：两个只读/只新建的子命令，为 ..
+d8f0c7e  38e36af  handoff-05 H1 1/2/4：组合框下拉（引擎自..
+786638c  598a645  H2 表单上屏幕：formfill/formtab/formch..
+c18b7ea  f5cf59d  handoff-05 H1 3 + 测试：表单输入那半只..
+a1fdef4  8e377be  合并 gui-probe-save（handoff-05）
+c4c4862  c1fceb7  合并 staging-cleanup（handoff-05）
+9922919  6a11eea  合并 form-filling（handoff-05 H1）；H3..
+7278eff  17c1bfc  §120 §121 第五批 H1–H3 合进 main，字段..
+b99bcc9  a08c638  docs/handoff-06.md：第六批两件并行 —— ..
+7234d36  c2a28bc  H5：组合框与列表框上屏幕 —— 下拉按钮 /..
+9a1e91b  a50d9d1  H4 已签名的文档：认出来、只改字段走增量..
+f72e8ec  a0ddb72  合并 gui-probe-choices（handoff-06）
+d5efd57  355afbc  合并 signed-docs（handoff-06）
+d84783b  0729bea  英文目录：合并 H4/H5 之后重生成核对 ——..
+617cf1d  5dc1853  gui-probe：经 picker 开完文档后把指针挪..
+e93b924  2dc4110  §122 §123 第六批 H4（已签名文档）、H5（..
+d6a1217  49228a1  docs/handoff-07.md：第七批两件并行 —— ..
+e46d5d7  58a0278  pdfprobe：--write-signed-sample —— 屏幕..
+eeb1b90  59185ed  gui-probe：signedsave / signedlock —— ..
+e71b031  6f2a94f  signatureverify：用 Windows 密码学接口..
+3de57c1  254ef13  I1 验证数字签名：四种结论上侧栏与状态栏..
+7c63472  f866ed2  §124 转 Word 整个重写：排出来像 PDF，而..
+92e4a53  d888102  §125 重打包并重装；check_docx.py 认 PN..
+4d02b3a  14a79de  合并 gui-probe-signed（handoff-07 I2）
+23afc50  040b300  合并 signature-verify（handoff-07 I1）
+dcd391e  135402f  合并 I1/I2 之后：状态栏英文焊句、认证那..
+5fd3844  0dd236c  签名结论只替换预告它的那一行；gui-prob..
+0188633  f3fdaf6  §126 §127 第七批 I1（验证签名）、I2（签..
+a1d116d  c3292fd  状态栏：通知压在提示下面上栏时，提示离..
+23dca8d  e6893b8  §128 签名文档在装上的那一份上：I2 两个..
+2475c61  f9e67f0  docs/handoff-08.md：第八批两件并行 —— ..
+a1762a5  b4feb00  转 Word：两栏正文成为 Word 的两栏；阿拉..
+243d4ff  c5e5708  §129 转 Word：两栏、阿拉伯文；导出那条..
+92ddf66  06297c4  docs/handoff-09.md：第九批三件并行 —— ..
+6566c82  5431410  §130 J2 时间戳与联网吊销都在本机现造：..
+afaab2a  3d90571  K1 转 Excel：PDF 里的表格成为工作表（x..
+9cec259  0ff5aa5  §130 PDF 转 PowerPoint：每页一张幻灯片..
+8737dc2  60ef496  §130 扫描件转成可搜索的 PDF：识别带位置..
+84cfd1c  17edd26  合并 signature-timestamp-revocation（h..
+5b29fb1  5516870  J1 gui-probe：侧栏「签名」页上屏幕（-M..
+d9f8957  285a191  合并 gui-probe-signatures（handoff-08 ..
+559d12f  6ce721e  合并 export-excel（handoff-09 K1：PDF ..
+ac6cea8  2d472b9  合并 export-powerpoint（handoff-09 K2：..
+2cef2d3  34e2188  合并 searchable-pdf（handoff-09 K3：扫..
+99cb8b0  2968e96  §130 合并后：四种转换收成一个 ExportKi..
+e7db9d8  166ed2b  §130 装上的那一份中英各跑一遍：四种转换..
+72292a5  c4d0790  gui-probe：表单与签名模式的样本路径改用..
+5da0bbb  edd721d  §131 改发 GitHub 安装包并以 MIT 开源：..

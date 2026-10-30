@@ -8058,3 +8058,33 @@ README 整篇重写：原来那份停在 M0（还写着侧栏、打印、打包�
 
 **没验的**：预览窗格在屏幕上真画出来 —— 要 XYZPDF 是 `.pdf` 的默认程序，而这台机器的默认是旧 MSIX，`UserChoice` 只有作者能在系统设置里改；
 没装过 MSIX 的机器上从安装到双击打开、预览窗格的全流程。
+## 132. 改写历史、删掉远端重建后公开；许可证让 GitHub 认得出（2026-10-30）
+
+**为什么改写**：公开之前查到 195 个提交里 193 个的作者/提交者是作者的私人邮箱。作者选择改写全部历史：`git filter-branch --env-filter` 只换邮箱
+（作者与提交者两处），换成 GitHub 的 noreply 地址，名字、时间、说明、树都不动。改写前存了一份 bundle（验证过），改写后最新提交的 tree 与改写前逐个相同。
+所有提交哈希因此都变了：**日志与交接文档里 §131 之前引用的短哈希都是旧的**，对照表在 `docs/rewritten-hashes.txt`（195 行，按顺序配对，
+每对的标题与作者时间都核过相同）。
+
+**强推不够**：强推之后用旧哈希 `72292a5` 问 GitHub 的 commits API，它照样答出旧提交、作者是旧邮箱 —— 不可达的对象还在服务器上，按哈希就能打开，
+而日志里引用了几十个旧短哈希，公开后顺着点就是。远端当时没有 PR、Issue、Release、fork、Actions secret，只有 `main`，所以作者授权删掉远端仓库
+（gh 令牌补了 `delete_repo`）、建同名空仓库再推。之后旧的 `72292a5` 与日志里的 `0188633` 都答 422 "No commit found"，远端全部提交的作者与提交者
+只剩 noreply（外加一个网页合并留下的 `noreply@github.com`）。然后改成公开，匿名访问 200。
+
+**公开前的隐私扫描**：历史里每个 blob（2370 个）加全部提交说明，按邮箱、手机号、身份证号、私钥头、各家令牌格式、`key=`/`secret=` 赋值、
+用户目录、盘符路径、证书文件名扫了一遍。邮箱只剩第三方许可证里的原作者与 Inno 简体中文语言包译者；没有密钥类；`StoreAppxManifest.xml` 历史里
+那个 `CN=3C3318D2-…` 是 §9.1 记过的编出来的值，不是真的 Partner Center 身份。路径里出现的只有测试用的公开技术资料文件名。
+
+**许可证**：§131 在 `LICENSE` 末尾加了一段第三方组件说明，GitHub 的识别就答 `NOASSERTION`（显示 Other）。改回 MIT 原文后答 `MIT`。
+第三方说明在 README 的「许可」与程序里「帮助 → 第三方开源许可」。
+
+**作者自己卸掉了旧 MSIX**。卸完之后 `.pdf` 的 `UserChoice` 仍指着那个包的 ProgID（`AppXpt859m…`），已是孤儿 —— 默认程序要作者在系统设置里重选。
+
+**旧 MSIX 卸掉之后，安装包在屏幕上走了一遍**（补上 §131 那两条"没验的"）：重新出包（许可页换成新的 `LICENSE`）：`XYZPDF-0.1.0-setup.exe`
+16,163,289 字节，sha256 `af2de1c5…a816`。静默装 `/TASKS="shell,shell\preview"`：exit 0，ProgID 下的预览指针与 `CLSID\{12DF01C2-…}\InprocServer32` 都在；
+装上的 exe 打开 `links.pdf`，**这一次启动后 HKCU 项没被撤**（没有包了，"包优先"那段不再触发）。作者在「打开方式 → 始终」里把 `.pdf` 设成 XYZPDF
+（`UserChoice` = `xyzpdf.Document`）。之后：
+- 资源管理器 `/select` 一个 `text.pdf`，按外框 `PrintWindow` 截图：预览窗格里是我们的预览（"text.pdf · 共 2 页"，两页的字都在；第 2 页的字更大是因为
+  它只有 400 pt 宽，按栏宽放大得更多 —— 样本本来如此）。模块：`prevhost` 里有 `xyzpdfpreview.dll` / `pdfium.dll` / `Qt6Core` / `Qt6Gui`，
+  **explorer.exe 里一颗都没有**。
+- `Start-Process colored.pdf`（走默认程序的 open）：起来的是 `%LOCALAPPDATA%\Programs\XYZPDF\bin\xyzpdf.exe`，标题 `colored.pdf — XYZPDF`。
+- 卸载这一步没在这一轮重做（§131 已静默卸过一次、逐项撤干净），装上的这份留给作者日常用。
